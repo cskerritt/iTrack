@@ -12,6 +12,9 @@ import {
 } from "@/db/catalog/dental";
 import { NURSING_RENEWAL_TASK_COPY_BINDINGS } from "@/db/catalog/nursing";
 import {
+  REHABILITATION_RENEWAL_TASK_COPY_BINDINGS,
+} from "@/db/catalog/rehabilitation";
+import {
   type RequestIdentity,
   resolveRequestIdentity,
 } from "@/db/identity";
@@ -92,6 +95,11 @@ const COMPLIANCE_PERIOD_RULE_SET_PREFIXES = [
   "pa-professional-educator-act-48-",
 ] as const;
 const NREMT_RULE_SET_PREFIX = "nremt-";
+const CRCC_RULE_SET_PREFIX = "crcc-";
+const ABVE_RULE_SET_PREFIX = "abve-";
+const CRCC_PROGRAM_REFERENCE_PREFIX = "CRCC";
+const ABVE_CURRENT_CYCLE_START = "2025-01-01";
+const ABVE_CURRENT_CYCLE_DEADLINE = "2027-12-31";
 const TEXAS_LPC_RULE_SET_ID = "tx-lpc-standard-renewal-2026-v1";
 const FLORIDA_INSURANCE_RULE_SET_PREFIX = "fl-insurance-producer-";
 const FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX = "fl-lcsw-lmft-lmhc-";
@@ -299,6 +307,15 @@ const DENTAL_RENEWAL_TASK_COPY = new Map<
   readonly [review: string, progress: string, submission: string]
 >(
   DENTAL_RENEWAL_TASK_COPY_BINDINGS.map(
+    ([ruleSetId, review, progress, submission]) =>
+      [ruleSetId, [review, progress, submission] as const] as const,
+  ),
+);
+const REHABILITATION_RENEWAL_TASK_COPY = new Map<
+  string,
+  readonly [review: string, progress: string, submission: string]
+>(
+  REHABILITATION_RENEWAL_TASK_COPY_BINDINGS.map(
     ([ruleSetId, review, progress, submission]) =>
       [ruleSetId, [review, progress, submission] as const] as const,
   ),
@@ -586,15 +603,22 @@ type NremtAllocationIssue = {
 
 function requirementMatchesField(
   payload: JsonRecord,
-  options: { required?: boolean } = {},
+  options: {
+    required?: boolean;
+    context?: "nremt" | "crcc";
+  } = {},
 ) {
   const raw = payload.requirementMatches;
   if (raw === undefined || raw === null) {
     if (options.required) {
       throw new RequestError(
-        "requirementMatches is required for National Registry credit.",
+        options.context === "crcc"
+          ? "Enter the General, Professional Development, and Ethics portions for this CRC program."
+          : "requirementMatches is required for National Registry credit.",
         409,
-        "nremt_requirement_amounts_required",
+        options.context === "crcc"
+          ? "crcc_requirement_amounts_required"
+          : "nremt_requirement_amounts_required",
       );
     }
     return [] as RequirementMatchInput[];
@@ -606,9 +630,13 @@ function requirementMatchesField(
   }
   if (options.required && raw.length === 0) {
     throw new RequestError(
-      "Enter the National Registry component and topic credit amounts.",
+      options.context === "crcc"
+        ? "Enter the CRCC-approved General, Professional Development, and Ethics amounts."
+        : "Enter the National Registry component and topic credit amounts.",
       409,
-      "nremt_requirement_amounts_required",
+      options.context === "crcc"
+        ? "crcc_requirement_amounts_required"
+        : "nremt_requirement_amounts_required",
     );
   }
   const matches = raw.map((value, index) => {
@@ -865,6 +893,299 @@ async function validateNremtRequirementMatches(
   }));
 }
 
+type CrcRequirementRole =
+  | "general"
+  | "professional_development"
+  | "ethics";
+
+function crcRequirementRole(
+  requirement: { ruleCategoryId: string | null },
+): CrcRequirementRole | null {
+  if (requirement.ruleCategoryId?.endsWith("-professional-development")) {
+    return "professional_development";
+  }
+  if (requirement.ruleCategoryId?.endsWith("-general")) {
+    return "general";
+  }
+  if (requirement.ruleCategoryId?.endsWith("-ethics")) {
+    return "ethics";
+  }
+  return null;
+}
+
+function crcAllocationIssue(
+  requirementsById: ReadonlyMap<string, NremtRequirementMetadata>,
+  matches: readonly RequirementMatchInput[],
+  allocatedUnits: number,
+): NremtAllocationIssue | null {
+  const activeRequirements = [...requirementsById.values()].filter(
+    (requirement) =>
+      Boolean(requirement.isActive) &&
+      requirement.applicabilityStatus === "applies",
+  );
+  const byRole = new Map(
+    activeRequirements.flatMap((requirement) =>
+      crcRequirementRole(requirement)
+        ? [[crcRequirementRole(requirement)!, requirement] as const]
+        : [],
+    ),
+  );
+  const expectedRoles: readonly CrcRequirementRole[] = [
+    "general",
+    "professional_development",
+    "ethics",
+  ] as const;
+  if (
+    expectedRoles.some(
+      (role) =>
+        activeRequirements.filter(
+          (requirement) => crcRequirementRole(requirement) === role,
+        ).length !== 1,
+    )
+  ) {
+    return {
+      code: "crcc_requirement_template_incomplete",
+      message:
+        "This CRC template is missing a required credit classification. Refresh the credential before recording hours.",
+      unresolvedExclusiveGroups: ["CRCC CRC credit allocation"],
+    };
+  }
+  if (
+    matches.some((match) => {
+      const requirement = requirementsById.get(match.requirementId);
+      return (
+        !requirement ||
+        !Boolean(requirement.isActive) ||
+        requirement.applicabilityStatus !== "applies" ||
+        !crcRequirementRole(requirement)
+      );
+    })
+  ) {
+    return {
+      code: "crcc_requirement_amount_invalid",
+      message:
+        "CRC credit amounts may use only General / Other Accepted, Professional Development, and Ethics classifications from this credential.",
+      unresolvedExclusiveGroups: ["CRCC CRC credit allocation"],
+    };
+  }
+  const amountFor = (role: CrcRequirementRole) => {
+    const requirement = byRole.get(role);
+    if (!requirement) return 0;
+    return Number(
+      matches.find(
+        (match) => match.requirementId === requirement.id,
+      )?.matchedUnits ?? 0,
+    );
+  };
+  const generalUnits = amountFor("general");
+  const professionalDevelopmentUnits = amountFor(
+    "professional_development",
+  );
+  const ethicsUnits = amountFor("ethics");
+  if (
+    !unitsEqual(
+      generalUnits + professionalDevelopmentUnits,
+      allocatedUnits,
+    )
+  ) {
+    return {
+      code: "crcc_credit_type_total_invalid",
+      message: `General / Other Accepted plus Professional Development must total the ${allocatedUnits} CRCC-approved hours applied to this credential.`,
+      unresolvedExclusiveGroups: ["CRCC CRC credit allocation"],
+    };
+  }
+  if (ethicsUnits > generalUnits + 0.001) {
+    return {
+      code: "crcc_ethics_amount_exceeds_general",
+      message:
+        "Ethics hours overlap General / Other Accepted CRC Credit and cannot exceed that portion of the program.",
+      unresolvedExclusiveGroups: ["CRCC CRC credit allocation"],
+    };
+  }
+  return null;
+}
+
+async function validateCrcRequirementMatches(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+  matches: readonly RequirementMatchInput[],
+  allocatedUnits: number,
+) {
+  const requirements = await query(
+    database,
+    `SELECT
+      requirement.id,
+      requirement.name,
+      requirement.rule_category_id AS ruleCategoryId,
+      requirement.relation,
+      requirement.parent_requirement_id AS parentRequirementId,
+      requirement.is_active AS isActive,
+      requirement.applicability_status AS applicabilityStatus,
+      requirement.exclusive_group AS exclusiveGroup
+    FROM credential_requirements requirement
+    JOIN credentials credential ON credential.id = requirement.credential_id
+    WHERE requirement.credential_id = ?
+      AND credential.user_id = ?`,
+    [credentialId, identity.userId],
+  ).all<NremtRequirementMetadata>();
+  const requirementsById = new Map(
+    requirements.results.map((requirement) => [requirement.id, requirement]),
+  );
+  const issue = crcAllocationIssue(
+    requirementsById,
+    matches,
+    allocatedUnits,
+  );
+  if (issue) {
+    throw new RequestError(issue.message, 409, issue.code);
+  }
+  return matches.map((match) => ({
+    ...requirementsById.get(match.requirementId)!,
+    matchedUnits: match.matchedUnits,
+  }));
+}
+
+function crcProgramEvidenceReference(
+  payload: JsonRecord,
+  allocatedUnits: number,
+) {
+  const approvalType = textField(payload, "crcApprovalType", {
+    required: true,
+    max: 20,
+  });
+  if (
+    approvalType !== "pre_approved" &&
+    approvalType !== "post_approved"
+  ) {
+    throw new RequestError(
+      "Choose whether CRCC pre-approved or post-approved the program.",
+      409,
+      "crcc_approval_type_required",
+    );
+  }
+  const programReference = textField(payload, "crcProgramReference", {
+    required: true,
+    max: 320,
+  })!;
+  if (payload.crcApprovalAttested !== true) {
+    throw new RequestError(
+      approvalType === "pre_approved"
+        ? "Confirm that the entered CRCC approval number and awarded credit types match the completion record."
+        : "Confirm that CRCC approved the post-submission, the review fee is paid, and the entered credit types match the accepted result.",
+      409,
+      "crcc_program_approval_attestation_required",
+    );
+  }
+  const normalizedReference = programReference
+    .replace(/\s+/g, " ")
+    .trim();
+  if (
+    approvalType === "pre_approved" &&
+    !/^(?:60007|TRN)/i.test(normalizedReference)
+  ) {
+    throw new RequestError(
+      "Enter the CRCC pre-approval number from the completion record. Current CRCC pre-approval numbers begin with 60007 or TRN.",
+      409,
+      "crcc_preapproval_number_invalid",
+    );
+  }
+  if (approvalType === "post_approved" && allocatedUnits < 1) {
+    throw new RequestError(
+      "CRCC post-approved activities must contain at least 1 approved clock hour.",
+      409,
+      "crcc_post_approval_minimum_required",
+    );
+  }
+  return `${CRCC_PROGRAM_REFERENCE_PREFIX} ${
+    approvalType === "pre_approved"
+      ? "pre-approved"
+      : "post-approved"
+  } | ${normalizedReference}`;
+}
+
+function isCrccProgramEvidenceReference(
+  evidenceReference: string | null,
+) {
+  if (!evidenceReference) return false;
+  const preApprovedPrefix =
+    `${CRCC_PROGRAM_REFERENCE_PREFIX} pre-approved | `;
+  if (evidenceReference.startsWith(preApprovedPrefix)) {
+    return /^(?:60007|TRN)/i.test(
+      evidenceReference.slice(preApprovedPrefix.length).trim(),
+    );
+  }
+  const postApprovedPrefix =
+    `${CRCC_PROGRAM_REFERENCE_PREFIX} post-approved | `;
+  return (
+    evidenceReference.startsWith(postApprovedPrefix) &&
+    evidenceReference.slice(postApprovedPrefix.length).trim().length > 0
+  );
+}
+
+function isCrccPostApprovedReference(evidenceReference: string | null) {
+  return (
+    evidenceReference?.startsWith(
+      `${CRCC_PROGRAM_REFERENCE_PREFIX} post-approved | `,
+    ) ?? false
+  );
+}
+
+function crccProgramIdentity(evidenceReference: string) {
+  const delimiterIndex = evidenceReference.indexOf("|");
+  return evidenceReference
+    .slice(delimiterIndex >= 0 ? delimiterIndex + 1 : 0)
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+async function assertNoDuplicateCrcProgram(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+  evidenceReference: string,
+  excludeActivityId?: string,
+) {
+  const duplicate = await query(
+    database,
+    `SELECT activity.id
+     FROM activity_allocations allocation
+     JOIN activities activity
+       ON activity.id = allocation.activity_id
+       AND activity.user_id = ?
+       AND activity.archived_at IS NULL
+     JOIN credentials credential
+       ON credential.id = allocation.credential_id
+       AND credential.user_id = activity.user_id
+     WHERE allocation.credential_id = ?
+       AND LOWER(
+         TRIM(
+           SUBSTR(
+             activity.evidence_reference,
+             INSTR(activity.evidence_reference, '|') + 1
+           )
+         )
+       ) = ?
+       AND (? IS NULL OR activity.id <> ?)
+     LIMIT 1`,
+    [
+      identity.userId,
+      credentialId,
+      crccProgramIdentity(evidenceReference),
+      excludeActivityId ?? null,
+      excludeActivityId ?? null,
+    ],
+  ).first<{ id: string }>();
+  if (duplicate) {
+    throw new RequestError(
+      "That CRCC approval or program reference is already recorded in this certification period. CRCC permits the same program to be submitted only once.",
+      409,
+      "crcc_duplicate_program",
+    );
+  }
+}
+
 function assertNremtAcceptedEducation(
   payload: JsonRecord,
   provider: string,
@@ -900,6 +1221,23 @@ async function isOwnedNremtCredential(
     [credentialId, identity.userId],
   ).first<{ isNremt: number }>();
   return Boolean(row?.isNremt);
+}
+
+async function isOwnedCrcCredential(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+) {
+  const row = await query(
+    database,
+    `SELECT 1 AS isCrc
+     FROM credentials
+     WHERE id = ?
+       AND user_id = ?
+       AND rule_set_id LIKE 'crcc-%'`,
+    [credentialId, identity.userId],
+  ).first<{ isCrc: number }>();
+  return Boolean(row?.isCrc);
 }
 
 function isoDateField(payload: JsonRecord, key: string, required = true) {
@@ -946,6 +1284,10 @@ function yearsAfter(isoDate: string, years: number) {
 
 function isNremtRuleSet(ruleSetId: string | null) {
   return ruleSetId?.startsWith(NREMT_RULE_SET_PREFIX) ?? false;
+}
+
+function isCrccRuleSet(ruleSetId: string | null) {
+  return ruleSetId?.startsWith(CRCC_RULE_SET_PREFIX) ?? false;
 }
 
 function isNremtEmrRuleSet(ruleSetId: string | null) {
@@ -1069,6 +1411,68 @@ function assertFloridaMentalHealthCredentialDates(
       "florida_mental_health_dates_attestation_required",
     );
   }
+}
+
+function abveAnnualStartYearField(payload: JsonRecord) {
+  const year = payload.abveAnnualStartYear;
+  if (
+    typeof year !== "number" ||
+    !Number.isInteger(year) ||
+    year < 2025 ||
+    year > 2027
+  ) {
+    throw new RequestError(
+      "Choose the first year this ABVE credential was held in the current 2025–2027 cycle so annual renewal tasks start in the correct year.",
+      409,
+      "abve_annual_start_year_required",
+    );
+  }
+  return year;
+}
+
+function assertRehabilitationCertificationDates(
+  ruleSetId: string,
+  cycleStart: string,
+  deadline: string,
+  payload: JsonRecord,
+) {
+  let abveAnnualStartYear: number | null = null;
+  if (
+    ruleSetId.startsWith(ABVE_RULE_SET_PREFIX) &&
+    (cycleStart !== ABVE_CURRENT_CYCLE_START ||
+      deadline !== ABVE_CURRENT_CYCLE_DEADLINE)
+  ) {
+    throw new RequestError(
+      `The current ABVE Fellow and Diplomate templates cover the fixed ${ABVE_CURRENT_CYCLE_START} through ${ABVE_CURRENT_CYCLE_DEADLINE} recertification cycle.`,
+      409,
+      "abve_fixed_cycle_required",
+    );
+  }
+  if (ruleSetId.startsWith(ABVE_RULE_SET_PREFIX)) {
+    abveAnnualStartYear = abveAnnualStartYearField(payload);
+  }
+  if (
+    ruleSetId.startsWith(CRCC_RULE_SET_PREFIX) &&
+    !matchesFullCycleWindow(cycleStart, deadline, 60)
+  ) {
+    throw new RequestError(
+      "The standard CRC template requires the exact five-year certification period shown in CRCCCONNECT. Create a custom plan for an extension, reinstatement, or other adjusted period.",
+      409,
+      "crcc_standard_cycle_required",
+    );
+  }
+  if (payload.officialDatesAttested !== true) {
+    throw new RequestError(
+      ruleSetId.startsWith(ABVE_RULE_SET_PREFIX)
+        ? "Confirm that the ABVE member record shows the selected Fellow or Diplomate credential and the fixed 2025–2027 cycle."
+        : "Confirm that CRCCCONNECT shows the entered CRC certification period and valid-through date.",
+      409,
+      ruleSetId.startsWith(ABVE_RULE_SET_PREFIX)
+        ? "abve_cycle_attestation_required"
+        : "crcc_cycle_attestation_required",
+    );
+  }
+  return abveAnnualStartYear;
 }
 
 function monthsBefore(isoDate: string, months: number) {
@@ -1267,6 +1671,19 @@ function isManagedDentalCredential(
   return profession === "Dental" && Boolean(ruleSetId);
 }
 
+function isManagedRehabilitationCredential(
+  profession: string,
+  ruleSetId: string | null,
+) {
+  return (
+    profession === "Vocational Rehabilitation" &&
+    Boolean(
+      ruleSetId?.startsWith(CRCC_RULE_SET_PREFIX) ||
+        ruleSetId?.startsWith(ABVE_RULE_SET_PREFIX),
+    )
+  );
+}
+
 function adjustedFloridaNursingTotal(
   ruleSetId: string | null,
   catalogTotal: number,
@@ -1333,6 +1750,7 @@ function renewalTaskSpecs(
   ruleSetId: string | null,
   deadline: string,
   reviewTitle?: string | null,
+  options: { abveAnnualStartYear?: number } = {},
 ) {
   const pharmacistTaskCopy = ruleSetId
     ? PHARMACIST_RENEWAL_TASK_COPY.get(ruleSetId)
@@ -1343,8 +1761,49 @@ function renewalTaskSpecs(
   const dentalTaskCopy = ruleSetId
     ? DENTAL_RENEWAL_TASK_COPY.get(ruleSetId)
     : null;
+  const rehabilitationTaskCopy = ruleSetId
+    ? (REHABILITATION_RENEWAL_TASK_COPY.get(ruleSetId) ??
+      (ruleSetId.startsWith(CRCC_RULE_SET_PREFIX)
+        ? [...REHABILITATION_RENEWAL_TASK_COPY].find(([candidateId]) =>
+            candidateId.startsWith(CRCC_RULE_SET_PREFIX),
+          )?.[1]
+        : null))
+    : null;
+  if (
+    rehabilitationTaskCopy &&
+    ruleSetId?.startsWith(ABVE_RULE_SET_PREFIX)
+  ) {
+    const credentialLabel = ruleSetId.startsWith("abve-fellow-")
+      ? "Fellow"
+      : "Diplomate";
+    const annualTask = (year: number) => ({
+      title: `Renew ABVE membership and ${credentialLabel} credential, pay annual fees, and reaffirm the Code of Ethics for ${year}`,
+      kind: "review",
+      dueDate: `${year}-12-31`,
+    });
+    const annualStartYear = options.abveAnnualStartYear ?? 2025;
+    return [
+      ...[2025, 2026]
+        .filter((year) => year >= annualStartYear)
+        .map(annualTask),
+      {
+        title: rehabilitationTaskCopy[1],
+        kind: "progress",
+        dueDate: daysBefore(deadline, 56),
+      },
+      ...(annualStartYear <= 2027 ? [annualTask(2027)] : []),
+      {
+        title: rehabilitationTaskCopy[2],
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
   const managedTaskCopy =
-    pharmacistTaskCopy ?? nursingTaskCopy ?? dentalTaskCopy;
+    pharmacistTaskCopy ??
+    nursingTaskCopy ??
+    dentalTaskCopy ??
+    rehabilitationTaskCopy;
   if (managedTaskCopy) {
     const isTexasNursing =
       ruleSetId === "tx-rn-2026-v1" ||
@@ -3048,10 +3507,11 @@ async function assertPortalCarryoverEvidenceReady(
   }
 }
 
-async function findUnresolvedNremtClassification(
+async function findUnresolvedExactClassification(
   database: D1Database,
   identity: RequestIdentity,
   credentialId: string,
+  exactKind: "nremt" | "crcc",
 ) {
   const [requirementResult, allocationResult, matchResult] =
     await Promise.all([
@@ -3129,11 +3589,18 @@ async function findUnresolvedNremtClassification(
   }
   for (const allocation of allocationResult.results) {
     const matches = matchesByAllocation.get(allocation.id) ?? [];
-    const issue = nremtAllocationIssue(
-      requirementsById,
-      matches,
-      Number(allocation.allocatedUnits),
-    );
+    const issue =
+      exactKind === "nremt"
+        ? nremtAllocationIssue(
+            requirementsById,
+            matches,
+            Number(allocation.allocatedUnits),
+          )
+        : crcAllocationIssue(
+            requirementsById,
+            matches,
+            Number(allocation.allocatedUnits),
+          );
     if (issue) {
       return {
         allocationId: allocation.id,
@@ -3151,11 +3618,12 @@ async function findUnresolvedCredentialClassification(
   credentialId: string,
   ruleSetId: string | null,
 ) {
-  if (isNremtRuleSet(ruleSetId)) {
-    return findUnresolvedNremtClassification(
+  if (isNremtRuleSet(ruleSetId) || isCrccRuleSet(ruleSetId)) {
+    return findUnresolvedExactClassification(
       database,
       identity,
       credentialId,
+      isCrccRuleSet(ruleSetId) ? "crcc" : "nremt",
     );
   }
   type ClassificationRequirementRow = {
@@ -4132,8 +4600,11 @@ export async function getWorkspace(
     ) {
       continue;
     }
-    if (isNremtRuleSet(credential.ruleSetId)) {
-      const nremtRequirementsById = new Map(
+    if (
+      isNremtRuleSet(credential.ruleSetId) ||
+      isCrccRuleSet(credential.ruleSetId)
+    ) {
+      const exactRequirementsById = new Map(
         requirementResult.results
           .filter(
             (requirement) =>
@@ -4141,25 +4612,32 @@ export async function getWorkspace(
           )
           .map((requirement) => [requirement.id, requirement]),
       );
-      const nremtIssue = nremtAllocationIssue(
-        nremtRequirementsById,
-        (matchesByAllocation.get(activity.allocationId) ?? []).map(
-          (match) => ({
-            requirementId: match.requirementId,
-            matchedUnits: match.matchedUnits,
-          }),
-        ),
-        Number(activity.allocatedUnits),
-      );
-      if (!nremtIssue) continue;
+      const exactMatches = (
+        matchesByAllocation.get(activity.allocationId) ?? []
+      ).map((match) => ({
+        requirementId: match.requirementId,
+        matchedUnits: match.matchedUnits,
+      }));
+      const exactIssue = isNremtRuleSet(credential.ruleSetId)
+        ? nremtAllocationIssue(
+            exactRequirementsById,
+            exactMatches,
+            Number(activity.allocatedUnits),
+          )
+        : crcAllocationIssue(
+            exactRequirementsById,
+            exactMatches,
+            Number(activity.allocatedUnits),
+          );
+      if (!exactIssue) continue;
       const issue = {
         allocationId: activity.allocationId,
         activityId: activity.id,
         activityTitle: activity.title,
         unresolvedExclusiveGroups:
-          nremtIssue.unresolvedExclusiveGroups,
+          exactIssue.unresolvedExclusiveGroups,
         allocatedUnits: Number(activity.allocatedUnits),
-        classificationMessage: nremtIssue.message,
+        classificationMessage: exactIssue.message,
       };
       classificationIssueByAllocation.set(activity.allocationId, issue);
       const credentialIssues =
@@ -4407,6 +4885,19 @@ export async function getWorkspace(
     );
   }
   for (const [credentialId, requirements] of requirementsByCredential) {
+    if (isCrccRuleSet(credentialById.get(credentialId)?.ruleSetId ?? null)) {
+      const professionalDevelopment = requirements.find(
+        (requirement) =>
+          requirement.ruleCategoryId?.endsWith(
+            "-professional-development",
+          ),
+      );
+      maximumExcessByCredential.set(
+        credentialId,
+        Number(professionalDevelopment?.excessUnits ?? 0),
+      );
+      continue;
+    }
     const allocations =
       classifiedAllocationsByCredential.get(credentialId) ??
       new Map<string, number>();
@@ -4785,6 +5276,7 @@ async function createCredential(
   let unitLabel: string;
   let cycleMonths: number;
   let categories: CredentialCategoryDraft[];
+  let abveAnnualStartYear: number | null = null;
 
   if (ruleSetId) {
     const applicabilityChoices = applicabilityChoicesField(payload);
@@ -4815,6 +5307,17 @@ async function createCredential(
     }
     if (ruleSetId.startsWith(FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX)) {
       assertFloridaMentalHealthCredentialDates(
+        cycleStart,
+        deadline,
+        payload,
+      );
+    }
+    if (
+      ruleSetId.startsWith(CRCC_RULE_SET_PREFIX) ||
+      ruleSetId.startsWith(ABVE_RULE_SET_PREFIX)
+    ) {
+      abveAnnualStartYear = assertRehabilitationCertificationDates(
+        ruleSetId,
         cycleStart,
         deadline,
         payload,
@@ -5203,7 +5706,9 @@ async function createCredential(
     );
   });
 
-  const taskSpecs = renewalTaskSpecs(ruleSetId, deadline);
+  const taskSpecs = renewalTaskSpecs(ruleSetId, deadline, undefined, {
+    abveAnnualStartYear: abveAnnualStartYear ?? undefined,
+  });
   taskSpecs.forEach((task, index) => {
     statements.push(
       query(
@@ -5285,7 +5790,7 @@ async function addActivity(
   })!;
   const legacyRequirementIds = requirementIdsField(payload);
   const evidenceStatus = normalizedEvidenceStatus(payload);
-  const evidenceReference = textField(payload, "evidenceReference", {
+  let evidenceReference = textField(payload, "evidenceReference", {
     max: 500,
   });
 
@@ -5319,31 +5824,64 @@ async function addActivity(
       "cycle_closed",
     );
   }
-  const isNremt = await isOwnedNremtCredential(
-    database,
-    identity,
-    credentialId,
-  );
-  const nremtMatches = isNremt
-    ? requirementMatchesField(payload, { required: true })
+  const [isNremt, isCrc] = await Promise.all([
+    isOwnedNremtCredential(database, identity, credentialId),
+    isOwnedCrcCredential(database, identity, credentialId),
+  ]);
+  const exactMatches = isNremt || isCrc
+    ? requirementMatchesField(payload, {
+        required: true,
+        context: isCrc ? "crcc" : "nremt",
+      })
     : [];
   if (isNremt) assertNremtAcceptedEducation(payload, provider);
+  if (isCrc) {
+    evidenceReference = crcProgramEvidenceReference(
+      payload,
+      allocatedUnits,
+    );
+    if (
+      evidenceStatus === "not_required" &&
+      isCrccPostApprovedReference(evidenceReference)
+    ) {
+      throw new RequestError(
+        "CRCC requires an uploaded completion record for post-approved credit. Choose Add later and upload the accepted record before submission.",
+        409,
+        "crcc_post_approval_proof_required",
+      );
+    }
+    await assertNoDuplicateCrcProgram(
+      database,
+      identity,
+      credentialId,
+      evidenceReference,
+    );
+  }
   const selectedRequirements = isNremt
     ? await validateNremtRequirementMatches(
         database,
         identity,
         credentialId,
-        nremtMatches,
+        exactMatches,
         allocatedUnits,
       )
-    : await validateRequirementTags(
-        database,
-        identity,
-        credentialId,
-        legacyRequirementIds,
-      );
-  const persistedMatches: RequirementMatchInput[] = isNremt
-    ? nremtMatches
+    : isCrc
+      ? await validateCrcRequirementMatches(
+          database,
+          identity,
+          credentialId,
+          exactMatches,
+          allocatedUnits,
+        )
+      : await validateRequirementTags(
+          database,
+          identity,
+          credentialId,
+          legacyRequirementIds,
+        );
+  const persistedMatches: RequirementMatchInput[] =
+    isNremt || isCrc
+    ? exactMatches
     : legacyRequirementIds.map((requirementId) => ({
         requirementId,
         matchedUnits: allocatedUnits,
@@ -5533,6 +6071,7 @@ type ActivityMutationRow = {
   totalUnits: number;
   provider: string;
   evidenceStatus: string;
+  evidenceReference: string | null;
 };
 
 type ActivityAllocationValidationRow = {
@@ -5560,7 +6099,8 @@ async function getActivityForMutation(
       completion_date AS completionDate,
       total_units AS totalUnits,
       provider,
-      evidence_status AS evidenceStatus
+      evidence_status AS evidenceStatus,
+      evidence_reference AS evidenceReference
      FROM activities
      WHERE id = ? AND user_id = ?`,
     [activityId, identity.userId],
@@ -5718,8 +6258,10 @@ async function validateActivityMutationAllocations(
       const proposedTotalUnits =
         options.proposedTotalUnits ?? options.currentTotalUnits;
       const isNremt = isNremtRuleSet(allocation.ruleSetId);
+      const isCrc = isCrccRuleSet(allocation.ruleSetId);
+      const hasExactRequirementAmounts = isNremt || isCrc;
       const proposedAllocatedUnits =
-        !isNremt &&
+        !hasExactRequirementAmounts &&
         unitsEqual(
           allocation.allocatedUnits,
           options.currentTotalUnits,
@@ -5727,13 +6269,17 @@ async function validateActivityMutationAllocations(
           ? proposedTotalUnits
           : Math.min(allocation.allocatedUnits, proposedTotalUnits);
       if (
-        isNremt &&
+        hasExactRequirementAmounts &&
         !unitsEqual(proposedAllocatedUnits, allocation.allocatedUnits)
       ) {
         throw new RequestError(
-          "National Registry component and topic amounts cannot be changed by a total-only correction. Archive this record and log the corrected credit with its exact component and topic amounts.",
+          isNremt
+            ? "National Registry component and topic amounts cannot be changed by a total-only correction. Archive this record and log the corrected credit with its exact component and topic amounts."
+            : "CRC credit-type and ethics amounts cannot be changed by a total-only correction. Open the allocation and enter the corrected General, Professional Development, and Ethics split.",
           409,
-          "nremt_allocation_revision_required",
+          isNremt
+            ? "nremt_allocation_revision_required"
+            : "crcc_allocation_revision_required",
         );
       }
       if (isNremt && !options.provider.trim()) {
@@ -5751,12 +6297,20 @@ async function validateActivityMutationAllocations(
             allocation.requirementMatches,
             allocation.allocatedUnits,
           )
-        : await validateRequirementTags(
-            database,
-            identity,
-            allocation.credentialId,
-            [...new Set(allocation.requirementIds)],
-          );
+        : isCrc
+          ? await validateCrcRequirementMatches(
+              database,
+              identity,
+              allocation.credentialId,
+              allocation.requirementMatches,
+              allocation.allocatedUnits,
+            )
+          : await validateRequirementTags(
+              database,
+              identity,
+              allocation.credentialId,
+              [...new Set(allocation.requirementIds)],
+            );
       assertActivityDateAllowedForRequirements(
         completionDate,
         allocation.cycleStart,
@@ -5879,18 +6433,28 @@ async function updateActivity(
     activityId,
   );
   assertActivityMutationState(activity, expectedRevision, "active");
-  const nremtAllocation = await query(
+  const managedAllocations = await query(
     database,
-    `SELECT 1 AS isNremt
+    `SELECT
+      MAX(
+        CASE
+          WHEN credential.rule_set_id LIKE 'nremt-%' THEN 1
+          ELSE 0
+        END
+      ) AS hasNremt,
+      MAX(
+        CASE
+          WHEN credential.rule_set_id LIKE 'crcc-%' THEN 1
+          ELSE 0
+        END
+      ) AS hasCrc
      FROM activity_allocations allocation
      JOIN credentials credential
        ON credential.id = allocation.credential_id
      WHERE allocation.activity_id = ?
-       AND credential.user_id = ?
-       AND credential.rule_set_id LIKE 'nremt-%'
-     LIMIT 1`,
+       AND credential.user_id = ?`,
     [activityId, identity.userId],
-  ).first<{ isNremt: number }>();
+  ).first<{ hasNremt: number; hasCrc: number }>();
   await validateActivityMutationAllocations(
     database,
     identity,
@@ -5903,8 +6467,18 @@ async function updateActivity(
       evidenceStatus: activity!.evidenceStatus,
     },
   );
-  if (nremtAllocation) {
+  if (Boolean(managedAllocations?.hasNremt)) {
     assertNremtAcceptedEducation(payload, provider);
+  }
+  if (
+    Boolean(managedAllocations?.hasCrc) &&
+    payload.crcApprovalAttested !== true
+  ) {
+    throw new RequestError(
+      "Confirm that the corrected activity title, provider, completion date, and credit total still match the saved CRCC approval record.",
+      409,
+      "crcc_activity_edit_attestation_required",
+    );
   }
 
   const mutableActivityExists = `
@@ -5941,7 +6515,10 @@ async function updateActivity(
          FROM credentials allocation_credential
          WHERE allocation_credential.id =
            activity_allocations.credential_id
-           AND allocation_credential.rule_set_id LIKE 'nremt-%'
+           AND (
+             allocation_credential.rule_set_id LIKE 'nremt-%'
+             OR allocation_credential.rule_set_id LIKE 'crcc-%'
+           )
        ) THEN MIN(allocated_units, ?)
        WHEN allocated_units = ? THEN ?
        ELSE MIN(allocated_units, ?)
@@ -5977,7 +6554,10 @@ async function updateActivity(
          WHERE activity_allocations.activity_id = ?
            AND (
              credentials.rule_set_id IS NULL
-             OR credentials.rule_set_id NOT LIKE 'nremt-%'
+             OR (
+               credentials.rule_set_id NOT LIKE 'nremt-%'
+               AND credentials.rule_set_id NOT LIKE 'crcc-%'
+             )
            )
            AND EXISTS (${mutableActivityExists})
        )`,
@@ -6061,6 +6641,43 @@ async function setActivityArchivedState(
   assertActivityMutationState(activity, expectedRevision, expectedState);
   if (!restore) {
     await assertNoActivityEvidenceDeletion(database, identity, activityId);
+  }
+  if (restore) {
+    const crcAllocations = await query(
+      database,
+      `SELECT allocation.credential_id AS credentialId
+       FROM activity_allocations allocation
+       JOIN credentials credential
+         ON credential.id = allocation.credential_id
+       JOIN activities restored_activity
+         ON restored_activity.id = allocation.activity_id
+       WHERE allocation.activity_id = ?
+         AND restored_activity.user_id = ?
+         AND credential.user_id = restored_activity.user_id
+         AND credential.rule_set_id LIKE 'crcc-%'
+       ORDER BY allocation.credential_id`,
+      [activityId, identity.userId],
+    ).all<{ credentialId: string }>();
+    if (crcAllocations.results.length > 0) {
+      if (!isCrccProgramEvidenceReference(activity!.evidenceReference)) {
+        throw new RequestError(
+          "Add the CRCC approval number or accepted post-approval program reference before restoring this CRC activity.",
+          409,
+          "crcc_program_reference_required",
+        );
+      }
+      await Promise.all(
+        crcAllocations.results.map((allocation) =>
+          assertNoDuplicateCrcProgram(
+            database,
+            identity,
+            allocation.credentialId,
+            activity!.evidenceReference!,
+            activityId,
+          ),
+        ),
+      );
+    }
   }
   await validateActivityMutationAllocations(
     database,
@@ -6814,6 +7431,301 @@ async function assertDentalCheckpointsComplete(
   );
 }
 
+async function assertCrcProgramsReady(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+  submissionDate: string,
+) {
+  const [allocationRows, requirementRows, matchRows] = await Promise.all([
+    query(
+      database,
+      `SELECT
+        allocation.id,
+        allocation.allocated_units AS allocatedUnits,
+        activity.evidence_reference AS evidenceReference
+       FROM activity_allocations allocation
+       JOIN activities activity
+         ON activity.id = allocation.activity_id
+         AND activity.user_id = ?
+         AND activity.archived_at IS NULL
+       JOIN credentials credential
+         ON credential.id = allocation.credential_id
+         AND credential.user_id = activity.user_id
+       WHERE allocation.credential_id = ?
+       ORDER BY allocation.id`,
+      [identity.userId, credentialId],
+    ).all<{
+      id: string;
+      allocatedUnits: number;
+      evidenceReference: string | null;
+    }>(),
+    query(
+      database,
+      `SELECT
+        requirement.id,
+        requirement.name,
+        requirement.rule_category_id AS ruleCategoryId,
+        requirement.relation,
+        requirement.parent_requirement_id AS parentRequirementId,
+        requirement.is_active AS isActive,
+        requirement.applicability_status AS applicabilityStatus,
+        requirement.exclusive_group AS exclusiveGroup
+       FROM credential_requirements requirement
+       JOIN credentials credential
+         ON credential.id = requirement.credential_id
+       WHERE requirement.credential_id = ?
+         AND credential.user_id = ?`,
+      [credentialId, identity.userId],
+    ).all<NremtRequirementMetadata>(),
+    query(
+      database,
+      `SELECT
+        match.allocation_id AS allocationId,
+        match.requirement_id AS requirementId,
+        match.matched_units AS matchedUnits
+       FROM activity_requirement_matches match
+       JOIN activity_allocations allocation
+         ON allocation.id = match.allocation_id
+       JOIN activities activity
+         ON activity.id = allocation.activity_id
+         AND activity.user_id = ?
+         AND activity.archived_at IS NULL
+       WHERE allocation.credential_id = ?
+         AND match.user_id = activity.user_id
+       ORDER BY match.allocation_id, match.requirement_id`,
+      [identity.userId, credentialId],
+    ).all<RequirementMatchInput & { allocationId: string }>(),
+  ]);
+  const requirementsById = new Map(
+    requirementRows.results.map((requirement) => [
+      requirement.id,
+      requirement,
+    ]),
+  );
+  const matchesByAllocation = new Map<string, RequirementMatchInput[]>();
+  for (const match of matchRows.results) {
+    const matches = matchesByAllocation.get(match.allocationId) ?? [];
+    matches.push({
+      requirementId: match.requirementId,
+      matchedUnits: Number(match.matchedUnits),
+    });
+    matchesByAllocation.set(match.allocationId, matches);
+  }
+  for (const allocation of allocationRows.results) {
+    const issue = crcAllocationIssue(
+      requirementsById,
+      matchesByAllocation.get(allocation.id) ?? [],
+      Number(allocation.allocatedUnits),
+    );
+    if (issue) {
+      throw new RequestError(issue.message, 409, issue.code);
+    }
+    if (!isCrccProgramEvidenceReference(allocation.evidenceReference)) {
+      throw new RequestError(
+        "Every CRC activity needs its CRCC pre-approval number or accepted post-approval program reference before renewal is submitted.",
+        409,
+        "crcc_program_reference_required",
+      );
+    }
+  }
+  const duplicate = await query(
+    database,
+    `SELECT LOWER(TRIM(activity.evidence_reference)) AS programReference
+     FROM activity_allocations allocation
+     JOIN activities activity
+       ON activity.id = allocation.activity_id
+       AND activity.user_id = ?
+       AND activity.archived_at IS NULL
+     WHERE allocation.credential_id = ?
+       AND activity.evidence_reference LIKE 'CRCC %| %'
+     GROUP BY LOWER(
+       TRIM(
+         SUBSTR(
+           activity.evidence_reference,
+           INSTR(activity.evidence_reference, '|') + 1
+         )
+       )
+     )
+     HAVING COUNT(*) > 1
+     LIMIT 1`,
+    [identity.userId, credentialId],
+  ).first<{ programReference: string }>();
+  if (duplicate) {
+    throw new RequestError(
+      "A CRCC approval or program reference appears more than once in this certification period. Keep only one record because CRCC permits the same program to be submitted once.",
+      409,
+      "crcc_duplicate_program",
+    );
+  }
+  const postApprovalWithoutProof = await query(
+    database,
+    `SELECT activity.id
+     FROM activity_allocations allocation
+     JOIN activities activity
+       ON activity.id = allocation.activity_id
+       AND activity.user_id = ?
+       AND activity.archived_at IS NULL
+     WHERE allocation.credential_id = ?
+       AND activity.evidence_reference LIKE 'CRCC post-approved | %'
+       AND NOT EXISTS (
+         SELECT 1
+         FROM evidence_files evidence
+         WHERE evidence.activity_id = activity.id
+           AND evidence.user_id = activity.user_id
+           AND evidence.status = 'ready'
+       )
+     LIMIT 1`,
+    [identity.userId, credentialId],
+  ).first<{ id: string }>();
+  if (postApprovalWithoutProof) {
+    throw new RequestError(
+      "Upload CRCC's accepted post-approval record and supporting proof for every post-approved program before submitting the renewal.",
+      409,
+      "crcc_post_approval_proof_required",
+    );
+  }
+  const [totals, thresholds] = await Promise.all([
+    query(
+      database,
+      `SELECT
+        COALESCE(SUM(
+          CASE
+            WHEN requirement.rule_category_id LIKE '%-general'
+            THEN match.matched_units
+            ELSE 0
+          END
+        ), 0) AS generalUnits,
+        COALESCE(SUM(
+          CASE
+            WHEN requirement.rule_category_id LIKE
+              '%-professional-development'
+            THEN match.matched_units
+            ELSE 0
+          END
+        ), 0) AS professionalDevelopmentUnits,
+        COALESCE(SUM(
+          CASE
+            WHEN requirement.rule_category_id LIKE '%-ethics'
+            THEN match.matched_units
+            ELSE 0
+          END
+        ), 0) AS ethicsUnits,
+        MAX(activity.completion_date) AS latestCompletionDate
+       FROM activity_requirement_matches match
+       JOIN activity_allocations allocation
+         ON allocation.id = match.allocation_id
+         AND allocation.credential_id = ?
+       JOIN activities activity
+         ON activity.id = allocation.activity_id
+         AND activity.user_id = ?
+         AND activity.archived_at IS NULL
+       JOIN credential_requirements requirement
+         ON requirement.id = match.requirement_id
+         AND requirement.credential_id = allocation.credential_id
+         AND requirement.is_active = 1
+         AND requirement.applicability_status = 'applies'
+       WHERE match.user_id = activity.user_id`,
+      [credentialId, identity.userId],
+    ).first<{
+      generalUnits: number;
+      professionalDevelopmentUnits: number;
+      ethicsUnits: number;
+      latestCompletionDate: string | null;
+    }>(),
+    query(
+      database,
+      `SELECT
+        credential.total_required AS totalRequired,
+        credential.deadline,
+        (
+          SELECT requirement.required_units
+          FROM credential_requirements requirement
+          WHERE requirement.credential_id = credential.id
+            AND requirement.rule_category_id LIKE
+              '%-professional-development'
+            AND requirement.kind = 'maximum'
+            AND requirement.is_active = 1
+            AND requirement.applicability_status = 'applies'
+          ORDER BY requirement.sort_order
+          LIMIT 1
+        ) AS professionalDevelopmentLimit,
+        (
+          SELECT requirement.required_units
+          FROM credential_requirements requirement
+          WHERE requirement.credential_id = credential.id
+            AND requirement.rule_category_id LIKE '%-ethics'
+            AND requirement.kind = 'minimum'
+            AND requirement.is_active = 1
+            AND requirement.applicability_status = 'applies'
+          ORDER BY requirement.sort_order
+          LIMIT 1
+        ) AS ethicsMinimum
+       FROM credentials credential
+       WHERE credential.id = ?
+         AND credential.user_id = ?`,
+      [credentialId, identity.userId],
+    ).first<{
+      totalRequired: number;
+      deadline: string;
+      professionalDevelopmentLimit: number | null;
+      ethicsMinimum: number | null;
+    }>(),
+  ]);
+  const generalUnits = Number(totals?.generalUnits ?? 0);
+  const professionalDevelopmentUnits = Number(
+    totals?.professionalDevelopmentUnits ?? 0,
+  );
+  const ethicsUnits = Number(totals?.ethicsUnits ?? 0);
+  const latestCompletionDate = totals?.latestCompletionDate ?? null;
+  const totalRequired = Number(thresholds?.totalRequired ?? 0);
+  const professionalDevelopmentLimit = Number(
+    thresholds?.professionalDevelopmentLimit ?? 0,
+  );
+  const ethicsMinimum = Number(thresholds?.ethicsMinimum ?? 0);
+  if (submissionDate > (thresholds?.deadline ?? "")) {
+    throw new RequestError(
+      `The standard CRC renewal must be submitted by the certification valid-through date, ${thresholds?.deadline}. Create a custom plan for an approved extension, reinstatement, or other adjusted period.`,
+      409,
+      "crcc_submission_after_deadline",
+    );
+  }
+  if (latestCompletionDate && latestCompletionDate > submissionDate) {
+    throw new RequestError(
+      `The CRC submission date cannot be before the latest credited program, completed ${latestCompletionDate}.`,
+      409,
+      "crcc_activity_after_submission",
+    );
+  }
+  if (
+    totalRequired <= 0 ||
+    professionalDevelopmentLimit <= 0 ||
+    ethicsMinimum <= 0
+  ) {
+    throw new RequestError(
+      "This CRC credential snapshot is missing its total, Professional Development maximum, or ethics minimum. Refresh the current template before submitting.",
+      409,
+      "crcc_requirement_template_incomplete",
+    );
+  }
+  const countableTotal =
+    generalUnits +
+    Math.min(
+      professionalDevelopmentLimit,
+      professionalDevelopmentUnits,
+    );
+  if (
+    countableTotal + 0.001 < totalRequired ||
+    ethicsUnits + 0.001 < ethicsMinimum
+  ) {
+    throw new RequestError(
+      `The CRC record must contain ${totalRequired} countable approved hours, including at least ${ethicsMinimum} ethics hours and no more than ${professionalDevelopmentLimit} counted Professional Development hours. Current accepted totals: ${countableTotal} countable, ${ethicsUnits} ethics.`,
+      409,
+      "crcc_requirements_incomplete",
+    );
+  }
+}
+
 async function markSubmitted(
   database: D1Database,
   identity: RequestIdentity,
@@ -6853,6 +7765,8 @@ async function markSubmitted(
   );
   const isNremtSubmission =
     credential.ruleSetId?.startsWith(NREMT_RULE_SET_PREFIX) ?? false;
+  const isCrccSubmission =
+    credential.ruleSetId?.startsWith(CRCC_RULE_SET_PREFIX) ?? false;
   const isLifecycleCheckpoint =
     isIsc2Checkpoint || isComplianceCheckpoint;
   let isNremtLateReinstatement = false;
@@ -6887,6 +7801,13 @@ async function markSubmitted(
       "Confirm that the National Registry dashboard shows the assigned model, all component and National-topic requirements, and the application as ready before submitting.",
       409,
       "nremt_submission_attestation_required",
+    );
+  }
+  if (isCrccSubmission && payload.complianceAttested !== true) {
+    throw new RequestError(
+      "Confirm that CRCCCONNECT shows every program accepted under the recorded credit types and the required countable total, ethics minimum, and Professional Development cap for this cycle satisfied.",
+      409,
+      "crcc_submission_attestation_required",
     );
   }
   await assertPortalCarryoverEvidenceReady(
@@ -6942,6 +7863,14 @@ async function markSubmitted(
       submissionDate,
     );
   }
+  if (isCrccSubmission) {
+    await assertCrcProgramsReady(
+      database,
+      identity,
+      credentialId,
+      submissionDate,
+    );
+  }
   const attestationKind = isIsc2Checkpoint
     ? "isc2_requirements_satisfied"
     : isComplianceCheckpoint
@@ -6950,6 +7879,8 @@ async function markSubmitted(
         ? isNremtLateReinstatement
           ? "nremt_late_reinstatement_requirements_satisfied"
           : "nremt_requirements_satisfied"
+        : isCrccSubmission
+          ? "crcc_requirements_satisfied"
         : null;
   const existing = await query(
     database,
@@ -7168,6 +8099,7 @@ async function addActivityAllocation(
         total_units AS totalUnits,
         completion_date AS completionDate,
         evidence_status AS evidenceStatus,
+        evidence_reference AS evidenceReference,
         revision,
         archived_at AS archivedAt
        FROM activities
@@ -7178,6 +8110,7 @@ async function addActivityAllocation(
       totalUnits: number;
       completionDate: string;
       evidenceStatus: string;
+      evidenceReference: string | null;
       revision: number;
       archivedAt: string | null;
     }>(),
@@ -7243,13 +8176,15 @@ async function addActivityAllocation(
     );
   }
 
-  const isNremt = await isOwnedNremtCredential(
-    database,
-    identity,
-    credentialId,
-  );
-  const nremtMatches = isNremt
-    ? requirementMatchesField(payload, { required: true })
+  const [isNremt, isCrc] = await Promise.all([
+    isOwnedNremtCredential(database, identity, credentialId),
+    isOwnedCrcCredential(database, identity, credentialId),
+  ]);
+  const exactMatches = isNremt || isCrc
+    ? requirementMatchesField(payload, {
+        required: true,
+        context: isCrc ? "crcc" : "nremt",
+      })
     : [];
   if (isNremt) {
     const activityProvider = await query(
@@ -7261,22 +8196,66 @@ async function addActivityAllocation(
     ).first<{ provider: string }>();
     assertNremtAcceptedEducation(payload, activityProvider?.provider ?? "");
   }
+  let crcEvidenceReference: string | null = null;
+  if (isCrc) {
+    crcEvidenceReference = crcProgramEvidenceReference(
+      payload,
+      allocatedUnits,
+    );
+    if (
+      isCrccProgramEvidenceReference(activity.evidenceReference) &&
+      activity.evidenceReference?.toLowerCase() !==
+        crcEvidenceReference.toLowerCase()
+    ) {
+      throw new RequestError(
+        "This learning record already has a different CRCC approval or program reference. Use the existing reference or create a separate record.",
+        409,
+        "crcc_program_reference_conflict",
+      );
+    }
+    if (
+      activity.evidenceStatus === "not_required" &&
+      isCrccPostApprovedReference(crcEvidenceReference)
+    ) {
+      throw new RequestError(
+        "CRCC requires an uploaded completion record for post-approved credit. This learning record is marked proof not required, so use a record that can retain the accepted post-approval proof.",
+        409,
+        "crcc_post_approval_proof_required",
+      );
+    }
+    await assertNoDuplicateCrcProgram(
+      database,
+      identity,
+      credentialId,
+      crcEvidenceReference,
+      activityId,
+    );
+  }
   const selectedRequirements = isNremt
     ? await validateNremtRequirementMatches(
         database,
         identity,
         credentialId,
-        nremtMatches,
+        exactMatches,
         allocatedUnits,
       )
-    : await validateRequirementTags(
-        database,
-        identity,
-        credentialId,
-        legacyRequirementIds,
-      );
-  const persistedMatches: RequirementMatchInput[] = isNremt
-    ? nremtMatches
+    : isCrc
+      ? await validateCrcRequirementMatches(
+          database,
+          identity,
+          credentialId,
+          exactMatches,
+          allocatedUnits,
+        )
+      : await validateRequirementTags(
+          database,
+          identity,
+          credentialId,
+          legacyRequirementIds,
+        );
+  const persistedMatches: RequirementMatchInput[] =
+    isNremt || isCrc
+    ? exactMatches
     : legacyRequirementIds.map((requirementId) => ({
         requirementId,
         matchedUnits: allocatedUnits,
@@ -7389,7 +8368,10 @@ async function addActivityAllocation(
     query(
       database,
       `UPDATE activities
-       SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP
+       SET
+         evidence_reference = COALESCE(?, evidence_reference),
+         revision = revision + 1,
+         updated_at = CURRENT_TIMESTAMP
        WHERE id = ?
          AND user_id = ?
          AND revision = ?
@@ -7406,6 +8388,7 @@ async function addActivityAllocation(
              AND saved_credential.status IN ('active', 'submitted')
          )`,
       [
+        crcEvidenceReference,
         activityId,
         identity.userId,
         Number(activity.revision),
@@ -7548,13 +8531,21 @@ async function updateActivityAllocationRequirements(
     );
   }
 
-  const isNremt = await isOwnedNremtCredential(
-    database,
-    identity,
-    allocation.credentialId,
-  );
+  const [isNremt, isCrc] = await Promise.all([
+    isOwnedNremtCredential(
+      database,
+      identity,
+      allocation.credentialId,
+    ),
+    isOwnedCrcCredential(
+      database,
+      identity,
+      allocation.credentialId,
+    ),
+  ]);
+  const hasExactRequirementAmounts = isNremt || isCrc;
   if (
-    isNremt &&
+    hasExactRequirementAmounts &&
     requestedAllocatedUnits !== null &&
     !unitsEqual(
       requestedAllocatedUnits,
@@ -7562,13 +8553,17 @@ async function updateActivityAllocationRequirements(
     )
   ) {
     throw new RequestError(
-      "National Registry component and topic amounts must stay exact. Archive this record and log the corrected replacement with its precise component and topic split.",
+      isNremt
+        ? "National Registry component and topic amounts must stay exact. Archive this record and log the corrected replacement with its precise component and topic split."
+        : "The total CRC hours applied to this credential stay fixed while you correct the General, Professional Development, and Ethics split.",
       409,
-      "nremt_allocation_revision_required",
+      isNremt
+        ? "nremt_allocation_revision_required"
+        : "crcc_allocation_revision_required",
     );
   }
   const updatesAllocatedUnits =
-    !isNremt && requestedAllocatedUnits !== null;
+    !hasExactRequirementAmounts && requestedAllocatedUnits !== null;
   const allocatedUnits = updatesAllocatedUnits
     ? requestedAllocatedUnits
     : Number(allocation.allocatedUnits);
@@ -7577,9 +8572,19 @@ async function updateActivityAllocationRequirements(
       "allocatedUnits cannot exceed the activity total for one credential",
     );
   }
-  const nremtMatches = isNremt
-    ? requirementMatchesField(payload, { required: true })
+  const exactMatches = hasExactRequirementAmounts
+    ? requirementMatchesField(payload, {
+        required: true,
+        context: isCrc ? "crcc" : "nremt",
+      })
     : [];
+  if (isCrc && payload.crcApprovalAttested !== true) {
+    throw new RequestError(
+      "Confirm that the corrected General, Professional Development, and Ethics amounts match the saved CRCC approval record.",
+      409,
+      "crcc_allocation_attestation_required",
+    );
+  }
   if (isNremt) {
     const activityProvider = await query(
       database,
@@ -7599,17 +8604,26 @@ async function updateActivityAllocationRequirements(
         database,
         identity,
         allocation.credentialId,
-        nremtMatches,
+        exactMatches,
         allocatedUnits,
       )
-    : await validateRequirementTags(
-        database,
-        identity,
-        allocation.credentialId,
-        legacyRequirementIds,
-      );
-  const persistedMatches: RequirementMatchInput[] = isNremt
-    ? nremtMatches
+    : isCrc
+      ? await validateCrcRequirementMatches(
+          database,
+          identity,
+          allocation.credentialId,
+          exactMatches,
+          allocatedUnits,
+        )
+      : await validateRequirementTags(
+          database,
+          identity,
+          allocation.credentialId,
+          legacyRequirementIds,
+        );
+  const persistedMatches: RequirementMatchInput[] =
+    hasExactRequirementAmounts
+    ? exactMatches
     : legacyRequirementIds.map((requirementId) => ({
         requirementId,
         matchedUnits: allocatedUnits,
@@ -7716,7 +8730,9 @@ async function updateActivityAllocationRequirements(
           id, user_id, allocation_id, requirement_id, matched_units
         )
         SELECT ?, ?, allocation.id, ?, ${
-          isNremt ? "?" : "allocation.allocated_units"
+          hasExactRequirementAmounts
+            ? "?"
+            : "allocation.allocated_units"
         }
         FROM activity_allocations allocation
         JOIN activities activity
@@ -7733,7 +8749,7 @@ async function updateActivityAllocationRequirements(
           crypto.randomUUID(),
           identity.userId,
           match.requirementId,
-          ...(isNremt ? [match.matchedUnits] : []),
+          ...(hasExactRequirementAmounts ? [match.matchedUnits] : []),
           allocationId,
           allocation.credentialId,
           Number(allocation.activityRevision),
@@ -8022,6 +9038,15 @@ async function markRenewalAccepted(
     credential.profession,
     credential.ruleSetId,
   );
+  const isManagedRehabilitationRenewal =
+    isManagedRehabilitationCredential(
+      credential.profession,
+      credential.ruleSetId,
+    );
+  const isAbveRenewal =
+    credential.ruleSetId?.startsWith(ABVE_RULE_SET_PREFIX) ?? false;
+  const isCrccRenewal =
+    credential.ruleSetId?.startsWith(CRCC_RULE_SET_PREFIX) ?? false;
   const requiresOfficialNextPeriodAttestation =
     isIsc2AutomaticRenewal ||
     isCompliancePeriod ||
@@ -8029,14 +9054,16 @@ async function markRenewalAccepted(
     isNremtRenewal ||
     isManagedPharmacistRenewal ||
     isManagedNursingRenewal ||
-    isManagedDentalRenewal;
+    isManagedDentalRenewal ||
+    isManagedRehabilitationRenewal;
   const requiresNonOverlappingNextPeriod =
     isIsc2AutomaticRenewal ||
     isCompliancePeriod ||
     replacementTemplateFamily === "florida_mental_health" ||
     isManagedPharmacistRenewal ||
     isManagedNursingRenewal ||
-    isManagedDentalRenewal;
+    isManagedDentalRenewal ||
+    isManagedRehabilitationRenewal;
   if (
     requiresOfficialNextPeriodAttestation &&
     payload.officialDatesAttested !== true
@@ -8142,6 +9169,23 @@ async function markRenewalAccepted(
       `A standard dental renewal must begin immediately after the current period, on ${daysAfter(credential.deadline, 1)}. Create a custom plan if the regulator assigned a gap, reinstatement, or adjusted period.`,
       409,
       "dental_next_cycle_must_be_consecutive",
+    );
+  }
+  if (
+    isCrccRenewal &&
+    nextCycleStart !== daysAfter(credential.deadline, 1)
+  ) {
+    throw new RequestError(
+      `A standard CRC certification period must begin immediately after the current period, on ${daysAfter(credential.deadline, 1)}. Create a custom plan if CRCC assigned an extension, reinstatement, gap, or adjusted period.`,
+      409,
+      "crcc_next_cycle_must_be_consecutive",
+    );
+  }
+  if (isAbveRenewal) {
+    throw new RequestError(
+      "ABVE has not yet published a verified Fellow or Diplomate template for the cycle after December 31, 2027. Keep this completed cycle open until the next official requirements and dates are available.",
+      409,
+      "abve_next_cycle_template_unavailable",
     );
   }
   let selectedNextRule: NextRuleTemplate | null = null;
@@ -8390,6 +9434,57 @@ async function markRenewalAccepted(
         "dental_next_cycle_dates_required",
       );
     }
+  } else if (isCrccRenewal) {
+    if (requestedNextRuleSetId) {
+      throw new RequestError(
+        "CRC renewals automatically use the latest current version of the same official template.",
+        400,
+        "crcc_next_template_not_selectable",
+      );
+    }
+    selectedNextRule = await query(
+      database,
+      `SELECT
+        current_rule.id,
+        current_rule.credential_name AS credentialName,
+        current_rule.profession,
+        current_rule.jurisdiction,
+        current_rule.issuer,
+        current_rule.total_units AS totalUnits,
+        current_rule.unit_label AS unitLabel,
+        current_rule.cycle_months AS cycleMonths
+       FROM rule_sets prior_rule
+       JOIN rule_sets current_rule
+         ON current_rule.stable_key = prior_rule.stable_key
+       WHERE prior_rule.id = ?
+         AND prior_rule.stable_key IS ?
+         AND current_rule.is_current = 1
+         AND current_rule.profession = 'Vocational Rehabilitation'
+         AND current_rule.id LIKE 'crcc-%'
+       ORDER BY current_rule.version DESC
+       LIMIT 1`,
+      [credential.ruleSetId, credential.ruleStableKey],
+    ).first<NextRuleTemplate>();
+    if (!selectedNextRule) {
+      throw new RequestError(
+        "The current CRC template is unavailable. Review CRCCCONNECT and create the next plan manually.",
+        409,
+        "crcc_current_template_unavailable",
+      );
+    }
+    if (
+      !matchesFullCycleWindow(
+        nextCycleStart,
+        nextDeadline,
+        Number(selectedNextRule.cycleMonths),
+      )
+    ) {
+      throw new RequestError(
+        `The next CRC plan must use the exact standard ${selectedNextRule.cycleMonths}-month certification period. Create a custom plan if CRCC assigned an extension, reinstatement, or adjusted period.`,
+        409,
+        "crcc_next_cycle_dates_required",
+      );
+    }
   } else if (requestedNextRuleSetId) {
     throw new RequestError(
       "A replacement rule template may be selected only for a supported Florida rollover.",
@@ -8442,7 +9537,8 @@ async function markRenewalAccepted(
             ${
               isManagedPharmacistRenewal ||
               isManagedNursingRenewal ||
-              isManagedDentalRenewal
+              isManagedDentalRenewal ||
+              isCrccRenewal
                 ? `AND NOT EXISTS (
                     SELECT 1
                     FROM rule_sets newer_rule
@@ -8456,14 +9552,16 @@ async function markRenewalAccepted(
               isNremtRenewal ||
               isManagedPharmacistRenewal ||
               isManagedNursingRenewal ||
-              isManagedDentalRenewal
+              isManagedDentalRenewal ||
+              isCrccRenewal
                 ? "AND selected_rule.stable_key IS ?"
                 : ""
             }
             ${
               isManagedPharmacistRenewal ||
               isManagedNursingRenewal ||
-              isManagedDentalRenewal
+              isManagedDentalRenewal ||
+              isCrccRenewal
                 ? `AND EXISTS (
                     SELECT 1
                     FROM rule_sets prior_rule_snapshot
@@ -8538,14 +9636,16 @@ async function markRenewalAccepted(
             isNremtRenewal ||
             isManagedPharmacistRenewal ||
             isManagedNursingRenewal ||
-            isManagedDentalRenewal
+            isManagedDentalRenewal ||
+            isCrccRenewal
               ? [credential.ruleStableKey]
               : []
           ),
           ...(
             isManagedPharmacistRenewal ||
             isManagedNursingRenewal ||
-            isManagedDentalRenewal
+            isManagedDentalRenewal ||
+            isCrccRenewal
               ? [credential.ruleSetId, credential.ruleStableKey]
               : []
           ),
@@ -8580,6 +9680,8 @@ async function markRenewalAccepted(
           ? "The current nursing template changed while the next renewal period was being created. Review the current template and try again."
           : isManagedDentalRenewal
             ? "The current dental template changed while the next renewal period was being created. Review the current template and try again."
+          : isCrccRenewal
+            ? "The current CRC template changed while the next certification period was being created. Review CRCCCONNECT and the current template, then try again."
         : isNremtRenewal
         ? "The selected National Registry template changed while the next cycle was being created. Review the current dashboard model and catalog template, then try again."
         : replacementTemplateFamily === "florida_mental_health"
@@ -8592,6 +9694,8 @@ async function markRenewalAccepted(
           ? "nursing_current_template_changed"
           : isManagedDentalRenewal
             ? "dental_current_template_changed"
+          : isCrccRenewal
+            ? "crcc_current_template_changed"
         : isNremtRenewal
         ? "nremt_next_template_changed"
         : replacementTemplateFamily === "florida_mental_health"
@@ -8624,6 +9728,14 @@ async function markRenewalAccepted(
   const linkedActivitySnapshotJson = JSON.stringify(
     linkedActivitySnapshotRows,
   );
+  if (isCrccRenewal) {
+    await assertCrcProgramsReady(
+      database,
+      identity,
+      credentialId,
+      submission.submittedAt.slice(0, 10),
+    );
+  }
   const linkedActivitySnapshotCondition = `(
     (
       SELECT COUNT(DISTINCT current_activity.id)
@@ -8854,6 +9966,7 @@ async function markRenewalAccepted(
             AND requirement.applicability_status = 'applies'
             AND requirement.exclusive_group IS NOT NULL
             AND requirement.kind = 'maximum'
+            AND owner.rule_set_id NOT LIKE 'crcc-%'
             AND (
               owner.rule_set_id = ?
               OR EXISTS (

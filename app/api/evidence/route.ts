@@ -268,7 +268,12 @@ export async function POST(request: Request) {
           `UPDATE activities
            SET
              evidence_status = 'attached',
-             evidence_reference = ?,
+             evidence_reference = CASE
+               WHEN evidence_reference LIKE 'CRCC pre-approved | %'
+                 OR evidence_reference LIKE 'CRCC post-approved | %'
+               THEN evidence_reference
+               ELSE ?
+             END,
              revision = revision + 1,
              updated_at = CURRENT_TIMESTAMP
            WHERE id = ? AND user_id = ?
@@ -304,7 +309,6 @@ export async function POST(request: Request) {
             crypto.randomUUID(),
             identity.userId,
             `${identity.userId}:badge:proof-ready`,
-            evidenceId,
             evidenceId,
             identity.userId,
           ],

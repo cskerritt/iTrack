@@ -1,9 +1,10 @@
 # License Lantern
 
 License Lantern is a cloud-based, phone-first companion for continuing
-education and professional-license renewals. It turns requirements into a
-clear plan, keeps completed learning distinct from renewal submission, and
-rewards meaningful record-keeping without punitive daily streaks.
+education and renewals of professional licenses or certifications. It turns
+requirements into a clear plan, keeps completed learning distinct from renewal
+submission, and rewards meaningful record-keeping without punitive daily
+streaks.
 
 ## What works today
 
@@ -33,13 +34,14 @@ rewards meaningful record-keeping without punitive daily streaks.
 - responsive dashboard with home-screen and standalone-app support
 - server-derived ownership from authenticated workspace identity
 - zero-credit dental checkpoints with evidence references that never inflate CE totals
+- source-linked CRC plus ABVE Fellow and Diplomate certification plans, including exact CRC credit splits and ABVE annual checkpoints
 
-The catalog contains 116 current, source-linked templates across 25 profession
-labels and 62 issuing bodies. Seventy-nine templates are state-specific across
+The catalog contains 119 current, source-linked templates across 26 profession
+labels and 64 issuing bodies. Seventy-nine templates are state-specific across
 California, Florida, New Jersey, New York, Pennsylvania, and Texas; the
 remainder are United States-wide or global. A template can represent a
 phase, tenure tier, or other variant of the same credential, so this count
-does not mean 109 distinct license types. Templates model applicable minimums, nested
+does not mean every template is a distinct credential type. Templates model applicable minimums, nested
 subrequirements, overlapping facets, and reporting caps where the source can
 be represented safely. Conditional rules require an explicit answer for each
 cycle. Users can search the catalog or create a custom credential, and the
@@ -47,10 +49,11 @@ product reminds them to confirm requirements with the issuing authority.
 
 ## Product boundary
 
-License Lantern is an organizer, not a licensing authority. Rule templates
-include official source links and review metadata, but the issuing board's
-current instructions control. Course eligibility, regulator acceptance, and
-license status are never inferred from a checked box.
+License Lantern is an organizer, not an issuing authority. Rule templates
+include official source links and review metadata, but current instructions
+from the licensing board or certifying body control. Course eligibility,
+official acceptance, and credential status are never inferred from a checked
+box.
 
 ## Architecture
 

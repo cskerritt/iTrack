@@ -201,7 +201,7 @@ export async function offerCalendarInvite(
     try {
       await navigator.share({
         title: "License Lantern calendar check-ins",
-        text: "Add these license and compliance check-ins to your calendar.",
+        text: "Add these credential and compliance check-ins to your calendar.",
         files: [file],
       });
       return "shared";

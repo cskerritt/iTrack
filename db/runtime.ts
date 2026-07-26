@@ -45,6 +45,12 @@ import {
   DENTAL_RENEWAL_TASK_COPY_BINDINGS,
   DENTAL_RULE_SET_SEED_BINDINGS,
 } from "./catalog/dental";
+import {
+  REHABILITATION_CATEGORY_SEED_BINDINGS,
+  REHABILITATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+  REHABILITATION_RENEWAL_TASK_COPY_BINDINGS,
+  REHABILITATION_RULE_SET_SEED_BINDINGS,
+} from "./catalog/rehabilitation";
 
 const DENTAL_ADDITIONAL_TOTAL_RELATION_SQL =
   DENTAL_ADDITIONAL_TOTAL_BINDINGS.map(
@@ -3818,6 +3824,7 @@ const CATALOG_2026_RULE_SET_SEED_BINDINGS = [
   ...PHARMACY_RULE_SET_SEED_BINDINGS,
   ...NURSING_RULE_SET_SEED_BINDINGS,
   ...DENTAL_RULE_SET_SEED_BINDINGS,
+  ...REHABILITATION_RULE_SET_SEED_BINDINGS,
 ] as const;
 
 const CATALOG_2026_CATEGORY_INSERT_SQL = `INSERT INTO rule_categories (
@@ -4587,6 +4594,7 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
   ...PHARMACY_CATEGORY_SEED_BINDINGS,
   ...NURSING_CATEGORY_SEED_BINDINGS,
   ...DENTAL_CATEGORY_SEED_BINDINGS,
+  ...REHABILITATION_CATEGORY_SEED_BINDINGS,
 ] as const;
 
 const MANAGED_EXTERNAL_RULE_SET_IDS = [
@@ -4599,6 +4607,7 @@ const MANAGED_EXTERNAL_RULE_SET_IDS = [
   ...PHARMACY_RULE_SET_SEED_BINDINGS,
   ...NURSING_RULE_SET_SEED_BINDINGS,
   ...DENTAL_RULE_SET_SEED_BINDINGS,
+  ...REHABILITATION_RULE_SET_SEED_BINDINGS,
 ].map((bindings) => bindings[0]);
 
 const MANAGED_EXTERNAL_CATEGORY_IDS = [
@@ -4611,6 +4620,7 @@ const MANAGED_EXTERNAL_CATEGORY_IDS = [
   ...PHARMACY_CATEGORY_SEED_BINDINGS,
   ...NURSING_CATEGORY_SEED_BINDINGS,
   ...DENTAL_CATEGORY_SEED_BINDINGS,
+  ...REHABILITATION_CATEGORY_SEED_BINDINGS,
 ].map((bindings) => bindings[0]);
 
 function trustedSqlStringList(values: readonly string[]) {
@@ -4643,6 +4653,8 @@ const MANAGED_EXTERNAL_SCOPE_SQL = `(managed_rule.id LIKE 'isc2-%'
   OR managed_rule.id LIKE 'fl-lcsw-lmft-lmhc-%'
   OR managed_rule.profession = 'Pharmacy'
   OR managed_rule.profession = 'Nursing'
+  OR managed_rule.id LIKE 'crcc-%'
+  OR managed_rule.id LIKE 'abve-%'
   OR managed_rule.stable_key IN (
     'ca-dentist',
     'ca-dental-hygienist',
@@ -4791,6 +4803,7 @@ const MAXIMUM_CLASSIFICATION_RULE_SET_IDS = [
   ...PHARMACY_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
   ...NURSING_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
   ...DENTAL_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+  ...REHABILITATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
 ] as const;
 
 const ACTIVE_CATALOG_SNAPSHOT_RULE_SET_IDS = [
@@ -5047,7 +5060,7 @@ WHERE status = 'active'
   )
   AND total_required IS NOT ${ACTIVE_DENTAL_TOTAL_SQL}`;
 
-const SYNC_NURSING_DEFAULT_TASK_SQL = `UPDATE checklist_tasks
+const SYNC_MANAGED_DEFAULT_TASK_SQL = `UPDATE checklist_tasks
 SET title = ?, updated_at = CURRENT_TIMESTAMP
 WHERE kind = ?
   AND title = ?
@@ -5088,6 +5101,31 @@ const NURSING_DEFAULT_TASK_REFRESH_BINDINGS =
 
 const DENTAL_DEFAULT_TASK_REFRESH_BINDINGS =
   DENTAL_RENEWAL_TASK_COPY_BINDINGS.flatMap(
+    ([ruleSetId, review, progress, submission]) =>
+      [
+        [
+          review,
+          "review",
+          "Review the renewal requirements",
+          ruleSetId,
+        ],
+        [
+          progress,
+          "progress",
+          "Complete and document required education",
+          ruleSetId,
+        ],
+        [
+          submission,
+          "submission",
+          "Submit renewal and save confirmation",
+          ruleSetId,
+        ],
+      ] as const,
+  );
+
+const REHABILITATION_DEFAULT_TASK_REFRESH_BINDINGS =
+  REHABILITATION_RENEWAL_TASK_COPY_BINDINGS.flatMap(
     ([ruleSetId, review, progress, submission]) =>
       [
         [
@@ -5576,12 +5614,17 @@ export async function initializeDatabase(database: D1Database): Promise<void> {
       ]);
       await database.batch(
         NURSING_DEFAULT_TASK_REFRESH_BINDINGS.map((bindings) =>
-          statement(database, SYNC_NURSING_DEFAULT_TASK_SQL, bindings),
+          statement(database, SYNC_MANAGED_DEFAULT_TASK_SQL, bindings),
         ),
       );
       await database.batch(
         DENTAL_DEFAULT_TASK_REFRESH_BINDINGS.map((bindings) =>
-          statement(database, SYNC_NURSING_DEFAULT_TASK_SQL, bindings),
+          statement(database, SYNC_MANAGED_DEFAULT_TASK_SQL, bindings),
+        ),
+      );
+      await database.batch(
+        REHABILITATION_DEFAULT_TASK_REFRESH_BINDINGS.map((bindings) =>
+          statement(database, SYNC_MANAGED_DEFAULT_TASK_SQL, bindings),
         ),
       );
       await database.batch(

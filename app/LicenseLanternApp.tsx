@@ -202,6 +202,7 @@ type Activity = {
   completionDate: string;
   totalUnits: number;
   evidenceStatus: "missing" | "attached" | "not_required";
+  evidenceReference?: string | null;
   evidenceCount: number;
   evidenceDeletionPendingCount?: number;
   credentialId?: string | null;
@@ -429,9 +430,16 @@ function addMonthsIso(value: string, months: number) {
 function defaultCatalogCycleStart(
   rule: CatalogRule | null | undefined,
 ) {
+  if (isAbveCatalogRule(rule)) return "2025-01-01";
   return rule
     ? addMonthsIso(nextYearIso(), -rule.cycleMonths)
     : yearAgoIso();
+}
+
+function defaultCatalogDeadline(
+  rule: CatalogRule | null | undefined,
+) {
+  return isAbveCatalogRule(rule) ? "2027-12-31" : nextYearIso();
 }
 
 function confirmedCarryoverWindowStart(
@@ -656,6 +664,14 @@ function isNremtCredential(credential: Credential | null | undefined) {
   return credential?.ruleSetId?.startsWith("nremt-") ?? false;
 }
 
+function isCrcCredential(credential: Credential | null | undefined) {
+  return credential?.ruleSetId?.startsWith("crcc-") ?? false;
+}
+
+function isAbveCredential(credential: Credential | null | undefined) {
+  return credential?.ruleSetId?.startsWith("abve-") ?? false;
+}
+
 function isNremtCatalogRule(rule: CatalogRule | null | undefined) {
   return rule?.id.startsWith("nremt-") ?? false;
 }
@@ -666,12 +682,27 @@ function isFloridaMentalHealthCatalogRule(
   return rule?.id.startsWith("fl-lcsw-lmft-lmhc-") ?? false;
 }
 
+function isCrccCatalogRule(rule: CatalogRule | null | undefined) {
+  return rule?.id.startsWith("crcc-") ?? false;
+}
+
+function isAbveCatalogRule(rule: CatalogRule | null | undefined) {
+  return rule?.id.startsWith("abve-") ?? false;
+}
+
+function isRehabilitationCertificationCatalogRule(
+  rule: CatalogRule | null | undefined,
+) {
+  return isCrccCatalogRule(rule) || isAbveCatalogRule(rule);
+}
+
 function requiresOfficialCatalogDates(
   rule: CatalogRule | null | undefined,
 ) {
   return (
     isNremtCatalogRule(rule) ||
-    isFloridaMentalHealthCatalogRule(rule)
+    isFloridaMentalHealthCatalogRule(rule) ||
+    isRehabilitationCertificationCatalogRule(rule)
   );
 }
 
@@ -694,6 +725,110 @@ type RequirementMatchPayload = {
   requirementId: string;
   matchedUnits: number;
 };
+
+type CrcApprovalPayload = {
+  crcApprovalType: "pre_approved" | "post_approved";
+  crcProgramReference: string;
+  crcApprovalAttested: true;
+};
+
+function crcRequirementMatchPayload(
+  form: FormData,
+  credential: Credential,
+  allocatedUnits: number,
+): RequirementMatchPayload[] {
+  const requirements = credential.requirements.filter(
+    (requirement) =>
+      requirementStatus(requirement) === "applies" &&
+      requirement.isActive !== false,
+  );
+  const general = requirements.find((requirement) =>
+    requirement.ruleCategoryId?.endsWith("-general"),
+  );
+  const professionalDevelopment = requirements.find((requirement) =>
+    requirement.ruleCategoryId?.endsWith("-professional-development"),
+  );
+  const ethics = requirements.find((requirement) =>
+    requirement.ruleCategoryId?.endsWith("-ethics"),
+  );
+  if (!general || !professionalDevelopment || !ethics) {
+    throw new Error(
+      "This CRC template is missing an exact-allocation requirement. Refresh the credential before saving.",
+    );
+  }
+
+  const amountFor = (requirement: Requirement) => {
+    const value = Number(form.get(`requirementMatch:${requirement.id}`) ?? 0);
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(`Enter a valid clock-hour amount for ${requirement.name}.`);
+    }
+    if (value > allocatedUnits + 0.0001) {
+      throw new Error(
+        `${requirement.name} cannot exceed the ${compactNumber(
+          allocatedUnits,
+        )} clock hours applied to this CRC.`,
+      );
+    }
+    return value;
+  };
+
+  const generalUnits = amountFor(general);
+  const professionalDevelopmentUnits = amountFor(professionalDevelopment);
+  const ethicsUnits = amountFor(ethics);
+  if (
+    Math.abs(
+      generalUnits + professionalDevelopmentUnits - allocatedUnits,
+    ) > 0.0001
+  ) {
+    throw new Error(
+      `General / Other Accepted CRC Credit and Professional Development must total ${compactNumber(
+        allocatedUnits,
+      )} clock hours.`,
+    );
+  }
+  if (ethicsUnits > generalUnits + 0.0001) {
+    throw new Error(
+      "Ethics overlaps General / Other Accepted CRC Credit and cannot exceed the General amount.",
+    );
+  }
+
+  return [
+    { requirementId: general.id, matchedUnits: generalUnits },
+    {
+      requirementId: professionalDevelopment.id,
+      matchedUnits: professionalDevelopmentUnits,
+    },
+    { requirementId: ethics.id, matchedUnits: ethicsUnits },
+  ].filter((match) => match.matchedUnits > 0);
+}
+
+function crcApprovalPayload(form: FormData): CrcApprovalPayload {
+  const approvalType = String(form.get("crcApprovalType") ?? "");
+  if (
+    approvalType !== "pre_approved" &&
+    approvalType !== "post_approved"
+  ) {
+    throw new Error("Choose the CRCC pre-approved or post-approved pathway.");
+  }
+  const programReference = String(
+    form.get("crcProgramReference") ?? "",
+  ).trim();
+  if (!programReference) {
+    throw new Error(
+      "Enter the CRCC approval number or post-approval program reference.",
+    );
+  }
+  if (form.get("crcApprovalAttested") !== "on") {
+    throw new Error(
+      "Confirm that the activity and entered hours are accepted by CRCC.",
+    );
+  }
+  return {
+    crcApprovalType: approvalType,
+    crcProgramReference: programReference,
+    crcApprovalAttested: true,
+  };
+}
 
 function nremtRequirementMatchPayload(
   form: FormData,
@@ -838,6 +973,16 @@ function isManagedDentalCredential(
   );
 }
 
+function isManagedRehabilitationCredential(
+  credential: Credential | null | undefined,
+) {
+  return Boolean(
+    credential?.profession === "Vocational Rehabilitation" &&
+      (credential.ruleSetId?.startsWith("crcc-") ||
+        credential.ruleSetId?.startsWith("abve-")),
+  );
+}
+
 function isCompliancePeriodCredential(
   credential: Credential | null | undefined,
 ) {
@@ -887,7 +1032,8 @@ function requiresOfficialNextPeriodAttestation(
     isNremtCredential(credential) ||
     isManagedPharmacistCredential(credential) ||
     isManagedNursingCredential(credential) ||
-    isManagedDentalCredential(credential)
+    isManagedDentalCredential(credential) ||
+    isManagedRehabilitationCredential(credential)
   );
 }
 
@@ -900,7 +1046,8 @@ function requiresNonOverlappingNextPeriod(
     isFloridaMentalHealthPhaseCredential(credential) ||
     isManagedPharmacistCredential(credential) ||
     isManagedNursingCredential(credential) ||
-    isManagedDentalCredential(credential)
+    isManagedDentalCredential(credential) ||
+    isManagedRehabilitationCredential(credential)
   );
 }
 
@@ -2391,6 +2538,8 @@ export function LicenseLanternApp() {
     const credential =
       workspace?.credentials.find((item) => item.id === credentialId) ?? null;
     let nremtMatches: RequirementMatchPayload[] | undefined;
+    let crcMatches: RequirementMatchPayload[] | undefined;
+    let crcApproval: CrcApprovalPayload | undefined;
     if (isNremtCredential(credential)) {
       try {
         nremtMatches = nremtRequirementMatchPayload(
@@ -2403,6 +2552,22 @@ export function LicenseLanternApp() {
           matchError instanceof Error
             ? matchError.message
             : "Review the National Registry credit allocation.",
+        );
+        return;
+      }
+    } else if (isCrcCredential(credential)) {
+      try {
+        crcMatches = crcRequirementMatchPayload(
+          form,
+          credential!,
+          allocatedUnits,
+        );
+        crcApproval = crcApprovalPayload(form);
+      } catch (matchError) {
+        setError(
+          matchError instanceof Error
+            ? matchError.message
+            : "Review the CRC clock-hour allocation.",
         );
         return;
       }
@@ -2422,6 +2587,11 @@ export function LicenseLanternApp() {
               requirementMatches: nremtMatches,
               acceptedEducationAttested: true,
             }
+          : crcMatches && crcApproval
+            ? {
+                requirementMatches: crcMatches,
+                ...crcApproval,
+              }
           : {
               requirementIds: form
                 .getAll("requirementIds")
@@ -2667,6 +2837,9 @@ export function LicenseLanternApp() {
           : (rule?.unitLabel ?? "hours"),
         categories,
         applicabilityChoices,
+        abveAnnualStartYear: isAbveCatalogRule(rule)
+          ? Number(form.get("abveAnnualStartYear"))
+          : undefined,
         officialDatesAttested: requiresOfficialCatalogDates(rule)
           ? form.get("officialDatesAttested") === "on"
           : undefined,
@@ -2695,7 +2868,8 @@ export function LicenseLanternApp() {
         complianceAttested:
           isIsc2AutomaticRenewalCredential(selectedCredential) ||
           isCompliancePeriodCredential(selectedCredential) ||
-          isNremtCredential(selectedCredential)
+          isNremtCredential(selectedCredential) ||
+          isCrcCredential(selectedCredential)
             ? form.get("complianceAttested") === "on"
             : undefined,
         lateReinstatementAttested:
@@ -2711,6 +2885,8 @@ export function LicenseLanternApp() {
           ? "Compliance-period milestone saved. Confirm the next period from the official record."
           : isNremtCredential(selectedCredential)
             ? "National Registry application logged. Keep the dashboard approval with your record."
+            : isCrcCredential(selectedCredential)
+              ? "CRC renewal logged. Keep the CRCCCONNECT confirmation with your program records."
             : "Submission logged. Keep the confirmation until your renewal is accepted.",
     );
     if (success) setSubmissionOpen(false);
@@ -2719,6 +2895,16 @@ export function LicenseLanternApp() {
   function openSubmission() {
     setNremtSubmissionDate(todayIso());
     setSubmissionOpen(true);
+  }
+
+  function openAcceptance() {
+    if (isAbveCredential(selectedCredential)) {
+      setError(
+        "ABVE has not yet published a verified Fellow or Diplomate template for the cycle after December 31, 2027. Keep this completed cycle open until the next official requirements and dates are available.",
+      );
+      return;
+    }
+    setAcceptanceOpen(true);
   }
 
   async function handleAcceptance(event: FormEvent<HTMLFormElement>) {
@@ -2809,6 +2995,8 @@ export function LicenseLanternApp() {
     const form = new FormData(event.currentTarget);
     const allocatedUnits = Number(form.get("allocatedUnits"));
     let nremtMatches: RequirementMatchPayload[] | undefined;
+    let crcMatches: RequirementMatchPayload[] | undefined;
+    let crcApproval: CrcApprovalPayload | undefined;
     if (isNremtCredential(allocationCredential)) {
       try {
         nremtMatches = nremtRequirementMatchPayload(
@@ -2824,6 +3012,22 @@ export function LicenseLanternApp() {
         );
         return;
       }
+    } else if (isCrcCredential(allocationCredential)) {
+      try {
+        crcMatches = crcRequirementMatchPayload(
+          form,
+          allocationCredential!,
+          allocatedUnits,
+        );
+        crcApproval = crcApprovalPayload(form);
+      } catch (matchError) {
+        setError(
+          matchError instanceof Error
+            ? matchError.message
+            : "Review the CRC clock-hour allocation.",
+        );
+        return;
+      }
     }
     const result = await runAction(
       "addActivityAllocation",
@@ -2835,6 +3039,11 @@ export function LicenseLanternApp() {
               requirementMatches: nremtMatches,
               acceptedEducationAttested: true,
             }
+          : crcMatches && crcApproval
+            ? {
+                requirementMatches: crcMatches,
+                ...crcApproval,
+              }
           : {
               requirementIds: form
                 .getAll("requirementIds")
@@ -2860,6 +3069,7 @@ export function LicenseLanternApp() {
     if (!classificationRepair) return;
     const form = new FormData(event.currentTarget);
     let nremtMatches: RequirementMatchPayload[] | undefined;
+    let crcMatches: RequirementMatchPayload[] | undefined;
     const isNremt = isNremtCredential(classificationCredential);
     if (isNremt) {
       try {
@@ -2876,6 +3086,21 @@ export function LicenseLanternApp() {
         );
         return;
       }
+    } else if (isCrcCredential(classificationCredential)) {
+      try {
+        crcMatches = crcRequirementMatchPayload(
+          form,
+          classificationCredential!,
+          classificationRepair.allocation.allocatedUnits,
+        );
+      } catch (matchError) {
+        setError(
+          matchError instanceof Error
+            ? matchError.message
+            : "Review the CRC clock-hour allocation.",
+        );
+        return;
+      }
     }
     const result = await runAction(
       "updateActivityAllocationRequirements",
@@ -2886,6 +3111,12 @@ export function LicenseLanternApp() {
               requirementMatches: nremtMatches,
               acceptedEducationAttested: true,
             }
+          : crcMatches
+            ? {
+                requirementMatches: crcMatches,
+                crcApprovalAttested:
+                  form.get("crcApprovalAttested") === "on",
+              }
           : {
               requirementIds: form
                 .getAll("requirementIds")
@@ -2950,6 +3181,7 @@ export function LicenseLanternApp() {
     completionDate: string;
     totalUnits: number;
     acceptedEducationAttested?: boolean;
+    crcApprovalAttested?: boolean;
   }) {
     if (!editingActivity) return;
     const result = await runAction(
@@ -3210,7 +3442,7 @@ export function LicenseLanternApp() {
               onViewCredentials={() => setView("credentials")}
               onViewRecords={() => setView("records")}
               onSubmit={openSubmission}
-              onAccept={() => setAcceptanceOpen(true)}
+              onAccept={openAcceptance}
               onReminders={() => setRemindersOpen(true)}
               onReminderState={(reminder, status) =>
                 void setReminderState(reminder, status)
@@ -3262,7 +3494,7 @@ export function LicenseLanternApp() {
               onSelect={(id) => setSelectedCredentialId(id)}
               onAdd={() => setCredentialOpen(true)}
               onSubmit={openSubmission}
-              onAccept={() => setAcceptanceOpen(true)}
+              onAccept={openAcceptance}
               onReminders={() => setRemindersOpen(true)}
               onAddToCalendar={(credential) =>
                 void addCredentialToCalendar(credential)
@@ -3590,9 +3822,9 @@ export function LicenseLanternApp() {
                   <input
                     name="totalUnits"
                     type="number"
-                    min="0.1"
+                    min={isCrcCredential(activityCredential) ? 0.01 : 0.1}
                     max={ACTIVITY_DRAFT_MAX_UNITS}
-                    step="0.1"
+                    step={isCrcCredential(activityCredential) ? 0.01 : 0.1}
                     inputMode="decimal"
                     placeholder="1.0"
                     value={activityDraft.totalUnits}
@@ -3624,13 +3856,13 @@ export function LicenseLanternApp() {
                   <input
                     name="allocatedUnits"
                     type="number"
-                    min="0.1"
+                    min={isCrcCredential(activityCredential) ? 0.01 : 0.1}
                     max={
                       Number(activityDraft.totalUnits) > 0
                         ? Number(activityDraft.totalUnits)
                         : ACTIVITY_DRAFT_MAX_UNITS
                     }
-                    step="0.1"
+                    step={isCrcCredential(activityCredential) ? 0.01 : 0.1}
                     inputMode="decimal"
                     placeholder="1.0"
                     value={activityDraft.allocatedUnits}
@@ -3689,6 +3921,12 @@ export function LicenseLanternApp() {
               </label>
               {isNremtCredential(activityCredential) ? (
                 <NremtRequirementAllocator
+                  key={activityCredential?.id}
+                  credential={activityCredential!}
+                  availableUnits={Number(activityDraft.allocatedUnits) || 0}
+                />
+              ) : isCrcCredential(activityCredential) ? (
+                <CrcRequirementAllocator
                   key={activityCredential?.id}
                   credential={activityCredential!}
                   availableUnits={Number(activityDraft.allocatedUnits) || 0}
@@ -3765,7 +4003,7 @@ export function LicenseLanternApp() {
                     type="radio"
                     name="evidenceStatus"
                     value="missing"
-                    defaultChecked
+                    defaultChecked={!isCrcCredential(activityCredential)}
                   />
                   <span>Add later</span>
                 </label>
@@ -3774,12 +4012,19 @@ export function LicenseLanternApp() {
                     type="radio"
                     name="evidenceStatus"
                     value="not_required"
-                    disabled={isPriorPeriodCarryoverEntry(
-                      activityDraft.completionDate,
-                      activityCredential,
-                    )}
+                    disabled={
+                      isPriorPeriodCarryoverEntry(
+                        activityDraft.completionDate,
+                        activityCredential,
+                      )
+                    }
+                    defaultChecked={isCrcCredential(activityCredential)}
                   />
-                  <span>Not required</span>
+                  <span>
+                    {isCrcCredential(activityCredential)
+                      ? "Not required for CRCC pre-approved credit"
+                      : "Not required"}
+                  </span>
                 </label>
               </fieldset>
               <div className="form-actions">
@@ -3890,7 +4135,7 @@ export function LicenseLanternApp() {
                   </label>
                 </div>
                 <label className="field">
-                  <span>Credential or license</span>
+                  <span>License or professional certification</span>
                   <input
                     autoFocus
                     name="credentialName"
@@ -3900,7 +4145,10 @@ export function LicenseLanternApp() {
                 </label>
                 <label className="field">
                   <span>Issuing organization <em>Optional</em></span>
-                  <input name="issuer" placeholder="State licensing board" />
+                  <input
+                    name="issuer"
+                    placeholder="Licensing board or certifying body"
+                  />
                 </label>
                 <div className="form-grid form-grid-three">
                   <label className="field">
@@ -3947,7 +4195,7 @@ export function LicenseLanternApp() {
                       setCatalogQuery(event.currentTarget.value);
                       setSelectedRuleId("");
                     }}
-                    placeholder="Search profession, license, or state"
+                    placeholder="Search profession, license, certification, or state"
                   />
                   <small>
                     {workspace.catalog.length} researched starting templates ·
@@ -4150,7 +4398,8 @@ export function LicenseLanternApp() {
                   name="cycleStart"
                   type="date"
                   defaultValue={
-                    requiresOfficialCatalogDates(selectedRule)
+                    requiresOfficialCatalogDates(selectedRule) &&
+                    !isAbveCatalogRule(selectedRule)
                       ? ""
                       : defaultCatalogCycleStart(selectedRule)
                   }
@@ -4164,9 +4413,10 @@ export function LicenseLanternApp() {
                   name="deadline"
                   type="date"
                   defaultValue={
-                    requiresOfficialCatalogDates(selectedRule)
+                    requiresOfficialCatalogDates(selectedRule) &&
+                    !isAbveCatalogRule(selectedRule)
                       ? ""
-                      : nextYearIso()
+                      : defaultCatalogDeadline(selectedRule)
                   }
                   required
                 />
@@ -4207,13 +4457,56 @@ export function LicenseLanternApp() {
                 />
               </label>
             ) : null}
+            {isRehabilitationCertificationCatalogRule(selectedRule) ? (
+              <>
+                {isAbveCatalogRule(selectedRule) ? (
+                  <label className="field">
+                    <span>
+                      First year this ABVE credential was held in this cycle
+                    </span>
+                    <select name="abveAnnualStartYear" defaultValue="" required>
+                      <option value="" disabled>
+                        Choose 2025, 2026, or 2027
+                      </option>
+                      <option value="2025">2025</option>
+                      <option value="2026">2026</option>
+                      <option value="2027">2027</option>
+                    </select>
+                    <small>
+                      Annual membership, credential renewal, fees, and ethics
+                      tasks begin with the year you first held this ABVE
+                      credential during the current cycle.
+                    </small>
+                  </label>
+                ) : null}
+                <label className="switch-row">
+                  <span>
+                    <strong>
+                      {isAbveCatalogRule(selectedRule)
+                        ? "I checked my ABVE member record"
+                        : "I checked CRCCCONNECT"}
+                    </strong>
+                    <small>
+                      {isAbveCatalogRule(selectedRule)
+                        ? "It shows the selected Fellow or Diplomate credential, the year first held in this cycle, and the fixed January 1, 2025 through December 31, 2027 recertification cycle."
+                        : "It shows the CRC certification-period start and valid-through date entered above."}
+                    </small>
+                  </span>
+                  <input
+                    name="officialDatesAttested"
+                    type="checkbox"
+                    required
+                  />
+                </label>
+              </>
+            ) : null}
 
             <div className="advisory-note">
               <span aria-hidden="true">i</span>
               <p>
-                Confirm dates and requirements with your licensing board.
-                License Lantern helps organize your records; it does not replace board
-                guidance.
+                Confirm dates and requirements with your issuing organization.
+                License Lantern helps organize your records; it does not replace
+                official guidance.
               </p>
             </div>
 
@@ -4272,6 +4565,8 @@ export function LicenseLanternApp() {
                       ? "Save the official compliance milestone"
                       : isNremtCredential(selectedCredential)
                         ? "Save the National Registry application record"
+                      : isCrcCredential(selectedCredential)
+                        ? "Confirm the accepted CRCCCONNECT totals"
                     : "One last record for your future self"}
                 </strong>
                 <p>
@@ -4281,6 +4576,8 @@ export function LicenseLanternApp() {
                       ? "Record when the official record shows this period’s education requirement is complete."
                       : isNremtCredential(selectedCredential)
                         ? "Confirm the assigned NCCP model and every component in the National Registry dashboard before recording the application."
+                      : isCrcCredential(selectedCredential)
+                        ? "Confirm every program is accepted once and the exact credit-type amounts satisfy the countable total, ethics minimum, and Professional Development cap shown for this cycle."
                     : "Logging the date and confirmation keeps “credits earned” separate from “renewal submitted.”"}
                 </p>
               </div>
@@ -4335,7 +4632,8 @@ export function LicenseLanternApp() {
             </label>
             {isIsc2AutomaticRenewalCredential(selectedCredential) ||
             isCompliancePeriodCredential(selectedCredential) ||
-            isNremtCredential(selectedCredential) ? (
+            isNremtCredential(selectedCredential) ||
+            isCrcCredential(selectedCredential) ? (
               <label className="switch-row">
                 <span>
                   <strong>
@@ -4343,14 +4641,18 @@ export function LicenseLanternApp() {
                       ? "I checked the ISC2 Dashboard"
                       : isCompliancePeriodCredential(selectedCredential)
                         ? "I checked the official compliance record"
-                        : "I checked the National Registry dashboard"}
+                        : isNremtCredential(selectedCredential)
+                          ? "I checked the National Registry dashboard"
+                          : "I checked CRCCCONNECT"}
                   </strong>
                   <small>
                     {isIsc2AutomaticRenewalCredential(selectedCredential)
                       ? "It shows this cycle’s required CPEs and annual maintenance fees as satisfied."
                       : isCompliancePeriodCredential(selectedCredential)
                         ? "It shows this period’s education requirement as complete."
-                        : "It shows the assigned model, component totals, National topics, and pediatric content as satisfied."}
+                        : isNremtCredential(selectedCredential)
+                          ? "It shows the assigned model, component totals, National topics, and pediatric content as satisfied."
+                          : "It shows each program accepted under the recorded credit type and the countable total, ethics minimum, and Professional Development cap shown for this cycle as satisfied."}
                   </small>
                 </span>
                 <input
@@ -4388,6 +4690,8 @@ export function LicenseLanternApp() {
                     ? "This records an education-compliance milestone, not a license-renewal filing. Close the period only after confirming the next official compliance dates."
                     : isNremtCredential(selectedCredential)
                       ? "For Active status, EMR and EMT skills are verified by a Training Officer; AEMT and Paramedic skills are verified by a Medical Director. Inactive status still requires the full continuing-education or RBE pathway. If expired, follow the dashboard’s current reinstatement process."
+                    : isCrcCredential(selectedCredential)
+                      ? "Post-approved programs must have CRCC’s accepted decision and supporting proof on file. The same program may be submitted only once, and excess hours do not carry forward."
                   : "This records what you submitted. Mark the cycle renewed only after the issuing organization confirms acceptance."}
               </p>
             </div>
@@ -4451,7 +4755,7 @@ export function LicenseLanternApp() {
                     ? "Your renewed certification starts a clean cycle"
                     : isCompliancePeriodCredential(selectedCredential)
                       ? "Your next compliance period starts clean"
-                    : "Your renewed license starts a clean cycle"}
+                    : "Your renewed credential starts a clean cycle"}
                 </strong>
                 <p>
                   The completed cycle stays in history. Credits, checked tasks,
@@ -4479,10 +4783,13 @@ export function LicenseLanternApp() {
                 <span>
                   {isCompliancePeriodCredential(selectedCredential)
                     ? "Official record reference"
-                    : "Decision or license reference"}{" "}
+                    : "Decision or credential reference"}{" "}
                   <em>Optional</em>
                 </span>
-                <input name="reference" placeholder="e.g., license receipt ID" />
+                <input
+                  name="reference"
+                  placeholder="e.g., renewal receipt ID"
+                />
               </label>
             </div>
             {isNremtCredential(selectedCredential) ? (
@@ -4918,9 +5225,9 @@ export function LicenseLanternApp() {
                 <input
                   name="allocatedUnits"
                   type="number"
-                  min="0.1"
+                  min={isCrcCredential(allocationCredential) ? 0.01 : 0.1}
                   max={allocationActivity.totalUnits}
-                  step="0.1"
+                  step={isCrcCredential(allocationCredential) ? 0.01 : 0.1}
                   defaultValue={allocationActivity.totalUnits}
                   required
                 />
@@ -4930,6 +5237,20 @@ export function LicenseLanternApp() {
                   key={allocationCredential?.id}
                   credential={allocationCredential!}
                   availableUnits={allocationActivity.totalUnits}
+                />
+              ) : isCrcCredential(allocationCredential) ? (
+                <CrcRequirementAllocator
+                  key={allocationCredential?.id}
+                  credential={allocationCredential!}
+                  availableUnits={allocationActivity.totalUnits}
+                  initialProgramReference={
+                    allocationsFor(allocationActivity).some(
+                      (allocation) =>
+                        allocation.credentialRuleSetId?.startsWith("crcc-"),
+                    )
+                      ? allocationActivity.evidenceReference ?? ""
+                      : ""
+                  }
                 />
               ) : (
                 <RequirementPicker
@@ -5027,6 +5348,8 @@ export function LicenseLanternApp() {
                     satisfies
                     {isNremtCredential(classificationCredential)
                       ? ". Its National Registry amount stays exact."
+                      : isCrcCredential(classificationCredential)
+                        ? ". Its CRC-applied amount and existing CRCC approval record stay exact."
                       : ", and correct how much of the full learning record counts here."}{" "}
                     Its date and proof will not change.
                   </p>
@@ -5042,6 +5365,18 @@ export function LicenseLanternApp() {
                   initialMatches={
                     classificationRepair.allocation.requirementMatches
                   }
+                />
+              ) : isCrcCredential(classificationCredential) ? (
+                <CrcRequirementAllocator
+                  key={classificationRepair.allocation.id}
+                  credential={classificationCredential}
+                  availableUnits={
+                    classificationRepair.allocation.allocatedUnits
+                  }
+                  initialMatches={
+                    classificationRepair.allocation.requirementMatches
+                  }
+                  includeApprovalFields={false}
                 />
               ) : (
                 <>
@@ -5349,7 +5684,7 @@ function MobileNavigation({
       />
       <NavButton
         active={view === "credentials"}
-        label="Licenses"
+        label="Credentials"
         symbol="▣"
         onClick={() => onView("credentials")}
       />
@@ -5470,7 +5805,7 @@ function TodayView({
         <PageGreeting
           eyebrow="Your renewal companion"
           title={`Welcome, ${firstName(workspace.user.displayName)}.`}
-          body="Let’s turn your license requirements into a clear, manageable plan."
+          body="Let’s turn your license or certification requirements into a clear, manageable plan."
         />
         <section className="onboarding-hero">
           <div className="onboarding-copy">
@@ -6598,7 +6933,7 @@ function CredentialsView({
                 />
               ) : (
                 <p className="total-excess-note">
-                  This regulator does not set a general numeric
+                  This issuing organization does not set a general numeric
                   continuing-education total. Complete the applicable training
                   conditions and checklist using the official record.
                 </p>
@@ -6669,7 +7004,7 @@ function CredentialsView({
               ) : null}
               <p>
                 {selected.sourceTitle ??
-                  "Confirm requirements and dates with the issuing organization, especially when rules or your license status change."}
+                  "Confirm requirements and dates with the issuing organization, especially when rules or your credential status change."}
               </p>
               {selected.sourceUrl ? (
                 <a
@@ -6694,7 +7029,7 @@ function CredentialsView({
                       ? "Does the ISC2 Dashboard show CPEs and annual maintenance fees satisfied?"
                       : isCompliancePeriodCredential(selected)
                         ? "Does the official record show this period complete?"
-                      : "Finished your board submission?"}
+                      : "Finished your renewal submission?"}
                   </strong>
                   <p>
                     {isIsc2AutomaticRenewalCredential(selected)
@@ -6768,7 +7103,7 @@ function CredentialsView({
       ) : (
         <EmptyPage
           title="Add your first credential"
-          body="Choose a source-linked rule template or make a custom plan from your licensing information."
+          body="Choose a source-linked rule template or make a custom plan from your credential information."
           action="Set up credential"
           onAction={onAdd}
         />
@@ -7116,6 +7451,7 @@ function ActivityEditorModal({
     completionDate: string;
     totalUnits: number;
     acceptedEducationAttested?: boolean;
+    crcApprovalAttested?: boolean;
   }) => void;
   onArchive: () => void;
 }) {
@@ -7123,6 +7459,9 @@ function ActivityEditorModal({
   const allocations = allocationsFor(activity);
   const hasNremtAllocation = allocations.some((allocation) =>
     allocation.credentialRuleSetId?.startsWith("nremt-"),
+  );
+  const hasCrcAllocation = allocations.some((allocation) =>
+    allocation.credentialRuleSetId?.startsWith("crcc-"),
   );
   const proofSummary =
     activity.evidenceStatus === "attached"
@@ -7143,6 +7482,9 @@ function ActivityEditorModal({
       totalUnits: Number(form.get("totalUnits")),
       acceptedEducationAttested: hasNremtAllocation
         ? form.get("acceptedEducationAttested") === "on"
+        : undefined,
+      crcApprovalAttested: hasCrcAllocation
+        ? form.get("crcApprovalAttested") === "on"
         : undefined,
     });
   };
@@ -7171,6 +7513,8 @@ function ActivityEditorModal({
               .{" "}
               {hasNremtAllocation
                 ? "National Registry component and topic amounts stay exact, so a credit-total correction that would change that allocation must be logged as a corrected replacement record."
+                : hasCrcAllocation
+                  ? "CRC credit-type and ethics amounts stay exact. Recheck any corrected activity details against the saved CRCC approval record."
                 : "If the corrected credit total is lower, any larger linked allocation and its requirement counts will be reduced to match."}
             </p>
           </div>
@@ -7251,6 +7595,23 @@ function ActivityEditorModal({
               </span>
               <input
                 name="acceptedEducationAttested"
+                type="checkbox"
+                required
+              />
+            </label>
+          ) : null}
+          {hasCrcAllocation ? (
+            <label className="switch-row nremt-education-attestation">
+              <span>
+                <strong>Reconfirm the saved CRCC approval record</strong>
+                <small>
+                  The corrected activity title, provider, completion date, and
+                  credit total still match the saved CRCC approval or accepted
+                  post-approval record.
+                </small>
+              </span>
+              <input
+                name="crcApprovalAttested"
                 type="checkbox"
                 required
               />
@@ -7911,11 +8272,11 @@ function AccountView({
         </section>
         <section className="card compliance-card">
           <span className="section-kicker">A careful boundary</span>
-          <h2>Organizer, not licensing authority.</h2>
+          <h2>Organizer, not an issuing authority.</h2>
           <p>
             License Lantern helps you track information and prepare for renewal. It
-            does not determine course eligibility, guarantee board acceptance,
-            or replace official instructions.
+            does not determine course eligibility, guarantee acceptance by a
+            licensing board or certifying body, or replace official instructions.
           </p>
           <ul>
             <li>Rule templates show their official source.</li>
@@ -8315,6 +8676,184 @@ function NremtRequirementAllocator({
           required
         />
       </label>
+    </fieldset>
+  );
+}
+
+function CrcRequirementAllocator({
+  credential,
+  availableUnits,
+  initialMatches = [],
+  includeApprovalFields = true,
+  initialProgramReference = "",
+}: {
+  credential: Credential;
+  availableUnits: number;
+  initialMatches?: RequirementMatchPayload[];
+  includeApprovalFields?: boolean;
+  initialProgramReference?: string;
+}) {
+  const parsedInitialReference =
+    /^CRCC (pre-approved|post-approved) \| (.+)$/.exec(
+      initialProgramReference,
+    );
+  const initialApprovalType =
+    parsedInitialReference?.[1] === "post-approved"
+      ? "post_approved"
+      : "pre_approved";
+  const displayedProgramReference =
+    parsedInitialReference?.[2] ?? initialProgramReference;
+  const initialUnits = new Map(
+    initialMatches.map((match) => [
+      match.requirementId,
+      Number(match.matchedUnits),
+    ]),
+  );
+  const selectable = credential.requirements.filter(
+    (requirement) =>
+      requirementStatus(requirement) === "applies" &&
+      requirement.isActive !== false,
+  );
+  const general = selectable.find((requirement) =>
+    requirement.ruleCategoryId?.endsWith("-general"),
+  );
+  const professionalDevelopment = selectable.find((requirement) =>
+    requirement.ruleCategoryId?.endsWith("-professional-development"),
+  );
+  const ethics = selectable.find((requirement) =>
+    requirement.ruleCategoryId?.endsWith("-ethics"),
+  );
+  const exactRequirements = [
+    general,
+    professionalDevelopment,
+    ethics,
+  ].filter((requirement): requirement is Requirement =>
+    Boolean(requirement),
+  );
+
+  const amountInput = (requirement: Requirement) => (
+    <label className="nremt-allocation-row" key={requirement.id}>
+      <span>
+        <strong>{requirement.name}</strong>
+        <small>
+          {requirement === ethics
+            ? "Overlaps General / Other; does not add clock hours"
+            : requirement === professionalDevelopment
+              ? "Separate activity type; no more than 50 hours per cycle"
+              : "Accepted CRC credit that is not Professional Development"}
+        </small>
+      </span>
+      <input
+        aria-label={`${requirement.name} accepted clock hours`}
+        name={`requirementMatch:${requirement.id}`}
+        type="number"
+        min="0"
+        max={availableUnits > 0 ? availableUnits : undefined}
+        step="0.01"
+        inputMode="decimal"
+        defaultValue={initialUnits.get(requirement.id) ?? 0}
+        required
+      />
+    </label>
+  );
+
+  return (
+    <fieldset className="nremt-requirement-allocator">
+      <legend>CRCC accepted clock-hour allocation</legend>
+      <p>
+        Enter the exact hours CRCC accepts. General / Other plus Professional
+        Development must equal the hours applied to this CRC; Ethics is the
+        overlapping portion of General / Other.
+      </p>
+      {exactRequirements.length === 3 ? (
+        <section>
+          <div className="nremt-allocation-heading">
+            <strong>Credit-type and ethics amounts</strong>
+            <small>
+              Assign every applied hour once between the two credit types, then
+              enter any ethics portion already included in General / Other.
+            </small>
+          </div>
+          <div className="nremt-allocation-list">
+            {exactRequirements.map(amountInput)}
+          </div>
+        </section>
+      ) : (
+        <p>
+          This CRC template is missing an exact-allocation requirement. Refresh
+          the credential before saving.
+        </p>
+      )}
+      {includeApprovalFields ? (
+        <>
+          <label className="field">
+            <span>CRCC approval pathway</span>
+            <select
+              name="crcApprovalType"
+              defaultValue={initialApprovalType}
+              required
+            >
+              <option value="pre_approved">
+                CRCC pre-approved activity
+              </option>
+              <option value="post_approved">
+                CRCC post-approved activity
+              </option>
+            </select>
+            <small>
+              Choose post-approved only when the activity was submitted through
+              CRCC&apos;s individual review process.
+            </small>
+          </label>
+          <label className="field">
+            <span>CRCC approval number or program reference</span>
+            <input
+              name="crcProgramReference"
+              defaultValue={displayedProgramReference}
+              placeholder="Approval number, program ID, or post-approval reference"
+              maxLength={500}
+              required
+            />
+            <small>
+              A current pre-approval number begins with 60007 or TRN. For
+              post-approval, use the CRCC submission or decision reference.
+            </small>
+          </label>
+          <label className="switch-row nremt-education-attestation">
+            <span>
+              <strong>These are CRCC-accepted hours</strong>
+              <small>
+                I confirmed the activity, approval pathway, program reference,
+                and exact accepted hours in the current CRCC record. For a
+                post-approved activity, CRCC accepted the submission, the
+                review fee is paid, and I will keep the supporting decision
+                and program proof. This same program has not already been
+                submitted in this certification period.
+              </small>
+            </span>
+            <input
+              name="crcApprovalAttested"
+              type="checkbox"
+              required
+            />
+          </label>
+        </>
+      ) : (
+        <label className="switch-row nremt-education-attestation">
+          <span>
+            <strong>I rechecked this exact CRCC allocation</strong>
+            <small>
+              The corrected General / Other, Professional Development, and
+              Ethics amounts match the saved CRCC approval record.
+            </small>
+          </span>
+          <input
+            name="crcApprovalAttested"
+            type="checkbox"
+            required
+          />
+        </label>
+      )}
     </fieldset>
   );
 }

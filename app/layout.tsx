@@ -27,7 +27,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const metadataBase = new URL(`${protocol}://${host}`);
   const title = "License Lantern — A clear path to renewal";
   const description =
-    "A calm continuing-education companion for tracking credits, proof, deadlines, and professional-license renewals.";
+    "A calm continuing-education companion for tracking credits, proof, deadlines, and professional license or certification renewals.";
   const socialImage = new URL("/og.png", metadataBase).toString();
 
   return {

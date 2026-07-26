@@ -43,7 +43,7 @@ function isOwnedCredentialCycleLookup(sql) {
 }
 
 function isOwnedActivityCycleLookup(sql) {
-  return /SELECT id, total_units AS totalUnits, completion_date AS completionDate, evidence_status AS evidenceStatus(?:, revision)?(?:, archived_at AS archivedAt)? FROM activities WHERE id = \? AND user_id = \?/i.test(
+  return /SELECT id, total_units AS totalUnits, completion_date AS completionDate, evidence_status AS evidenceStatus(?:, evidence_reference AS evidenceReference)?(?:, revision)?(?:, archived_at AS archivedAt)? FROM activities WHERE id = \? AND user_id = \?/i.test(
     sql,
   );
 }
@@ -482,6 +482,16 @@ const runtimeCatalogModules = [
       "DENTAL_RULE_SET_SEED_BINDINGS",
     ],
   },
+  {
+    moduleName: "rehabilitation",
+    sourceUrl: new URL("../db/catalog/rehabilitation.ts", import.meta.url),
+    exports: [
+      "REHABILITATION_CATEGORY_SEED_BINDINGS",
+      "REHABILITATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+      "REHABILITATION_RENEWAL_TASK_COPY_BINDINGS",
+      "REHABILITATION_RULE_SET_SEED_BINDINGS",
+    ],
+  },
 ];
 
 async function importTypeScriptModule(source) {
@@ -567,7 +577,7 @@ test("License Lantern product contract", async (t) => {
     );
     assert.match(
       html,
-      /<meta name="description" content="A calm continuing-education companion for tracking credits, proof, deadlines, and professional-license renewals\."\/>/i,
+      /<meta name="description" content="A calm continuing-education companion for tracking credits, proof, deadlines, and professional license or certification renewals\."\/>/i,
     );
     assert.match(
       html,
@@ -807,7 +817,7 @@ test("License Lantern product contract", async (t) => {
       assert.equal(
         raw.prepare("SELECT COUNT(*) AS count FROM rule_categories").get()
           .count,
-        623,
+        628,
       );
 
       assert.deepEqual(
@@ -1830,6 +1840,1011 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
+    "seeds source-linked CRC and ABVE certifications with enforceable renewal boundaries",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const [runtimeSource, rehabilitationSource, routeSource, clientSource] =
+        await Promise.all([
+          readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
+          readFile(
+            new URL("../db/catalog/rehabilitation.ts", import.meta.url),
+            "utf8",
+          ),
+          readFile(
+            new URL("../app/api/workspace/route.ts", import.meta.url),
+            "utf8",
+          ),
+          readFile(
+            new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+            "utf8",
+          ),
+        ]);
+      const [runtimeModule, rehabilitationModule] = await Promise.all([
+        importTypeScriptModule(
+          `${runtimeSource}\nexport const __rehabilitationCatalogNonce = "catalog";`,
+        ),
+        importTypeScriptModule(rehabilitationSource),
+      ]);
+      await runtimeModule.initializeDatabase(database);
+      testCloudflareEnv.DB = database;
+      const raw = database.raw;
+      const rows = (sql) =>
+        raw
+          .prepare(sql)
+          .all()
+          .map((row) => ({ ...row }));
+
+      try {
+        assert.deepEqual(Object.keys(rehabilitationModule).sort(), [
+          "REHABILITATION_CATEGORY_SEED_BINDINGS",
+          "REHABILITATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+          "REHABILITATION_RENEWAL_TASK_COPY_BINDINGS",
+          "REHABILITATION_RULE_SET_SEED_BINDINGS",
+        ]);
+        assert.equal(
+          rehabilitationModule.REHABILITATION_RULE_SET_SEED_BINDINGS.length,
+          3,
+        );
+        assert.equal(
+          new Set(
+            rehabilitationModule.REHABILITATION_RULE_SET_SEED_BINDINGS.map(
+              (binding) => binding[1],
+            ),
+          ).size,
+          3,
+        );
+        assert.deepEqual(
+          rehabilitationModule.REHABILITATION_RENEWAL_TASK_COPY_BINDINGS.map(
+            (binding) => binding[0],
+          ),
+          [
+            "crcc-crc-2026-v1",
+            "abve-fellow-2025-v1",
+            "abve-diplomate-2025-v1",
+          ],
+        );
+        assert.deepEqual(
+          rehabilitationModule
+            .REHABILITATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+          ["crcc-crc-2026-v1"],
+        );
+
+        assert.deepEqual(
+          rows(
+            `SELECT
+               id,
+               total_units AS totalUnits,
+               unit_label AS unitLabel,
+               cycle_months AS cycleMonths,
+               effective_date AS effectiveDate,
+               last_verified_at AS lastVerifiedAt,
+               review_status AS reviewStatus
+             FROM rule_sets
+             WHERE profession = 'Vocational Rehabilitation'
+             ORDER BY id`,
+          ),
+          [
+            {
+              id: "abve-diplomate-2025-v1",
+              totalUnits: 42,
+              unitLabel: "ABVE-approved CEUs",
+              cycleMonths: 36,
+              effectiveDate: "2025-01-01",
+              lastVerifiedAt: "2026-07-26",
+              reviewStatus: "source_linked_check_conditions",
+            },
+            {
+              id: "abve-fellow-2025-v1",
+              totalUnits: 42,
+              unitLabel: "ABVE-approved CEUs",
+              cycleMonths: 36,
+              effectiveDate: "2025-01-01",
+              lastVerifiedAt: "2026-07-26",
+              reviewStatus: "source_linked_check_conditions",
+            },
+            {
+              id: "crcc-crc-2026-v1",
+              totalUnits: 100,
+              unitLabel: "CRCC-approved clock hours",
+              cycleMonths: 60,
+              effectiveDate: null,
+              lastVerifiedAt: "2026-07-26",
+              reviewStatus: "source_linked_check_conditions",
+            },
+          ],
+        );
+        assert.deepEqual(
+          rows(
+            `SELECT
+               name,
+               required_units AS requiredUnits,
+               kind,
+               relation,
+               exclusive_group AS exclusiveGroup
+             FROM rule_categories
+             WHERE rule_set_id = 'crcc-crc-2026-v1'
+             ORDER BY sort_order`,
+          ),
+          [
+            {
+              name: "General / Other Accepted CRC Credit",
+              requiredUnits: 0,
+              kind: "informational",
+              relation: "independent",
+              exclusiveGroup: "CRCC CRC credit type",
+            },
+            {
+              name: "Professional Development",
+              requiredUnits: 50,
+              kind: "maximum",
+              relation: "independent",
+              exclusiveGroup: "CRCC CRC credit type",
+            },
+            {
+              name: "Ethics",
+              requiredUnits: 10,
+              kind: "minimum",
+              relation: "overlapping",
+              exclusiveGroup: null,
+            },
+          ],
+        );
+        assert.deepEqual(
+          {
+            ...raw
+              .prepare(
+                `SELECT
+                   COUNT(*) AS categoryCount,
+                   SUM(CASE WHEN kind = 'informational' THEN 1 ELSE 0 END)
+                     AS informationalCount
+                 FROM rule_categories
+                 WHERE rule_set_id IN (
+                   'abve-fellow-2025-v1',
+                   'abve-diplomate-2025-v1'
+                 )`,
+              )
+              .get(),
+          },
+          { categoryCount: 2, informationalCount: 2 },
+        );
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM rule_sets
+               WHERE id IN (
+                 'abve-fellow-2025-v1',
+                 'abve-diplomate-2025-v1'
+               )
+                 AND source_url = 'https://www.abve.net/certification-main'
+                 AND source_title LIKE '%no separate ethics minimum%'
+                 AND source_title LIKE '%Active Emeritus and IPEC are separate variants%'`,
+            )
+            .get().count,
+          2,
+        );
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM rule_sets
+               WHERE id = 'crcc-crc-2026-v1'
+                 AND source_url LIKE 'https://crccertification.com/%'
+                 AND source_title LIKE '%excess hours do not carry%'
+                 AND source_title LIKE '%does not add CRC-MAC or CRC-CS%'`,
+            )
+            .get().count,
+          1,
+        );
+
+        const wrongAbveDates = await postWorkspace(
+          "createCredential",
+          {
+            ruleSetId: "abve-fellow-2025-v1",
+            cycleStart: "2025-01-02",
+            deadline: "2027-12-31",
+            officialDatesAttested: true,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(wrongAbveDates.status, 409);
+        assert.equal(
+          (await wrongAbveDates.json()).code,
+          "abve_fixed_cycle_required",
+        );
+        const missingAbveAnnualStartYear = await postWorkspace(
+          "createCredential",
+          {
+            ruleSetId: "abve-fellow-2025-v1",
+            cycleStart: "2025-01-01",
+            deadline: "2027-12-31",
+            officialDatesAttested: true,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(missingAbveAnnualStartYear.status, 409);
+        assert.equal(
+          (await missingAbveAnnualStartYear.json()).code,
+          "abve_annual_start_year_required",
+        );
+
+        const unattestedCrc = await postWorkspace(
+          "createCredential",
+          {
+            ruleSetId: "crcc-crc-2026-v1",
+            cycleStart: "2022-08-01",
+            deadline: "2027-07-31",
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(unattestedCrc.status, 409);
+        assert.equal(
+          (await unattestedCrc.json()).code,
+          "crcc_cycle_attestation_required",
+        );
+
+        const nonstandardCrc = await postWorkspace(
+          "createCredential",
+          {
+            ruleSetId: "crcc-crc-2026-v1",
+            cycleStart: "2026-08-01",
+            deadline: "2027-07-31",
+            officialDatesAttested: true,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(nonstandardCrc.status, 409);
+        assert.equal(
+          (await nonstandardCrc.json()).code,
+          "crcc_standard_cycle_required",
+        );
+
+        const crcResponse = await postWorkspace(
+          "createCredential",
+          {
+            ruleSetId: "crcc-crc-2026-v1",
+            cycleStart: "2022-08-01",
+            deadline: "2027-07-31",
+            officialDatesAttested: true,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(
+          crcResponse.status,
+          200,
+          JSON.stringify(await crcResponse.clone().json()),
+        );
+        const crcCredentialId = (await crcResponse.json()).id;
+        assert.deepEqual(
+          raw
+            .prepare(
+              `SELECT title
+               FROM checklist_tasks
+               WHERE credential_id = ?
+               ORDER BY sort_order`,
+            )
+            .all(crcCredentialId)
+            .map((task) => task.title),
+          [
+            "Confirm CRCCCONNECT dates, profile information, five-year window, and pre- or post-approved CE status",
+            "Report 100 approved clock hours, including at least 10 ethics and no more than 50 Professional Development hours",
+            "Complete the CRC attestations and disclosures, submit payment, and save CRCCCONNECT renewal confirmation",
+          ],
+        );
+        const crcRequirementByCategory = new Map(
+          rows(
+            `SELECT id, rule_category_id AS ruleCategoryId
+             FROM credential_requirements
+             WHERE credential_id = '${crcCredentialId}'`,
+          ).map((requirement) => [
+            requirement.ruleCategoryId,
+            requirement.id,
+          ]),
+        );
+        const addCrcProgram = ({
+          title,
+          totalUnits,
+          reference,
+          approvalType = "pre_approved",
+          evidenceStatus = "missing",
+          matches,
+        }) =>
+          postWorkspace(
+            "addActivity",
+            {
+              title,
+              provider: "CRCC-approved provider",
+              completionDate: "2026-09-15",
+              totalUnits,
+              allocatedUnits: totalUnits,
+              credentialId: crcCredentialId,
+              evidenceStatus,
+              requirementMatches: matches.map(
+                ([ruleCategoryId, matchedUnits]) => ({
+                  requirementId:
+                    crcRequirementByCategory.get(ruleCategoryId),
+                  matchedUnits,
+                }),
+              ),
+              crcApprovalType: approvalType,
+              crcProgramReference: reference,
+              crcApprovalAttested: true,
+            },
+            "rehabilitation@example.com",
+          );
+        const invalidPreApproval = await addCrcProgram({
+          title: "Program with an invalid pre-approval number",
+          totalUnits: 1,
+          reference: "CRC-APPROVAL-INVALID",
+          matches: [["crcc-crc-2026-general", 1]],
+        });
+        assert.equal(invalidPreApproval.status, 409);
+        assert.equal(
+          (await invalidPreApproval.json()).code,
+          "crcc_preapproval_number_invalid",
+        );
+        const subhourPostApproval = await addCrcProgram({
+          title: "Sub-hour post-approved program",
+          totalUnits: 0.75,
+          reference: "CRCC-POST-SUBHOUR",
+          approvalType: "post_approved",
+          matches: [["crcc-crc-2026-general", 0.75]],
+        });
+        assert.equal(subhourPostApproval.status, 409);
+        assert.equal(
+          (await subhourPostApproval.json()).code,
+          "crcc_post_approval_minimum_required",
+        );
+        const partialEthicsProgram = await addCrcProgram({
+          title: "Six-hour program with two ethics hours",
+          totalUnits: 6,
+          reference: "60007-1001",
+          evidenceStatus: "not_required",
+          matches: [
+            ["crcc-crc-2026-general", 3],
+            ["crcc-crc-2026-professional-development", 3],
+            ["crcc-crc-2026-ethics", 2],
+          ],
+        });
+        assert.equal(
+          partialEthicsProgram.status,
+          200,
+          JSON.stringify(await partialEthicsProgram.clone().json()),
+        );
+        const partialEthicsActivityId =
+          (await partialEthicsProgram.json()).id;
+        assert.deepEqual(
+          rows(
+            `SELECT
+               requirement.rule_category_id AS ruleCategoryId,
+               match.matched_units AS matchedUnits
+             FROM activity_requirement_matches match
+             JOIN activity_allocations allocation
+               ON allocation.id = match.allocation_id
+             JOIN credential_requirements requirement
+               ON requirement.id = match.requirement_id
+             WHERE allocation.activity_id = '${partialEthicsActivityId}'
+             ORDER BY requirement.rule_category_id`,
+          ),
+          [
+            {
+              ruleCategoryId: "crcc-crc-2026-ethics",
+              matchedUnits: 2,
+            },
+            {
+              ruleCategoryId: "crcc-crc-2026-general",
+              matchedUnits: 3,
+            },
+            {
+              ruleCategoryId:
+                "crcc-crc-2026-professional-development",
+              matchedUnits: 3,
+            },
+          ],
+        );
+        const partialEthicsRevision = raw
+          .prepare(
+            `SELECT revision
+             FROM activities
+             WHERE id = ?`,
+          )
+          .get(partialEthicsActivityId).revision;
+        const unattestedProgramMetadata = await postWorkspace(
+          "updateActivity",
+          {
+            activityId: partialEthicsActivityId,
+            expectedRevision: partialEthicsRevision,
+            title: "Six-hour program with two ethics hours — corrected title",
+            provider: "CRCC-approved provider",
+            completionDate: "2026-09-15",
+            totalUnits: 8,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(unattestedProgramMetadata.status, 409);
+        assert.equal(
+          (await unattestedProgramMetadata.json()).code,
+          "crcc_activity_edit_attestation_required",
+        );
+        const correctedProgramMetadata = await postWorkspace(
+          "updateActivity",
+          {
+            activityId: partialEthicsActivityId,
+            expectedRevision: partialEthicsRevision,
+            title: "Six-hour program with two ethics hours — corrected title",
+            provider: "CRCC-approved provider",
+            completionDate: "2026-09-15",
+            totalUnits: 8,
+            crcApprovalAttested: true,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(
+          correctedProgramMetadata.status,
+          200,
+          JSON.stringify(await correctedProgramMetadata.clone().json()),
+        );
+        assert.deepEqual(
+          {
+            ...raw
+              .prepare(
+                `SELECT
+                   allocation.allocated_units AS allocatedUnits,
+                   SUM(
+                     CASE
+                       WHEN requirement.rule_category_id =
+                         'crcc-crc-2026-general'
+                       THEN match.matched_units
+                       ELSE 0
+                     END
+                   ) AS generalUnits,
+                   SUM(
+                     CASE
+                       WHEN requirement.rule_category_id =
+                         'crcc-crc-2026-professional-development'
+                       THEN match.matched_units
+                       ELSE 0
+                     END
+                   ) AS professionalDevelopmentUnits,
+                   SUM(
+                     CASE
+                       WHEN requirement.rule_category_id =
+                         'crcc-crc-2026-ethics'
+                       THEN match.matched_units
+                       ELSE 0
+                     END
+                   ) AS ethicsUnits
+                 FROM activity_allocations allocation
+                 JOIN activity_requirement_matches match
+                   ON match.allocation_id = allocation.id
+                 JOIN credential_requirements requirement
+                   ON requirement.id = match.requirement_id
+                 WHERE allocation.activity_id = ?
+                 GROUP BY allocation.id`,
+              )
+              .get(partialEthicsActivityId),
+          },
+          {
+            allocatedUnits: 6,
+            generalUnits: 3,
+            professionalDevelopmentUnits: 3,
+            ethicsUnits: 2,
+          },
+        );
+        const partialEthicsAllocationId = raw
+          .prepare(
+            `SELECT id
+             FROM activity_allocations
+             WHERE activity_id = ? AND credential_id = ?`,
+          )
+          .get(partialEthicsActivityId, crcCredentialId).id;
+        const repairedCrcMatches = [
+          ["crcc-crc-2026-general", 4],
+          ["crcc-crc-2026-professional-development", 2],
+          ["crcc-crc-2026-ethics", 2],
+        ].map(([ruleCategoryId, matchedUnits]) => ({
+          requirementId: crcRequirementByCategory.get(ruleCategoryId),
+          matchedUnits,
+        }));
+        const unattestedCrcRepair = await postWorkspace(
+          "updateActivityAllocationRequirements",
+          {
+            allocationId: partialEthicsAllocationId,
+            requirementMatches: repairedCrcMatches,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(unattestedCrcRepair.status, 409);
+        assert.equal(
+          (await unattestedCrcRepair.json()).code,
+          "crcc_allocation_attestation_required",
+        );
+        const crcRepair = await postWorkspace(
+          "updateActivityAllocationRequirements",
+          {
+            allocationId: partialEthicsAllocationId,
+            requirementMatches: repairedCrcMatches,
+            crcApprovalAttested: true,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(
+          crcRepair.status,
+          200,
+          JSON.stringify(await crcRepair.clone().json()),
+        );
+        assert.deepEqual(
+          rows(
+            `SELECT
+               requirement.rule_category_id AS ruleCategoryId,
+               match.matched_units AS matchedUnits
+             FROM activity_requirement_matches match
+             JOIN credential_requirements requirement
+               ON requirement.id = match.requirement_id
+             WHERE match.allocation_id = '${partialEthicsAllocationId}'
+             ORDER BY requirement.rule_category_id`,
+          ),
+          [
+            {
+              ruleCategoryId: "crcc-crc-2026-ethics",
+              matchedUnits: 2,
+            },
+            {
+              ruleCategoryId: "crcc-crc-2026-general",
+              matchedUnits: 4,
+            },
+            {
+              ruleCategoryId:
+                "crcc-crc-2026-professional-development",
+              matchedUnits: 2,
+            },
+          ],
+        );
+        const remainingGeneralProgram = await addCrcProgram({
+          title: "General rehabilitation counseling program",
+          totalUnits: 47,
+          reference: "60007-1002",
+          matches: [
+            ["crcc-crc-2026-general", 47],
+            ["crcc-crc-2026-ethics", 8],
+          ],
+        });
+        assert.equal(
+          remainingGeneralProgram.status,
+          200,
+          JSON.stringify(await remainingGeneralProgram.clone().json()),
+        );
+        const duplicateProgram = await addCrcProgram({
+          title: "Duplicate program entry",
+          totalUnits: 1,
+          reference: "60007-1002",
+          approvalType: "post_approved",
+          matches: [["crcc-crc-2026-general", 1]],
+        });
+        assert.equal(duplicateProgram.status, 409);
+        assert.equal(
+          (await duplicateProgram.json()).code,
+          "crcc_duplicate_program",
+        );
+        const remainingGeneralActivityId =
+          (await remainingGeneralProgram.json()).id;
+        const archiveOriginalProgram = await postWorkspace(
+          "archiveActivity",
+          {
+            activityId: remainingGeneralActivityId,
+            expectedRevision: 1,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(archiveOriginalProgram.status, 200);
+        const replacementProgram = await addCrcProgram({
+          title: "Temporary replacement program entry",
+          totalUnits: 1,
+          reference: "60007-1002",
+          matches: [["crcc-crc-2026-general", 1]],
+        });
+        assert.equal(
+          replacementProgram.status,
+          200,
+          JSON.stringify(await replacementProgram.clone().json()),
+        );
+        const duplicateRestore = await postWorkspace(
+          "restoreActivity",
+          {
+            activityId: remainingGeneralActivityId,
+            expectedRevision: 2,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(duplicateRestore.status, 409);
+        assert.equal(
+          (await duplicateRestore.json()).code,
+          "crcc_duplicate_program",
+        );
+        const replacementActivityId = (await replacementProgram.json()).id;
+        const archiveReplacementProgram = await postWorkspace(
+          "archiveActivity",
+          {
+            activityId: replacementActivityId,
+            expectedRevision: 1,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(archiveReplacementProgram.status, 200);
+        const restoreOriginalProgram = await postWorkspace(
+          "restoreActivity",
+          {
+            activityId: remainingGeneralActivityId,
+            expectedRevision: 2,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(
+          restoreOriginalProgram.status,
+          200,
+          JSON.stringify(await restoreOriginalProgram.clone().json()),
+        );
+        const postApprovedProgram = await addCrcProgram({
+          title: "Professional development program",
+          totalUnits: 47,
+          reference: "CRCC-POST-2001",
+          approvalType: "post_approved",
+          matches: [
+            ["crcc-crc-2026-professional-development", 47],
+          ],
+        });
+        assert.equal(
+          postApprovedProgram.status,
+          200,
+          JSON.stringify(await postApprovedProgram.clone().json()),
+        );
+        const postApprovedActivityId =
+          (await postApprovedProgram.json()).id;
+        const missingPostApprovalProof = await postWorkspace(
+          "markSubmitted",
+          {
+            credentialId: crcCredentialId,
+            submissionDate: "2027-07-31",
+            confirmationNumber: "CRC-RENEWAL-1",
+            complianceAttested: true,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(missingPostApprovalProof.status, 409);
+        assert.equal(
+          (await missingPostApprovalProof.json()).code,
+          "crcc_post_approval_proof_required",
+        );
+        const crcWorkspaceResponse = await fetchWorker(
+          "https://license-lantern.example/api/workspace",
+          { headers: authHeaders("rehabilitation@example.com") },
+        );
+        assert.equal(
+          crcWorkspaceResponse.status,
+          200,
+          JSON.stringify(await crcWorkspaceResponse.clone().json()),
+        );
+        const crcWorkspace = await crcWorkspaceResponse.json();
+        const trackedCrc = crcWorkspace.credentials.find(
+          (credential) => credential.id === crcCredentialId,
+        );
+        assert.equal(trackedCrc.totalEarned, 100);
+        assert.equal(trackedCrc.unclassifiedUnits, 0);
+        assert.equal(
+          trackedCrc.requirements.find(
+            (requirement) =>
+              requirement.ruleCategoryId ===
+              "crcc-crc-2026-professional-development",
+          ).rawEarned,
+          49,
+        );
+        testCloudflareEnv.EVIDENCE = new FakeEvidenceBucket();
+        const crcProofForm = new FormData();
+        crcProofForm.set("activityId", postApprovedActivityId);
+        crcProofForm.set(
+          "file",
+          new File(
+            [
+              new Uint8Array([
+                0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0a,
+              ]),
+            ],
+            "crc-post-approval.pdf",
+            { type: "application/pdf" },
+          ),
+        );
+        const crcProofUpload = await postEvidence(
+          crcProofForm,
+          "rehabilitation@example.com",
+        );
+        assert.equal(
+          crcProofUpload.status,
+          201,
+          JSON.stringify(await crcProofUpload.clone().json()),
+        );
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT evidence_reference AS evidenceReference
+               FROM activities
+               WHERE id = ?`,
+            )
+            .get(postApprovedActivityId).evidenceReference,
+          "CRCC post-approved | CRCC-POST-2001",
+        );
+        const prematureCrcSubmission = await postWorkspace(
+          "markSubmitted",
+          {
+            credentialId: crcCredentialId,
+            submissionDate: "2026-09-14",
+            confirmationNumber: "CRC-RENEWAL-EARLY",
+            complianceAttested: true,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(prematureCrcSubmission.status, 409);
+        assert.equal(
+          (await prematureCrcSubmission.json()).code,
+          "crcc_activity_after_submission",
+        );
+        const lateCrcSubmission = await postWorkspace(
+          "markSubmitted",
+          {
+            credentialId: crcCredentialId,
+            submissionDate: "2027-08-01",
+            confirmationNumber: "CRC-RENEWAL-LATE",
+            complianceAttested: true,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(lateCrcSubmission.status, 409);
+        assert.equal(
+          (await lateCrcSubmission.json()).code,
+          "crcc_submission_after_deadline",
+        );
+        const crcSubmission = await postWorkspace(
+          "markSubmitted",
+          {
+            credentialId: crcCredentialId,
+            submissionDate: "2027-07-31",
+            confirmationNumber: "CRC-RENEWAL-1",
+            complianceAttested: true,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(
+          crcSubmission.status,
+          200,
+          JSON.stringify(await crcSubmission.clone().json()),
+        );
+        raw
+          .prepare(
+            `INSERT INTO rule_sets (
+               id, stable_key, version, profession, credential_name,
+               jurisdiction, issuer, total_units, unit_label, cycle_months,
+               source_url, source_title, effective_date, last_verified_at,
+               review_status, is_current
+             )
+             SELECT
+               'crcc-crc-2027-v2', stable_key, 2, profession,
+               credential_name, jurisdiction, issuer, total_units,
+               unit_label, cycle_months, source_url,
+               source_title || ' Test-only successor snapshot.',
+               '2027-08-01', last_verified_at, review_status, 1
+             FROM rule_sets
+             WHERE id = 'crcc-crc-2026-v1'`,
+          )
+          .run();
+        raw
+          .prepare(
+            `INSERT INTO rule_categories (
+               id, rule_set_id, name, required_units, kind, relation,
+               parent_category_id, applicability, condition_note,
+               exclusive_group, sort_order
+             )
+             SELECT
+               CASE
+                 WHEN id LIKE '%-professional-development'
+                   THEN 'crcc-crc-2027-professional-development'
+                 WHEN id LIKE '%-ethics'
+                   THEN 'crcc-crc-2027-ethics'
+                 ELSE 'crcc-crc-2027-general'
+               END,
+               'crcc-crc-2027-v2', name, required_units, kind, relation,
+               NULL, applicability, condition_note, exclusive_group,
+               sort_order
+             FROM rule_categories
+             WHERE rule_set_id = 'crcc-crc-2026-v1'`,
+          )
+          .run();
+        const nonconsecutiveCrcAcceptance = await postWorkspace(
+          "markRenewalAccepted",
+          {
+            credentialId: crcCredentialId,
+            acceptedAt: "2027-08-01",
+            reference: "CRC-RENEWED-GAP",
+            nextCycleStart: "2027-08-02",
+            nextDeadline: "2032-08-01",
+            officialDatesAttested: true,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(nonconsecutiveCrcAcceptance.status, 409);
+        assert.equal(
+          (await nonconsecutiveCrcAcceptance.json()).code,
+          "crcc_next_cycle_must_be_consecutive",
+        );
+        const crcAcceptance = await postWorkspace(
+          "markRenewalAccepted",
+          {
+            credentialId: crcCredentialId,
+            acceptedAt: "2027-08-01",
+            reference: "CRC-RENEWED-1",
+            nextCycleStart: "2027-08-01",
+            nextDeadline: "2032-07-31",
+            officialDatesAttested: true,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(
+          crcAcceptance.status,
+          200,
+          JSON.stringify(await crcAcceptance.clone().json()),
+        );
+        const nextCrcCredentialId = (await crcAcceptance.json()).id;
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT rule_set_id AS ruleSetId
+               FROM credentials
+               WHERE id = ?`,
+            )
+            .get(nextCrcCredentialId).ruleSetId,
+          "crcc-crc-2027-v2",
+        );
+        assert.deepEqual(
+          raw
+            .prepare(
+              `SELECT rule_category_id AS ruleCategoryId
+               FROM credential_requirements
+               WHERE credential_id = ?
+               ORDER BY rule_category_id`,
+            )
+            .all(nextCrcCredentialId)
+            .map((requirement) => requirement.ruleCategoryId),
+          [
+            "crcc-crc-2027-ethics",
+            "crcc-crc-2027-general",
+            "crcc-crc-2027-professional-development",
+          ],
+        );
+
+        const abveResponse = await postWorkspace(
+          "createCredential",
+          {
+            ruleSetId: "abve-diplomate-2025-v1",
+            cycleStart: "2025-01-01",
+            deadline: "2027-12-31",
+            abveAnnualStartYear: 2026,
+            officialDatesAttested: true,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(
+          abveResponse.status,
+          200,
+          JSON.stringify(await abveResponse.clone().json()),
+        );
+        const abveCredentialId = (await abveResponse.json()).id;
+        assert.deepEqual(
+          {
+            ...raw
+              .prepare(
+                `SELECT
+                   credential_name AS credentialName,
+                   cycle_start AS cycleStart,
+                   deadline,
+                   total_required AS totalRequired,
+                   unit_label AS unitLabel
+                 FROM credentials
+                 WHERE id = ?`,
+              )
+              .get(abveCredentialId),
+          },
+          {
+            credentialName:
+              "Diplomate of the American Board of Vocational Experts (ABVE/D) — 2025–2027 recertification",
+            cycleStart: "2025-01-01",
+            deadline: "2027-12-31",
+            totalRequired: 42,
+            unitLabel: "ABVE-approved CEUs",
+          },
+        );
+        assert.deepEqual(
+          raw
+            .prepare(
+              `SELECT title, due_date AS dueDate
+               FROM checklist_tasks
+               WHERE credential_id = ?
+               ORDER BY sort_order`,
+            )
+            .all(abveCredentialId)
+            .map((task) => ({ ...task })),
+          [
+            {
+              title:
+                "Renew ABVE membership and Diplomate credential, pay annual fees, and reaffirm the Code of Ethics for 2026",
+              dueDate: "2026-12-31",
+            },
+            {
+              title:
+                "Submit any alternative-credit requests at least eight weeks before cycle end, record 42 ABVE-approved CEUs at the awarded values, and retain approval evidence",
+              dueDate: "2027-11-05",
+            },
+            {
+              title:
+                "Renew ABVE membership and Diplomate credential, pay annual fees, and reaffirm the Code of Ethics for 2027",
+              dueDate: "2027-12-31",
+            },
+            {
+              title:
+                "Confirm all 42 accepted CEUs are on file by December 31, 2027 and save ABVE Diplomate recertification proof",
+              dueDate: "2027-12-31",
+            },
+          ],
+        );
+        const abveSubmission = await postWorkspace(
+          "markSubmitted",
+          {
+            credentialId: abveCredentialId,
+            submissionDate: "2027-12-31",
+            confirmationNumber: "ABVE-2027",
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(
+          abveSubmission.status,
+          200,
+          JSON.stringify(await abveSubmission.clone().json()),
+        );
+        const unavailableAbveRollover = await postWorkspace(
+          "markRenewalAccepted",
+          {
+            credentialId: abveCredentialId,
+            acceptedAt: "2028-01-02",
+            reference: "ABVE-2027",
+            nextCycleStart: "2028-01-01",
+            nextDeadline: "2030-12-31",
+            officialDatesAttested: true,
+          },
+          "rehabilitation@example.com",
+        );
+        assert.equal(unavailableAbveRollover.status, 409);
+        assert.equal(
+          (await unavailableAbveRollover.json()).code,
+          "abve_next_cycle_template_unavailable",
+        );
+
+        assert.match(
+          runtimeSource,
+          /\.\.\.REHABILITATION_RULE_SET_SEED_BINDINGS[\s\S]*?\.\.\.REHABILITATION_CATEGORY_SEED_BINDINGS[\s\S]*?managed_rule\.id LIKE 'crcc-%'[\s\S]*?managed_rule\.id LIKE 'abve-%'/,
+        );
+        assert.match(
+          routeSource,
+          /assertRehabilitationCertificationDates[\s\S]*?abve_fixed_cycle_required[\s\S]*?crcc_standard_cycle_required[\s\S]*?crcc_cycle_attestation_required/,
+        );
+        assert.match(
+          clientSource,
+          /isRehabilitationCertificationCatalogRule[\s\S]*?I checked my ABVE member record[\s\S]*?I checked CRCCCONNECT[\s\S]*?CRCC accepted clock-hour allocation/,
+        );
+      } finally {
+        database.close();
+      }
+    },
+  );
+
+  await t.test(
     "seeds twelve source-linked nursing renewals with explicit zero-hour and conditional rules",
     async () => {
       const { DatabaseSync } = await import("node:sqlite");
@@ -1880,12 +2895,12 @@ test("License Lantern product contract", async (t) => {
             )
             .get(),
         },
-        { totalRules: 117, currentRules: 116 },
+        { totalRules: 120, currentRules: 119 },
       );
       assert.equal(
         raw.prepare("SELECT COUNT(*) AS count FROM rule_categories").get()
           .count,
-        623,
+        628,
       );
       assert.deepEqual(
         {
@@ -2332,7 +3347,7 @@ test("License Lantern product contract", async (t) => {
       );
       assert.match(
         clientSource,
-        /selected\.totalRequired > 0[\s\S]*?"Checklist"[\s\S]*?selected\.totalRequired > 0[\s\S]*?This regulator does not set a general numeric[\s\S]*?continuing-education total/,
+        /selected\.totalRequired > 0[\s\S]*?"Checklist"[\s\S]*?selected\.totalRequired > 0[\s\S]*?This issuing organization does not set a general numeric[\s\S]*?continuing-education total/,
       );
       assert.match(
         clientSource,
@@ -5088,7 +6103,7 @@ test("License Lantern product contract", async (t) => {
       );
       assert.match(
         calendarSource,
-        /title: "License Lantern calendar check-ins"[\s\S]*?text: "Add these license and compliance check-ins to your calendar\."/,
+        /title: "License Lantern calendar check-ins"[\s\S]*?text: "Add these credential and compliance check-ins to your calendar\."/,
       );
     },
   );
@@ -8609,7 +9624,7 @@ test("License Lantern product contract", async (t) => {
             )
             .get(),
         },
-        { totalRules: 117, currentRules: 116 },
+        { totalRules: 120, currentRules: 119 },
       );
       assert.equal(
         raw
@@ -20387,7 +21402,7 @@ test("License Lantern product contract", async (t) => {
       const userId = await expectedStableUserId("owner@example.com");
       const activityId = "activity-correction";
       const isActivityMutationLookup = (sql) =>
-        /SELECT id, revision, archived_at AS archivedAt, completion_date AS completionDate, total_units AS totalUnits, provider, evidence_status AS evidenceStatus FROM activities WHERE id = \? AND user_id = \?/i.test(
+        /SELECT id, revision, archived_at AS archivedAt, completion_date AS completionDate, total_units AS totalUnits, provider, evidence_status AS evidenceStatus, evidence_reference AS evidenceReference FROM activities WHERE id = \? AND user_id = \?/i.test(
           sql,
         );
       const isAllocationValidationLookup = (sql) =>
@@ -20412,6 +21427,7 @@ test("License Lantern product contract", async (t) => {
         totalUnits: 2,
         provider: "Original Provider",
         evidenceStatus: "missing",
+        evidenceReference: null,
       };
       const genericRequirement = {
         id: "requirement-general",
@@ -20765,16 +21781,16 @@ test("License Lantern product contract", async (t) => {
           exclusiveGroup: null,
         },
       ];
+      const isManagedAllocationLookup = (sql) =>
+        /AS hasNremt[\s\S]*AS hasCrc[\s\S]*FROM activity_allocations allocation/i.test(
+          sql,
+        );
       const makeNremtDatabase = () =>
         new FakeDatabase({
           resolveFirst(call) {
             if (isActivityMutationLookup(call.sql)) return activeActivity;
-            if (
-              /SELECT 1 AS isNremt FROM activity_allocations allocation JOIN credentials credential/i.test(
-                call.sql,
-              )
-            ) {
-              return { isNremt: 1 };
+            if (isManagedAllocationLookup(call.sql)) {
+              return { hasNremt: 1, hasCrc: 0 };
             }
             return null;
           },
@@ -20844,9 +21860,7 @@ test("License Lantern product contract", async (t) => {
         unattestedCorrectionDatabase.calls.find(
           (call) =>
             call.method === "first" &&
-            /SELECT 1 AS isNremt FROM activity_allocations allocation JOIN credentials credential/i.test(
-              call.sql,
-            ),
+            isManagedAllocationLookup(call.sql),
         );
       assert.ok(nremtCorrectionLookup);
       assert.deepEqual(nremtCorrectionLookup.bindings, [
@@ -20879,12 +21893,8 @@ test("License Lantern product contract", async (t) => {
       const closedNremtDatabase = new FakeDatabase({
         resolveFirst(call) {
           if (isActivityMutationLookup(call.sql)) return activeActivity;
-          if (
-            /SELECT 1 AS isNremt FROM activity_allocations allocation JOIN credentials credential/i.test(
-              call.sql,
-            )
-          ) {
-            return { isNremt: 1 };
+          if (isManagedAllocationLookup(call.sql)) {
+            return { hasNremt: 1, hasCrc: 0 };
           }
           return null;
         },

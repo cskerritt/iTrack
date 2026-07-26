@@ -85,7 +85,7 @@ export function credentialDeadlineCalendarEvent(
       } deadline in ${credential.jurisdiction}.`,
       compliancePeriod
         ? "Confirm current requirements and completion status with the official authority or employer record."
-        : "Confirm current requirements with the licensing authority before submitting.",
+        : "Confirm current requirements with the licensing board or certifying body before submitting.",
     ].join(" "),
     date: credential.deadline,
     reminderDaysBefore: [...reminderDaysBefore],

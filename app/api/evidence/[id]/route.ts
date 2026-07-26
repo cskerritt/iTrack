@@ -105,15 +105,20 @@ export async function DELETE(request: Request, context: RouteContext) {
              ) THEN 'attached'
              ELSE 'missing'
            END,
-           evidence_reference = (
-             SELECT stored.original_filename
-             FROM evidence_files stored
-             WHERE stored.activity_id = activities.id
-               AND stored.user_id = activities.user_id
-               AND stored.status = 'ready'
-             ORDER BY stored.created_at DESC, stored.id DESC
-             LIMIT 1
-           ),
+           evidence_reference = CASE
+             WHEN evidence_reference LIKE 'CRCC pre-approved | %'
+               OR evidence_reference LIKE 'CRCC post-approved | %'
+             THEN evidence_reference
+             ELSE (
+               SELECT stored.original_filename
+               FROM evidence_files stored
+               WHERE stored.activity_id = activities.id
+                 AND stored.user_id = activities.user_id
+                 AND stored.status = 'ready'
+               ORDER BY stored.created_at DESC, stored.id DESC
+               LIMIT 1
+             )
+           END,
            revision = revision + 1,
            updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
