@@ -244,6 +244,8 @@ type Workspace = {
     xp: number;
     weekActions: number;
     weeklyGoal: number;
+    nextWeeklyGoal?: number;
+    nextWeeklyGoalEffectiveOn?: string | null;
     badges: Badge[];
   };
   progression: Progression;
@@ -1203,6 +1205,10 @@ export function LicenseLanternApp() {
     }, 0);
     return () => window.clearTimeout(timeout);
   }, [loadWorkspace]);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [view]);
 
   useEffect(() => {
     const handleOnline = () => {
@@ -2298,6 +2304,16 @@ export function LicenseLanternApp() {
     );
   }
 
+  async function updateWeeklyGoal(weeklyGoal: number) {
+    await runAction(
+      "updateWeeklyGoal",
+      { weeklyGoal },
+      weeklyGoal === workspace?.profile.weeklyGoal
+        ? "Your current weekly rhythm will continue."
+        : "Your next weekly rhythm is scheduled.",
+    );
+  }
+
   const userName = workspace?.user.displayName ?? "Professional";
 
   return (
@@ -2445,6 +2461,10 @@ export function LicenseLanternApp() {
             <AccountView
               workspace={workspace}
               onReminders={() => setRemindersOpen(true)}
+              onWeeklyGoal={(weeklyGoal) =>
+                void updateWeeklyGoal(weeklyGoal)
+              }
+              weeklyGoalPending={pending}
               isStandalone={isStandalone}
               installAvailable={Boolean(installPrompt)}
               onInstall={() => void handleInstallApp()}
@@ -4468,11 +4488,15 @@ function TodayView({
           <div
             className="readiness-ring"
             style={{ "--score": readiness } as React.CSSProperties}
+            role="progressbar"
             aria-label={`${readiness}% ${
               isCompliancePeriodCredential(credential)
                 ? "compliance"
                 : "renewal"
             } readiness`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={readiness}
           >
             <span>
               <strong>{readiness}%</strong>
@@ -5490,6 +5514,8 @@ function RecordsView({
 function AccountView({
   workspace,
   onReminders,
+  onWeeklyGoal,
+  weeklyGoalPending,
   isStandalone,
   installAvailable,
   onInstall,
@@ -5497,11 +5523,39 @@ function AccountView({
 }: {
   workspace: Workspace;
   onReminders: () => void;
+  onWeeklyGoal: (weeklyGoal: number) => void;
+  weeklyGoalPending: boolean;
   isStandalone: boolean;
   installAvailable: boolean;
   onInstall: () => void;
   onAddAllCheckIns: () => void;
 }) {
+  const currentWeeklyGoal = workspace.profile.weeklyGoal;
+  const scheduledWeeklyGoal = workspace.profile.nextWeeklyGoal;
+  const scheduledWeeklyGoalEffectiveOn =
+    workspace.profile.nextWeeklyGoalEffectiveOn;
+  const savedWeeklyGoal =
+    typeof scheduledWeeklyGoal === "number"
+      ? scheduledWeeklyGoal
+      : currentWeeklyGoal;
+  const [weeklyGoalChoice, setWeeklyGoalChoice] = useState<number | null>(null);
+  const selectedWeeklyGoal = weeklyGoalChoice ?? savedWeeklyGoal;
+
+  const weeklyGoalPresets = [
+    { label: "Light", value: 1 },
+    { label: "Steady", value: 3 },
+    { label: "Balanced", value: 4 },
+    { label: "Focused", value: 5 },
+    { label: "Ambitious", value: 7 },
+  ];
+  const weeklyGoalChanged = selectedWeeklyGoal !== savedWeeklyGoal;
+
+  const handleWeeklyGoalSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!weeklyGoalChanged || weeklyGoalPending) return;
+    onWeeklyGoal(selectedWeeklyGoal);
+  };
+
   return (
     <div className="view-stack">
       <PageGreeting
@@ -5584,6 +5638,85 @@ function AccountView({
               </article>
             ))}
           </div>
+        </section>
+        <section
+          className="card weekly-rhythm-card"
+          aria-labelledby="weekly-rhythm-title"
+        >
+          <span className="section-kicker">Weekly rhythm</span>
+          <h2 id="weekly-rhythm-title">Choose a pace that fits real life.</h2>
+          <p>
+            Your current target is {currentWeeklyGoal}{" "}
+            {currentWeeklyGoal === 1 ? "action" : "actions"} each week.
+            Changes start next Monday, so this week’s goal stays fair. Missed
+            days do not break your rhythm.
+          </p>
+          {typeof scheduledWeeklyGoal === "number" &&
+          scheduledWeeklyGoalEffectiveOn ? (
+            <div className="weekly-goal-scheduled" role="status">
+              <span aria-hidden="true">↗</span>
+              <p>
+                <strong>
+                  {scheduledWeeklyGoal}{" "}
+                  {scheduledWeeklyGoal === 1 ? "action" : "actions"} starting{" "}
+                  {formatDate(scheduledWeeklyGoalEffectiveOn)}
+                </strong>
+                <small>
+                  Choose another pace below to replace this scheduled change.
+                </small>
+              </p>
+            </div>
+          ) : null}
+          <form
+            className="weekly-goal-form"
+            aria-busy={weeklyGoalPending}
+            onSubmit={handleWeeklyGoalSubmit}
+          >
+            <fieldset disabled={weeklyGoalPending}>
+              <legend>Weekly action target</legend>
+              <div className="weekly-goal-options">
+                {weeklyGoalPresets.map((preset) => (
+                  <label className="weekly-goal-option" key={preset.value}>
+                    <input
+                      type="radio"
+                      name="weeklyGoal"
+                      value={preset.value}
+                      checked={selectedWeeklyGoal === preset.value}
+                      onChange={() => setWeeklyGoalChoice(preset.value)}
+                    />
+                    <span>
+                      <strong>{preset.label}</strong>
+                      <small>
+                        {preset.value}{" "}
+                        {preset.value === 1 ? "action" : "actions"}
+                      </small>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <div className="weekly-goal-actions">
+              <button
+                className="button button-primary"
+                type="submit"
+                disabled={!weeklyGoalChanged || weeklyGoalPending}
+              >
+                {weeklyGoalPending
+                  ? "Scheduling…"
+                  : selectedWeeklyGoal === currentWeeklyGoal &&
+                      typeof scheduledWeeklyGoal === "number"
+                    ? "Keep current pace"
+                    : "Start next Monday"}
+              </button>
+              <span aria-live="polite">
+                {weeklyGoalPending
+                  ? "Saving your weekly target."
+                  : weeklyGoalChanged
+                    ? "Ready to schedule."
+                    : "Your saved pace is selected."}
+              </span>
+            </div>
+          </form>
         </section>
         <section className="card reminder-settings-card">
           <span className="section-kicker">Due-date check-ins</span>

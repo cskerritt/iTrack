@@ -1370,6 +1370,7 @@ function renewalTaskSpecs(
 
 const DEFAULT_LEAD_DAYS = [90, 30, 7, 1] as const;
 const ALLOWED_LEAD_DAYS = new Set<number>(DEFAULT_LEAD_DAYS);
+const WEEKLY_GOAL_PRESETS = new Set([1, 3, 4, 5, 7]);
 
 function normalizeLeadDays(value: unknown): number[] {
   if (!Array.isArray(value)) {
@@ -1451,6 +1452,12 @@ type WeeklyQuestClaimRow = {
   claimedAt: string;
 };
 
+type WeeklyProgressionPeriodRow = {
+  weekStart: string;
+  weeklyGoal: number;
+  timeZone: string;
+};
+
 type ProgressionQuest = {
   key: string;
   title: string;
@@ -1475,6 +1482,8 @@ type ProgressionContext = {
 type ProgressionData = {
   lifetimeXp: number;
   weeklyGoal: number;
+  nextWeeklyGoal?: number;
+  nextWeeklyGoalEffectiveOn?: string;
   weekActions: number;
   level: {
     number: number;
@@ -1523,6 +1532,125 @@ function weekStartForDate(isoDate: string) {
   const daysSinceMonday = (date.getUTCDay() + 6) % 7;
   date.setUTCDate(date.getUTCDate() - daysSinceMonday);
   return date.toISOString().slice(0, 10);
+}
+
+function isValidIsoCalendarDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T12:00:00.000Z`);
+  return (
+    !Number.isNaN(parsed.getTime()) &&
+    parsed.toISOString().slice(0, 10) === value
+  );
+}
+
+function progressionGoal(value: unknown) {
+  const goal = Number(value);
+  return Number.isInteger(goal) && goal >= 1 && goal <= 20 ? goal : 4;
+}
+
+async function getOrCreateCurrentProgressionPeriod(
+  database: D1Database,
+  identity: RequestIdentity,
+) {
+  const [profile, preference, latestPeriod] = await Promise.all([
+    query(
+      database,
+      `SELECT
+        p.weekly_goal AS weeklyGoal,
+        COALESCE(
+          (SELECT SUM(points) FROM xp_events WHERE user_id = p.user_id),
+          0
+        ) AS lifetimeXp
+      FROM profiles p
+      WHERE p.user_id = ?`,
+      [identity.userId],
+    ).first<{ weeklyGoal: number; lifetimeXp: number }>(),
+    query(
+      database,
+      `SELECT time_zone AS timeZone
+       FROM reminder_preferences
+       WHERE user_id = ?`,
+      [identity.userId],
+    ).first<{ timeZone: string }>(),
+    query(
+      database,
+      `SELECT
+        week_start AS weekStart,
+        weekly_goal AS weeklyGoal,
+        time_zone AS timeZone
+       FROM weekly_progression_periods
+       WHERE user_id = ?
+       ORDER BY week_start DESC
+       LIMIT 1`,
+      [identity.userId],
+    ).first<WeeklyProgressionPeriodRow>(),
+  ]);
+
+  const desiredWeeklyGoal = progressionGoal(profile?.weeklyGoal);
+  const lifetimeXp = Math.max(0, Number(profile?.lifetimeXp ?? 0));
+  if (
+    latestPeriod &&
+    isValidIsoCalendarDate(latestPeriod.weekStart) &&
+    validTimeZone(latestPeriod.timeZone)
+  ) {
+    const today = todayInTimeZone(latestPeriod.timeZone);
+    if (
+      today >= latestPeriod.weekStart &&
+      today <= daysAfter(latestPeriod.weekStart, 6)
+    ) {
+      return {
+        desiredWeeklyGoal,
+        lifetimeXp,
+        period: {
+          ...latestPeriod,
+          weeklyGoal: progressionGoal(latestPeriod.weeklyGoal),
+        },
+      };
+    }
+  }
+
+  const timeZone =
+    preference?.timeZone && validTimeZone(preference.timeZone)
+      ? preference.timeZone
+      : "UTC";
+  const attemptedPeriod: WeeklyProgressionPeriodRow = {
+    weekStart: weekStartForDate(todayInTimeZone(timeZone)),
+    weeklyGoal: desiredWeeklyGoal,
+    timeZone,
+  };
+  await query(
+    database,
+    `INSERT OR IGNORE INTO weekly_progression_periods (
+      user_id, week_start, weekly_goal, time_zone
+    ) VALUES (?, ?, ?, ?)`,
+    [
+      identity.userId,
+      attemptedPeriod.weekStart,
+      attemptedPeriod.weeklyGoal,
+      attemptedPeriod.timeZone,
+    ],
+  ).run();
+  const storedPeriod = await query(
+    database,
+    `SELECT
+      week_start AS weekStart,
+      weekly_goal AS weeklyGoal,
+      time_zone AS timeZone
+     FROM weekly_progression_periods
+     WHERE user_id = ? AND week_start = ?`,
+    [identity.userId, attemptedPeriod.weekStart],
+  ).first<WeeklyProgressionPeriodRow>();
+
+  return {
+    desiredWeeklyGoal,
+    lifetimeXp,
+    period: storedPeriod
+      ? {
+          ...storedPeriod,
+          weeklyGoal: progressionGoal(storedPeriod.weeklyGoal),
+        }
+      : attemptedPeriod,
+  };
 }
 
 function progressionLevel(lifetimeXp: number) {
@@ -1708,19 +1836,9 @@ async function getProgressionData(
   database: D1Database,
   identity: RequestIdentity,
 ): Promise<ProgressionData> {
-  const [profile, actions, claims, preference, context] = await Promise.all([
-    query(
-      database,
-      `SELECT
-        p.weekly_goal AS weeklyGoal,
-        COALESCE(
-          (SELECT SUM(points) FROM xp_events WHERE user_id = p.user_id),
-          0
-        ) AS lifetimeXp
-      FROM profiles p
-      WHERE p.user_id = ?`,
-      [identity.userId],
-    ).first<{ weeklyGoal: number; lifetimeXp: number }>(),
+  const { desiredWeeklyGoal, lifetimeXp, period } =
+    await getOrCreateCurrentProgressionPeriod(database, identity);
+  const [actions, claims, context] = await Promise.all([
     query(
       database,
       `SELECT
@@ -1750,13 +1868,6 @@ async function getProgressionData(
       ORDER BY week_start DESC, claimed_at DESC`,
       [identity.userId],
     ).all<WeeklyQuestClaimRow>(),
-    query(
-      database,
-      `SELECT time_zone AS timeZone
-       FROM reminder_preferences
-       WHERE user_id = ?`,
-      [identity.userId],
-    ).first<{ timeZone: string }>(),
     query(
       database,
       `SELECT
@@ -1812,16 +1923,7 @@ async function getProgressionData(
     ).first<ProgressionContext>(),
   ]);
 
-  const timeZone =
-    preference?.timeZone && validTimeZone(preference.timeZone)
-      ? preference.timeZone
-      : "UTC";
-  const weeklyGoal = Math.min(
-    20,
-    Math.max(1, Number(profile?.weeklyGoal ?? 4)),
-  );
-  const lifetimeXp = Math.max(0, Number(profile?.lifetimeXp ?? 0));
-  const currentWeekStart = weekStartForDate(todayInTimeZone(timeZone));
+  const { timeZone, weekStart: currentWeekStart, weeklyGoal } = period;
   const currentActionsByKey = new Map<string, ProgressionActionRow>();
   for (const action of actions.results) {
     if (
@@ -1856,6 +1958,12 @@ async function getProgressionData(
   return {
     lifetimeXp,
     weeklyGoal,
+    ...(desiredWeeklyGoal !== weeklyGoal
+      ? {
+          nextWeeklyGoal: desiredWeeklyGoal,
+          nextWeeklyGoalEffectiveOn: daysAfter(currentWeekStart, 7),
+        }
+      : {}),
     weekActions: currentActions.length,
     level: progressionLevel(lifetimeXp),
     week: {
@@ -3920,6 +4028,14 @@ async function getWorkspace(
       xp: progression.lifetimeXp,
       weekActions: progression.weekActions,
       weeklyGoal: progression.weeklyGoal,
+      ...(progression.nextWeeklyGoal !== undefined &&
+      progression.nextWeeklyGoalEffectiveOn
+        ? {
+            nextWeeklyGoal: progression.nextWeeklyGoal,
+            nextWeeklyGoalEffectiveOn:
+              progression.nextWeeklyGoalEffectiveOn,
+          }
+        : {}),
       badges: badgeResult.results,
     },
     progression,
@@ -7176,6 +7292,35 @@ async function updateRequirementApplicability(
   return credentialId;
 }
 
+async function updateWeeklyGoal(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  const weeklyGoal = payload.weeklyGoal;
+  if (
+    typeof weeklyGoal !== "number" ||
+    !Number.isInteger(weeklyGoal) ||
+    !WEEKLY_GOAL_PRESETS.has(weeklyGoal)
+  ) {
+    throw new RequestError(
+      "weeklyGoal must be one of 1, 3, 4, 5, or 7",
+      400,
+      "invalid_weekly_goal",
+    );
+  }
+
+  await getOrCreateCurrentProgressionPeriod(database, identity);
+  await query(
+    database,
+    `UPDATE profiles
+     SET weekly_goal = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE user_id = ?`,
+    [weeklyGoal, identity.userId],
+  ).run();
+  return "weekly-goal";
+}
+
 async function updateReminderPreferences(
   database: D1Database,
   identity: RequestIdentity,
@@ -7423,6 +7568,9 @@ export async function POST(request: Request) {
           identity,
           body.payload,
         );
+        break;
+      case "updateWeeklyGoal":
+        id = await updateWeeklyGoal(database, identity, body.payload);
         break;
       case "updateReminderPreferences":
         id = await updateReminderPreferences(

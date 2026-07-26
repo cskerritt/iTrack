@@ -31,6 +31,25 @@ export const profiles = sqliteTable("profiles", {
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const weeklyProgressionPeriods = sqliteTable(
+  "weekly_progression_periods",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    weekStart: text("week_start").notNull(),
+    weeklyGoal: integer("weekly_goal").notNull(),
+    timeZone: text("time_zone").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("weekly_progression_periods_user_week_unique").on(
+      table.userId,
+      table.weekStart,
+    ),
+  ],
+);
+
 export const ruleSets = sqliteTable(
   "rule_sets",
   {

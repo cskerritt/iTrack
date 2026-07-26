@@ -49,6 +49,16 @@ const TABLE_STATEMENTS = [
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )`,
+  `CREATE TABLE IF NOT EXISTS weekly_progression_periods (
+    user_id TEXT NOT NULL,
+    week_start TEXT NOT NULL,
+    weekly_goal INTEGER NOT NULL,
+    time_zone TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS weekly_progression_periods_user_week_unique
+    ON weekly_progression_periods (user_id, week_start)`,
   `CREATE TABLE IF NOT EXISTS rule_sets (
     id TEXT PRIMARY KEY NOT NULL,
     stable_key TEXT NOT NULL,

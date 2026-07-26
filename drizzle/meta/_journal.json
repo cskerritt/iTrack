@@ -50,6 +50,13 @@
       "when": 1785053599459,
       "tag": "0006_graceful_jackal",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1785061073997,
+      "tag": "0007_damp_mandroid",
+      "breakpoints": true
     }
   ]
 }

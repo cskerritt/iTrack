@@ -461,7 +461,7 @@ a {
 }
 
 .text-button {
-  min-height: 40px;
+  min-height: 44px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -863,7 +863,7 @@ a {
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  min-height: 42px;
+  min-height: 44px;
   margin-top: 20px;
   border: 0;
   border-top: 1px solid var(--line);
@@ -974,13 +974,13 @@ a {
 
 .quest-heading small {
   margin-top: 2px;
-  color: #8a938e;
-  font-size: 8px;
+  color: #62736c;
+  font-size: 10px;
 }
 
 .quest-heading > span {
-  color: #61756c;
-  font-size: 8px;
+  color: #536b61;
+  font-size: 10px;
   font-weight: 800;
 }
 
@@ -1046,14 +1046,14 @@ a {
 
 .quest-copy strong {
   color: var(--ink);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .quest-copy small {
   overflow: hidden;
   margin-top: 2px;
-  color: #818b86;
-  font-size: 7px;
+  color: #5f716a;
+  font-size: 10px;
   line-height: 1.35;
   text-overflow: ellipsis;
 }
@@ -1065,13 +1065,13 @@ a {
 
 .quest-row button {
   min-width: 68px;
-  min-height: 40px;
+  min-height: 44px;
   border: 0;
   border-radius: 9px;
   background: var(--ink);
   color: var(--white);
   cursor: pointer;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 850;
   padding: 7px 9px;
 }
@@ -1088,7 +1088,7 @@ a {
 .quest-count {
   min-width: 44px;
   color: #7b8983;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 800;
   text-align: right;
 }
@@ -2086,7 +2086,8 @@ a {
 .account-momentum h2,
 .compliance-card h2,
 .reminder-settings-card h2,
-.phone-companion-card h2 {
+.phone-companion-card h2,
+.weekly-rhythm-card h2 {
   margin: 4px 0 6px;
   font-family: var(--font-newsreader), Georgia, serif;
   font-size: 27px;
@@ -2096,7 +2097,8 @@ a {
 .account-momentum > p,
 .compliance-card > p,
 .reminder-settings-card > p,
-.phone-companion-card > p {
+.phone-companion-card > p,
+.weekly-rhythm-card > p {
   max-width: 630px;
   margin: 0;
   color: #737e7a;
@@ -2128,6 +2130,142 @@ a {
   margin-top: 3px;
   color: #78867f;
   font-size: 8px;
+}
+
+.weekly-rhythm-card {
+  grid-column: 1 / -1;
+  padding: 28px;
+}
+
+.weekly-goal-scheduled {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  max-width: 680px;
+  margin-top: 18px;
+  border: 1px solid #c9dfd5;
+  border-radius: 12px;
+  background: #f1f9f4;
+  color: #386f5b;
+  padding: 11px 13px;
+}
+
+.weekly-goal-scheduled > span {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: var(--sage-bright);
+  font-weight: 900;
+}
+
+.weekly-goal-scheduled p {
+  margin: 0;
+}
+
+.weekly-goal-scheduled strong,
+.weekly-goal-scheduled small {
+  display: block;
+}
+
+.weekly-goal-scheduled strong {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.weekly-goal-scheduled small {
+  margin-top: 2px;
+  color: #61766d;
+  font-size: 10px;
+}
+
+.weekly-goal-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.weekly-goal-form fieldset {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.weekly-goal-form legend {
+  margin-bottom: 9px;
+  color: #526a61;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.weekly-goal-options {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.weekly-goal-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--white);
+  cursor: pointer;
+  padding: 8px 11px;
+}
+
+.weekly-goal-option:has(input:checked) {
+  border-color: #72ae96;
+  background: var(--sage-bright);
+  box-shadow: inset 0 0 0 1px rgba(79, 143, 117, 0.18);
+}
+
+.weekly-goal-option input {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: #34765f;
+}
+
+.weekly-goal-option span,
+.weekly-goal-option strong,
+.weekly-goal-option small {
+  display: block;
+}
+
+.weekly-goal-option strong {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.weekly-goal-option small {
+  margin-top: 1px;
+  color: #61736c;
+  font-size: 10px;
+}
+
+.weekly-goal-form fieldset:disabled .weekly-goal-option {
+  cursor: progress;
+  opacity: 0.62;
+}
+
+.weekly-goal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.weekly-goal-actions > span {
+  color: #697a73;
+  font-size: 10px;
 }
 
 .reminder-settings-card {
@@ -3747,8 +3885,8 @@ a {
   .avatar-button {
     display: grid;
     place-items: center;
-    width: 42px;
-    height: 42px;
+    width: 44px;
+    height: 44px;
     border: 1px solid var(--line-strong);
     border-radius: 13px;
     background: var(--white);
@@ -3795,8 +3933,8 @@ a {
     min-height: 48px;
     gap: 2px;
     padding: 3px;
-    color: #8a9590;
-    font-size: 8px;
+    color: #596b64;
+    font-size: 10px;
   }
 
   .mobile-nav .nav-button.active {
@@ -3907,6 +4045,10 @@ a {
     grid-template-columns: 1fr;
   }
 
+  .progression-card {
+    order: -1;
+  }
+
   .onboarding-hero {
     grid-template-columns: 1fr;
   }
@@ -3982,6 +4124,10 @@ a {
     grid-template-columns: 1fr;
   }
 
+  .weekly-goal-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .evidence-upload {
     grid-template-columns: 1fr;
   }
@@ -4044,14 +4190,6 @@ a {
 
   .renewal-identity h2 {
     font-size: 27px;
-  }
-
-  .renewal-identity .text-button {
-    font-size: 0;
-  }
-
-  .renewal-identity .text-button span {
-    font-size: 18px;
   }
 
   .deadline-row {
