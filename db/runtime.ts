@@ -362,6 +362,31 @@ const TABLE_STATEMENTS = [
     ON badge_events (user_id, created_at)`,
 ] as const;
 
+const INTEGRITY_TRIGGER_STATEMENTS = [
+  `CREATE TRIGGER IF NOT EXISTS activity_requirement_matches_active_guard
+   BEFORE INSERT ON activity_requirement_matches
+   FOR EACH ROW
+   WHEN NOT EXISTS (
+     SELECT 1
+     FROM credential_requirements requirement
+     JOIN activity_allocations allocation
+       ON allocation.id = NEW.allocation_id
+     JOIN credentials credential
+       ON credential.id = allocation.credential_id
+     JOIN activities activity
+       ON activity.id = allocation.activity_id
+     WHERE requirement.id = NEW.requirement_id
+       AND requirement.credential_id = allocation.credential_id
+       AND requirement.is_active = 1
+       AND requirement.applicability_status = 'applies'
+       AND credential.user_id = NEW.user_id
+       AND activity.user_id = NEW.user_id
+   )
+   BEGIN
+     SELECT RAISE(ABORT, 'activity_requirement_inactive');
+   END`,
+] as const;
+
 const RICH_RULE_COLUMNS = [
   {
     table: "rule_categories",
@@ -4912,6 +4937,9 @@ export async function initializeDatabase(database: D1Database): Promise<void> {
           ),
         ),
       ]);
+      await database.batch(
+        INTEGRITY_TRIGGER_STATEMENTS.map((sql) => database.prepare(sql)),
+      );
     })().catch((error) => {
       initializationPromise = null;
       throw error;
@@ -4996,7 +5024,9 @@ export async function ensureUser(
       ON requirement.id = allocation.requirement_id
       AND requirement.credential_id = allocation.credential_id
     WHERE activity.user_id = ?
-      AND allocation.requirement_id IS NOT NULL`,
+      AND allocation.requirement_id IS NOT NULL
+      AND requirement.is_active = 1
+      AND requirement.applicability_status = 'applies'`,
     [identity.userId],
   ).run();
 }

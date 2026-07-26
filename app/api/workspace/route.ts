@@ -61,13 +61,32 @@ const NREMT_RULE_SET_PREFIX = "nremt-";
 const TEXAS_LPC_RULE_SET_ID = "tx-lpc-standard-renewal-2026-v1";
 const FLORIDA_INSURANCE_RULE_SET_PREFIX = "fl-insurance-producer-";
 const FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX = "fl-lcsw-lmft-lmhc-";
-const PHARMACIST_RULE_SET_IDS = new Set([
-  "ca-pharmacist-2026-v1",
-  "tx-pharmacist-2026-v1",
-  "fl-pharmacist-2026-v1",
-  "ny-pharmacist-2026-v1",
-  "nj-pharmacist-2026-v1",
-  "pa-pharmacist-2026-v1",
+const CONFIRMED_CARRYOVER_LOOKBACK_MONTHS = new Map([
+  ["tx-lpc-standard-renewal-2026-confirmed-carryover", 24],
+  ["nj-lpc-standard-renewal-2026-confirmed-carryover", 24],
+  ["pa-professional-educator-act-48-2026-confirmed-carryover", 24],
+  ["hrci-phr-2026-confirmed-carryover", 12],
+  ["hrci-sphr-2026-confirmed-carryover", 12],
+  ["shrm-cp-2026-confirmed-carryover", 36],
+  ["shrm-scp-2026-confirmed-carryover", 36],
+  ["nj-pharmacist-2026-confirmed-carryover", 6],
+]);
+const TX_PHARMACIST_STERILE_COMPOUNDING_CATEGORY_IDS = [
+  "tx-pharmacist-2026-sterile-standard",
+  "tx-pharmacist-2026-sterile-high-risk",
+] as const;
+const TX_PHARMACIST_DTM_YEAR_WINDOWS = new Map<
+  string,
+  { startsAfterMonths: number; endsAfterMonths: number }
+>([
+  [
+    "tx-pharmacist-2026-drug-therapy-management-year-1",
+    { startsAfterMonths: 0, endsAfterMonths: 12 },
+  ],
+  [
+    "tx-pharmacist-2026-drug-therapy-management-year-2",
+    { startsAfterMonths: 12, endsAfterMonths: 24 },
+  ],
 ]);
 const PHARMACIST_RENEWAL_TASK_COPY = new Map<
   string,
@@ -85,7 +104,7 @@ const PHARMACIST_RENEWAL_TASK_COPY = new Map<
     "tx-pharmacist-2026-v1",
     [
       "Confirm TSBP birth-month dates, initial-period status, and every held authorization",
-      "Complete 30 hours, Texas pharmacy law, and the HHSC-approved trafficking course",
+      "Complete 30 hours, Texas law, trafficking, and every applicable certification requirement",
       "Submit the renewal under current TSBP tracking instructions and save confirmation",
     ],
   ],
@@ -367,6 +386,134 @@ function daysAfter(isoDate: string, days: number) {
   return daysBefore(isoDate, -days);
 }
 
+function monthsBefore(isoDate: string, months: number) {
+  const date = new Date(`${isoDate}T12:00:00.000Z`);
+  const targetDay = date.getUTCDate();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() - months);
+  const lastDay = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0),
+  ).getUTCDate();
+  date.setUTCDate(Math.min(targetDay, lastDay));
+  return date.toISOString().slice(0, 10);
+}
+
+function monthsAfter(isoDate: string, months: number) {
+  return monthsBefore(isoDate, -months);
+}
+
+function confirmedCarryoverLookbackMonths(
+  requirements: readonly { ruleCategoryId?: string | null }[],
+) {
+  const lookbacks = requirements.flatMap((requirement) => {
+    if (!requirement.ruleCategoryId) return [];
+    const months = CONFIRMED_CARRYOVER_LOOKBACK_MONTHS.get(
+      requirement.ruleCategoryId,
+    );
+    return months ? [months] : [];
+  });
+  return lookbacks.length ? Math.max(...lookbacks) : null;
+}
+
+function assertActivityDateFitsCredential(
+  completionDate: string,
+  credential: { cycleStart: string; deadline: string },
+  requirements: readonly { ruleCategoryId?: string | null }[],
+  label: "completion date" | "activity date",
+) {
+  const carryoverLookback = confirmedCarryoverLookbackMonths(requirements);
+  if (carryoverLookback !== null) {
+    const earliestCarryoverDate = monthsBefore(
+      credential.cycleStart,
+      carryoverLookback,
+    );
+    if (
+      completionDate < earliestCarryoverDate ||
+      completionDate >= credential.cycleStart
+    ) {
+      throw new RequestError(
+        `Confirmed carryover must use the actual prior-cycle completion date from ${earliestCarryoverDate} through the day before ${credential.cycleStart}.`,
+        409,
+        "carryover_activity_outside_source_window",
+      );
+    }
+    return;
+  }
+  const annualWindow = requirements
+    .map((requirement) =>
+      requirement.ruleCategoryId
+        ? TX_PHARMACIST_DTM_YEAR_WINDOWS.get(requirement.ruleCategoryId)
+        : undefined,
+    )
+    .find(Boolean);
+  if (annualWindow) {
+    const windowStart = monthsAfter(
+      credential.cycleStart,
+      annualWindow.startsAfterMonths,
+    );
+    const windowEndExclusive = monthsAfter(
+      credential.cycleStart,
+      annualWindow.endsAfterMonths,
+    );
+    const windowEndInclusive =
+      credential.deadline <= windowEndExclusive
+        ? credential.deadline
+        : daysBefore(windowEndExclusive, 1);
+    if (
+      completionDate < windowStart ||
+      completionDate > windowEndInclusive
+    ) {
+      throw new RequestError(
+        `This annual drug-therapy-management requirement accepts activity from ${windowStart} through ${windowEndInclusive}.`,
+        409,
+        "pharmacist_annual_requirement_outside_year",
+      );
+    }
+    return;
+  }
+  if (
+    completionDate < credential.cycleStart ||
+    completionDate > credential.deadline
+  ) {
+    const cycleLabel =
+      label === "activity date"
+        ? "the target renewal cycle"
+        : "this renewal cycle";
+    throw new RequestError(
+      `The ${label} must fall within ${cycleLabel} (${credential.cycleStart} through ${credential.deadline}).`,
+      409,
+      "activity_outside_cycle",
+    );
+  }
+}
+
+function assertMutuallyExclusivePharmacistConditions(
+  requirements: readonly {
+    ruleCategoryId?: string | null;
+    applicabilityStatus?: ApplicabilityStatus;
+  }[],
+) {
+  const activeIds = new Set(
+    requirements
+      .filter(
+        (requirement) => requirement.applicabilityStatus === "applies",
+      )
+      .map((requirement) => requirement.ruleCategoryId)
+      .filter((id): id is string => Boolean(id)),
+  );
+  if (
+    TX_PHARMACIST_STERILE_COMPOUNDING_CATEGORY_IDS.every((id) =>
+      activeIds.has(id),
+    )
+  ) {
+    throw new RequestError(
+      "Choose either the two-hour standard sterile-compounding requirement or the four-hour higher-risk requirement, not both.",
+      409,
+      "conflicting_pharmacist_conditions",
+    );
+  }
+}
+
 function isCompliancePeriodRuleSet(ruleSetId: string | null) {
   return Boolean(
     ruleSetId &&
@@ -380,8 +527,11 @@ function isIsc2AutomaticRenewalRuleSet(ruleSetId: string | null) {
   return ruleSetId?.startsWith(ISC2_AUTOMATIC_RENEWAL_RULE_SET_PREFIX) ?? false;
 }
 
-function isManagedPharmacistRuleSet(ruleSetId: string | null) {
-  return Boolean(ruleSetId && PHARMACIST_RULE_SET_IDS.has(ruleSetId));
+function isManagedPharmacistCredential(
+  profession: string,
+  ruleSetId: string | null,
+) {
+  return profession === "Pharmacy" && Boolean(ruleSetId);
 }
 
 function nextTemplateFamily(ruleSetId: string | null) {
@@ -1443,6 +1593,18 @@ function estimatedCycleMonths(cycleStart: string, deadline: string) {
   return Math.max(1, Math.round((end - start) / averageMonthMs));
 }
 
+function matchesFullCycleWindow(
+  cycleStart: string,
+  deadline: string,
+  cycleMonths: number,
+) {
+  const nextCycleBoundary = monthsAfter(cycleStart, cycleMonths);
+  return (
+    deadline === nextCycleBoundary ||
+    deadline === daysBefore(nextCycleBoundary, 1)
+  );
+}
+
 async function validateRequirementTags(
   database: D1Database,
   identity: RequestIdentity,
@@ -1834,6 +1996,14 @@ async function rethrowClosedCycleWrite(
   message: string,
   error: unknown,
 ): Promise<never> {
+  const errorMessage = error instanceof Error ? error.message : "";
+  if (errorMessage.includes("activity_requirement_inactive")) {
+    throw new RequestError(
+      "A selected requirement changed while this activity was being saved. Refresh the plan, confirm the requirement still applies, and try again.",
+      409,
+      "requirement_inactive",
+    );
+  }
   await assertCredentialStillMutable(
     database,
     identity,
@@ -2880,6 +3050,30 @@ async function createCredential(
       );
     }
     if (
+      rule.profession === "Pharmacy" &&
+      payload.templateEligibilityAttested !== true
+    ) {
+      throw new RequestError(
+        "Confirm that the official record shows a standard full pharmacist renewal period and that no shortened, inactive, prorated, exempt, or other adjusted-status variant applies.",
+        409,
+        "pharmacist_template_eligibility_required",
+      );
+    }
+    if (
+      rule.profession === "Pharmacy" &&
+      !matchesFullCycleWindow(
+        cycleStart,
+        deadline,
+        Number(rule.cycleMonths),
+      )
+    ) {
+      throw new RequestError(
+        `This pharmacist template requires a standard full ${rule.cycleMonths}-month period. Use the exact regulator dates or create a custom plan for a shortened or adjusted period.`,
+        409,
+        "pharmacist_standard_cycle_dates_required",
+      );
+    }
+    if (
       ruleSetId === CFP_PRE_2027_RULE_SET_ID &&
       cycleStart >= CFP_2027_CYCLE_START
     ) {
@@ -3075,6 +3269,7 @@ async function createCredential(
     }
   }
 
+  assertMutuallyExclusivePharmacistConditions(categories);
   const orderedCategories = orderedCategoryDrafts(categories);
   validateActiveCategoryParents(categories);
   const requirementIdByKey = new Map(
@@ -3267,22 +3462,17 @@ async function addActivity(
       "cycle_closed",
     );
   }
-  if (
-    completionDate < credential.cycleStart ||
-    completionDate > credential.deadline
-  ) {
-    throw new RequestError(
-      `The completion date must fall within this renewal cycle (${credential.cycleStart} through ${credential.deadline}).`,
-      409,
-      "activity_outside_cycle",
-    );
-  }
-
-  await validateRequirementTags(
+  const selectedRequirements = await validateRequirementTags(
     database,
     identity,
     credentialId,
     requirementIds,
+  );
+  assertActivityDateFitsCredential(
+    completionDate,
+    credential,
+    selectedRequirements,
+    "completion date",
   );
 
   const activityId = crypto.randomUUID();
@@ -3899,16 +4089,6 @@ async function addActivityAllocation(
       "cycle_closed",
     );
   }
-  if (
-    activity.completionDate < credential.cycleStart ||
-    activity.completionDate > credential.deadline
-  ) {
-    throw new RequestError(
-      `The activity date must fall within the target renewal cycle (${credential.cycleStart} through ${credential.deadline}).`,
-      409,
-      "activity_outside_cycle",
-    );
-  }
   if (existing) {
     throw new RequestError(
       "This activity is already applied to that credential.",
@@ -3922,11 +4102,17 @@ async function addActivityAllocation(
     );
   }
 
-  await validateRequirementTags(
+  const selectedRequirements = await validateRequirementTags(
     database,
     identity,
     credentialId,
     requirementIds,
+  );
+  assertActivityDateFitsCredential(
+    activity.completionDate,
+    credential,
+    selectedRequirements,
+    "activity date",
   );
 
   const allocationId = crypto.randomUUID();
@@ -4016,7 +4202,10 @@ async function updateActivityAllocationRequirements(
       allocation.id,
       allocation.credential_id AS credentialId,
       allocation.allocated_units AS allocatedUnits,
-      credential.status
+      activity.completion_date AS completionDate,
+      credential.status,
+      credential.cycle_start AS cycleStart,
+      credential.deadline
      FROM activity_allocations allocation
      JOIN activities activity ON activity.id = allocation.activity_id
      JOIN credentials credential ON credential.id = allocation.credential_id
@@ -4028,7 +4217,10 @@ async function updateActivityAllocationRequirements(
     id: string;
     credentialId: string;
     allocatedUnits: number;
+    completionDate: string;
     status: string;
+    cycleStart: string;
+    deadline: string;
   }>();
   if (!allocation) {
     throw new RequestError(
@@ -4045,11 +4237,17 @@ async function updateActivityAllocationRequirements(
     );
   }
 
-  await validateRequirementTags(
+  const selectedRequirements = await validateRequirementTags(
     database,
     identity,
     allocation.credentialId,
     requirementIds,
+  );
+  assertActivityDateFitsCredential(
+    allocation.completionDate,
+    allocation,
+    selectedRequirements,
+    "activity date",
   );
 
   const statements: D1PreparedStatement[] = [
@@ -4302,17 +4500,21 @@ async function markRenewalAccepted(
   );
   const isNremtRenewal =
     credential.ruleSetId?.startsWith(NREMT_RULE_SET_PREFIX) ?? false;
+  const isManagedPharmacistRenewal = isManagedPharmacistCredential(
+    credential.profession,
+    credential.ruleSetId,
+  );
   const requiresOfficialNextPeriodAttestation =
     isIsc2AutomaticRenewal ||
     isCompliancePeriod ||
     replacementTemplateFamily === "florida_mental_health" ||
     isNremtRenewal ||
-    isManagedPharmacistRuleSet(credential.ruleSetId);
+    isManagedPharmacistRenewal;
   const requiresNonOverlappingNextPeriod =
     isIsc2AutomaticRenewal ||
     isCompliancePeriod ||
     replacementTemplateFamily === "florida_mental_health" ||
-    isManagedPharmacistRuleSet(credential.ruleSetId);
+    isManagedPharmacistRenewal;
   if (
     requiresOfficialNextPeriodAttestation &&
     payload.officialDatesAttested !== true
@@ -4321,6 +4523,16 @@ async function markRenewalAccepted(
       "Confirm that the completion record and next cycle dates match the official source before closing this period.",
       409,
       "official_next_period_attestation_required",
+    );
+  }
+  if (
+    isManagedPharmacistRenewal &&
+    payload.templateEligibilityAttested !== true
+  ) {
+    throw new RequestError(
+      "Confirm that the official next-period record is a standard full pharmacist renewal and that no shortened, inactive, prorated, exempt, or other adjusted-status variant applies.",
+      409,
+      "pharmacist_next_template_eligibility_required",
     );
   }
   if (isIsc2AutomaticRenewal && acceptedAt < credential.deadline) {
@@ -4392,6 +4604,63 @@ async function markRenewalAccepted(
           : "florida_mental_health_next_template_unavailable",
       );
     }
+  } else if (isManagedPharmacistRenewal) {
+    if (requestedNextRuleSetId) {
+      throw new RequestError(
+        "Pharmacist renewals automatically use the latest current version of the same official template.",
+        400,
+        "pharmacist_next_template_not_selectable",
+      );
+    }
+    selectedNextRule = await query(
+      database,
+      `SELECT
+        current_rule.id,
+        current_rule.credential_name AS credentialName,
+        current_rule.profession,
+        current_rule.jurisdiction,
+        current_rule.issuer,
+        current_rule.total_units AS totalUnits,
+        current_rule.unit_label AS unitLabel,
+        current_rule.cycle_months AS cycleMonths
+       FROM rule_sets prior_rule
+       JOIN rule_sets current_rule
+         ON current_rule.stable_key = prior_rule.stable_key
+       WHERE prior_rule.id = ?
+         AND current_rule.is_current = 1
+         AND current_rule.profession = 'Pharmacy'
+       ORDER BY current_rule.version DESC
+       LIMIT 1`,
+      [credential.ruleSetId],
+    ).first<NextRuleTemplate>();
+    if (!selectedNextRule) {
+      throw new RequestError(
+        "The current pharmacist template is unavailable. Review the official rule and create the next plan manually.",
+        409,
+        "pharmacist_current_template_unavailable",
+      );
+    }
+    if (
+      !matchesFullCycleWindow(
+        nextCycleStart,
+        nextDeadline,
+        Number(selectedNextRule.cycleMonths),
+      )
+    ) {
+      throw new RequestError(
+        `The next pharmacist plan must use the official standard ${selectedNextRule.cycleMonths}-month period. Create a custom plan if the regulator assigned a shortened or adjusted cycle.`,
+        409,
+        "pharmacist_next_cycle_dates_required",
+      );
+    }
+  } else if (requestedNextRuleSetId) {
+    throw new RequestError(
+      "A replacement rule template may be selected only for a supported Florida rollover.",
+      400,
+      "next_template_not_allowed",
+    );
+  }
+  if (selectedNextRule) {
     const categoryResult = await query(
       database,
       `SELECT
@@ -4411,12 +4680,6 @@ async function markRenewalAccepted(
       [selectedNextRule.id],
     ).all<NextRuleCategory>();
     selectedNextCategories = categoryResult.results;
-  } else if (requestedNextRuleSetId) {
-    throw new RequestError(
-      "A replacement rule template may be selected only for a supported Florida rollover.",
-      400,
-      "next_template_not_allowed",
-    );
   }
   const unresolvedClassification =
     await findUnresolvedCredentialClassification(
@@ -5020,6 +5283,7 @@ async function updateRequirementApplicability(
   type ApplicabilityRequirementRow = {
     id: string;
     name: string;
+    ruleCategoryId: string | null;
     relation: RequirementRelation;
     parentRequirementId: string | null;
     applicability: RequirementApplicability;
@@ -5038,6 +5302,7 @@ async function updateRequirementApplicability(
       `SELECT
         requirement.id,
         requirement.name,
+        requirement.rule_category_id AS ruleCategoryId,
         requirement.relation,
         requirement.parent_requirement_id AS parentRequirementId,
         requirement.applicability,
@@ -5090,6 +5355,51 @@ async function updateRequirementApplicability(
       ),
     );
   }
+  const deactivatingRequirementIds = [...normalizedChoices]
+    .filter(([, status]) => status !== "applies")
+    .map(([requirementId]) => requirementId);
+  const findAllocatedDeactivation = async () => {
+    if (deactivatingRequirementIds.length === 0) return null;
+    const placeholders = deactivatingRequirementIds
+      .map(() => "?")
+      .join(", ");
+    return query(
+      database,
+      `SELECT requirement.id, requirement.name
+       FROM credential_requirements requirement
+       JOIN credentials credential
+         ON credential.id = requirement.credential_id
+       WHERE requirement.credential_id = ?
+         AND credential.user_id = ?
+         AND requirement.id IN (${placeholders})
+         AND EXISTS (
+           SELECT 1
+           FROM activity_allocations allocation
+           LEFT JOIN activity_requirement_matches match
+             ON match.allocation_id = allocation.id
+             AND match.user_id = credential.user_id
+           WHERE allocation.credential_id = requirement.credential_id
+             AND (
+               allocation.requirement_id = requirement.id
+               OR match.requirement_id = requirement.id
+             )
+         )
+       LIMIT 1`,
+      [
+        credentialId,
+        identity.userId,
+        ...deactivatingRequirementIds,
+      ],
+    ).first<{ id: string; name: string }>();
+  };
+  const allocatedDeactivation = await findAllocatedDeactivation();
+  if (allocatedDeactivation) {
+    throw new RequestError(
+      `${allocatedDeactivation.name} already has tagged credit. Reclassify or remove those activity allocations before marking this requirement inactive.`,
+      409,
+      "requirement_has_allocated_credit",
+    );
+  }
 
   const effectiveStatus = (requirementId: string) =>
     normalizedChoices.get(requirementId) ??
@@ -5108,12 +5418,48 @@ async function updateRequirementApplicability(
       );
     }
   }
+  assertMutuallyExclusivePharmacistConditions(
+    [...requirementsById.values()].map((requirement) => ({
+      ruleCategoryId: requirement.ruleCategoryId,
+      applicabilityStatus: effectiveStatus(requirement.id),
+    })),
+  );
 
-  const statements = [...normalizedChoices].flatMap(
-    ([requirementId, status]) => {
-      const update = query(
-        database,
-        `UPDATE credential_requirements
+  const deactivationGuardSql =
+    deactivatingRequirementIds.length === 0
+      ? ""
+      : `AND NOT EXISTS (
+           SELECT 1
+           FROM activity_allocations guarded_allocation
+           LEFT JOIN activity_requirement_matches guarded_match
+             ON guarded_match.allocation_id = guarded_allocation.id
+             AND guarded_match.user_id = ?
+           WHERE guarded_allocation.credential_id =
+             credential_requirements.credential_id
+             AND (
+               guarded_allocation.requirement_id IN (
+                 ${deactivatingRequirementIds.map(() => "?").join(", ")}
+               )
+               OR guarded_match.requirement_id IN (
+                 ${deactivatingRequirementIds.map(() => "?").join(", ")}
+               )
+             )
+         )`;
+  const deactivationGuardBindings =
+    deactivatingRequirementIds.length === 0
+      ? []
+      : [
+          identity.userId,
+          ...deactivatingRequirementIds,
+          ...deactivatingRequirementIds,
+        ];
+  const statements: D1PreparedStatement[] = [];
+  const updateResultIndexes: number[] = [];
+  for (const [requirementId, status] of normalizedChoices) {
+    updateResultIndexes.push(statements.length);
+    const update = query(
+      database,
+      `UPDATE credential_requirements
          SET applicability_status = ?, is_active = ?
          WHERE id = ?
            AND credential_id = ?
@@ -5123,18 +5469,20 @@ async function updateRequirementApplicability(
              WHERE credential.id = credential_requirements.credential_id
                AND credential.user_id = ?
                AND credential.status IN ('active', 'submitted')
-           )`,
-        [
-          status,
-          status === "applies" ? 1 : 0,
-          requirementId,
-          credentialId,
-          identity.userId,
-        ],
-      );
-      if (status === "needs_confirmation") return [update];
-      return [
-        update,
+           )
+           ${deactivationGuardSql}`,
+      [
+        status,
+        status === "applies" ? 1 : 0,
+        requirementId,
+        credentialId,
+        identity.userId,
+        ...deactivationGuardBindings,
+      ],
+    );
+    statements.push(update);
+    if (status !== "needs_confirmation") {
+      statements.push(
         query(
           database,
           `INSERT OR IGNORE INTO xp_events (
@@ -5159,9 +5507,9 @@ async function updateRequirementApplicability(
             identity.userId,
           ],
         ),
-      ];
-    },
-  );
+      );
+    }
+  }
   let results: D1Result[];
   try {
     results = await database.batch(statements);
@@ -5174,12 +5522,29 @@ async function updateRequirementApplicability(
       error,
     );
   }
-  if (Number(results[0]?.meta?.changes ?? Number.NaN) === 0) {
+  if (
+    updateResultIndexes.some(
+      (index) => Number(results[index]?.meta?.changes) === 0,
+    )
+  ) {
+    const racedAllocatedDeactivation = await findAllocatedDeactivation();
+    if (racedAllocatedDeactivation) {
+      throw new RequestError(
+        `${racedAllocatedDeactivation.name} received tagged credit while its status was changing. Reclassify or remove those allocations, then try again.`,
+        409,
+        "requirement_has_allocated_credit",
+      );
+    }
     await assertCredentialStillMutable(
       database,
       identity,
       credentialId,
       "This renewal cycle is closed and its requirements are frozen.",
+    );
+    throw new RequestError(
+      "The requirement changed while its status was being updated. Refresh and try again.",
+      409,
+      "requirement_state_changed",
     );
   }
   return credentialId;

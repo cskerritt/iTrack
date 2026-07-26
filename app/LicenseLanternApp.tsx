@@ -338,6 +338,57 @@ function addMonthsIso(value: string, months: number) {
   return date.toISOString().slice(0, 10);
 }
 
+const CONFIRMED_CARRYOVER_LOOKBACK_MONTHS = new Map([
+  ["tx-lpc-standard-renewal-2026-confirmed-carryover", 24],
+  ["nj-lpc-standard-renewal-2026-confirmed-carryover", 24],
+  ["pa-professional-educator-act-48-2026-confirmed-carryover", 24],
+  ["hrci-phr-2026-confirmed-carryover", 12],
+  ["hrci-sphr-2026-confirmed-carryover", 12],
+  ["shrm-cp-2026-confirmed-carryover", 36],
+  ["shrm-scp-2026-confirmed-carryover", 36],
+  ["nj-pharmacist-2026-confirmed-carryover", 6],
+]);
+
+function confirmedCarryoverWindowStart(
+  credential: Credential | null | undefined,
+) {
+  if (!credential) return null;
+  const lookbacks = credential.requirements.flatMap((requirement) => {
+    if (
+      requirement.isActive === false ||
+      requirement.applicabilityStatus !== "applies" ||
+      !requirement.ruleCategoryId
+    ) {
+      return [];
+    }
+    const months = CONFIRMED_CARRYOVER_LOOKBACK_MONTHS.get(
+      requirement.ruleCategoryId,
+    );
+    return months ? [months] : [];
+  });
+  return lookbacks.length
+    ? addMonthsIso(credential.cycleStart, -Math.max(...lookbacks))
+    : null;
+}
+
+function activityDateFitsCredential(
+  completionDate: string,
+  credential: Credential,
+) {
+  if (
+    completionDate >= credential.cycleStart &&
+    completionDate <= credential.deadline
+  ) {
+    return true;
+  }
+  const carryoverStart = confirmedCarryoverWindowStart(credential);
+  return Boolean(
+    carryoverStart &&
+      completionDate >= carryoverStart &&
+      completionDate < credential.cycleStart,
+  );
+}
+
 function allocationsFor(activity: Activity): ActivityAllocation[] {
   if (activity.allocations?.length) return activity.allocations;
   if (!activity.credentialId || !activity.credentialName) return [];
@@ -484,21 +535,11 @@ function isNremtCredential(credential: Credential | null | undefined) {
   return credential?.ruleSetId?.startsWith("nremt-") ?? false;
 }
 
-const PHARMACIST_RULE_SET_IDS = new Set([
-  "ca-pharmacist-2026-v1",
-  "tx-pharmacist-2026-v1",
-  "fl-pharmacist-2026-v1",
-  "ny-pharmacist-2026-v1",
-  "nj-pharmacist-2026-v1",
-  "pa-pharmacist-2026-v1",
-]);
-
 function isManagedPharmacistCredential(
   credential: Credential | null | undefined,
 ) {
   return Boolean(
-    credential?.ruleSetId &&
-      PHARMACIST_RULE_SET_IDS.has(credential.ruleSetId),
+    credential?.profession === "Pharmacy" && credential.ruleSetId,
   );
 }
 
@@ -1175,8 +1216,10 @@ export function LicenseLanternApp() {
       (credential) =>
         credential.status !== "renewed" &&
         !existingIds.has(credential.id) &&
-        allocationActivity.completionDate >= credential.cycleStart &&
-        allocationActivity.completionDate <= credential.deadline,
+        activityDateFitsCredential(
+          allocationActivity.completionDate,
+          credential,
+        ),
     );
   }, [allocationActivity, workspace]);
 
@@ -1760,6 +1803,10 @@ export function LicenseLanternApp() {
           : (rule?.issuer ?? ""),
         cycleStart: String(form.get("cycleStart") ?? ""),
         deadline: String(form.get("deadline") ?? ""),
+        templateEligibilityAttested:
+          rule?.profession === "Pharmacy"
+            ? form.get("templateEligibilityAttested") === "on"
+            : undefined,
         totalRequired,
         unitLabel: customCredential
           ? String(form.get("unitLabel") ?? "hours")
@@ -1825,6 +1872,11 @@ export function LicenseLanternApp() {
           requiresOfficialNextPeriodAttestation(selectedCredential)
             ? form.get("officialDatesAttested") === "on"
             : undefined,
+        templateEligibilityAttested: isManagedPharmacistCredential(
+          selectedCredential,
+        )
+          ? form.get("templateEligibilityAttested") === "on"
+          : undefined,
       },
       isCompliancePeriodCredential(selectedCredential)
         ? "Compliance period completed. Your next period is ready."
@@ -2343,7 +2395,10 @@ export function LicenseLanternApp() {
                         completionDate: event.currentTarget.value,
                       }))
                     }
-                    min={activityCredential?.cycleStart}
+                    min={
+                      confirmedCarryoverWindowStart(activityCredential) ??
+                      activityCredential?.cycleStart
+                    }
                     max={activityCredential?.deadline}
                     required
                   />
@@ -2354,9 +2409,11 @@ export function LicenseLanternApp() {
                         : undefined
                     }
                   >
-                    {activityScan.suggestions.completionDate
-                      ? "Suggested from the scan — confirm it falls within this renewal cycle."
-                      : "Must fall within the selected renewal cycle."}
+                    {confirmedCarryoverWindowStart(activityCredential)
+                      ? "Use a current-cycle date, or the actual prior-cycle date when selecting confirmed carryover."
+                      : activityScan.suggestions.completionDate
+                        ? "Suggested from the scan — confirm it falls within this renewal cycle."
+                        : "Must fall within the selected renewal cycle."}
                   </small>
                 </label>
                 <label
@@ -2754,6 +2811,25 @@ export function LicenseLanternApp() {
                     </div>
                   </fieldset>
                 ) : null}
+                {selectedRule?.profession === "Pharmacy" ? (
+                  <label className="switch-row">
+                    <span>
+                      <strong>
+                        I confirmed this is a standard full-cycle renewal
+                      </strong>
+                      <small>
+                        The regulator record matches the dates below, and no
+                        shortened, inactive, prorated, exempt, or other
+                        adjusted-status variant applies.
+                      </small>
+                    </span>
+                    <input
+                      name="templateEligibilityAttested"
+                      type="checkbox"
+                      required
+                    />
+                  </label>
+                ) : null}
               </>
             )}
 
@@ -3114,6 +3190,25 @@ export function LicenseLanternApp() {
                 />
               </label>
             ) : null}
+            {isManagedPharmacistCredential(selectedCredential) ? (
+              <label className="switch-row">
+                <span>
+                  <strong>
+                    I confirmed the next period is a standard full-cycle
+                    renewal
+                  </strong>
+                  <small>
+                    No shortened, inactive, prorated, exempt, or other
+                    adjusted-status variant applies to the next period.
+                  </small>
+                </span>
+                <input
+                  name="templateEligibilityAttested"
+                  type="checkbox"
+                  required
+                />
+              </label>
+            ) : null}
             <div className="advisory-note">
               <span aria-hidden="true">i</span>
               <p>
@@ -3121,7 +3216,9 @@ export function LicenseLanternApp() {
                   ? "The next period will use the selected current template and will reset every conditional rule for confirmation."
                   : isFloridaMentalHealthPhaseCredential(selectedCredential)
                     ? "The next renewal will use the CE Broker-confirmed phase and reset every third-biennium and supervisor condition for review."
-                  : "Requirements are copied as a starting snapshot. Review the current official rules before relying on the new plan."}
+                    : isManagedPharmacistCredential(selectedCredential)
+                      ? "The next renewal will use the latest current version of this state pharmacist template and reset every conditional authorization for review."
+                      : "Requirements are copied as a starting snapshot. Review the current official rules before relying on the new plan."}
               </p>
             </div>
             <div className="form-actions">
