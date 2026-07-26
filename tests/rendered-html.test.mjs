@@ -2655,6 +2655,28 @@ test("License Lantern product contract", async (t) => {
       );
       raw
         .prepare(
+          `INSERT INTO credentials (
+             id, user_id, rule_set_id, credential_name, profession,
+             jurisdiction, issuer, cycle_start, deadline, total_required,
+             unit_label, status
+           ) VALUES (
+             'credential-fl-lpn-active-refresh',
+             ?,
+             'fl-lpn-2026-v1',
+             'Licensed Practical Nurse',
+             'Nursing',
+             'Florida',
+             'Florida Board of Nursing',
+             '2026-01-01',
+             '2027-12-31',
+             24,
+             'CE hours',
+             'active'
+           )`,
+        )
+        .run(userId);
+      raw
+        .prepare(
           `INSERT INTO credential_requirements (
              id, credential_id, rule_category_id, name, required_units, kind,
              relation, applicability, applicability_status, condition_note,
@@ -2675,6 +2697,92 @@ test("License Lantern product contract", async (t) => {
            )`,
         )
         .run();
+      raw
+        .prepare(
+          `INSERT INTO credential_requirements (
+             id, credential_id, rule_category_id, name, required_units, kind,
+             relation, applicability, applicability_status, condition_note,
+             is_active, sort_order
+           ) VALUES (
+             'requirement-fl-lpn-active-domestic-violence',
+             'credential-fl-lpn-active-refresh',
+             'fl-lpn-2026-domestic-violence',
+             'Domestic Violence — additional two hours',
+             2,
+             'minimum',
+             'independent',
+             'conditional',
+             'applies',
+             'Legacy LPN condition copy',
+             1,
+             4
+           )`,
+        )
+        .run();
+      raw
+        .prepare(
+          `INSERT INTO credential_requirements (
+             id, credential_id, rule_category_id, name, required_units, kind,
+             relation, applicability, applicability_status, condition_note,
+             is_active, sort_order
+           ) VALUES (
+             'requirement-fl-rn-submitted-domestic-violence',
+             'credential-fl-rn-submitted-refresh',
+             'fl-rn-2026-domestic-violence',
+             'Frozen submitted domestic-violence snapshot',
+             9,
+             'minimum',
+             'independent',
+             'conditional',
+             'applies',
+             'Frozen submitted condition',
+             1,
+             44
+           )`,
+        )
+        .run();
+      raw
+        .prepare(
+          `INSERT INTO activities (
+             id, user_id, title, provider, completion_date, total_units,
+             evidence_status
+           ) VALUES (
+             'activity-fl-rn-domestic-violence-refresh',
+             ?,
+             'Florida domestic-violence course',
+             'Florida approved provider',
+             '2027-05-01',
+             2,
+             'missing'
+           )`,
+        )
+        .run(userId);
+      raw
+        .prepare(
+          `INSERT INTO activity_allocations (
+             id, activity_id, credential_id, requirement_id, allocated_units
+           ) VALUES (
+             'allocation-fl-rn-domestic-violence-refresh',
+             'activity-fl-rn-domestic-violence-refresh',
+             'credential-fl-rn-active-refresh',
+             'requirement-fl-rn-active-domestic-violence',
+             2
+           )`,
+        )
+        .run();
+      raw
+        .prepare(
+          `INSERT INTO activity_requirement_matches (
+             id, user_id, allocation_id, requirement_id, matched_units
+           ) VALUES (
+             'match-fl-rn-domestic-violence-refresh',
+             ?,
+             'allocation-fl-rn-domestic-violence-refresh',
+             'requirement-fl-rn-active-domestic-violence',
+             2
+           )`,
+        )
+        .run(userId);
       const insertTask = raw.prepare(
         `INSERT INTO checklist_tasks (
            id, user_id, credential_id, title, kind, status, due_date,
@@ -2706,6 +2814,86 @@ test("License Lantern product contract", async (t) => {
         ],
       ]) {
         insertTask.run(id, userId, title, kind, dueDate, sortOrder);
+      }
+      const insertTaskSentinel = raw.prepare(
+        `INSERT INTO checklist_tasks (
+           id, user_id, credential_id, title, kind, status, due_date,
+           completed_at, is_personal, archived_at, revision, sort_order
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const sentinel of [
+        [
+          "task-fl-rn-completed-default",
+          userId,
+          "credential-fl-rn-active-refresh",
+          "Review the renewal requirements",
+          "review",
+          "completed",
+          "2027-08-01",
+          "2027-07-01 12:00:00",
+          0,
+          null,
+          7,
+          10,
+        ],
+        [
+          "task-fl-rn-personal-default",
+          userId,
+          "credential-fl-rn-active-refresh",
+          "Complete and document required education",
+          "progress",
+          "pending",
+          "2027-08-02",
+          null,
+          1,
+          null,
+          8,
+          11,
+        ],
+        [
+          "task-fl-rn-archived-default",
+          userId,
+          "credential-fl-rn-active-refresh",
+          "Submit renewal and save confirmation",
+          "submission",
+          "pending",
+          "2027-08-03",
+          null,
+          0,
+          "2027-07-03 12:00:00",
+          9,
+          12,
+        ],
+        [
+          "task-fl-rn-custom-pending",
+          userId,
+          "credential-fl-rn-active-refresh",
+          "Call the hospital credentialing office",
+          "review",
+          "pending",
+          "2027-08-04",
+          null,
+          0,
+          null,
+          10,
+          13,
+        ],
+        [
+          "task-fl-rn-submitted-default",
+          userId,
+          "credential-fl-rn-submitted-refresh",
+          "Review the renewal requirements",
+          "review",
+          "pending",
+          "2027-08-05",
+          null,
+          0,
+          null,
+          11,
+          0,
+        ],
+      ]) {
+        insertTaskSentinel.run(...sentinel);
       }
       raw
         .prepare(
@@ -2770,6 +2958,7 @@ test("License Lantern product contract", async (t) => {
             `SELECT id, total_required AS totalRequired
              FROM credentials
              WHERE id IN (
+               'credential-fl-lpn-active-refresh',
                'credential-fl-rn-active-refresh',
                'credential-fl-rn-submitted-refresh'
              )
@@ -2779,6 +2968,10 @@ test("License Lantern product contract", async (t) => {
           .map((row) => ({ ...row })),
         [
           {
+            id: "credential-fl-lpn-active-refresh",
+            totalRequired: 26,
+          },
+          {
             id: "credential-fl-rn-active-refresh",
             totalRequired: 26,
           },
@@ -2787,6 +2980,141 @@ test("License Lantern product contract", async (t) => {
             totalRequired: 77,
           },
         ],
+      );
+      assert.deepEqual(
+        raw
+          .prepare(
+            `SELECT
+               credential_id AS credentialId,
+               COUNT(*) AS requirementCount,
+               SUM(
+                 CASE
+                   WHEN applicability_status = 'applies' AND is_active = 1
+                   THEN 1 ELSE 0
+                 END
+               ) AS activeCount,
+               SUM(
+                 CASE
+                   WHEN applicability_status = 'needs_confirmation'
+                     AND is_active = 0
+                   THEN 1 ELSE 0
+                 END
+               ) AS pendingCount
+             FROM credential_requirements
+             WHERE credential_id IN (
+               'credential-fl-lpn-active-refresh',
+               'credential-fl-rn-active-refresh'
+             )
+             GROUP BY credential_id
+             ORDER BY credential_id`,
+          )
+          .all()
+          .map((row) => ({ ...row })),
+        [
+          {
+            credentialId: "credential-fl-lpn-active-refresh",
+            requirementCount: 6,
+            activeCount: 4,
+            pendingCount: 2,
+          },
+          {
+            credentialId: "credential-fl-rn-active-refresh",
+            requirementCount: 6,
+            activeCount: 4,
+            pendingCount: 2,
+          },
+        ],
+        "active managed nursing snapshots must be backfilled without resetting confirmed conditions",
+      );
+      assert.deepEqual(
+        raw
+          .prepare(
+            `SELECT
+               id,
+               credential_id AS credentialId,
+               applicability_status AS applicabilityStatus,
+               condition_note AS conditionNote,
+               is_active AS isActive
+             FROM credential_requirements
+             WHERE id IN (
+               'requirement-fl-lpn-active-domestic-violence',
+               'requirement-fl-rn-active-domestic-violence'
+             )
+             ORDER BY id`,
+          )
+          .all()
+          .map((row) => ({ ...row })),
+        [
+          {
+            id: "requirement-fl-lpn-active-domestic-violence",
+            credentialId: "credential-fl-lpn-active-refresh",
+            applicabilityStatus: "applies",
+            conditionNote:
+              "Required every third biennium in addition to the standard 24 hours. Activating this condition raises the credential total to 26; complete two Board-approved hours and verify them in CE Broker.",
+            isActive: 1,
+          },
+          {
+            id: "requirement-fl-rn-active-domestic-violence",
+            credentialId: "credential-fl-rn-active-refresh",
+            applicabilityStatus: "applies",
+            conditionNote:
+              "Required every third biennium in addition to the standard 24 hours. Activating this condition raises the credential total to 26; complete two Board-approved hours and verify them in CE Broker.",
+            isActive: 1,
+          },
+        ],
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 id,
+                 name,
+                 required_units AS requiredUnits,
+                 condition_note AS conditionNote,
+                 applicability_status AS applicabilityStatus,
+                 is_active AS isActive,
+                 sort_order AS sortOrder
+               FROM credential_requirements
+               WHERE credential_id = 'credential-fl-rn-submitted-refresh'`,
+            )
+            .get(),
+        },
+        {
+          id: "requirement-fl-rn-submitted-domestic-violence",
+          name: "Frozen submitted domestic-violence snapshot",
+          requiredUnits: 9,
+          conditionNote: "Frozen submitted condition",
+          applicabilityStatus: "applies",
+          isActive: 1,
+          sortOrder: 44,
+        },
+        "submitted requirement snapshots must not be backfilled or refreshed",
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 allocation.requirement_id AS allocationRequirementId,
+                 match.requirement_id AS matchRequirementId,
+                 match.matched_units AS matchedUnits
+               FROM activity_allocations allocation
+               JOIN activity_requirement_matches match
+                 ON match.allocation_id = allocation.id
+               WHERE allocation.id =
+                 'allocation-fl-rn-domestic-violence-refresh'`,
+            )
+            .get(),
+        },
+        {
+          allocationRequirementId:
+            "requirement-fl-rn-active-domestic-violence",
+          matchRequirementId:
+            "requirement-fl-rn-active-domestic-violence",
+          matchedUnits: 2,
+        },
+        "managed snapshot refresh must preserve existing allocation identity and credit",
       );
       const expectedTaskTitles = [
         "Confirm MQA and CE Broker dates, impairment cadence, domestic-violence cycle, and fingerprints",
@@ -2799,6 +3127,7 @@ test("License Lantern product contract", async (t) => {
             `SELECT title
              FROM checklist_tasks
              WHERE credential_id = 'credential-fl-rn-active-refresh'
+               AND sort_order < 3
              ORDER BY sort_order`,
           )
           .all()
@@ -2816,11 +3145,96 @@ test("License Lantern product contract", async (t) => {
             `SELECT title
              FROM checklist_tasks
              WHERE credential_id = 'credential-fl-rn-active-refresh'
+               AND sort_order < 3
              ORDER BY sort_order`,
           )
           .all()
           .map((task) => task.title),
         expectedTaskTitles,
+      );
+      assert.deepEqual(
+        raw
+          .prepare(
+            `SELECT
+               id,
+               credential_id AS credentialId,
+               title,
+               kind,
+               status,
+               due_date AS dueDate,
+               is_personal AS isPersonal,
+               archived_at AS archivedAt,
+               revision
+             FROM checklist_tasks
+             WHERE id IN (
+               'task-fl-rn-completed-default',
+               'task-fl-rn-personal-default',
+               'task-fl-rn-archived-default',
+               'task-fl-rn-custom-pending',
+               'task-fl-rn-submitted-default'
+             )
+             ORDER BY id`,
+          )
+          .all()
+          .map((row) => ({ ...row })),
+        [
+          {
+            id: "task-fl-rn-archived-default",
+            credentialId: "credential-fl-rn-active-refresh",
+            title: "Submit renewal and save confirmation",
+            kind: "submission",
+            status: "pending",
+            dueDate: "2027-08-03",
+            isPersonal: 0,
+            archivedAt: "2027-07-03 12:00:00",
+            revision: 9,
+          },
+          {
+            id: "task-fl-rn-completed-default",
+            credentialId: "credential-fl-rn-active-refresh",
+            title: "Review the renewal requirements",
+            kind: "review",
+            status: "completed",
+            dueDate: "2027-08-01",
+            isPersonal: 0,
+            archivedAt: null,
+            revision: 7,
+          },
+          {
+            id: "task-fl-rn-custom-pending",
+            credentialId: "credential-fl-rn-active-refresh",
+            title: "Call the hospital credentialing office",
+            kind: "review",
+            status: "pending",
+            dueDate: "2027-08-04",
+            isPersonal: 0,
+            archivedAt: null,
+            revision: 10,
+          },
+          {
+            id: "task-fl-rn-personal-default",
+            credentialId: "credential-fl-rn-active-refresh",
+            title: "Complete and document required education",
+            kind: "progress",
+            status: "pending",
+            dueDate: "2027-08-02",
+            isPersonal: 1,
+            archivedAt: null,
+            revision: 8,
+          },
+          {
+            id: "task-fl-rn-submitted-default",
+            credentialId: "credential-fl-rn-submitted-refresh",
+            title: "Review the renewal requirements",
+            kind: "review",
+            status: "pending",
+            dueDate: "2027-08-05",
+            isPersonal: 0,
+            archivedAt: null,
+            revision: 11,
+          },
+        ],
+        "task refresh must leave completed, personal, archived, custom, and submitted tasks untouched",
       );
       assert.equal(
         raw
@@ -2943,6 +3357,161 @@ test("License Lantern product contract", async (t) => {
             .get(floridaNotDueCredentialId),
         },
         { totalRequired: 24 },
+      );
+
+      const floridaLpnPayload = {
+        ruleSetId: "fl-lpn-2026-v1",
+        cycleStart: "2026-01-01",
+        deadline: "2027-12-31",
+        templateEligibilityAttested: true,
+      };
+      const floridaLpnDueResponse = await postWorkspace(
+        "createCredential",
+        {
+          ...floridaLpnPayload,
+          applicabilityChoices: [
+            {
+              ruleCategoryId: "fl-lpn-2026-domestic-violence",
+              status: "applies",
+            },
+          ],
+        },
+      );
+      assert.equal(
+        floridaLpnDueResponse.status,
+        200,
+        JSON.stringify(await floridaLpnDueResponse.clone().json()),
+      );
+      const floridaLpnDueCredentialId =
+        (await floridaLpnDueResponse.json()).id;
+      const floridaLpnNotDueResponse = await postWorkspace(
+        "createCredential",
+        {
+          ...floridaLpnPayload,
+          applicabilityChoices: [
+            {
+              ruleCategoryId: "fl-lpn-2026-domestic-violence",
+              status: "not_applicable",
+            },
+          ],
+        },
+      );
+      assert.equal(
+        floridaLpnNotDueResponse.status,
+        200,
+        JSON.stringify(await floridaLpnNotDueResponse.clone().json()),
+      );
+      const floridaLpnNotDueCredentialId =
+        (await floridaLpnNotDueResponse.json()).id;
+      assert.deepEqual(
+        raw
+          .prepare(
+            `SELECT id, total_required AS totalRequired
+             FROM credentials
+             WHERE id IN (?, ?)
+             ORDER BY total_required DESC`,
+          )
+          .all(
+            floridaLpnDueCredentialId,
+            floridaLpnNotDueCredentialId,
+          )
+          .map((credential) => ({ ...credential })),
+        [
+          { id: floridaLpnDueCredentialId, totalRequired: 26 },
+          { id: floridaLpnNotDueCredentialId, totalRequired: 24 },
+        ],
+      );
+      const floridaLpnDomesticViolenceRequirementId = raw
+        .prepare(
+          `SELECT id
+           FROM credential_requirements
+           WHERE credential_id = ?
+             AND rule_category_id = 'fl-lpn-2026-domestic-violence'`,
+        )
+        .get(floridaLpnNotDueCredentialId).id;
+      const activateLpnResponse = await postWorkspace(
+        "updateRequirementApplicability",
+        {
+          credentialId: floridaLpnNotDueCredentialId,
+          choices: [
+            {
+              requirementId:
+                floridaLpnDomesticViolenceRequirementId,
+              status: "applies",
+            },
+          ],
+        },
+      );
+      assert.equal(
+        activateLpnResponse.status,
+        200,
+        JSON.stringify(await activateLpnResponse.clone().json()),
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 credential.total_required AS totalRequired,
+                 requirement.applicability_status AS applicabilityStatus,
+                 requirement.is_active AS isActive
+               FROM credentials credential
+               JOIN credential_requirements requirement
+                 ON requirement.credential_id = credential.id
+               WHERE credential.id = ? AND requirement.id = ?`,
+            )
+            .get(
+              floridaLpnNotDueCredentialId,
+              floridaLpnDomesticViolenceRequirementId,
+            ),
+        },
+        {
+          totalRequired: 26,
+          applicabilityStatus: "applies",
+          isActive: 1,
+        },
+      );
+      const deactivateLpnResponse = await postWorkspace(
+        "updateRequirementApplicability",
+        {
+          credentialId: floridaLpnNotDueCredentialId,
+          choices: [
+            {
+              requirementId:
+                floridaLpnDomesticViolenceRequirementId,
+              status: "not_applicable",
+            },
+          ],
+        },
+      );
+      assert.equal(
+        deactivateLpnResponse.status,
+        200,
+        JSON.stringify(await deactivateLpnResponse.clone().json()),
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 credential.total_required AS totalRequired,
+                 requirement.applicability_status AS applicabilityStatus,
+                 requirement.is_active AS isActive
+               FROM credentials credential
+               JOIN credential_requirements requirement
+                 ON requirement.credential_id = credential.id
+               WHERE credential.id = ? AND requirement.id = ?`,
+            )
+            .get(
+              floridaLpnNotDueCredentialId,
+              floridaLpnDomesticViolenceRequirementId,
+            ),
+        },
+        {
+          totalRequired: 24,
+          applicabilityStatus: "not_applicable",
+          isActive: 0,
+        },
       );
 
       const domesticViolenceRequirementId = raw
@@ -3156,6 +3725,82 @@ test("License Lantern product contract", async (t) => {
             .get(nextFloridaCredentialId),
         },
         { conditionalCount: 3, resetCount: 3 },
+      );
+
+      const floridaLpnSubmissionResponse = await postWorkspace(
+        "markSubmitted",
+        {
+          credentialId: floridaLpnDueCredentialId,
+          submissionDate: "2027-12-31",
+          confirmationNumber: "MQA-LPN-COMPLETE",
+        },
+      );
+      assert.equal(
+        floridaLpnSubmissionResponse.status,
+        200,
+        JSON.stringify(
+          await floridaLpnSubmissionResponse.clone().json(),
+        ),
+      );
+      const floridaLpnAcceptanceResponse = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          credentialId: floridaLpnDueCredentialId,
+          acceptedAt: "2028-01-01",
+          reference: "MQA-LPN-RENEWED",
+          nextCycleStart: "2028-01-01",
+          nextDeadline: "2029-12-31",
+          officialDatesAttested: true,
+          templateEligibilityAttested: true,
+        },
+      );
+      assert.equal(
+        floridaLpnAcceptanceResponse.status,
+        200,
+        JSON.stringify(
+          await floridaLpnAcceptanceResponse.clone().json(),
+        ),
+      );
+      const nextFloridaLpnCredentialId =
+        (await floridaLpnAcceptanceResponse.json()).id;
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 rule_set_id AS ruleSetId,
+                 total_required AS totalRequired,
+                 status
+               FROM credentials
+               WHERE id = ?`,
+            )
+            .get(nextFloridaLpnCredentialId),
+        },
+        {
+          ruleSetId: "fl-lpn-2026-v1",
+          totalRequired: 24,
+          status: "active",
+        },
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 applicability_status AS applicabilityStatus,
+                 is_active AS isActive
+               FROM credential_requirements
+               WHERE credential_id = ?
+                 AND rule_category_id =
+                   'fl-lpn-2026-domestic-violence'`,
+            )
+            .get(nextFloridaLpnCredentialId),
+        },
+        {
+          applicabilityStatus: "needs_confirmation",
+          isActive: 0,
+        },
+        "a due LPN domestic-violence condition must reset instead of inflating the next biennium",
       );
 
       const newYorkResponse = await postWorkspace("createCredential", {
