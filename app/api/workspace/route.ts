@@ -287,6 +287,22 @@ function nonNegativeNumber(
   return Math.round(raw * 100) / 100;
 }
 
+function expectedRevisionField(payload: JsonRecord) {
+  const revision = payload.expectedRevision;
+  if (
+    typeof revision !== "number" ||
+    !Number.isInteger(revision) ||
+    revision < 1
+  ) {
+    throw new RequestError(
+      "expectedRevision must be a positive integer",
+      400,
+      "invalid_revision",
+    );
+  }
+  return revision;
+}
+
 function enumField<T extends string>(
   payload: JsonRecord,
   key: string,
@@ -1891,6 +1907,8 @@ async function getProgressionData(
             AND credential.user_id = task.user_id
           WHERE task.user_id = user.id
             AND task.status = 'pending'
+            AND task.archived_at IS NULL
+            AND task.is_personal = 0
             AND credential.status <> 'renewed'
         ) AS pendingTasks,
         (
@@ -1906,6 +1924,7 @@ async function getProgressionData(
           SELECT COUNT(*)
           FROM activities activity
           WHERE activity.user_id = user.id
+            AND activity.archived_at IS NULL
             AND activity.evidence_status = 'missing'
             AND EXISTS (
               SELECT 1
@@ -2065,6 +2084,7 @@ async function getReminderData(
       WHERE task.user_id = ?
         AND credential.user_id = task.user_id
         AND credential.status <> 'renewed'
+        AND task.archived_at IS NULL
         AND task.status <> 'completed'
         AND task.kind <> 'submission'
         AND task.due_date IS NOT NULL`,
@@ -2637,6 +2657,7 @@ async function assertPortalCarryoverEvidenceReady(
        AND requirement.credential_id = credential.id
      WHERE allocation.credential_id = ?
        AND activity.user_id = ?
+       AND activity.archived_at IS NULL
        AND credential.user_id = activity.user_id
        AND activity.completion_date < credential.cycle_start
        AND requirement.rule_category_id IN (${placeholders})
@@ -2700,6 +2721,7 @@ async function findUnresolvedNremtClassification(
            ON credential.id = allocation.credential_id
          WHERE allocation.credential_id = ?
            AND activity.user_id = ?
+           AND activity.archived_at IS NULL
            AND credential.user_id = ?`,
         [credentialId, identity.userId, identity.userId],
       ).all<{ id: string; allocatedUnits: number }>(),
@@ -2718,6 +2740,7 @@ async function findUnresolvedNremtClassification(
          WHERE allocation.credential_id = ?
            AND match.user_id = ?
            AND activity.user_id = match.user_id
+           AND activity.archived_at IS NULL
            AND credential.user_id = match.user_id`,
         [credentialId, identity.userId],
       ).all<{
@@ -2816,6 +2839,7 @@ async function findUnresolvedCredentialClassification(
            ON credential.id = allocation.credential_id
          WHERE allocation.credential_id = ?
            AND activity.user_id = ?
+           AND activity.archived_at IS NULL
            AND credential.user_id = ?`,
         [credentialId, identity.userId, identity.userId],
       ).all<ClassificationAllocationRow>(),
@@ -2833,6 +2857,7 @@ async function findUnresolvedCredentialClassification(
          WHERE allocation.credential_id = ?
            AND match.user_id = ?
            AND activity.user_id = match.user_id
+           AND activity.archived_at IS NULL
            AND credential.user_id = match.user_id`,
         [credentialId, identity.userId],
       ).all<ClassificationMatchRow>(),
@@ -2940,7 +2965,18 @@ async function assertNremtSubmissionComplete(
       database,
       `SELECT
         credential.total_required AS totalRequired,
-        COALESCE(SUM(allocation.allocated_units), 0) AS totalEarned,
+        COALESCE(
+          SUM(
+            CASE
+              WHEN activity.id IS NULL THEN 0
+              ELSE MIN(
+                allocation.allocated_units,
+                activity.total_units
+              )
+            END
+          ),
+          0
+        ) AS totalEarned,
         MAX(activity.completion_date) AS latestCompletionDate,
         COALESCE(
           SUM(
@@ -2957,6 +2993,7 @@ async function assertNremtSubmissionComplete(
       LEFT JOIN activities activity
         ON activity.id = allocation.activity_id
         AND activity.user_id = credential.user_id
+        AND activity.archived_at IS NULL
       WHERE credential.id = ? AND credential.user_id = ?
       GROUP BY credential.id`,
       [credentialId, identity.userId],
@@ -2993,6 +3030,7 @@ async function assertNremtSubmissionComplete(
       LEFT JOIN activities activity
         ON activity.id = allocation.activity_id
         AND activity.user_id = credential.user_id
+        AND activity.archived_at IS NULL
       WHERE requirement.credential_id = ?
         AND credential.user_id = ?
         AND requirement.kind = 'minimum'
@@ -3200,6 +3238,9 @@ async function getWorkspace(
     kind: string;
     status: string;
     dueDate: string | null;
+    revision: number;
+    isPersonal: number;
+    archivedAt: string | null;
   };
   type ActivityRow = {
     id: string;
@@ -3210,9 +3251,14 @@ async function getWorkspace(
     evidenceStatus: string;
     evidenceReference: string | null;
     evidenceCount: number;
+    evidenceDeletionPendingCount: number;
+    revision: number;
+    archivedAt: string | null;
+    updatedAt: string;
     allocationId: string | null;
     credentialId: string | null;
     credentialName: string | null;
+    credentialRuleSetId: string | null;
     requirementId: string | null;
     categoryName: string | null;
     allocatedUnits: number;
@@ -3225,6 +3271,7 @@ async function getWorkspace(
     requirementId: string;
     categoryName: string;
     matchedUnits: number;
+    archivedAt: string | null;
   };
   type BadgeRow = {
     id: string;
@@ -3308,7 +3355,18 @@ async function getWorkspace(
         acceptance.accepted_at AS acceptedAt,
         acceptance.acceptance_reference AS acceptanceReference,
         acceptance.next_credential_id AS nextCredentialId,
-        COALESCE(SUM(alloc.allocated_units), 0) AS totalEarned
+        COALESCE(
+          SUM(
+            CASE
+              WHEN counted_activity.id IS NULL THEN 0
+              ELSE MIN(
+                alloc.allocated_units,
+                counted_activity.total_units
+              )
+            END
+          ),
+          0
+        ) AS totalEarned
       FROM credentials c
       LEFT JOIN rule_sets rs ON rs.id = c.rule_set_id
       LEFT JOIN credential_cycle_links cycle
@@ -3319,6 +3377,10 @@ async function getWorkspace(
         ON acceptance.credential_id = c.id
         AND acceptance.user_id = c.user_id
       LEFT JOIN activity_allocations alloc ON alloc.credential_id = c.id
+      LEFT JOIN activities counted_activity
+        ON counted_activity.id = alloc.activity_id
+        AND counted_activity.user_id = c.user_id
+        AND counted_activity.archived_at IS NULL
       WHERE c.user_id = ?
       GROUP BY c.id
       ORDER BY
@@ -3366,6 +3428,7 @@ async function getWorkspace(
       LEFT JOIN activities activity
         ON activity.id = alloc.activity_id
         AND activity.user_id = c.user_id
+        AND activity.archived_at IS NULL
       WHERE c.user_id = ?
       GROUP BY req.id
       ORDER BY req.credential_id, req.sort_order, req.name`,
@@ -3379,10 +3442,17 @@ async function getWorkspace(
         title,
         kind,
         status,
-        due_date AS dueDate
+        due_date AS dueDate,
+        revision,
+        is_personal AS isPersonal,
+        archived_at AS archivedAt
       FROM checklist_tasks
       WHERE user_id = ?
-      ORDER BY credential_id, sort_order, due_date`,
+      ORDER BY
+        credential_id,
+        CASE WHEN archived_at IS NULL THEN 0 ELSE 1 END,
+        sort_order,
+        due_date`,
       [identity.userId],
     ).all<TaskRow>(),
     query(
@@ -3395,6 +3465,9 @@ async function getWorkspace(
         a.total_units AS totalUnits,
         a.evidence_status AS evidenceStatus,
         a.evidence_reference AS evidenceReference,
+        a.revision,
+        a.archived_at AS archivedAt,
+        a.updated_at AS updatedAt,
         (
           SELECT COUNT(*)
           FROM evidence_files stored
@@ -3402,9 +3475,17 @@ async function getWorkspace(
             AND stored.user_id = a.user_id
             AND stored.status = 'ready'
         ) AS evidenceCount,
+        (
+          SELECT COUNT(*)
+          FROM evidence_files deleting
+          WHERE deleting.activity_id = a.id
+            AND deleting.user_id = a.user_id
+            AND deleting.status = 'deleting'
+        ) AS evidenceDeletionPendingCount,
         CASE WHEN c.id IS NULL THEN NULL ELSE alloc.id END AS allocationId,
         c.id AS credentialId,
         c.credential_name AS credentialName,
+        c.rule_set_id AS credentialRuleSetId,
         req.id AS requirementId,
         req.name AS categoryName,
         CASE
@@ -3418,7 +3499,10 @@ async function getWorkspace(
       LEFT JOIN credential_requirements req
         ON req.id = alloc.requirement_id AND req.credential_id = c.id
       WHERE a.user_id = ?
-      ORDER BY a.completion_date DESC, a.created_at DESC`,
+      ORDER BY
+        CASE WHEN a.archived_at IS NULL THEN 0 ELSE 1 END,
+        a.completion_date DESC,
+        a.created_at DESC`,
       [identity.userId],
     ).all<ActivityRow>(),
     query(
@@ -3430,6 +3514,7 @@ async function getWorkspace(
         allocation.credential_id AS credentialId,
         match.requirement_id AS requirementId,
         requirement.name AS categoryName,
+        activity.archived_at AS archivedAt,
         MIN(
           match.matched_units,
           allocation.allocated_units,
@@ -3510,6 +3595,7 @@ async function getWorkspace(
     existing.push(normalizedMatch);
     matchesByAllocation.set(match.allocationId, existing);
 
+    if (match.archivedAt) continue;
     const requirement = requirementMetadataById.get(match.requirementId);
     if (
       !requirement?.exclusiveGroup ||
@@ -3624,6 +3710,7 @@ async function getWorkspace(
       ? credentialById.get(activity.credentialId)
       : null;
     if (
+      activity.archivedAt ||
       !activity.allocationId ||
       !activity.credentialId ||
       !credential ||
@@ -3758,6 +3845,7 @@ async function getWorkspace(
   >();
   const requirementsWithAllocationMatches = new Set<string>();
   for (const match of activityMatchResult.results) {
+    if (match.archivedAt) continue;
     let current = requirementMetadataById.get(match.requirementId);
     const visited = new Set<string>();
     while (
@@ -3785,6 +3873,7 @@ async function getWorkspace(
     unitsByRequirementAllocation.set(requirementId, byAllocation);
   };
   for (const match of activityMatchResult.results) {
+    if (match.archivedAt) continue;
     if (classificationIssueByAllocation.has(match.allocationId)) continue;
     const directRequirement = requirementMetadataById.get(match.requirementId);
     if (
@@ -3869,6 +3958,7 @@ async function getWorkspace(
   >();
   for (const activity of activityResult.results) {
     if (
+      activity.archivedAt ||
       !activity.allocationId ||
       !activity.credentialId ||
       classificationIssueByAllocation.has(activity.allocationId)
@@ -3921,11 +4011,26 @@ async function getWorkspace(
     );
   }
 
-  const tasksByCredential = new Map<string, TaskRow[]>();
+  type NormalizedTaskRow = Omit<TaskRow, "isPersonal"> & {
+    isPersonal: boolean;
+  };
+  const tasksByCredential = new Map<string, NormalizedTaskRow[]>();
+  const archivedTasksByCredential = new Map<
+    string,
+    NormalizedTaskRow[]
+  >();
   for (const task of taskResult.results) {
-    const existing = tasksByCredential.get(task.credentialId) ?? [];
-    existing.push(task);
-    tasksByCredential.set(task.credentialId, existing);
+    const normalizedTask: NormalizedTaskRow = {
+      ...task,
+      revision: Number(task.revision),
+      isPersonal: Boolean(task.isPersonal),
+    };
+    const target = task.archivedAt
+      ? archivedTasksByCredential
+      : tasksByCredential;
+    const existing = target.get(task.credentialId) ?? [];
+    existing.push(normalizedTask);
+    target.set(task.credentialId, existing);
   }
 
   const activitiesById = new Map<
@@ -3935,6 +4040,7 @@ async function getWorkspace(
         id: string;
         credentialId: string;
         credentialName: string;
+        credentialRuleSetId: string | null;
         requirementId: string | null;
         categoryName: string | null;
         requirementIds: string[];
@@ -3959,8 +4065,12 @@ async function getWorkspace(
       grouped = {
         ...baseActivity,
         totalUnits: Number(activity.totalUnits),
+        revision: Number(activity.revision),
         allocatedUnits: Number(activity.allocatedUnits),
         evidenceCount: Number(activity.evidenceCount),
+        evidenceDeletionPendingCount: Number(
+          activity.evidenceDeletionPendingCount,
+        ),
         allocations: [],
       };
       activitiesById.set(activity.id, grouped);
@@ -3978,6 +4088,7 @@ async function getWorkspace(
         id: allocationId,
         credentialId: activity.credentialId,
         credentialName: activity.credentialName,
+        credentialRuleSetId: activity.credentialRuleSetId,
         requirementId: firstMatch?.requirementId ?? activity.requirementId,
         categoryName: firstMatch?.categoryName ?? activity.categoryName,
         requirementIds: matches.length
@@ -4080,9 +4191,16 @@ async function getWorkspace(
         cycleMonths: Number(credential.cycleMonths),
         requirements: requirementsByCredential.get(credential.id) ?? [],
         tasks: tasksByCredential.get(credential.id) ?? [],
+        archivedTasks:
+          archivedTasksByCredential.get(credential.id) ?? [],
       };
     }),
-    activities: [...activitiesById.values()],
+    activities: [...activitiesById.values()].filter(
+      (activity) => !activity.archivedAt,
+    ),
+    archivedActivities: [...activitiesById.values()].filter(
+      (activity) => Boolean(activity.archivedAt),
+    ),
     reminderPreferences: reminderData.reminderPreferences,
     reminders: reminderData.reminders,
   };
@@ -4802,13 +4920,28 @@ async function addActivity(
         database,
         `INSERT INTO activity_requirement_matches (
           id, user_id, allocation_id, requirement_id, matched_units
-        ) VALUES (?, ?, ?, ?, ?)`,
+        )
+        SELECT ?, ?, allocation.id, ?, ?
+        FROM activity_allocations allocation
+        JOIN activities activity ON activity.id = allocation.activity_id
+        JOIN credentials credential
+          ON credential.id = allocation.credential_id
+        WHERE allocation.id = ?
+          AND allocation.activity_id = ?
+          AND allocation.credential_id = ?
+          AND activity.user_id = ?
+          AND activity.archived_at IS NULL
+          AND credential.user_id = activity.user_id
+          AND credential.status IN ('active', 'submitted')`,
         [
           crypto.randomUUID(),
           identity.userId,
-          allocationId,
           match.requirementId,
           match.matchedUnits,
+          allocationId,
+          activityId,
+          credentialId,
+          identity.userId,
         ],
       ),
     );
@@ -4831,7 +4964,20 @@ async function addActivity(
   }
 
   try {
-    await database.batch(statements);
+    const results = await database.batch(statements);
+    if (Number(results[0]?.meta?.changes ?? Number.NaN) === 0) {
+      await assertCredentialStillMutable(
+        database,
+        identity,
+        credentialId,
+        "This renewal cycle is closed and cannot receive activities.",
+      );
+      throw new RequestError(
+        "This renewal cycle changed while the activity was being saved. Refresh and try again.",
+        409,
+        "activity_state_changed",
+      );
+    }
   } catch (error) {
     return rethrowClosedCycleWrite(
       database,
@@ -4842,6 +4988,596 @@ async function addActivity(
     );
   }
   return activityId;
+}
+
+type ActivityMutationRow = {
+  id: string;
+  revision: number;
+  archivedAt: string | null;
+  completionDate: string;
+  totalUnits: number;
+  provider: string;
+  evidenceStatus: string;
+};
+
+type ActivityAllocationValidationRow = {
+  id: string;
+  credentialId: string;
+  requirementId: string | null;
+  allocatedUnits: number;
+  ruleSetId: string | null;
+  credentialStatus: string;
+  cycleStart: string;
+  deadline: string;
+};
+
+async function getActivityForMutation(
+  database: D1Database,
+  identity: RequestIdentity,
+  activityId: string,
+) {
+  return query(
+    database,
+    `SELECT
+      id,
+      revision,
+      archived_at AS archivedAt,
+      completion_date AS completionDate,
+      total_units AS totalUnits,
+      provider,
+      evidence_status AS evidenceStatus
+     FROM activities
+     WHERE id = ? AND user_id = ?`,
+    [activityId, identity.userId],
+  ).first<ActivityMutationRow>();
+}
+
+function assertActivityMutationState(
+  activity: ActivityMutationRow | null,
+  expectedRevision: number,
+  archiveState: "active" | "archived",
+) {
+  if (!activity) {
+    throw new RequestError("Activity not found.", 404, "activity_not_found");
+  }
+  if (Number(activity.revision) !== expectedRevision) {
+    throw new RequestError(
+      "This learning record changed in another session. Refresh and try again.",
+      409,
+      "activity_version_conflict",
+    );
+  }
+  if (archiveState === "active" && activity.archivedAt) {
+    throw new RequestError(
+      "This learning record is archived. Restore it before making changes.",
+      409,
+      "activity_archived",
+    );
+  }
+  if (archiveState === "archived" && !activity.archivedAt) {
+    throw new RequestError(
+      "This learning record is already active.",
+      409,
+      "activity_not_archived",
+    );
+  }
+}
+
+async function getActivityAllocationValidationRows(
+  database: D1Database,
+  identity: RequestIdentity,
+  activityId: string,
+) {
+  const [allocations, matches] = await Promise.all([
+    query(
+      database,
+      `SELECT
+        allocation.id,
+        allocation.credential_id AS credentialId,
+        allocation.requirement_id AS requirementId,
+        allocation.allocated_units AS allocatedUnits,
+        credential.rule_set_id AS ruleSetId,
+        credential.status AS credentialStatus,
+        credential.cycle_start AS cycleStart,
+        credential.deadline
+       FROM activity_allocations allocation
+       JOIN activities activity ON activity.id = allocation.activity_id
+       JOIN credentials credential
+         ON credential.id = allocation.credential_id
+       WHERE allocation.activity_id = ?
+         AND activity.user_id = ?
+         AND credential.user_id = activity.user_id
+       ORDER BY allocation.id`,
+      [activityId, identity.userId],
+    ).all<ActivityAllocationValidationRow>(),
+    query(
+      database,
+      `SELECT
+        match.allocation_id AS allocationId,
+        match.requirement_id AS requirementId,
+        match.matched_units AS matchedUnits
+       FROM activity_requirement_matches match
+       JOIN activity_allocations allocation
+         ON allocation.id = match.allocation_id
+       JOIN activities activity ON activity.id = allocation.activity_id
+       JOIN credentials credential
+         ON credential.id = allocation.credential_id
+       WHERE allocation.activity_id = ?
+         AND match.user_id = ?
+         AND activity.user_id = match.user_id
+         AND credential.user_id = match.user_id
+       ORDER BY match.allocation_id, match.requirement_id`,
+      [activityId, identity.userId],
+    ).all<RequirementMatchInput & { allocationId: string }>(),
+  ]);
+  const requirementMatchesByAllocation = new Map<
+    string,
+    RequirementMatchInput[]
+  >();
+  for (const match of matches.results) {
+    const requirementMatches =
+      requirementMatchesByAllocation.get(match.allocationId) ?? [];
+    requirementMatches.push({
+      requirementId: match.requirementId,
+      matchedUnits: Number(match.matchedUnits),
+    });
+    requirementMatchesByAllocation.set(
+      match.allocationId,
+      requirementMatches,
+    );
+  }
+  return allocations.results.map((allocation) => ({
+    ...allocation,
+    allocatedUnits: Number(allocation.allocatedUnits),
+    requirementMatches:
+      requirementMatchesByAllocation.get(allocation.id) ??
+      (allocation.requirementId
+        ? [
+            {
+              requirementId: allocation.requirementId,
+              matchedUnits: Number(allocation.allocatedUnits),
+            },
+          ]
+        : []),
+    requirementIds:
+      requirementMatchesByAllocation
+        .get(allocation.id)
+        ?.map((match) => match.requirementId) ??
+      (allocation.requirementId ? [allocation.requirementId] : []),
+  }));
+}
+
+async function validateActivityMutationAllocations(
+  database: D1Database,
+  identity: RequestIdentity,
+  activityId: string,
+  completionDate: string,
+  options: {
+    revalidateTags?: boolean;
+    currentTotalUnits: number;
+    proposedTotalUnits?: number;
+    provider: string;
+    evidenceStatus: string;
+  },
+) {
+  const allocations = await getActivityAllocationValidationRows(
+    database,
+    identity,
+    activityId,
+  );
+  if (
+    allocations.some(
+      (allocation) =>
+        !["active", "submitted"].includes(allocation.credentialStatus),
+    )
+  ) {
+    throw new RequestError(
+      "A renewal cycle using this learning record is closed, so the record is frozen.",
+      409,
+      "cycle_closed",
+    );
+  }
+  if (options.revalidateTags === false) return;
+  await Promise.all(
+    allocations.map(async (allocation) => {
+      const proposedTotalUnits =
+        options.proposedTotalUnits ?? options.currentTotalUnits;
+      const proposedAllocatedUnits = Math.min(
+        allocation.allocatedUnits,
+        proposedTotalUnits,
+      );
+      const isNremt = isNremtRuleSet(allocation.ruleSetId);
+      if (
+        isNremt &&
+        !unitsEqual(proposedAllocatedUnits, allocation.allocatedUnits)
+      ) {
+        throw new RequestError(
+          "National Registry component and topic amounts cannot be changed by a total-only correction. Archive this record and log the corrected credit with its exact component and topic amounts.",
+          409,
+          "nremt_allocation_revision_required",
+        );
+      }
+      if (isNremt && !options.provider.trim()) {
+        throw new RequestError(
+          "Provider is required for National Registry education.",
+          409,
+          "nremt_provider_required",
+        );
+      }
+      const selectedRequirements = isNremt
+        ? await validateNremtRequirementMatches(
+            database,
+            identity,
+            allocation.credentialId,
+            allocation.requirementMatches,
+            allocation.allocatedUnits,
+          )
+        : await validateRequirementTags(
+            database,
+            identity,
+            allocation.credentialId,
+            [...new Set(allocation.requirementIds)],
+          );
+      assertActivityDateAllowedForRequirements(
+        completionDate,
+        allocation.cycleStart,
+        allocation.deadline,
+        selectedRequirements,
+        {
+          portalCarryoverAttested: true,
+          evidenceStatus: options.evidenceStatus,
+        },
+      );
+      assertActivityDateFitsCredential(
+        completionDate,
+        allocation,
+        selectedRequirements,
+        "activity date",
+      );
+    }),
+  );
+}
+
+async function assertNoActivityEvidenceDeletion(
+  database: D1Database,
+  identity: RequestIdentity,
+  activityId: string,
+) {
+  const deletingEvidence = await query(
+    database,
+    `SELECT evidence.id
+     FROM evidence_files evidence
+     JOIN activities activity ON activity.id = evidence.activity_id
+     WHERE evidence.activity_id = ?
+       AND evidence.user_id = ?
+       AND activity.user_id = evidence.user_id
+       AND evidence.status = 'deleting'
+     LIMIT 1`,
+    [activityId, identity.userId],
+  ).first<{ id: string }>();
+  if (deletingEvidence) {
+    throw new RequestError(
+      "Evidence is being removed from this learning record. Try archiving again in a moment.",
+      409,
+      "activity_busy",
+    );
+  }
+}
+
+async function diagnoseActivityMutationFailure(
+  database: D1Database,
+  identity: RequestIdentity,
+  activityId: string,
+  expectedRevision: number,
+  archiveState: "active" | "archived",
+  rejectEvidenceDeletion = false,
+  revalidateTags = true,
+): Promise<never> {
+  const activity = await getActivityForMutation(
+    database,
+    identity,
+    activityId,
+  );
+  assertActivityMutationState(activity, expectedRevision, archiveState);
+  if (rejectEvidenceDeletion) {
+    await assertNoActivityEvidenceDeletion(database, identity, activityId);
+  }
+  await validateActivityMutationAllocations(
+    database,
+    identity,
+    activityId,
+    activity!.completionDate,
+    {
+      revalidateTags,
+      currentTotalUnits: Number(activity!.totalUnits),
+      provider: activity!.provider,
+      evidenceStatus: activity!.evidenceStatus,
+    },
+  );
+  throw new RequestError(
+    "This learning record changed while it was being saved. Refresh and try again.",
+    409,
+    "activity_state_changed",
+  );
+}
+
+async function updateActivity(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  const activityId = textField(payload, "activityId", {
+    required: true,
+    max: 160,
+  })!;
+  const expectedRevision = expectedRevisionField(payload);
+  const title = textField(payload, "title", {
+    required: true,
+    max: 180,
+  })!;
+  const provider = textField(payload, "provider", { max: 180 }) ?? "";
+  const completionDate = isoDateField(payload, "completionDate")!;
+  const totalUnits = positiveNumber(payload, "totalUnits", {
+    required: true,
+  })!;
+
+  const activity = await getActivityForMutation(
+    database,
+    identity,
+    activityId,
+  );
+  assertActivityMutationState(activity, expectedRevision, "active");
+  const nremtAllocation = await query(
+    database,
+    `SELECT 1 AS isNremt
+     FROM activity_allocations allocation
+     JOIN credentials credential
+       ON credential.id = allocation.credential_id
+     WHERE allocation.activity_id = ?
+       AND credential.user_id = ?
+       AND credential.rule_set_id LIKE 'nremt-%'
+     LIMIT 1`,
+    [activityId, identity.userId],
+  ).first<{ isNremt: number }>();
+  await validateActivityMutationAllocations(
+    database,
+    identity,
+    activityId,
+    completionDate,
+    {
+      currentTotalUnits: Number(activity!.totalUnits),
+      proposedTotalUnits: totalUnits,
+      provider,
+      evidenceStatus: activity!.evidenceStatus,
+    },
+  );
+  if (nremtAllocation) {
+    assertNremtAcceptedEducation(payload, provider);
+  }
+
+  const mutableActivityExists = `
+    SELECT 1
+    FROM activities activity
+    WHERE activity.id = activity_allocations.activity_id
+      AND activity.id = ?
+      AND activity.user_id = ?
+      AND activity.revision = ?
+      AND activity.archived_at IS NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM activity_allocations guarded_allocation
+        JOIN credentials guarded_credential
+          ON guarded_credential.id = guarded_allocation.credential_id
+        WHERE guarded_allocation.activity_id = activity.id
+          AND (
+            guarded_credential.user_id <> activity.user_id
+            OR guarded_credential.status NOT IN ('active', 'submitted')
+          )
+      )`;
+  const statements: D1PreparedStatement[] = [
+    query(
+      database,
+      `UPDATE activity_allocations
+       SET allocated_units = CASE
+         WHEN EXISTS (
+           SELECT 1
+           FROM credentials allocation_credential
+           WHERE allocation_credential.id =
+             activity_allocations.credential_id
+             AND allocation_credential.rule_set_id LIKE 'nremt-%'
+         ) THEN MIN(allocated_units, ?)
+         WHEN allocated_units = ? THEN ?
+         ELSE MIN(allocated_units, ?)
+       END
+       WHERE activity_id = ?
+         AND EXISTS (${mutableActivityExists})`,
+      [
+        totalUnits,
+        Number(activity!.totalUnits),
+        totalUnits,
+        totalUnits,
+        activityId,
+        activityId,
+        identity.userId,
+        expectedRevision,
+      ],
+    ),
+    query(
+      database,
+      `UPDATE activity_requirement_matches
+       SET matched_units = (
+         SELECT allocation.allocated_units
+         FROM activity_allocations allocation
+         WHERE allocation.id =
+           activity_requirement_matches.allocation_id
+       )
+       WHERE user_id = ?
+         AND allocation_id IN (
+           SELECT activity_allocations.id
+           FROM activity_allocations
+           JOIN credentials
+             ON credentials.id = activity_allocations.credential_id
+           WHERE activity_allocations.activity_id = ?
+             AND (
+               credentials.rule_set_id IS NULL
+               OR credentials.rule_set_id NOT LIKE 'nremt-%'
+             )
+             AND EXISTS (${mutableActivityExists})
+         )`,
+      [
+        identity.userId,
+        activityId,
+        activityId,
+        identity.userId,
+        expectedRevision,
+      ],
+    ),
+    query(
+      database,
+      `UPDATE activities
+       SET
+         title = ?,
+         provider = ?,
+         completion_date = ?,
+         total_units = ?,
+         revision = revision + 1,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?
+         AND user_id = ?
+         AND revision = ?
+         AND archived_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1
+           FROM activity_allocations guarded_allocation
+           JOIN credentials guarded_credential
+             ON guarded_credential.id = guarded_allocation.credential_id
+           WHERE guarded_allocation.activity_id = activities.id
+             AND (
+               guarded_credential.user_id <> activities.user_id
+               OR guarded_credential.status NOT IN ('active', 'submitted')
+             )
+         )`,
+      [
+        title,
+        provider,
+        completionDate,
+        totalUnits,
+        activityId,
+        identity.userId,
+        expectedRevision,
+      ],
+    ),
+  ];
+  const results = await database.batch(statements);
+  if (Number(results[2]?.meta?.changes ?? Number.NaN) !== 1) {
+    return diagnoseActivityMutationFailure(
+      database,
+      identity,
+      activityId,
+      expectedRevision,
+      "active",
+    );
+  }
+  return activityId;
+}
+
+async function setActivityArchivedState(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+  restore: boolean,
+) {
+  const activityId = textField(payload, "activityId", {
+    required: true,
+    max: 160,
+  })!;
+  const expectedRevision = expectedRevisionField(payload);
+  const expectedState = restore ? "archived" : "active";
+  const activity = await getActivityForMutation(
+    database,
+    identity,
+    activityId,
+  );
+  assertActivityMutationState(activity, expectedRevision, expectedState);
+  if (!restore) {
+    await assertNoActivityEvidenceDeletion(database, identity, activityId);
+  }
+  await validateActivityMutationAllocations(
+    database,
+    identity,
+    activityId,
+    activity!.completionDate,
+    {
+      revalidateTags: restore,
+      currentTotalUnits: Number(activity!.totalUnits),
+      provider: activity!.provider,
+      evidenceStatus: activity!.evidenceStatus,
+    },
+  );
+
+  const result = await query(
+    database,
+    `UPDATE activities
+     SET
+       archived_at = ${restore ? "NULL" : "CURRENT_TIMESTAMP"},
+       revision = revision + 1,
+       updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?
+       AND user_id = ?
+       AND revision = ?
+       AND archived_at IS ${restore ? "NOT NULL" : "NULL"}
+       ${
+         restore
+           ? ""
+           : `AND NOT EXISTS (
+         SELECT 1
+         FROM evidence_files deleting_evidence
+         WHERE deleting_evidence.activity_id = activities.id
+           AND deleting_evidence.user_id = activities.user_id
+           AND deleting_evidence.status = 'deleting'
+       )`
+       }
+       AND NOT EXISTS (
+         SELECT 1
+         FROM activity_allocations guarded_allocation
+         JOIN credentials guarded_credential
+           ON guarded_credential.id = guarded_allocation.credential_id
+         WHERE guarded_allocation.activity_id = activities.id
+           AND (
+             guarded_credential.user_id <> activities.user_id
+             OR guarded_credential.status NOT IN ('active', 'submitted')
+           )
+       )`,
+    [activityId, identity.userId, expectedRevision],
+  ).run();
+  if (Number(result.meta?.changes ?? Number.NaN) !== 1) {
+    return diagnoseActivityMutationFailure(
+      database,
+      identity,
+      activityId,
+      expectedRevision,
+      expectedState,
+      !restore,
+      restore,
+    );
+  }
+  return activityId;
+}
+
+async function archiveActivity(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  return setActivityArchivedState(database, identity, payload, false);
+}
+
+async function restoreActivity(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  return setActivityArchivedState(database, identity, payload, true);
 }
 
 async function claimWeeklyQuest(
@@ -4936,6 +5672,410 @@ async function claimWeeklyQuest(
   return saved.id;
 }
 
+type TaskMutationRow = {
+  id: string;
+  credentialId: string;
+  revision: number;
+  isPersonal: number;
+  archivedAt: string | null;
+  credentialStatus: string;
+};
+
+async function getTaskForMutation(
+  database: D1Database,
+  identity: RequestIdentity,
+  taskId: string,
+  archiveState?: "active" | "archived",
+) {
+  return query(
+    database,
+    `SELECT
+      task.id,
+      task.credential_id AS credentialId,
+      task.revision,
+      task.is_personal AS isPersonal,
+      task.archived_at AS archivedAt,
+      credential.status AS credentialStatus
+     FROM checklist_tasks task
+     JOIN credentials credential ON credential.id = task.credential_id
+     WHERE task.id = ?
+       AND task.user_id = ?
+       AND credential.user_id = task.user_id
+       ${
+         archiveState === "active"
+           ? "AND task.archived_at IS NULL"
+           : archiveState === "archived"
+             ? "AND task.archived_at IS NOT NULL"
+             : ""
+       }`,
+    [taskId, identity.userId],
+  ).first<TaskMutationRow>();
+}
+
+function assertTaskMutationState(
+  task: TaskMutationRow | null,
+  expectedRevision: number,
+  archiveState: "active" | "archived",
+  personalOnly: boolean,
+) {
+  if (!task) {
+    throw new RequestError("Task not found.", 404, "task_not_found");
+  }
+  if (personalOnly && !Boolean(task.isPersonal)) {
+    throw new RequestError(
+      "Managed renewal tasks cannot be edited or archived.",
+      409,
+      "managed_task_immutable",
+    );
+  }
+  if (Number(task.revision) !== expectedRevision) {
+    throw new RequestError(
+      "This task changed in another session. Refresh and try again.",
+      409,
+      "task_version_conflict",
+    );
+  }
+  if (archiveState === "active" && task.archivedAt) {
+    throw new RequestError(
+      "This task is archived. Restore it before making changes.",
+      409,
+      "task_archived",
+    );
+  }
+  if (archiveState === "archived" && !task.archivedAt) {
+    throw new RequestError(
+      "This task is already active.",
+      409,
+      "task_not_archived",
+    );
+  }
+  if (!["active", "submitted"].includes(task.credentialStatus)) {
+    throw new RequestError(
+      "This renewal cycle is closed and its checklist is frozen.",
+      409,
+      "cycle_closed",
+    );
+  }
+}
+
+async function diagnoseTaskMutationFailure(
+  database: D1Database,
+  identity: RequestIdentity,
+  taskId: string,
+  expectedRevision: number,
+  archiveState: "active" | "archived",
+  personalOnly: boolean,
+): Promise<never> {
+  const task = await getTaskForMutation(
+    database,
+    identity,
+    taskId,
+  );
+  assertTaskMutationState(
+    task,
+    expectedRevision,
+    archiveState,
+    personalOnly,
+  );
+  throw new RequestError(
+    "This task changed while it was being saved. Refresh and try again.",
+    409,
+    "task_state_changed",
+  );
+}
+
+async function createPersonalTask(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  const credentialId = textField(payload, "credentialId", {
+    required: true,
+    max: 160,
+  })!;
+  const title = textField(payload, "title", {
+    required: true,
+    max: 160,
+  })!;
+  const dueDate = isoDateField(payload, "dueDate", false);
+  const credential = await query(
+    database,
+    `SELECT id, status
+     FROM credentials
+     WHERE id = ? AND user_id = ?`,
+    [credentialId, identity.userId],
+  ).first<{ id: string; status: string }>();
+  if (!credential) {
+    throw new RequestError(
+      "Credential not found.",
+      404,
+      "credential_not_found",
+    );
+  }
+  if (!["active", "submitted"].includes(credential.status)) {
+    throw new RequestError(
+      "This renewal cycle is closed and its checklist is frozen.",
+      409,
+      "cycle_closed",
+    );
+  }
+  const personalTaskCount = await query(
+    database,
+    `SELECT COUNT(*) AS count
+     FROM checklist_tasks
+     WHERE credential_id = ?
+       AND user_id = ?
+       AND is_personal = 1
+       AND archived_at IS NULL`,
+    [credentialId, identity.userId],
+  ).first<{ count: number }>();
+  if (Number(personalTaskCount?.count ?? 0) >= 50) {
+    throw new RequestError(
+      "A credential can have at most 50 active personal tasks.",
+      409,
+      "personal_task_limit",
+    );
+  }
+
+  const taskId = crypto.randomUUID();
+  const result = await query(
+    database,
+    `INSERT INTO checklist_tasks (
+      id, user_id, credential_id, title, kind, status, due_date,
+      completed_at, sort_order, is_personal, revision, archived_at
+    )
+    SELECT
+      ?,
+      credential.user_id,
+      credential.id,
+      ?,
+      'personal',
+      'pending',
+      ?,
+      NULL,
+      COALESCE(
+        (
+          SELECT MAX(existing_task.sort_order) + 1
+          FROM checklist_tasks existing_task
+          WHERE existing_task.credential_id = credential.id
+            AND existing_task.user_id = credential.user_id
+        ),
+        0
+      ),
+      1,
+      1,
+      NULL
+    FROM credentials credential
+    WHERE credential.id = ?
+      AND credential.user_id = ?
+      AND credential.status IN ('active', 'submitted')
+      AND (
+        SELECT COUNT(*)
+        FROM checklist_tasks personal_task
+        WHERE personal_task.credential_id = credential.id
+          AND personal_task.user_id = credential.user_id
+          AND personal_task.is_personal = 1
+          AND personal_task.archived_at IS NULL
+      ) < 50`,
+    [taskId, title, dueDate, credentialId, identity.userId],
+  ).run();
+  if (Number(result.meta?.changes ?? Number.NaN) !== 1) {
+    await assertCredentialStillMutable(
+      database,
+      identity,
+      credentialId,
+      "This renewal cycle is closed and its checklist is frozen.",
+    );
+    const currentCount = await query(
+      database,
+      `SELECT COUNT(*) AS count
+       FROM checklist_tasks
+       WHERE credential_id = ?
+         AND user_id = ?
+         AND is_personal = 1
+         AND archived_at IS NULL`,
+      [credentialId, identity.userId],
+    ).first<{ count: number }>();
+    if (Number(currentCount?.count ?? 0) >= 50) {
+      throw new RequestError(
+        "A credential can have at most 50 active personal tasks.",
+        409,
+        "personal_task_limit",
+      );
+    }
+    throw new RequestError(
+      "This personal task changed while it was being saved. Refresh and try again.",
+      409,
+      "task_state_changed",
+    );
+  }
+  return taskId;
+}
+
+async function updatePersonalTask(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  const taskId = textField(payload, "taskId", {
+    required: true,
+    max: 160,
+  })!;
+  const expectedRevision = expectedRevisionField(payload);
+  const title = textField(payload, "title", {
+    required: true,
+    max: 160,
+  })!;
+  const dueDate = isoDateField(payload, "dueDate", false);
+  const task =
+    (await getTaskForMutation(
+      database,
+      identity,
+      taskId,
+      "active",
+    )) ??
+    (await getTaskForMutation(database, identity, taskId));
+  assertTaskMutationState(task, expectedRevision, "active", true);
+
+  const result = await query(
+    database,
+    `UPDATE checklist_tasks
+     SET
+       title = ?,
+       due_date = ?,
+       revision = revision + 1,
+       updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?
+       AND user_id = ?
+       AND is_personal = 1
+       AND revision = ?
+       AND archived_at IS NULL
+       AND EXISTS (
+         SELECT 1
+         FROM credentials credential
+         WHERE credential.id = checklist_tasks.credential_id
+           AND credential.user_id = checklist_tasks.user_id
+           AND credential.status IN ('active', 'submitted')
+       )`,
+    [title, dueDate, taskId, identity.userId, expectedRevision],
+  ).run();
+  if (Number(result.meta?.changes ?? Number.NaN) !== 1) {
+    return diagnoseTaskMutationFailure(
+      database,
+      identity,
+      taskId,
+      expectedRevision,
+      "active",
+      true,
+    );
+  }
+  return taskId;
+}
+
+async function setPersonalTaskArchivedState(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+  restore: boolean,
+) {
+  const taskId = textField(payload, "taskId", {
+    required: true,
+    max: 160,
+  })!;
+  const expectedRevision = expectedRevisionField(payload);
+  const expectedState = restore ? "archived" : "active";
+  const task =
+    (await getTaskForMutation(
+      database,
+      identity,
+      taskId,
+      expectedState,
+    )) ??
+    (await getTaskForMutation(database, identity, taskId));
+  assertTaskMutationState(task, expectedRevision, expectedState, true);
+
+  const result = await query(
+    database,
+    `UPDATE checklist_tasks
+     SET
+       archived_at = ${restore ? "NULL" : "CURRENT_TIMESTAMP"},
+       revision = revision + 1,
+       updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?
+       AND user_id = ?
+       AND is_personal = 1
+       AND revision = ?
+       AND archived_at IS ${restore ? "NOT NULL" : "NULL"}
+       ${
+         restore
+           ? `AND (
+         SELECT COUNT(*)
+         FROM checklist_tasks active_personal_task
+         WHERE active_personal_task.credential_id =
+           checklist_tasks.credential_id
+           AND active_personal_task.user_id = checklist_tasks.user_id
+           AND active_personal_task.is_personal = 1
+           AND active_personal_task.archived_at IS NULL
+       ) < 50`
+           : ""
+       }
+       AND EXISTS (
+         SELECT 1
+         FROM credentials credential
+         WHERE credential.id = checklist_tasks.credential_id
+           AND credential.user_id = checklist_tasks.user_id
+           AND credential.status IN ('active', 'submitted')
+       )`,
+    [taskId, identity.userId, expectedRevision],
+  ).run();
+  if (Number(result.meta?.changes ?? Number.NaN) !== 1) {
+    if (restore) {
+      const activePersonalTaskCount = await query(
+        database,
+        `SELECT COUNT(*) AS count
+         FROM checklist_tasks
+         WHERE credential_id = ?
+           AND user_id = ?
+           AND is_personal = 1
+           AND archived_at IS NULL`,
+        [task!.credentialId, identity.userId],
+      ).first<{ count: number }>();
+      if (Number(activePersonalTaskCount?.count ?? 0) >= 50) {
+        throw new RequestError(
+          "A credential can have at most 50 active personal tasks.",
+          409,
+          "personal_task_limit",
+        );
+      }
+    }
+    return diagnoseTaskMutationFailure(
+      database,
+      identity,
+      taskId,
+      expectedRevision,
+      expectedState,
+      true,
+    );
+  }
+  return taskId;
+}
+
+async function archivePersonalTask(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  return setPersonalTaskArchivedState(database, identity, payload, false);
+}
+
+async function restorePersonalTask(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  return setPersonalTaskArchivedState(database, identity, payload, true);
+}
+
 async function toggleTask(
   database: D1Database,
   identity: RequestIdentity,
@@ -4949,33 +6089,16 @@ async function toggleTask(
     throw new RequestError("completed must be a boolean");
   }
   const completed = payload.completed;
-  const task = await query(
-    database,
-    `SELECT
-      task.id,
-      task.credential_id AS credentialId,
-      credential.status AS credentialStatus
-     FROM checklist_tasks task
-     JOIN credentials credential ON credential.id = task.credential_id
-     WHERE task.id = ?
-       AND task.user_id = ?
-       AND credential.user_id = task.user_id`,
-    [taskId, identity.userId],
-  ).first<{
-    id: string;
-    credentialId: string;
-    credentialStatus: string;
-  }>();
-  if (!task) {
-    throw new RequestError("Task not found.", 404, "task_not_found");
-  }
-  if (task.credentialStatus === "renewed") {
-    throw new RequestError(
-      "This renewal cycle is closed and its checklist is frozen.",
-      409,
-      "cycle_closed",
-    );
-  }
+  const expectedRevision = expectedRevisionField(payload);
+  const task =
+    (await getTaskForMutation(
+      database,
+      identity,
+      taskId,
+      "active",
+    )) ??
+    (await getTaskForMutation(database, identity, taskId));
+  assertTaskMutationState(task, expectedRevision, "active", false);
 
   const statements: D1PreparedStatement[] = [
     query(
@@ -4984,8 +6107,11 @@ async function toggleTask(
        SET
          status = ?,
          completed_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE NULL END,
+         revision = revision + 1,
          updated_at = CURRENT_TIMESTAMP
        WHERE id = ? AND user_id = ?
+         AND revision = ?
+         AND archived_at IS NULL
          AND EXISTS (
            SELECT 1
            FROM credentials credential
@@ -4998,10 +6124,11 @@ async function toggleTask(
         completed ? 1 : 0,
         taskId,
         identity.userId,
+        expectedRevision,
       ],
     ),
   ];
-  if (completed) {
+  if (completed && !Boolean(task!.isPersonal)) {
     statements.push(
       query(
         database,
@@ -5013,6 +6140,10 @@ async function toggleTask(
         JOIN credentials credential ON credential.id = task.credential_id
         WHERE task.id = ?
           AND task.user_id = ?
+          AND task.is_personal = 0
+          AND task.archived_at IS NULL
+          AND task.revision = ?
+          AND task.status = 'completed'
           AND credential.user_id = task.user_id
           AND credential.status IN ('active', 'submitted')`,
         [
@@ -5022,6 +6153,7 @@ async function toggleTask(
           taskId,
           taskId,
           identity.userId,
+          expectedRevision + 1,
         ],
       ),
     );
@@ -5033,17 +6165,19 @@ async function toggleTask(
     return rethrowClosedCycleWrite(
       database,
       identity,
-      task.credentialId,
+      task!.credentialId,
       "This renewal cycle is closed and its checklist is frozen.",
       error,
     );
   }
   if (Number(results[0]?.meta?.changes ?? Number.NaN) === 0) {
-    await assertCredentialStillMutable(
+    return diagnoseTaskMutationFailure(
       database,
       identity,
-      task.credentialId,
-      "This renewal cycle is closed and its checklist is frozen.",
+      taskId,
+      expectedRevision,
+      "active",
+      false,
     );
   }
   return taskId;
@@ -5221,8 +6355,11 @@ async function markSubmitted(
        SET
          status = 'completed',
          completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+         revision = revision + 1,
          updated_at = CURRENT_TIMESTAMP
        WHERE credential_id = ? AND user_id = ? AND kind = 'submission'
+         AND is_personal = 0
+         AND archived_at IS NULL
          AND EXISTS (
            SELECT 1
            FROM credentials credential
@@ -5358,7 +6495,9 @@ async function addActivityAllocation(
         id,
         total_units AS totalUnits,
         completion_date AS completionDate,
-        evidence_status AS evidenceStatus
+        evidence_status AS evidenceStatus,
+        revision,
+        archived_at AS archivedAt
        FROM activities
        WHERE id = ? AND user_id = ?`,
       [activityId, identity.userId],
@@ -5367,6 +6506,8 @@ async function addActivityAllocation(
       totalUnits: number;
       completionDate: string;
       evidenceStatus: string;
+      revision: number;
+      archivedAt: string | null;
     }>(),
     query(
       database,
@@ -5401,6 +6542,13 @@ async function addActivityAllocation(
       "Credential not found.",
       404,
       "credential_not_found",
+    );
+  }
+  if (activity.archivedAt) {
+    throw new RequestError(
+      "Restore this learning record before changing its allocations.",
+      409,
+      "activity_archived",
     );
   }
   if (credential.status === "renewed") {
@@ -5496,7 +6644,15 @@ async function addActivityAllocation(
       FROM credentials credential
       WHERE credential.id = ?
         AND credential.user_id = ?
-        AND credential.status IN ('active', 'submitted')`,
+        AND credential.status IN ('active', 'submitted')
+        AND EXISTS (
+          SELECT 1
+          FROM activities activity
+          WHERE activity.id = ?
+            AND activity.user_id = credential.user_id
+            AND activity.revision = ?
+            AND activity.archived_at IS NULL
+        )`,
       [
         allocationId,
         activityId,
@@ -5504,6 +6660,8 @@ async function addActivityAllocation(
         allocatedUnits,
         credentialId,
         identity.userId,
+        activityId,
+        Number(activity.revision),
       ],
     ),
   ];
@@ -5513,25 +6671,104 @@ async function addActivityAllocation(
         database,
         `INSERT INTO activity_requirement_matches (
           id, user_id, allocation_id, requirement_id, matched_units
-        ) VALUES (?, ?, ?, ?, ?)`,
+        )
+        SELECT ?, ?, allocation.id, ?, ?
+        FROM activity_allocations allocation
+        JOIN activities mutable_activity
+          ON mutable_activity.id = allocation.activity_id
+        JOIN credentials mutable_credential
+          ON mutable_credential.id = allocation.credential_id
+        WHERE allocation.id = ?
+          AND allocation.activity_id = ?
+          AND allocation.credential_id = ?
+          AND mutable_activity.user_id = ?
+          AND mutable_activity.revision = ?
+          AND mutable_activity.archived_at IS NULL
+          AND mutable_credential.user_id = mutable_activity.user_id
+          AND mutable_credential.status IN ('active', 'submitted')`,
         [
           crypto.randomUUID(),
           identity.userId,
-          allocationId,
           match.requirementId,
           match.matchedUnits,
+          allocationId,
+          activityId,
+          credentialId,
+          identity.userId,
+          Number(activity.revision),
         ],
       ),
     );
   }
+  const revisionResultIndex = statements.length;
+  statements.push(
+    query(
+      database,
+      `UPDATE activities
+       SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?
+         AND user_id = ?
+         AND revision = ?
+         AND archived_at IS NULL
+         AND EXISTS (
+           SELECT 1
+           FROM activity_allocations saved_allocation
+           JOIN credentials saved_credential
+             ON saved_credential.id = saved_allocation.credential_id
+           WHERE saved_allocation.id = ?
+             AND saved_allocation.activity_id = activities.id
+             AND saved_allocation.credential_id = ?
+             AND saved_credential.user_id = activities.user_id
+             AND saved_credential.status IN ('active', 'submitted')
+         )`,
+      [
+        activityId,
+        identity.userId,
+        Number(activity.revision),
+        allocationId,
+        credentialId,
+      ],
+    ),
+  );
   try {
     const results = await database.batch(statements);
-    if (Number(results[0]?.meta?.changes ?? Number.NaN) === 0) {
+    if (
+      Number(results[0]?.meta?.changes ?? Number.NaN) === 0 ||
+      Number(
+        results[revisionResultIndex]?.meta?.changes ?? Number.NaN,
+      ) === 0
+    ) {
+      const currentActivity = await query(
+        database,
+        `SELECT archived_at AS archivedAt
+         FROM activities
+         WHERE id = ? AND user_id = ?`,
+        [activityId, identity.userId],
+      ).first<{ archivedAt: string | null }>();
+      if (!currentActivity) {
+        throw new RequestError(
+          "Activity not found.",
+          404,
+          "activity_not_found",
+        );
+      }
+      if (currentActivity.archivedAt) {
+        throw new RequestError(
+          "Restore this learning record before changing its allocations.",
+          409,
+          "activity_archived",
+        );
+      }
       await assertCredentialStillMutable(
         database,
         identity,
         credentialId,
         "This renewal cycle is closed and cannot receive activities.",
+      );
+      throw new RequestError(
+        "This learning record or renewal changed while the allocation was being saved. Refresh and try again.",
+        409,
+        "allocation_state_changed",
       );
     }
   } catch (error) {
@@ -5571,8 +6808,11 @@ async function updateActivityAllocationRequirements(
       allocation.id,
       allocation.credential_id AS credentialId,
       allocation.allocated_units AS allocatedUnits,
+      activity.id AS activityId,
+      activity.revision AS activityRevision,
       activity.completion_date AS completionDate,
       activity.evidence_status AS evidenceStatus,
+      activity.archived_at AS archivedAt,
       credential.status,
       credential.cycle_start AS cycleStart,
       credential.deadline
@@ -5587,8 +6827,11 @@ async function updateActivityAllocationRequirements(
     id: string;
     credentialId: string;
     allocatedUnits: number;
+    activityId: string;
+    activityRevision: number;
     completionDate: string;
     evidenceStatus: string;
+    archivedAt: string | null;
     status: string;
     cycleStart: string;
     deadline: string;
@@ -5605,6 +6848,13 @@ async function updateActivityAllocationRequirements(
       "This renewal cycle is closed and cannot be changed.",
       409,
       "cycle_closed",
+    );
+  }
+  if (allocation.archivedAt) {
+    throw new RequestError(
+      "Restore this learning record before changing its classification.",
+      409,
+      "activity_archived",
     );
   }
 
@@ -5683,6 +6933,11 @@ async function updateActivityAllocationRequirements(
          AND EXISTS (
            SELECT 1
            FROM credentials credential
+           JOIN activities activity
+             ON activity.id = activity_allocations.activity_id
+             AND activity.user_id = credential.user_id
+             AND activity.revision = ?
+             AND activity.archived_at IS NULL
            WHERE credential.id = activity_allocations.credential_id
              AND credential.user_id = ?
              AND credential.status IN ('active', 'submitted')
@@ -5691,6 +6946,7 @@ async function updateActivityAllocationRequirements(
         primaryRequirementId,
         allocationId,
         allocation.credentialId,
+        Number(allocation.activityRevision),
         identity.userId,
       ],
     ),
@@ -5701,14 +6957,23 @@ async function updateActivityAllocationRequirements(
          AND EXISTS (
            SELECT 1
            FROM activity_allocations allocation
+           JOIN activities activity
+             ON activity.id = allocation.activity_id
+             AND activity.archived_at IS NULL
            JOIN credentials credential
              ON credential.id = allocation.credential_id
            WHERE allocation.id =
              activity_requirement_matches.allocation_id
+             AND activity.revision = ?
              AND credential.user_id = ?
              AND credential.status IN ('active', 'submitted')
          )`,
-      [allocationId, identity.userId, identity.userId],
+      [
+        allocationId,
+        identity.userId,
+        Number(allocation.activityRevision),
+        identity.userId,
+      ],
     ),
   ];
   for (const match of persistedMatches) {
@@ -5722,10 +6987,14 @@ async function updateActivityAllocationRequirements(
           isNremt ? "?" : "allocation.allocated_units"
         }
         FROM activity_allocations allocation
+        JOIN activities activity
+          ON activity.id = allocation.activity_id
+          AND activity.archived_at IS NULL
         JOIN credentials credential
           ON credential.id = allocation.credential_id
         WHERE allocation.id = ?
           AND allocation.credential_id = ?
+          AND activity.revision = ?
           AND credential.user_id = ?
           AND credential.status IN ('active', 'submitted')`,
         [
@@ -5735,11 +7004,42 @@ async function updateActivityAllocationRequirements(
           ...(isNremt ? [match.matchedUnits] : []),
           allocationId,
           allocation.credentialId,
+          Number(allocation.activityRevision),
           identity.userId,
         ],
       ),
     );
   }
+  const revisionResultIndex = statements.length;
+  statements.push(
+    query(
+      database,
+      `UPDATE activities
+       SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?
+         AND user_id = ?
+         AND revision = ?
+         AND archived_at IS NULL
+         AND EXISTS (
+           SELECT 1
+           FROM activity_allocations saved_allocation
+           JOIN credentials saved_credential
+             ON saved_credential.id = saved_allocation.credential_id
+           WHERE saved_allocation.id = ?
+             AND saved_allocation.activity_id = activities.id
+             AND saved_allocation.credential_id = ?
+             AND saved_credential.user_id = activities.user_id
+             AND saved_credential.status IN ('active', 'submitted')
+         )`,
+      [
+        allocation.activityId,
+        identity.userId,
+        Number(allocation.activityRevision),
+        allocationId,
+        allocation.credentialId,
+      ],
+    ),
+  );
   let results: D1Result[];
   try {
     results = await database.batch(statements);
@@ -5752,12 +7052,59 @@ async function updateActivityAllocationRequirements(
       error,
     );
   }
-  if (Number(results[0]?.meta?.changes ?? Number.NaN) === 0) {
-    await assertCredentialStillMutable(
+  if (
+    Number(results[0]?.meta?.changes ?? Number.NaN) === 0 ||
+    Number(
+      results[revisionResultIndex]?.meta?.changes ?? Number.NaN,
+    ) === 0
+  ) {
+    const currentAllocation = await query(
       database,
-      identity,
-      allocation.credentialId,
-      "This renewal cycle is closed and cannot be changed.",
+      `SELECT
+        activity.archived_at AS archivedAt,
+        credential.status AS credentialStatus
+       FROM activity_allocations current_allocation
+       JOIN activities activity
+         ON activity.id = current_allocation.activity_id
+       JOIN credentials credential
+         ON credential.id = current_allocation.credential_id
+       WHERE current_allocation.id = ?
+         AND activity.user_id = ?
+         AND credential.user_id = activity.user_id`,
+      [allocationId, identity.userId],
+    ).first<{
+      archivedAt: string | null;
+      credentialStatus: string;
+    }>();
+    if (!currentAllocation) {
+      throw new RequestError(
+        "Activity allocation not found.",
+        404,
+        "allocation_not_found",
+      );
+    }
+    if (currentAllocation.archivedAt) {
+      throw new RequestError(
+        "Restore this learning record before changing its classification.",
+        409,
+        "activity_archived",
+      );
+    }
+    if (
+      !["active", "submitted"].includes(
+        currentAllocation.credentialStatus,
+      )
+    ) {
+      throw new RequestError(
+        "This renewal cycle is closed and cannot be changed.",
+        409,
+        "cycle_closed",
+      );
+    }
+    throw new RequestError(
+      "This activity allocation changed while it was being saved. Refresh and try again.",
+      409,
+      "allocation_state_changed",
     );
   }
   return allocationId;
@@ -6193,6 +7540,20 @@ async function markRenewalAccepted(
     ).all<NextRuleCategory>();
     selectedNextCategories = categoryResult.results;
   }
+  const selectedNextCategoriesSnapshotJson = JSON.stringify(
+    selectedNextCategories.map((category) => ({
+      id: category.id,
+      name: category.name,
+      requiredUnits: Number(category.requiredUnits),
+      kind: category.kind,
+      relation: category.relation,
+      parentCategoryId: category.parentCategoryId,
+      applicability: category.applicability,
+      conditionNote: category.conditionNote,
+      exclusiveGroup: category.exclusiveGroup,
+      sortOrder: Number(category.sortOrder),
+    })),
+  );
   const nextCatalogSnapshotGuard = selectedNextRule
     ? {
         sql: `EXISTS (
@@ -6216,26 +7577,54 @@ async function markRenewalAccepted(
               SELECT COUNT(*)
               FROM rule_categories counted_category
               WHERE counted_category.rule_set_id = selected_rule.id
-            ) = ?
-            ${selectedNextCategories
-              .map(
-                () => `AND EXISTS (
+            ) = json_array_length(?)
+            AND NOT EXISTS (
+              SELECT 1
+              FROM json_each(?) snapshot_category
+              WHERE NOT EXISTS (
                   SELECT 1
                   FROM rule_categories selected_category
                   WHERE selected_category.rule_set_id = selected_rule.id
-                    AND selected_category.id = ?
-                    AND selected_category.name IS ?
-                    AND selected_category.required_units IS ?
-                    AND selected_category.kind IS ?
-                    AND selected_category.relation IS ?
-                    AND selected_category.parent_category_id IS ?
-                    AND selected_category.applicability IS ?
-                    AND selected_category.condition_note IS ?
-                    AND selected_category.exclusive_group IS ?
-                    AND selected_category.sort_order IS ?
-                )`,
+                    AND selected_category.id IS
+                      json_extract(snapshot_category.value, '$.id')
+                    AND selected_category.name IS
+                      json_extract(snapshot_category.value, '$.name')
+                    AND selected_category.required_units IS
+                      json_extract(
+                        snapshot_category.value,
+                        '$.requiredUnits'
+                      )
+                    AND selected_category.kind IS
+                      json_extract(snapshot_category.value, '$.kind')
+                    AND selected_category.relation IS
+                      json_extract(snapshot_category.value, '$.relation')
+                    AND selected_category.parent_category_id IS
+                      json_extract(
+                        snapshot_category.value,
+                        '$.parentCategoryId'
+                      )
+                    AND selected_category.applicability IS
+                      json_extract(
+                        snapshot_category.value,
+                        '$.applicability'
+                      )
+                    AND selected_category.condition_note IS
+                      json_extract(
+                        snapshot_category.value,
+                        '$.conditionNote'
+                      )
+                    AND selected_category.exclusive_group IS
+                      json_extract(
+                        snapshot_category.value,
+                        '$.exclusiveGroup'
+                      )
+                    AND selected_category.sort_order IS
+                      json_extract(
+                        snapshot_category.value,
+                        '$.sortOrder'
+                      )
               )
-              .join("\n")}
+            )
         )`,
         bindings: [
           selectedNextRule.id,
@@ -6247,19 +7636,8 @@ async function markRenewalAccepted(
           Number(selectedNextRule.totalUnits),
           selectedNextRule.unitLabel,
           Number(selectedNextRule.cycleMonths),
-          selectedNextCategories.length,
-          ...selectedNextCategories.flatMap((category) => [
-            category.id,
-            category.name,
-            Number(category.requiredUnits),
-            category.kind,
-            category.relation,
-            category.parentCategoryId,
-            category.applicability,
-            category.conditionNote,
-            category.exclusiveGroup,
-            Number(category.sortOrder),
-          ]),
+          selectedNextCategoriesSnapshotJson,
+          selectedNextCategoriesSnapshotJson,
         ] as readonly unknown[],
       }
     : null;
@@ -6292,6 +7670,97 @@ async function markRenewalAccepted(
           ? "florida_mental_health_next_template_changed"
           : "florida_next_template_changed",
     );
+  };
+  const linkedActivitySnapshot = await query(
+    database,
+    `SELECT DISTINCT
+      activity.id,
+      activity.revision
+     FROM activity_allocations allocation
+     JOIN activities activity ON activity.id = allocation.activity_id
+     JOIN credentials linked_credential
+       ON linked_credential.id = allocation.credential_id
+     WHERE allocation.credential_id = ?
+       AND activity.user_id = ?
+       AND activity.archived_at IS NULL
+       AND linked_credential.user_id = activity.user_id
+     ORDER BY activity.id`,
+    [credentialId, identity.userId],
+  ).all<{ id: string; revision: number }>();
+  const linkedActivitySnapshotRows = linkedActivitySnapshot.results.map(
+    (activity) => ({
+      id: activity.id,
+      revision: Number(activity.revision),
+    }),
+  );
+  const linkedActivitySnapshotJson = JSON.stringify(
+    linkedActivitySnapshotRows,
+  );
+  const linkedActivitySnapshotCondition = `(
+    (
+      SELECT COUNT(DISTINCT current_activity.id)
+      FROM activity_allocations current_allocation
+      JOIN activities current_activity
+        ON current_activity.id = current_allocation.activity_id
+        AND current_activity.user_id = credentials.user_id
+        AND current_activity.archived_at IS NULL
+      WHERE current_allocation.credential_id = credentials.id
+    ) = json_array_length(?)
+    AND NOT EXISTS (
+      SELECT 1
+      FROM json_each(?) snapshot
+      WHERE NOT EXISTS (
+          SELECT 1
+          FROM activity_allocations snapshot_allocation
+          JOIN activities snapshot_activity
+            ON snapshot_activity.id = snapshot_allocation.activity_id
+          WHERE snapshot_allocation.credential_id = credentials.id
+            AND snapshot_activity.id =
+              json_extract(snapshot.value, '$.id')
+            AND snapshot_activity.user_id = credentials.user_id
+            AND snapshot_activity.revision =
+              CAST(json_extract(snapshot.value, '$.revision') AS INTEGER)
+            AND snapshot_activity.archived_at IS NULL
+      )
+    )
+  )`;
+  const linkedActivitySnapshotBindings: readonly unknown[] = [
+    linkedActivitySnapshotJson,
+    linkedActivitySnapshotJson,
+  ];
+  const assertLinkedActivitySnapshotStillMatches = async () => {
+    const current = await query(
+      database,
+      `SELECT DISTINCT
+        activity.id,
+        activity.revision
+       FROM activity_allocations allocation
+       JOIN activities activity ON activity.id = allocation.activity_id
+       JOIN credentials linked_credential
+         ON linked_credential.id = allocation.credential_id
+       WHERE allocation.credential_id = ?
+         AND activity.user_id = ?
+         AND activity.archived_at IS NULL
+         AND linked_credential.user_id = activity.user_id
+       ORDER BY activity.id`,
+      [credentialId, identity.userId],
+    ).all<{ id: string; revision: number }>();
+    const currentRows = current.results;
+    const changed =
+      currentRows.length !== linkedActivitySnapshotRows.length ||
+      currentRows.some(
+        (activity, index) =>
+          activity.id !== linkedActivitySnapshotRows[index]?.id ||
+          Number(activity.revision) !==
+            linkedActivitySnapshotRows[index]?.revision,
+      );
+    if (changed) {
+      throw new RequestError(
+        "A linked learning record changed while acceptance was being recorded. Review the refreshed renewal and try again.",
+        409,
+        "acceptance_activity_state_changed",
+      );
+    }
   };
   const unresolvedClassification =
     await findUnresolvedCredentialClassification(
@@ -6477,6 +7946,7 @@ async function markRenewalAccepted(
             AND guarded_submission.user_id = credentials.user_id
             AND substr(guarded_submission.submitted_at, 1, 10) <= ?
         )
+        AND ${linkedActivitySnapshotCondition}
         ${
           nextCatalogSnapshotGuard
             ? `AND ${nextCatalogSnapshotGuard.sql}`
@@ -6485,6 +7955,10 @@ async function markRenewalAccepted(
         AND NOT EXISTS (
           SELECT 1
           FROM activity_allocations allocation
+          JOIN activities active_activity
+            ON active_activity.id = allocation.activity_id
+            AND active_activity.user_id = credentials.user_id
+            AND active_activity.archived_at IS NULL
           JOIN required_classification_groups required_group
             ON required_group.credential_id = allocation.credential_id
           WHERE allocation.credential_id = credentials.id
@@ -6506,6 +7980,10 @@ async function markRenewalAccepted(
         AND NOT EXISTS (
           SELECT 1
           FROM activity_allocations allocation
+          JOIN activities active_activity
+            ON active_activity.id = allocation.activity_id
+            AND active_activity.user_id = credentials.user_id
+            AND active_activity.archived_at IS NULL
           JOIN activity_requirement_matches first_match
             ON first_match.allocation_id = allocation.id
           JOIN credential_requirements first_requirement
@@ -6550,6 +8028,7 @@ async function markRenewalAccepted(
             ON carryover_activity.id =
               carryover_allocation.activity_id
             AND carryover_activity.user_id = credentials.user_id
+            AND carryover_activity.archived_at IS NULL
           JOIN activity_requirement_matches carryover_match
             ON carryover_match.allocation_id =
               carryover_allocation.id
@@ -6590,6 +8069,7 @@ async function markRenewalAccepted(
         identity.userId,
         submission.id,
         acceptedAt,
+        ...linkedActivitySnapshotBindings,
         ...(nextCatalogSnapshotGuard?.bindings ?? []),
         ...portalCarryoverCategoryIdsForGuard,
       ],
@@ -6910,6 +8390,14 @@ async function markRenewalAccepted(
   try {
     acceptanceResults = await database.batch(statements);
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "";
+    if (errorMessage.includes("credential_evidence_busy")) {
+      throw new RequestError(
+        "Proof is being changed for an activity in this renewal. Wait for that change to finish, then try accepting the renewal again.",
+        409,
+        "evidence_change_in_progress",
+      );
+    }
     const racedAcceptance = await query(
       database,
       `SELECT next_credential_id AS nextCredentialId
@@ -6938,6 +8426,7 @@ async function markRenewalAccepted(
       identity,
       credentialId,
     );
+    await assertLinkedActivitySnapshotStillMatches();
     await assertSubmissionStillAcceptable();
     throw error;
   }
@@ -6972,6 +8461,7 @@ async function markRenewalAccepted(
       identity,
       credentialId,
     );
+    await assertLinkedActivitySnapshotStillMatches();
     await assertSubmissionStillAcceptable();
     throw new RequestError(
       "The renewal changed while acceptance was being recorded. Refresh and try again.",
@@ -7117,6 +8607,10 @@ async function updateRequirementApplicability(
          AND EXISTS (
            SELECT 1
            FROM activity_allocations allocation
+           JOIN activities active_activity
+             ON active_activity.id = allocation.activity_id
+             AND active_activity.user_id = credential.user_id
+             AND active_activity.archived_at IS NULL
            LEFT JOIN activity_requirement_matches match
              ON match.allocation_id = allocation.id
              AND match.user_id = credential.user_id
@@ -7173,6 +8667,10 @@ async function updateRequirementApplicability(
       : `AND NOT EXISTS (
            SELECT 1
            FROM activity_allocations guarded_allocation
+           JOIN activities guarded_activity
+             ON guarded_activity.id = guarded_allocation.activity_id
+             AND guarded_activity.user_id = ?
+             AND guarded_activity.archived_at IS NULL
            LEFT JOIN activity_requirement_matches guarded_match
              ON guarded_match.allocation_id = guarded_allocation.id
              AND guarded_match.user_id = ?
@@ -7191,6 +8689,7 @@ async function updateRequirementApplicability(
     deactivatingRequirementIds.length === 0
       ? []
       : [
+          identity.userId,
           identity.userId,
           ...deactivatingRequirementIds,
           ...deactivatingRequirementIds,
@@ -7427,6 +8926,7 @@ async function setReminderState(
          AND task.credential_id = ?
          AND task.user_id = ?
          AND task.due_date = ?
+         AND task.archived_at IS NULL
          AND credential.user_id = task.user_id`,
       [taskId, credentialId, identity.userId, occurrenceDate],
     ).first<{ id: string }>();
@@ -7540,6 +9040,15 @@ export async function POST(request: Request) {
       case "addActivity":
         id = await addActivity(database, identity, body.payload);
         break;
+      case "updateActivity":
+        id = await updateActivity(database, identity, body.payload);
+        break;
+      case "archiveActivity":
+        id = await archiveActivity(database, identity, body.payload);
+        break;
+      case "restoreActivity":
+        id = await restoreActivity(database, identity, body.payload);
+        break;
       case "addActivityAllocation":
         id = await addActivityAllocation(database, identity, body.payload);
         break;
@@ -7555,6 +9064,18 @@ export async function POST(request: Request) {
         break;
       case "toggleTask":
         id = await toggleTask(database, identity, body.payload);
+        break;
+      case "createPersonalTask":
+        id = await createPersonalTask(database, identity, body.payload);
+        break;
+      case "updatePersonalTask":
+        id = await updatePersonalTask(database, identity, body.payload);
+        break;
+      case "archivePersonalTask":
+        id = await archivePersonalTask(database, identity, body.payload);
+        break;
+      case "restorePersonalTask":
+        id = await restorePersonalTask(database, identity, body.payload);
         break;
       case "markSubmitted":
         id = await markSubmitted(database, identity, body.payload);

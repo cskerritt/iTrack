@@ -192,11 +192,18 @@ export const activities = sqliteTable(
     totalUnits: real("total_units").notNull(),
     evidenceStatus: text("evidence_status").notNull().default("missing"),
     evidenceReference: text("evidence_reference"),
+    revision: integer("revision").notNull().default(1),
+    archivedAt: text("archived_at"),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     index("activities_user_date_idx").on(table.userId, table.completionDate),
+    index("activities_user_archive_date_idx").on(
+      table.userId,
+      table.archivedAt,
+      table.completionDate,
+    ),
   ],
 );
 
@@ -306,6 +313,11 @@ export const checklistTasks = sqliteTable(
     dueDate: text("due_date"),
     completedAt: text("completed_at"),
     sortOrder: integer("sort_order").notNull().default(0),
+    isPersonal: integer("is_personal", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    revision: integer("revision").notNull().default(1),
+    archivedAt: text("archived_at"),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
@@ -313,6 +325,12 @@ export const checklistTasks = sqliteTable(
     index("checklist_tasks_user_credential_idx").on(
       table.userId,
       table.credentialId,
+      table.sortOrder,
+    ),
+    index("checklist_tasks_user_credential_archive_idx").on(
+      table.userId,
+      table.credentialId,
+      table.archivedAt,
       table.sortOrder,
     ),
   ],

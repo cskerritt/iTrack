@@ -34,7 +34,10 @@ export type EvidenceRow = {
   sha256: string;
   storageEtag: string | null;
   createdAt: string;
+  status: "ready" | "deleting";
 };
+
+export type DeletionEvidenceRow = EvidenceRow;
 
 export type PublicEvidence = {
   id: string;
@@ -45,6 +48,7 @@ export type PublicEvidence = {
   sha256: string;
   createdAt: string;
   downloadUrl: string;
+  deletionPending: boolean;
 };
 
 export type DetectedFile = {
@@ -146,6 +150,7 @@ export function toPublicEvidence(row: EvidenceRow): PublicEvidence {
     sha256: row.sha256,
     createdAt: row.createdAt,
     downloadUrl: `/api/evidence/${encodeURIComponent(row.id)}/download`,
+    deletionPending: row.status === "deleting",
   };
 }
 
@@ -165,37 +170,89 @@ export async function findOwnedEvidence(
       size_bytes AS sizeBytes,
       sha256,
       storage_etag AS storageEtag,
-      created_at AS createdAt
+      created_at AS createdAt,
+      status
     FROM evidence_files
     WHERE id = ? AND user_id = ? AND status = 'ready'`,
     [evidenceId, userId],
   ).first<EvidenceRow>();
 }
 
-export async function assertActivityEvidenceMutable(
+export async function findOwnedEvidenceForDeletion(
+  database: D1Database,
+  userId: string,
+  evidenceId: string,
+) {
+  return query(
+    database,
+    `SELECT
+      id,
+      activity_id AS activityId,
+      object_key AS objectKey,
+      original_filename AS originalFilename,
+      content_type AS contentType,
+      size_bytes AS sizeBytes,
+      sha256,
+      storage_etag AS storageEtag,
+      created_at AS createdAt,
+      status
+    FROM evidence_files
+    WHERE id = ?
+      AND user_id = ?
+      AND status IN ('ready', 'deleting')`,
+    [evidenceId, userId],
+  ).first<DeletionEvidenceRow>();
+}
+
+export async function assertOwnedActivityEvidenceMutable(
   database: D1Database,
   userId: string,
   activityId: string,
 ) {
-  const closedCycle = await query(
+  const activity = await query(
     database,
-    `SELECT 1 AS isClosed
-     FROM activity_allocations allocation
-     JOIN credentials credential
-       ON credential.id = allocation.credential_id
-      AND credential.user_id = ?
-     WHERE allocation.activity_id = ?
-       AND credential.status = 'renewed'
-     LIMIT 1`,
-    [userId, activityId],
-  ).first<{ isClosed: number }>();
-  if (closedCycle) {
+    `SELECT
+      activity.id,
+      activity.archived_at AS archivedAt,
+      EXISTS (
+        SELECT 1
+        FROM activity_allocations allocation
+        JOIN credentials credential
+          ON credential.id = allocation.credential_id
+        WHERE allocation.activity_id = activity.id
+          AND credential.user_id = activity.user_id
+          AND credential.status = 'renewed'
+      ) AS usedByClosedCycle
+    FROM activities activity
+    WHERE activity.id = ? AND activity.user_id = ?`,
+    [activityId, userId],
+  ).first<{
+    id: string;
+    archivedAt: string | null;
+    usedByClosedCycle: number;
+  }>();
+  if (!activity) {
     throw new EvidenceApiError(
-      "Evidence linked to an accepted renewal cycle cannot be changed.",
+      "Activity not found.",
+      404,
+      "activity_not_found",
+    );
+  }
+  if (activity.archivedAt) {
+    throw new EvidenceApiError(
+      "Restore this archived activity before changing its proof.",
+      409,
+      "activity_archived",
+    );
+  }
+  if (Boolean(activity.usedByClosedCycle)) {
+    throw new EvidenceApiError(
+      "This record is used by a closed renewal cycle, so its proof is frozen.",
       409,
       "cycle_closed",
     );
   }
+  return activity;
 }
 
 export function sanitizeFilename(value: string, detected: DetectedFile) {

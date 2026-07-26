@@ -76,6 +76,7 @@ export async function GET(request: Request) {
         LEFT JOIN credential_requirements req
           ON req.id = alloc.requirement_id AND req.credential_id = c.id
         WHERE a.user_id = ?
+          AND a.archived_at IS NULL
         ORDER BY a.completion_date DESC, a.created_at DESC`,
       )
       .bind(identity.userId)

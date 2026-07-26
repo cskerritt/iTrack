@@ -1,8 +1,8 @@
 import {
-  assertActivityEvidenceMutable,
   EvidenceApiError,
   MAX_EVIDENCE_BYTES,
   MAX_EVIDENCE_PER_ACTIVITY,
+  assertOwnedActivityEvidenceMutable,
   detectFileType,
   evidenceErrorResponse,
   findOwnedEvidence,
@@ -40,9 +40,12 @@ export async function GET(request: Request) {
             size_bytes AS sizeBytes,
             sha256,
             storage_etag AS storageEtag,
-            created_at AS createdAt
+            created_at AS createdAt,
+            status
           FROM evidence_files
-          WHERE user_id = ? AND activity_id = ? AND status = 'ready'
+          WHERE user_id = ?
+            AND activity_id = ?
+            AND status IN ('ready', 'deleting')
           ORDER BY created_at DESC, id DESC
           LIMIT 200`,
           [identity.userId, activityId],
@@ -58,9 +61,10 @@ export async function GET(request: Request) {
             size_bytes AS sizeBytes,
             sha256,
             storage_etag AS storageEtag,
-            created_at AS createdAt
+            created_at AS createdAt,
+            status
           FROM evidence_files
-          WHERE user_id = ? AND status = 'ready'
+          WHERE user_id = ? AND status IN ('ready', 'deleting')
           ORDER BY created_at DESC, id DESC
           LIMIT 200`,
           [identity.userId],
@@ -153,19 +157,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const activity = await query(
-      database,
-      `SELECT id FROM activities WHERE id = ? AND user_id = ?`,
-      [activityId, identity.userId],
-    ).first<{ id: string }>();
-    if (!activity) {
-      throw new EvidenceApiError(
-        "Activity not found.",
-        404,
-        "activity_not_found",
-      );
-    }
-    await assertActivityEvidenceMutable(
+    await assertOwnedActivityEvidenceMutable(
       database,
       identity.userId,
       activityId,
@@ -236,28 +228,39 @@ export async function POST(request: Request) {
             id, user_id, activity_id, object_key, original_filename,
             content_type, size_bytes, sha256, storage_etag, status
           )
-          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready'
-          WHERE NOT EXISTS (
-            SELECT 1
-            FROM activity_allocations allocation
-            JOIN credentials credential
-              ON credential.id = allocation.credential_id
-             AND credential.user_id = ?
-            WHERE allocation.activity_id = ?
-              AND credential.status = 'renewed'
-          )`,
+          SELECT ?, ?, activity.id, ?, ?, ?, ?, ?, ?, 'ready'
+          FROM activities activity
+          WHERE activity.id = ?
+            AND activity.user_id = ?
+            AND activity.archived_at IS NULL
+            AND NOT EXISTS (
+              SELECT 1
+              FROM activity_allocations allocation
+              JOIN credentials credential
+                ON credential.id = allocation.credential_id
+              WHERE allocation.activity_id = activity.id
+                AND credential.user_id = activity.user_id
+                AND credential.status = 'renewed'
+            )
+            AND (
+              SELECT COUNT(*)
+              FROM evidence_files existing_evidence
+              WHERE existing_evidence.activity_id = activity.id
+                AND existing_evidence.user_id = activity.user_id
+                AND existing_evidence.status = 'ready'
+            ) < ?`,
           [
             evidenceId,
             identity.userId,
-            activityId,
             uploadedObjectKey,
             safeFilename,
             detected.contentType,
             file.size,
             checksum.hex,
             stored.etag,
-            identity.userId,
             activityId,
+            identity.userId,
+            MAX_EVIDENCE_PER_ACTIVITY,
           ],
         ),
         query(
@@ -266,9 +269,19 @@ export async function POST(request: Request) {
            SET
              evidence_status = 'attached',
              evidence_reference = ?,
+             revision = revision + 1,
              updated_at = CURRENT_TIMESTAMP
-           WHERE id = ?
-             AND user_id = ?
+           WHERE id = ? AND user_id = ?
+             AND archived_at IS NULL
+             AND NOT EXISTS (
+               SELECT 1
+               FROM activity_allocations allocation
+               JOIN credentials credential
+                 ON credential.id = allocation.credential_id
+               WHERE allocation.activity_id = activities.id
+                 AND credential.user_id = activities.user_id
+                 AND credential.status = 'renewed'
+             )
              AND EXISTS (
                SELECT 1
                FROM evidence_files stored
@@ -284,14 +297,9 @@ export async function POST(request: Request) {
           `INSERT OR IGNORE INTO badge_events (
             id, user_id, badge_id, idempotency_key, related_type, related_id
           )
-          SELECT ?, ?, 'proof-ready', ?, 'evidence', ?
-          WHERE EXISTS (
-            SELECT 1
-            FROM evidence_files stored
-            WHERE stored.id = ?
-              AND stored.user_id = ?
-              AND stored.status = 'ready'
-          )`,
+          SELECT ?, ?, 'proof-ready', ?, 'evidence', stored.id
+          FROM evidence_files stored
+          WHERE stored.id = ? AND stored.user_id = ?`,
           [
             crypto.randomUUID(),
             identity.userId,
@@ -307,26 +315,39 @@ export async function POST(request: Request) {
             id, user_id, idempotency_key, event_type, points, related_type,
             related_id
           )
-          SELECT ?, ?, ?, 'evidence_attached', 40, 'activity', ?
-          WHERE EXISTS (
-            SELECT 1
-            FROM evidence_files stored
-            WHERE stored.id = ?
-              AND stored.user_id = ?
-              AND stored.status = 'ready'
-          )`,
+          SELECT ?, ?, ?, 'evidence_attached', 40, 'activity', stored.activity_id
+          FROM evidence_files stored
+          WHERE stored.id = ? AND stored.user_id = ?`,
           [
             crypto.randomUUID(),
             identity.userId,
             `${identity.userId}:activity:${activityId}:evidence-attached`,
-            activityId,
             evidenceId,
             identity.userId,
           ],
         ),
       ]);
       if (Number(results[0]?.meta?.changes ?? Number.NaN) === 0) {
-        await assertActivityEvidenceMutable(
+        const currentCount = await query(
+          database,
+          `SELECT COUNT(*) AS count
+           FROM evidence_files
+           WHERE user_id = ?
+             AND activity_id = ?
+             AND status = 'ready'`,
+          [identity.userId, activityId],
+        ).first<{ count: number }>();
+        if (
+          Number(currentCount?.count ?? 0) >=
+          MAX_EVIDENCE_PER_ACTIVITY
+        ) {
+          throw new EvidenceApiError(
+            `An activity can have up to ${MAX_EVIDENCE_PER_ACTIVITY} evidence files.`,
+            409,
+            "activity_file_limit",
+          );
+        }
+        await assertOwnedActivityEvidenceMutable(
           database,
           identity.userId,
           activityId,

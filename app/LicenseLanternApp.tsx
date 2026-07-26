@@ -69,6 +69,9 @@ type RenewalTask = {
   kind: string;
   status: "pending" | "completed";
   dueDate?: string | null;
+  revision: number;
+  isPersonal: boolean;
+  archivedAt?: string | null;
 };
 
 type Credential = {
@@ -109,6 +112,7 @@ type Credential = {
   }>;
   requirements: Requirement[];
   tasks: RenewalTask[];
+  archivedTasks: RenewalTask[];
 };
 
 type CatalogCategory = {
@@ -144,6 +148,7 @@ type ActivityAllocation = {
   id: string;
   credentialId: string;
   credentialName: string;
+  credentialRuleSetId?: string | null;
   requirementId?: string | null;
   categoryName?: string | null;
   requirementIds?: string[];
@@ -166,12 +171,15 @@ type Activity = {
   totalUnits: number;
   evidenceStatus: "missing" | "attached" | "not_required";
   evidenceCount: number;
+  evidenceDeletionPendingCount?: number;
   credentialId?: string | null;
   credentialName?: string | null;
   requirementId?: string | null;
   categoryName?: string | null;
   allocatedUnits: number;
   allocations?: ActivityAllocation[];
+  revision: number;
+  archivedAt?: string | null;
 };
 
 type EvidenceFile = {
@@ -183,6 +191,7 @@ type EvidenceFile = {
   sha256: string;
   createdAt: string;
   downloadUrl: string;
+  deletionPending: boolean;
 };
 
 type Badge = {
@@ -252,6 +261,7 @@ type Workspace = {
   catalog: CatalogRule[];
   credentials: Credential[];
   activities: Activity[];
+  archivedActivities: Activity[];
   reminderPreferences: {
     inAppEnabled: boolean;
     leadDays: number[];
@@ -408,6 +418,19 @@ function allocationsFor(activity: Activity): ActivityAllocation[] {
       allocatedUnits: activity.allocatedUnits,
     },
   ];
+}
+
+function activityIsMutable(
+  activity: Activity,
+  credentials: Credential[],
+) {
+  const credentialStatusById = new Map(
+    credentials.map((credential) => [credential.id, credential.status]),
+  );
+  return allocationsFor(activity).every((allocation) => {
+    const status = credentialStatusById.get(allocation.credentialId);
+    return status === "active" || status === "submitted";
+  });
 }
 
 function requirementEarned(requirement: Requirement) {
@@ -995,6 +1018,11 @@ export function LicenseLanternApp() {
   const [evidenceActivity, setEvidenceActivity] = useState<Activity | null>(
     null,
   );
+  const [editingActivity, setEditingActivity] = useState<Activity | null>(null);
+  const [taskEditor, setTaskEditor] = useState<{
+    credential: Credential;
+    task: RenewalTask | null;
+  } | null>(null);
   const [evidenceFiles, setEvidenceFiles] = useState<EvidenceFile[]>([]);
   const [evidencePending, setEvidencePending] = useState(false);
   const [customCredential, setCustomCredential] = useState(false);
@@ -1188,6 +1216,7 @@ export function LicenseLanternApp() {
             new Date(a.deadline).getTime() - new Date(b.deadline).getTime(),
         )[0]?.id ?? "";
       });
+      return true;
     } catch (loadError) {
       setWorkspaceLoadFailed(true);
       setWorkspaceLoadFailureStatus(responseStatus);
@@ -1196,6 +1225,7 @@ export function LicenseLanternApp() {
           ? loadError.message
           : "We couldn’t load your renewal workspace.",
       );
+      return false;
     }
   }, []);
 
@@ -1342,6 +1372,8 @@ export function LicenseLanternApp() {
       setAllocationActivity(null);
       setClassificationRepair(null);
       setEvidenceActivity(null);
+      setEditingActivity(null);
+      setTaskEditor(null);
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
@@ -1442,6 +1474,11 @@ export function LicenseLanternApp() {
       (credential) => credential.id === selectedCredentialId,
     ) ?? null;
   const scanningActivityEvidence = activityScan.phase === "scanning";
+  const evidenceIsFrozen = Boolean(
+    evidenceActivity &&
+      workspace &&
+      !activityIsMutable(evidenceActivity, workspace.credentials),
+  );
 
   async function runAction(
     action: string,
@@ -1466,9 +1503,33 @@ export function LicenseLanternApp() {
       const result = (await response.json()) as {
         ok?: boolean;
         error?: string;
+        code?: string;
         id?: string;
       };
       if (!response.ok) {
+        if (
+          [
+            "activity_version_conflict",
+            "activity_state_changed",
+            "allocation_state_changed",
+            "task_version_conflict",
+            "task_state_changed",
+            "cycle_closed",
+          ].includes(result.code ?? "")
+        ) {
+          const refreshed = await loadWorkspace();
+          if (refreshed) {
+            setEditingActivity(null);
+            setTaskEditor(null);
+            setAllocationActivity(null);
+            setClassificationRepair(null);
+          }
+          throw new Error(
+            refreshed
+              ? `${result.error || "That item changed in another session."} The latest version is loaded; reopen it to continue.`
+              : `${result.error || "That item changed in another session."} The workspace could not be refreshed; keep this editor open and try Refresh when your connection is stable.`,
+          );
+        }
         throw new Error(result.error || "That update didn’t save.");
       }
       await loadWorkspace();
@@ -1939,8 +2000,20 @@ export function LicenseLanternApp() {
         `/api/evidence/${encodeURIComponent(evidence.id)}`,
         { method: "DELETE" },
       );
-      const result = (await response.json()) as { error?: string };
+      const result = (await response.json()) as {
+        error?: string;
+        code?: string;
+      };
       if (!response.ok) {
+        if (result.code === "evidence_delete_retry") {
+          setEvidenceFiles((current) =>
+            current.map((item) =>
+              item.id === evidence.id
+                ? { ...item, deletionPending: true }
+                : item,
+            ),
+          );
+        }
         throw new Error(result.error || "The proof file could not be removed.");
       }
       setEvidenceFiles((current) =>
@@ -2271,11 +2344,154 @@ export function LicenseLanternApp() {
     );
   }
 
+  async function updateActivityRecord(input: {
+    title: string;
+    provider: string;
+    completionDate: string;
+    totalUnits: number;
+    acceptedEducationAttested?: boolean;
+  }) {
+    if (!editingActivity) return;
+    const result = await runAction(
+      "updateActivity",
+      {
+        activityId: editingActivity.id,
+        expectedRevision: editingActivity.revision,
+        ...input,
+      },
+      "Learning record corrected.",
+    );
+    if (result) setEditingActivity(null);
+  }
+
+  async function archiveActivityRecord(activity: Activity) {
+    const result = await runAction(
+      "archiveActivity",
+      {
+        activityId: activity.id,
+        expectedRevision: activity.revision,
+      },
+      "Learning record archived.",
+    );
+    if (!result) return;
+    setEditingActivity(null);
+    setToast({
+      message: "Learning record archived. Its proof remains saved.",
+      undo: () => {
+        void runAction(
+          "restoreActivity",
+          {
+            activityId: activity.id,
+            expectedRevision: activity.revision + 1,
+          },
+          "Learning record restored.",
+        );
+      },
+    });
+    window.setTimeout(
+      () => document.getElementById("archived-records-summary")?.focus(),
+      0,
+    );
+  }
+
+  async function restoreActivityRecord(activity: Activity) {
+    const result = await runAction(
+      "restoreActivity",
+      {
+        activityId: activity.id,
+        expectedRevision: activity.revision,
+      },
+      "Learning record restored.",
+    );
+    if (result) {
+      window.setTimeout(
+        () => document.getElementById("records-summary")?.focus(),
+        0,
+      );
+    }
+  }
+
+  async function savePersonalTask(input: {
+    title: string;
+    dueDate: string;
+  }) {
+    if (!taskEditor) return;
+    const { credential, task } = taskEditor;
+    const result = await runAction(
+      task ? "updatePersonalTask" : "createPersonalTask",
+      task
+        ? {
+            taskId: task.id,
+            expectedRevision: task.revision,
+            ...input,
+          }
+        : {
+            credentialId: credential.id,
+            ...input,
+          },
+      task ? "Personal task updated." : "Personal task added.",
+    );
+    if (result) setTaskEditor(null);
+  }
+
+  async function archivePersonalTask(task: RenewalTask) {
+    if (!task.isPersonal) return;
+    const result = await runAction(
+      "archivePersonalTask",
+      {
+        taskId: task.id,
+        expectedRevision: task.revision,
+      },
+      "Personal task archived.",
+    );
+    if (!result) return;
+    setTaskEditor(null);
+    setToast({
+      message: "Personal task archived.",
+      undo: () => {
+        void runAction(
+          "restorePersonalTask",
+          {
+            taskId: task.id,
+            expectedRevision: task.revision + 1,
+          },
+          "Personal task restored.",
+        );
+      },
+    });
+    window.setTimeout(
+      () => document.getElementById("archived-tasks-summary")?.focus(),
+      0,
+    );
+  }
+
+  async function restorePersonalTask(task: RenewalTask) {
+    if (!task.isPersonal) return;
+    const result = await runAction(
+      "restorePersonalTask",
+      {
+        taskId: task.id,
+        expectedRevision: task.revision,
+      },
+      "Personal task restored.",
+    );
+    if (result) {
+      window.setTimeout(
+        () => document.getElementById("renewal-checklist")?.focus(),
+        0,
+      );
+    }
+  }
+
   async function toggleTask(task: RenewalTask) {
     const completed = task.status !== "completed";
     const success = await runAction(
       "toggleTask",
-      { taskId: task.id, completed },
+      {
+        taskId: task.id,
+        completed,
+        expectedRevision: task.revision,
+      },
       completed ? "Task checked off." : "Task reopened.",
     );
     if (success) {
@@ -2284,7 +2500,11 @@ export function LicenseLanternApp() {
         undo: () => {
           void runAction(
             "toggleTask",
-            { taskId: task.id, completed: !completed },
+            {
+              taskId: task.id,
+              completed: !completed,
+              expectedRevision: task.revision + 1,
+            },
             "Change undone.",
           );
         },
@@ -2397,6 +2617,18 @@ export function LicenseLanternApp() {
                 void addReminderToCalendar(reminder)
               }
               onToggleTask={toggleTask}
+              onAddPersonalTask={(credential) => {
+                setError("");
+                setTaskEditor({ credential, task: null });
+              }}
+              onEditPersonalTask={(credential, task) => {
+                setError("");
+                setTaskEditor({ credential, task });
+              }}
+              onRestorePersonalTask={(task) =>
+                void restorePersonalTask(task)
+              }
+              taskActionsDisabled={pending || !isOnline}
               onClaimQuest={(quest) => void claimWeeklyQuest(quest)}
               progressionPending={pending}
               onRequirementApplicability={(requirement, status) =>
@@ -2436,8 +2668,15 @@ export function LicenseLanternApp() {
           ) : view === "records" ? (
             <RecordsView
               activities={workspace.activities}
+              archivedActivities={workspace.archivedActivities}
               credentials={workspace.credentials}
               onAdd={openActivityEntry}
+              onEdit={(activity) => {
+                setError("");
+                setEditingActivity(activity);
+              }}
+              onRestore={(activity) => void restoreActivityRecord(activity)}
+              actionsDisabled={pending || !isOnline}
               onEvidence={(activity) => void openEvidence(activity)}
               onAllocate={(activity) => {
                 const existingIds = new Set(
@@ -2896,6 +3135,48 @@ export function LicenseLanternApp() {
             </form>
           )}
         </Modal>
+      ) : null}
+
+      {editingActivity ? (
+        <ActivityEditorModal
+          key={`${editingActivity.id}:${editingActivity.revision}`}
+          activity={editingActivity}
+          error={error}
+          pending={pending}
+          isOnline={isOnline}
+          onClose={() => {
+            setEditingActivity(null);
+            setError("");
+          }}
+          onSave={(input) => void updateActivityRecord(input)}
+          onArchive={() => void archiveActivityRecord(editingActivity)}
+        />
+      ) : null}
+
+      {taskEditor ? (
+        <PersonalTaskEditorModal
+          key={`${taskEditor.task?.id ?? "new"}:${
+            taskEditor.task?.revision ?? 0
+          }`}
+          credential={taskEditor.credential}
+          task={taskEditor.task}
+          error={error}
+          pending={pending}
+          isOnline={isOnline}
+          onClose={() => {
+            setTaskEditor(null);
+            setError("");
+          }}
+          onSave={(input) => void savePersonalTask(input)}
+          onArchive={
+            taskEditor.task
+              ? () => {
+                  const task = taskEditor.task;
+                  if (task) void archivePersonalTask(task);
+                }
+              : undefined
+          }
+        />
       ) : null}
 
       {credentialOpen && workspace ? (
@@ -4003,30 +4284,51 @@ export function LicenseLanternApp() {
         <Modal
           title="Proof and certificates"
           eyebrow={evidenceActivity.title}
-          onClose={() => setEvidenceActivity(null)}
+          onClose={() => {
+            setEvidenceActivity(null);
+            setError("");
+          }}
         >
           <div className="form-stack">
-            <form className="evidence-upload" onSubmit={handleEvidenceUpload}>
-              <label className="field file-field">
-                <span>Add a proof file</span>
-                <input
-                  name="file"
-                  type="file"
-                  accept=".pdf,image/jpeg,image/png,image/webp"
-                  required
-                />
-                <small>
-                  Private to your account · PDF, JPEG, PNG, or WebP · up to 10 MB
-                </small>
-              </label>
-              <button
-                className="button button-primary"
-                type="submit"
-                disabled={evidencePending}
-              >
-                {evidencePending ? "Saving…" : "Upload proof"}
-              </button>
-            </form>
+            {error ? (
+              <div className="modal-error" role="alert">
+                <strong>Proof could not be updated</strong>
+                <span>{error}</span>
+              </div>
+            ) : null}
+            {evidenceIsFrozen ? (
+              <div className="advisory-note frozen-proof-advisory">
+                <span aria-hidden="true">i</span>
+                <p>
+                  Proof is frozen with closed cycle history. You can view and
+                  download saved files, but new uploads and removals are
+                  locked. An interrupted removal can still be retried safely.
+                </p>
+              </div>
+            ) : (
+              <form className="evidence-upload" onSubmit={handleEvidenceUpload}>
+                <label className="field file-field">
+                  <span>Add a proof file</span>
+                  <input
+                    name="file"
+                    type="file"
+                    accept=".pdf,image/jpeg,image/png,image/webp"
+                    required
+                  />
+                  <small>
+                    Private to your account · PDF, JPEG, PNG, or WebP · up to 10
+                    MB
+                  </small>
+                </label>
+                <button
+                  className="button button-primary"
+                  type="submit"
+                  disabled={evidencePending}
+                >
+                  {evidencePending ? "Saving…" : "Upload proof"}
+                </button>
+              </form>
+            )}
             <div className="evidence-file-list" aria-live="polite">
               {evidencePending && evidenceFiles.length === 0 ? (
                 <p className="form-hint">Loading proof files…</p>
@@ -4038,32 +4340,42 @@ export function LicenseLanternApp() {
                       <small>
                         {(evidence.sizeBytes / 1_048_576).toFixed(1)} MB · saved{" "}
                         {formatDate(evidence.createdAt)}
+                        {evidence.deletionPending
+                          ? " · removal interrupted"
+                          : ""}
                       </small>
                     </div>
                     <div className="evidence-file-actions">
-                      <a
-                        className="button button-outline button-compact"
-                        href={evidence.downloadUrl}
-                      >
-                        Download
-                      </a>
-                      <button
-                        className="button button-ghost button-compact"
-                        type="button"
-                        disabled={evidencePending}
-                        onClick={() => void deleteEvidence(evidence)}
-                      >
-                        Remove
-                      </button>
+                      {!evidence.deletionPending ? (
+                        <a
+                          className="button button-outline button-compact"
+                          href={evidence.downloadUrl}
+                        >
+                          Download
+                        </a>
+                      ) : null}
+                      {evidence.deletionPending || !evidenceIsFrozen ? (
+                        <button
+                          className="button button-ghost button-compact"
+                          type="button"
+                          disabled={evidencePending}
+                          onClick={() => void deleteEvidence(evidence)}
+                        >
+                          {evidence.deletionPending
+                            ? "Retry removal"
+                            : "Remove"}
+                        </button>
+                      ) : null}
                     </div>
                   </article>
                 ))
-              ) : (
+              ) : error ? null : (
                 <div className="evidence-empty">
                   <strong>No proof uploaded yet</strong>
                   <p>
-                    Add the completion certificate, receipt, or attendance
-                    record above.
+                    {evidenceIsFrozen
+                      ? "No proof was saved before this cycle became closed history."
+                      : "Add the completion certificate, receipt, or attendance record above."}
                   </p>
                 </div>
               )}
@@ -4258,6 +4570,10 @@ function TodayView({
   onReminderState,
   onAddReminderToCalendar,
   onToggleTask,
+  onAddPersonalTask,
+  onEditPersonalTask,
+  onRestorePersonalTask,
+  taskActionsDisabled,
   onClaimQuest,
   progressionPending,
   onRequirementApplicability,
@@ -4277,6 +4593,13 @@ function TodayView({
   ) => void;
   onAddReminderToCalendar: (reminder: Reminder) => void;
   onToggleTask: (task: RenewalTask) => void;
+  onAddPersonalTask: (credential: Credential) => void;
+  onEditPersonalTask: (
+    credential: Credential,
+    task: RenewalTask,
+  ) => void;
+  onRestorePersonalTask: (task: RenewalTask) => void;
+  taskActionsDisabled: boolean;
   onClaimQuest: (quest: WeeklyQuest) => void;
   progressionPending: boolean;
   onRequirementApplicability: (
@@ -4802,13 +5125,27 @@ function TodayView({
               <span className="section-kicker">Renewal checklist</span>
               <h2 id="checklist-title">Packet readiness</h2>
             </div>
-            <span className="card-summary">
-              {
-                credential.tasks.filter((task) => task.status === "completed")
-                  .length
-              }
-              /{credential.tasks.length} done
-            </span>
+            <div className="checklist-heading-actions">
+              <span className="card-summary">
+                {
+                  credential.tasks.filter(
+                    (task) => task.status === "completed",
+                  ).length
+                }
+                /{credential.tasks.length} done
+              </span>
+              {credential.status !== "renewed" ? (
+                <button
+                  className="task-add-button"
+                  type="button"
+                  disabled={taskActionsDisabled}
+                  onClick={() => onAddPersonalTask(credential)}
+                >
+                  <span aria-hidden="true">＋</span>
+                  Add task
+                </button>
+              ) : null}
+            </div>
           </div>
           {isNremtCredential(credential) ? (
             <div className="nremt-checklist-note">
@@ -4823,37 +5160,107 @@ function TodayView({
             </div>
           ) : null}
           <div className="task-list">
-            {credential.tasks.map((task) => (
-              <label
-                className={`task-row ${
-                  task.status === "completed" ? "completed" : ""
-                } ${credential.status === "renewed" ? "locked" : ""}`}
-                key={task.id}
-              >
-                <input
-                  type="checkbox"
-                  checked={task.status === "completed"}
-                  disabled={credential.status === "renewed"}
-                  onChange={() => onToggleTask(task)}
-                />
-                <span className="custom-check" aria-hidden="true">
-                  ✓
-                </span>
+            {credential.tasks.map((task) => {
+              const taskOverdue =
+                task.status !== "completed" &&
+                task.dueDate !== null &&
+                task.dueDate !== undefined &&
+                daysUntil(task.dueDate) < 0;
+              return (
+                <article
+                  className={`task-row ${
+                    task.status === "completed" ? "completed" : ""
+                  } ${taskOverdue ? "overdue" : ""} ${
+                    credential.status === "renewed" ? "locked" : ""
+                  }`}
+                  key={task.id}
+                >
+                  <label className="task-toggle">
+                    <input
+                      type="checkbox"
+                      checked={task.status === "completed"}
+                      disabled={
+                        credential.status === "renewed" ||
+                        taskActionsDisabled
+                      }
+                      onChange={() => onToggleTask(task)}
+                    />
+                    <span className="custom-check" aria-hidden="true">
+                      ✓
+                    </span>
+                    <span>
+                      <strong>{task.title}</strong>
+                      <small>
+                        {task.kind === "evidence"
+                          ? `${missingEvidence} records still need proof`
+                          : task.dueDate
+                            ? `${
+                                taskOverdue ? "Overdue · " : ""
+                              }Due ${formatDate(task.dueDate)}`
+                            : credential.status === "renewed"
+                              ? "Preserved in cycle history"
+                              : task.isPersonal
+                                ? "Personal task · no due date"
+                                : "You can undo this anytime"}
+                      </small>
+                    </span>
+                  </label>
+                  {task.isPersonal &&
+                  credential.status !== "renewed" ? (
+                    <button
+                      className="task-edit-button"
+                      type="button"
+                      aria-label={`Edit ${task.title}`}
+                      disabled={taskActionsDisabled}
+                      onClick={() => onEditPersonalTask(credential, task)}
+                    >
+                      Edit
+                    </button>
+                  ) : null}
+                </article>
+              );
+            })}
+          </div>
+          {(credential.archivedTasks ?? []).length ? (
+            <details className="archived-items archived-tasks">
+              <summary id="archived-tasks-summary">
                 <span>
-                  <strong>{task.title}</strong>
+                  Archived personal tasks
                   <small>
-                    {task.kind === "evidence"
-                      ? `${missingEvidence} records still need proof`
-                      : task.dueDate
-                        ? `Due ${formatDate(task.dueDate)}`
-                        : credential.status === "renewed"
-                          ? "Preserved in cycle history"
-                          : "You can undo this anytime"}
+                    {credential.archivedTasks.length}{" "}
+                    {credential.archivedTasks.length === 1 ? "task" : "tasks"}
                   </small>
                 </span>
-              </label>
-            ))}
-          </div>
+                <span aria-hidden="true">⌄</span>
+              </summary>
+              <div className="archived-item-list">
+                {credential.archivedTasks.map((task) => (
+                  <article className="archived-item" key={task.id}>
+                    <div>
+                      <strong>{task.title}</strong>
+                      <small>
+                        {task.dueDate
+                          ? `Due ${formatDate(task.dueDate)}`
+                          : "No due date"}
+                      </small>
+                    </div>
+                    {credential.status === "renewed" ? (
+                      <span className="archived-item-state">Cycle frozen</span>
+                    ) : (
+                      <button
+                        type="button"
+                        aria-label={`Restore ${task.title}`}
+                        disabled={taskActionsDisabled}
+                        onClick={() => onRestorePersonalTask(task)}
+                      >
+                        Restore task
+                      </button>
+                    )}
+                  </article>
+                ))}
+              </div>
+            </details>
+          ) : null}
           {credential.status === "active" ? (
             <button className="card-link" type="button" onClick={onSubmit}>
               {isIsc2AutomaticRenewalCredential(credential)
@@ -5296,15 +5703,23 @@ function CredentialsView({
 
 function RecordsView({
   activities,
+  archivedActivities,
   credentials,
   onAdd,
+  onEdit,
+  onRestore,
+  actionsDisabled,
   onEvidence,
   onAllocate,
   onClassify,
 }: {
   activities: Activity[];
+  archivedActivities: Activity[];
   credentials: Credential[];
   onAdd: () => void;
+  onEdit: (activity: Activity) => void;
+  onRestore: (activity: Activity) => void;
+  actionsDisabled: boolean;
   onEvidence: (activity: Activity) => void;
   onAllocate: (activity: Activity) => void;
   onClassify: (
@@ -5315,6 +5730,8 @@ function RecordsView({
   const credentialStatusById = new Map(
     credentials.map((credential) => [credential.id, credential.status]),
   );
+  const recordIsMutable = (activity: Activity) =>
+    activityIsMutable(activity, credentials);
   const total = activities.reduce(
     (sum, activity) =>
       sum +
@@ -5341,7 +5758,7 @@ function RecordsView({
           </button>
         }
       />
-      <section className="record-summary">
+      <section className="record-summary" id="records-summary" tabIndex={-1}>
         <div>
           <span>Total allocated</span>
           <strong>{compactNumber(total)}</strong>
@@ -5374,13 +5791,14 @@ function RecordsView({
             <span>Credential</span>
             <span>Proof</span>
             <span>Credits</span>
+            <span>Actions</span>
           </div>
           {activities.map((activity) => (
             <article
-              className="records-table"
-              key={`${activity.id}:${activity.credentialId ?? "unassigned"}:${
-                activity.requirementId ?? "general"
+              className={`records-table ${
+                recordIsMutable(activity) ? "" : "frozen"
               }`}
+              key={activity.id}
             >
               <div className="record-title">
                 <span
@@ -5477,13 +5895,32 @@ function RecordsView({
               </span>
               <span className="proof-cell">
                 <span className={`proof-label ${activity.evidenceStatus}`}>
-                  {activity.evidenceStatus === "attached"
+                  {activity.evidenceDeletionPendingCount
+                    ? "Removal pending"
+                    : activity.evidenceStatus === "attached"
                     ? `${activity.evidenceCount || 1} on file`
                     : activity.evidenceStatus === "missing"
                       ? "Add later"
                       : "Not required"}
                 </span>
-                {activity.evidenceStatus !== "not_required" ? (
+                {!recordIsMutable(activity) ? (
+                  <>
+                    {activity.evidenceStatus === "attached" ||
+                    activity.evidenceDeletionPendingCount ? (
+                      <button
+                        className="proof-action"
+                        type="button"
+                        onClick={() => onEvidence(activity)}
+                      >
+                        View proof
+                      </button>
+                    ) : null}
+                    <small className="frozen-proof-note">
+                      Proof is frozen with closed cycle history
+                    </small>
+                  </>
+                ) : activity.evidenceStatus !== "not_required" ||
+                  activity.evidenceDeletionPendingCount ? (
                   <button
                     className="proof-action"
                     type="button"
@@ -5496,6 +5933,20 @@ function RecordsView({
               <strong className="record-credit">
                 {compactNumber(activity.totalUnits)}
               </strong>
+              <div className="record-manage">
+                {recordIsMutable(activity) ? (
+                  <button
+                    type="button"
+                    aria-label={`Edit ${activity.title}`}
+                    disabled={actionsDisabled}
+                    onClick={() => onEdit(activity)}
+                  >
+                    Edit record
+                  </button>
+                ) : (
+                  <span>Frozen history</span>
+                )}
+              </div>
             </article>
           ))}
         </section>
@@ -5507,7 +5958,467 @@ function RecordsView({
           onAction={onAdd}
         />
       )}
+      {archivedActivities.length ? (
+        <details className="archived-items archived-records">
+          <summary id="archived-records-summary">
+            <span>
+              Archived records
+              <small>
+                {archivedActivities.length}{" "}
+                {archivedActivities.length === 1 ? "record" : "records"}
+              </small>
+            </span>
+            <span aria-hidden="true">⌄</span>
+          </summary>
+          <div className="archived-item-list">
+            {archivedActivities.map((activity) => {
+              const mutable = recordIsMutable(activity);
+              return (
+                <article className="archived-item" key={activity.id}>
+                  <div>
+                    <strong>{activity.title}</strong>
+                    <small>
+                      {formatDate(activity.completionDate)}
+                      {activity.provider ? ` · ${activity.provider}` : ""}
+                      {" · "}
+                      {compactNumber(activity.totalUnits)} credits
+                    </small>
+                  </div>
+                  <div className="archived-item-actions">
+                    {activity.evidenceStatus === "attached" ||
+                    activity.evidenceDeletionPendingCount ? (
+                      <button
+                        type="button"
+                        aria-label={`View proof for ${activity.title}`}
+                        onClick={() => onEvidence(activity)}
+                      >
+                        View proof
+                      </button>
+                    ) : null}
+                    {mutable ? (
+                      <button
+                        type="button"
+                        aria-label={`Restore ${activity.title}`}
+                        disabled={actionsDisabled}
+                        onClick={() => onRestore(activity)}
+                      >
+                        Restore record
+                      </button>
+                    ) : (
+                      <span className="archived-item-state">
+                        History frozen
+                      </span>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </details>
+      ) : null}
     </div>
+  );
+}
+
+function ActivityEditorModal({
+  activity,
+  error,
+  pending,
+  isOnline,
+  onClose,
+  onSave,
+  onArchive,
+}: {
+  activity: Activity;
+  error: string;
+  pending: boolean;
+  isOnline: boolean;
+  onClose: () => void;
+  onSave: (input: {
+    title: string;
+    provider: string;
+    completionDate: string;
+    totalUnits: number;
+    acceptedEducationAttested?: boolean;
+  }) => void;
+  onArchive: () => void;
+}) {
+  const [confirmingArchive, setConfirmingArchive] = useState(false);
+  const allocations = allocationsFor(activity);
+  const hasNremtAllocation = allocations.some((allocation) =>
+    allocation.credentialRuleSetId?.startsWith("nremt-"),
+  );
+  const proofSummary =
+    activity.evidenceStatus === "attached"
+      ? `${activity.evidenceCount || 1} proof ${
+          (activity.evidenceCount || 1) === 1 ? "file" : "files"
+        } attached`
+      : activity.evidenceStatus === "missing"
+        ? "Proof still needs to be added"
+        : "Proof is marked not required";
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    onSave({
+      title: String(form.get("title") ?? ""),
+      provider: String(form.get("provider") ?? ""),
+      completionDate: String(form.get("completionDate") ?? ""),
+      totalUnits: Number(form.get("totalUnits")),
+      acceptedEducationAttested: hasNremtAllocation
+        ? form.get("acceptedEducationAttested") === "on"
+        : undefined,
+    });
+  };
+
+  return (
+    <Modal
+      title="Edit learning record"
+      eyebrow="Correct saved details"
+      onClose={onClose}
+    >
+      <div className="form-stack">
+        {error ? (
+          <div className="modal-error" role="alert">
+            <strong>This correction did not save</strong>
+            <span>{error}</span>
+          </div>
+        ) : null}
+        {allocations.length ? (
+          <div className="advisory-note">
+            <span aria-hidden="true">i</span>
+            <p>
+              This learning is used by{" "}
+              {allocations.map((allocation) => allocation.credentialName).join(
+                ", ",
+              )}
+              .{" "}
+              {hasNremtAllocation
+                ? "National Registry component and topic amounts stay exact, so a credit-total correction that would change that allocation must be logged as a corrected replacement record."
+                : "If the corrected credit total is lower, any larger linked allocation and its requirement counts will be reduced to match."}
+            </p>
+          </div>
+        ) : (
+          <div className="advisory-note">
+            <span aria-hidden="true">i</span>
+            <p>
+              This record is not currently applied to a credential. Correcting
+              it will not change renewal progress.
+            </p>
+          </div>
+        )}
+        <form className="form-stack" onSubmit={handleSubmit}>
+          <label className="field">
+            <span>Course, conference, or activity</span>
+            <input
+              autoFocus
+              name="title"
+              defaultValue={activity.title}
+              maxLength={ACTIVITY_DRAFT_TITLE_MAX_LENGTH}
+              required
+            />
+          </label>
+          <div className="form-grid">
+            <label className="field">
+              <span>Completion date</span>
+              <input
+                name="completionDate"
+                type="date"
+                defaultValue={activity.completionDate}
+                required
+              />
+              <small>
+                Keep the date accurate for every linked credential cycle.
+              </small>
+            </label>
+            <label className="field">
+              <span>Credits earned</span>
+              <input
+                name="totalUnits"
+                type="number"
+                min="0.01"
+                max={ACTIVITY_DRAFT_MAX_UNITS}
+                step="0.01"
+                inputMode="decimal"
+                defaultValue={activity.totalUnits}
+                required
+              />
+              <small>
+                Linked allocations above the corrected total will be reduced.
+              </small>
+            </label>
+          </div>
+          <label className="field">
+            <span>
+              Provider or organizer{" "}
+              <em>
+                {hasNremtAllocation
+                  ? "Required for National Registry"
+                  : "Optional"}
+              </em>
+            </span>
+            <input
+              name="provider"
+              defaultValue={activity.provider ?? ""}
+              maxLength={ACTIVITY_DRAFT_PROVIDER_MAX_LENGTH}
+              required={hasNremtAllocation}
+            />
+          </label>
+          {hasNremtAllocation ? (
+            <label className="switch-row nremt-education-attestation">
+              <span>
+                <strong>Reconfirm accepted National Registry education</strong>
+                <small>
+                  I rechecked the corrected provider, course, and post-cap
+                  credits against the current National Registry record.
+                </small>
+              </span>
+              <input
+                name="acceptedEducationAttested"
+                type="checkbox"
+                required
+              />
+            </label>
+          ) : null}
+          <div className="read-only-status" aria-label="Current proof status">
+            <span
+              className={`proof-label ${activity.evidenceStatus}`}
+              aria-hidden="true"
+            >
+              {activity.evidenceStatus === "attached"
+                ? "On file"
+                : activity.evidenceStatus === "missing"
+                  ? "Add later"
+                  : "Not required"}
+            </span>
+            <p>
+              <strong>Proof status stays unchanged</strong>
+              <small>{proofSummary}. Manage proof separately in Records.</small>
+            </p>
+          </div>
+          <div className="form-actions">
+            <button
+              className="button button-ghost"
+              type="button"
+              onClick={onClose}
+              disabled={pending}
+            >
+              Cancel
+            </button>
+            <button
+              className="button button-primary"
+              type="submit"
+              disabled={pending || !isOnline}
+            >
+              {pending
+                ? "Saving…"
+                : isOnline
+                  ? "Save corrections"
+                  : "Reconnect to save"}
+            </button>
+          </div>
+        </form>
+        <section className="archive-zone" aria-labelledby="archive-record-title">
+          <div>
+            <strong id="archive-record-title">Archive this record</strong>
+            <p>
+              Use archive when this learning should no longer count toward an
+              open renewal.
+            </p>
+          </div>
+          {!confirmingArchive ? (
+            <button
+              className="archive-trigger"
+              type="button"
+              disabled={pending || !isOnline}
+              onClick={() => setConfirmingArchive(true)}
+            >
+              Archive record
+            </button>
+          ) : (
+            <div className="archive-confirmation" role="alert">
+              <p>
+                <strong>Archive this learning record?</strong>
+                Its credits will leave active progress and exports. Proof stays
+                saved, and you can restore the record later.
+              </p>
+              <div>
+                <button
+                  className="button button-ghost"
+                  type="button"
+                  disabled={pending}
+                  onClick={() => setConfirmingArchive(false)}
+                >
+                  Keep record
+                </button>
+                <button
+                  autoFocus
+                  className="button button-danger"
+                  type="button"
+                  disabled={pending || !isOnline}
+                  onClick={onArchive}
+                >
+                  {pending ? "Archiving…" : "Archive record"}
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
+      </div>
+    </Modal>
+  );
+}
+
+function PersonalTaskEditorModal({
+  credential,
+  task,
+  error,
+  pending,
+  isOnline,
+  onClose,
+  onSave,
+  onArchive,
+}: {
+  credential: Credential;
+  task: RenewalTask | null;
+  error: string;
+  pending: boolean;
+  isOnline: boolean;
+  onClose: () => void;
+  onSave: (input: { title: string; dueDate: string }) => void;
+  onArchive?: () => void;
+}) {
+  const [confirmingArchive, setConfirmingArchive] = useState(false);
+  const editing = Boolean(task);
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    onSave({
+      title: String(form.get("title") ?? ""),
+      dueDate: String(form.get("dueDate") ?? ""),
+    });
+  };
+
+  return (
+    <Modal
+      title={editing ? "Edit personal task" : "Add a personal task"}
+      eyebrow={credential.credentialName}
+      onClose={onClose}
+    >
+      <div className="form-stack">
+        {error ? (
+          <div className="modal-error" role="alert">
+            <strong>This task did not save</strong>
+            <span>{error}</span>
+          </div>
+        ) : null}
+        <div className="advisory-note">
+          <span aria-hidden="true">i</span>
+          <p>
+            Personal tasks count toward Packet readiness. Complete or archive
+            them before submission. They do not earn XP.
+          </p>
+        </div>
+        <form className="form-stack" onSubmit={handleSubmit}>
+          <label className="field">
+            <span>Task</span>
+            <input
+              autoFocus
+              name="title"
+              defaultValue={task?.title ?? ""}
+              maxLength={160}
+              placeholder="e.g., Request transcript from provider"
+              required
+            />
+          </label>
+          <label className="field">
+            <span>
+              Due date <em>Optional</em>
+            </span>
+            <input
+              name="dueDate"
+              type="date"
+              defaultValue={task?.dueDate ?? ""}
+            />
+            <small>
+              Due dates appear in Today check-ins when reminders are on.
+            </small>
+          </label>
+          <div className="form-actions">
+            <button
+              className="button button-ghost"
+              type="button"
+              onClick={onClose}
+              disabled={pending}
+            >
+              Cancel
+            </button>
+            <button
+              className="button button-primary"
+              type="submit"
+              disabled={pending || !isOnline}
+            >
+              {pending
+                ? "Saving…"
+                : !isOnline
+                  ? "Reconnect to save"
+                  : editing
+                    ? "Save changes"
+                    : "Add task"}
+            </button>
+          </div>
+        </form>
+        {task?.isPersonal && onArchive ? (
+          <section className="archive-zone" aria-labelledby="archive-task-title">
+            <div>
+              <strong id="archive-task-title">Archive this task</strong>
+              <p>
+                Remove it from Packet readiness and reminders without deleting
+                its history.
+              </p>
+            </div>
+            {!confirmingArchive ? (
+              <button
+                className="archive-trigger"
+                type="button"
+                disabled={pending || !isOnline}
+                onClick={() => setConfirmingArchive(true)}
+              >
+                Archive task
+              </button>
+            ) : (
+              <div className="archive-confirmation" role="alert">
+                <p>
+                  <strong>Archive this personal task?</strong>
+                  This removes it from Packet readiness and reminders. You can
+                  restore it later.
+                </p>
+                <div>
+                  <button
+                    className="button button-ghost"
+                    type="button"
+                    disabled={pending}
+                    onClick={() => setConfirmingArchive(false)}
+                  >
+                    Keep task
+                  </button>
+                  <button
+                    autoFocus
+                    className="button button-danger"
+                    type="button"
+                    disabled={pending || !isOnline}
+                    onClick={onArchive}
+                  >
+                    {pending ? "Archiving…" : "Archive task"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+        ) : null}
+      </div>
+    </Modal>
   );
 }
 

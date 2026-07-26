@@ -43,7 +43,19 @@ function isOwnedCredentialCycleLookup(sql) {
 }
 
 function isOwnedActivityCycleLookup(sql) {
-  return /SELECT id, total_units AS totalUnits, completion_date AS completionDate, evidence_status AS evidenceStatus FROM activities WHERE id = \? AND user_id = \?/i.test(
+  return /SELECT id, total_units AS totalUnits, completion_date AS completionDate, evidence_status AS evidenceStatus(?:, revision)?(?:, archived_at AS archivedAt)? FROM activities WHERE id = \? AND user_id = \?/i.test(
+    sql,
+  );
+}
+
+function isOwnedEvidenceForDeletionLookup(sql) {
+  return /FROM evidence_files WHERE id = \? AND user_id = \? AND status IN \('ready', 'deleting'\)/i.test(
+    sql,
+  );
+}
+
+function isOwnedMutableActivityLookup(sql) {
+  return /SELECT activity\.id, activity\.archived_at AS archivedAt, EXISTS \( SELECT 1 FROM activity_allocations allocation JOIN credentials credential ON credential\.id = allocation\.credential_id WHERE allocation\.activity_id = activity\.id AND credential\.user_id = activity\.user_id AND credential\.status = 'renewed' \) AS usedByClosedCycle FROM activities activity WHERE activity\.id = \? AND activity\.user_id = \?/i.test(
     sql,
   );
 }
@@ -109,17 +121,20 @@ class FakeStatement {
       bindings: [...this.bindings],
     };
     this.database.calls.push(call);
+    const resolved = await this.database.resolveRun(call);
+    if (resolved !== undefined) return resolved;
     return { success: true, meta: {} };
   }
 }
 
 class FakeDatabase {
-  constructor({ resolveFirst, resolveAll, resolveBatch } = {}) {
+  constructor({ resolveFirst, resolveAll, resolveBatch, resolveRun } = {}) {
     this.calls = [];
     this.batches = [];
     this.resolveFirst = resolveFirst ?? (() => null);
     this.resolveAll = resolveAll ?? (() => []);
     this.resolveBatch = resolveBatch ?? (() => undefined);
+    this.resolveRun = resolveRun ?? (() => undefined);
   }
 
   prepare(sql) {
@@ -3055,6 +3070,9 @@ test("License Lantern product contract", async (t) => {
       weeklyPeriodMigration,
       builtWeeklyPeriodMigration,
       weeklyPeriodSnapshotSource,
+      archiveMigration,
+      builtArchiveMigration,
+      archiveSnapshotSource,
     ] = await Promise.all([
         readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
         readFile(
@@ -3174,6 +3192,21 @@ test("License Lantern product contract", async (t) => {
           new URL("../drizzle/meta/0007_snapshot.json", import.meta.url),
           "utf8",
         ),
+        readFile(
+          new URL("../drizzle/0008_mighty_snowbird.sql", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL(
+            "../dist/.openai/drizzle/0008_mighty_snowbird.sql",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+        readFile(
+          new URL("../drizzle/meta/0008_snapshot.json", import.meta.url),
+          "utf8",
+        ),
       ]);
 
     const hosting = JSON.parse(hostingSource);
@@ -3190,8 +3223,9 @@ test("License Lantern product contract", async (t) => {
     assert.equal(builtExclusiveGroupMigration, exclusiveGroupMigration);
     assert.equal(builtAttestationMigration, attestationMigration);
     assert.equal(builtWeeklyPeriodMigration, weeklyPeriodMigration);
+    assert.equal(builtArchiveMigration, archiveMigration);
 
-    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}\n${attestationMigration}\n${weeklyPeriodMigration}`;
+    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}\n${attestationMigration}\n${weeklyPeriodMigration}\n${archiveMigration}`;
     const migratedTables = new Set(
       [...migration.matchAll(/CREATE TABLE `([^`]+)`/g)].map(
         (match) => match[1],
@@ -3301,7 +3335,7 @@ test("License Lantern product contract", async (t) => {
     const migrationJournal = JSON.parse(migrationJournalSource);
     assert.equal(
       migrationJournal.entries.at(-1)?.tag,
-      "0007_damp_mandroid",
+      "0008_mighty_snowbird",
     );
     assert.match(
       weeklyPeriodMigration,
@@ -3320,6 +3354,23 @@ test("License Lantern product contract", async (t) => {
         columns: ["user_id", "week_start"],
         isUnique: true,
       },
+    );
+    const archiveSnapshot = JSON.parse(archiveSnapshotSource);
+    assert.equal(
+      archiveSnapshot.tables.activities.columns.revision.default,
+      1,
+    );
+    assert.equal(
+      archiveSnapshot.tables.activities.columns.archived_at.name,
+      "archived_at",
+    );
+    assert.equal(
+      archiveSnapshot.tables.checklist_tasks.columns.is_personal.default,
+      false,
+    );
+    assert.equal(
+      archiveSnapshot.tables.checklist_tasks.columns.revision.default,
+      1,
     );
     assert.match(
       exclusiveGroupMigration,
@@ -3438,6 +3489,507 @@ test("License Lantern product contract", async (t) => {
       /FOREIGN KEY \(`user_id`\) REFERENCES `users`\(`id`\)[\s\S]*?ON DELETE cascade/i,
     );
   });
+
+  await t.test(
+    "migrates revisioned archives and keeps active-record queries coherent",
+    async () => {
+      const [
+        schemaSource,
+        runtimeSource,
+        migrationSource,
+        snapshotSource,
+        journalSource,
+        workspaceRouteSource,
+        exportRouteSource,
+        evidenceSharedSource,
+        evidenceUploadSource,
+        evidenceDeleteSource,
+      ] = await Promise.all([
+        readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+        readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
+        readFile(
+          new URL("../drizzle/0008_mighty_snowbird.sql", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL("../drizzle/meta/0008_snapshot.json", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL("../drizzle/meta/_journal.json", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL("../app/api/workspace/route.ts", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL("../app/api/export/route.ts", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL("../app/api/evidence/_shared.ts", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL("../app/api/evidence/route.ts", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL("../app/api/evidence/[id]/route.ts", import.meta.url),
+          "utf8",
+        ),
+      ]);
+
+      const activitySchema = schemaSource.slice(
+        schemaSource.indexOf("export const activities"),
+        schemaSource.indexOf("export const evidenceFiles"),
+      );
+      const taskSchema = schemaSource.slice(
+        schemaSource.indexOf("export const checklistTasks"),
+        schemaSource.indexOf("export const renewalSubmissions"),
+      );
+      assert.match(
+        activitySchema,
+        /revision:\s*integer\("revision"\)\.notNull\(\)\.default\(1\)/,
+      );
+      assert.match(activitySchema, /archivedAt:\s*text\("archived_at"\)/);
+      assert.match(
+        activitySchema,
+        /activities_user_archive_date_idx[\s\S]*?userId[\s\S]*?archivedAt[\s\S]*?completionDate/,
+      );
+      assert.match(
+        taskSchema,
+        /isPersonal:\s*integer\("is_personal",\s*\{\s*mode:\s*"boolean"\s*\}\)[\s\S]*?default\(false\)/,
+      );
+      assert.match(
+        taskSchema,
+        /revision:\s*integer\("revision"\)\.notNull\(\)\.default\(1\)/,
+      );
+      assert.match(taskSchema, /archivedAt:\s*text\("archived_at"\)/);
+      assert.match(
+        taskSchema,
+        /checklist_tasks_user_credential_archive_idx[\s\S]*?userId[\s\S]*?credentialId[\s\S]*?archivedAt[\s\S]*?sortOrder/,
+      );
+
+      for (const pattern of [
+        /ALTER TABLE `activities` ADD `revision` integer DEFAULT 1 NOT NULL/i,
+        /ALTER TABLE `activities` ADD `archived_at` text/i,
+        /CREATE INDEX `activities_user_archive_date_idx` ON `activities` \(`user_id`,`archived_at`,`completion_date`\)/i,
+        /ALTER TABLE `checklist_tasks` ADD `is_personal` integer DEFAULT false NOT NULL/i,
+        /ALTER TABLE `checklist_tasks` ADD `revision` integer DEFAULT 1 NOT NULL/i,
+        /ALTER TABLE `checklist_tasks` ADD `archived_at` text/i,
+        /CREATE INDEX `checklist_tasks_user_credential_archive_idx` ON `checklist_tasks` \(`user_id`,`credential_id`,`archived_at`,`sort_order`\)/i,
+      ]) {
+        assert.match(migrationSource, pattern);
+      }
+
+      const snapshot = JSON.parse(snapshotSource);
+      assert.deepEqual(snapshot.tables.activities.columns.revision, {
+        name: "revision",
+        type: "integer",
+        primaryKey: false,
+        notNull: true,
+        autoincrement: false,
+        default: 1,
+      });
+      assert.equal(
+        snapshot.tables.activities.columns.archived_at.name,
+        "archived_at",
+      );
+      assert.deepEqual(
+        snapshot.tables.activities.indexes.activities_user_archive_date_idx
+          .columns,
+        ["user_id", "archived_at", "completion_date"],
+      );
+      assert.equal(
+        snapshot.tables.checklist_tasks.columns.is_personal.default,
+        false,
+      );
+      assert.equal(
+        snapshot.tables.checklist_tasks.columns.revision.default,
+        1,
+      );
+      assert.deepEqual(
+        snapshot.tables.checklist_tasks.indexes
+          .checklist_tasks_user_credential_archive_idx.columns,
+        ["user_id", "credential_id", "archived_at", "sort_order"],
+      );
+      assert.equal(
+        JSON.parse(journalSource).entries.at(-1)?.tag,
+        "0008_mighty_snowbird",
+      );
+
+      assert.match(
+        runtimeSource,
+        /activities_closed_cycle_core_guard_v2[\s\S]*?BEFORE UPDATE OF title, provider, completion_date, total_units,[\s\S]*?archived_at[\s\S]*?credential\.status = 'renewed'[\s\S]*?activity_cycle_closed/i,
+      );
+      assert.match(
+        runtimeSource,
+        /activity_allocations_mutable_guard_v2[\s\S]*?activity\.archived_at IS NULL[\s\S]*?credential\.status IN \('active', 'submitted'\)[\s\S]*?activity_allocation_not_mutable/i,
+      );
+      assert.match(
+        runtimeSource,
+        /activity_requirement_matches_mutable_insert_guard_v2[\s\S]*?activity\.archived_at IS NULL[\s\S]*?activity_match_not_mutable/i,
+      );
+      assert.match(
+        runtimeSource,
+        /checklist_tasks_closed_cycle_guard_v2[\s\S]*?BEFORE UPDATE OF title, kind, status, due_date, completed_at,[\s\S]*?archived_at[\s\S]*?credential\.status IN \('active', 'submitted'\)[\s\S]*?checklist_cycle_closed/i,
+      );
+
+      assert.match(
+        workspaceRouteSource,
+        /SUM\([\s\S]*?counted_activity\.id IS NULL THEN 0[\s\S]*?MIN\([\s\S]*?alloc\.allocated_units,[\s\S]*?counted_activity\.total_units[\s\S]*?counted_activity\.archived_at IS NULL/i,
+      );
+      assert.match(
+        workspaceRouteSource,
+        /AS rawEarned[\s\S]*?LEFT JOIN activities activity[\s\S]*?activity\.archived_at IS NULL/i,
+      );
+      assert.match(
+        workspaceRouteSource,
+        /archivedTasksByCredential[\s\S]*?archivedActivities/,
+      );
+      assert.match(
+        workspaceRouteSource,
+        /active_activity\.archived_at IS NULL[\s\S]*?required_classification_groups/,
+      );
+      assert.match(
+        exportRouteSource,
+        /WHERE a\.user_id = \?[\s\S]*?a\.archived_at IS NULL/,
+      );
+
+      assert.match(
+        evidenceSharedSource,
+        /assertOwnedActivityEvidenceMutable[\s\S]*?activity\.id = \? AND activity\.user_id = \?[\s\S]*?activity\.archivedAt[\s\S]*?usedByClosedCycle/,
+      );
+      assert.match(
+        evidenceUploadSource,
+        /INSERT INTO evidence_files[\s\S]*?activity\.archived_at IS NULL[\s\S]*?credential\.status = 'renewed'/,
+      );
+      assert.match(
+        evidenceUploadSource,
+        /UPDATE activities[\s\S]*?revision = revision \+ 1[\s\S]*?archived_at IS NULL/,
+      );
+      assert.match(
+        evidenceDeleteSource,
+        /assertOwnedActivityEvidenceMutable[\s\S]*?SET status = 'deleting'[\s\S]*?revision = revision \+ 1[\s\S]*?bucket\.delete/,
+      );
+      assert.match(
+        evidenceDeleteSource,
+        /findOwnedEvidenceForDeletion[\s\S]*?evidence\.status === "ready"[\s\S]*?evidence_delete_retry/,
+      );
+    },
+  );
+
+  await t.test(
+    "enforces archive defaults and closed-cycle mutation guards in SQLite",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const isolatedRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __archiveGuardTestNonce = "archive-guard";`,
+      );
+      await isolatedRuntime.initializeDatabase(database);
+      const raw = database.raw;
+
+      try {
+        raw
+          .prepare(
+            `INSERT INTO users (id, email, display_name, is_demo)
+             VALUES (?, ?, ?, 0)`,
+          )
+          .run(
+            "user-archive-guard",
+            "archive-guard@example.com",
+            "Archive Guard",
+          );
+        const insertCredential = raw.prepare(
+          `INSERT INTO credentials (
+             id, user_id, rule_set_id, credential_name, profession,
+             jurisdiction, issuer, cycle_start, deadline, total_required,
+             unit_label, status
+           ) VALUES (?, 'user-archive-guard', NULL, ?, 'Testing', 'Test',
+             'Test Board', '2026-01-01', '2026-12-31', 10, 'hours', ?)`,
+        );
+        insertCredential.run(
+          "credential-archive-active",
+          "Active archive credential",
+          "active",
+        );
+        insertCredential.run(
+          "credential-archive-closed",
+          "Closed archive credential",
+          "renewed",
+        );
+        raw
+          .prepare(
+            `INSERT INTO activities (
+               id, user_id, title, provider, completion_date, total_units,
+               evidence_status
+             ) VALUES (
+               'activity-archive-guard',
+               'user-archive-guard',
+               'Guarded activity',
+               'Provider',
+               '2026-06-15',
+               2,
+               'missing'
+             )`,
+          )
+          .run();
+        raw
+          .prepare(
+            `INSERT INTO activity_allocations (
+               id, activity_id, credential_id, requirement_id,
+               allocated_units
+             ) VALUES (
+               'allocation-archive-guard',
+               'activity-archive-guard',
+               'credential-archive-active',
+               NULL,
+               2
+             )`,
+          )
+          .run();
+        raw
+          .prepare(
+            `INSERT INTO credential_requirements (
+               id, credential_id, name, required_units, kind, relation,
+               applicability, applicability_status, is_active, sort_order
+             ) VALUES (
+               'requirement-archive-guard',
+               'credential-archive-active',
+               'Guarded requirement',
+               2,
+               'minimum',
+               'independent',
+               'always',
+               'applies',
+               1,
+               0
+             )`,
+          )
+          .run();
+        raw
+          .prepare(
+            `INSERT INTO activity_requirement_matches (
+               id, user_id, allocation_id, requirement_id, matched_units
+             ) VALUES (
+               'match-archive-guard',
+               'user-archive-guard',
+               'allocation-archive-guard',
+               'requirement-archive-guard',
+               2
+             )`,
+          )
+          .run();
+        raw
+          .prepare(
+            `INSERT INTO checklist_tasks (
+               id, user_id, credential_id, title, kind, status,
+               is_personal
+             ) VALUES (
+               'task-archive-guard',
+               'user-archive-guard',
+               'credential-archive-active',
+               'Guarded task',
+               'personal',
+               'pending',
+               1
+             )`,
+          )
+          .run();
+
+        assert.deepEqual(
+          {
+            ...raw
+              .prepare(
+                `SELECT revision, archived_at AS archivedAt
+                 FROM activities
+                 WHERE id = 'activity-archive-guard'`,
+              )
+              .get(),
+          },
+          { revision: 1, archivedAt: null },
+        );
+        assert.deepEqual(
+          {
+            ...raw
+              .prepare(
+                `SELECT
+                   is_personal AS isPersonal,
+                   revision,
+                   archived_at AS archivedAt
+                 FROM checklist_tasks
+                 WHERE id = 'task-archive-guard'`,
+              )
+              .get(),
+          },
+          { isPersonal: 1, revision: 1, archivedAt: null },
+        );
+
+        assert.throws(
+          () =>
+            raw
+              .prepare(
+                `INSERT INTO activity_allocations (
+                   id, activity_id, credential_id, requirement_id,
+                   allocated_units
+                 ) VALUES (?, ?, ?, NULL, 1)`,
+              )
+              .run(
+                "allocation-archive-closed",
+                "activity-archive-guard",
+                "credential-archive-closed",
+              ),
+          /activity_allocation_not_mutable/i,
+        );
+        raw
+          .prepare(
+            `UPDATE credentials
+             SET status = 'renewed'
+             WHERE id = 'credential-archive-active'`,
+          )
+          .run();
+        assert.throws(
+          () =>
+            raw
+              .prepare(
+                `UPDATE activities
+                 SET archived_at = CURRENT_TIMESTAMP
+                 WHERE id = 'activity-archive-guard'`,
+              )
+              .run(),
+          /activity_cycle_closed/i,
+        );
+        assert.throws(
+          () =>
+            raw
+              .prepare(
+                `UPDATE activity_allocations
+                 SET allocated_units = 1
+                 WHERE id = 'allocation-archive-guard'`,
+              )
+              .run(),
+          /activity_allocation_not_mutable/i,
+        );
+        assert.throws(
+          () =>
+            raw
+              .prepare(
+                `DELETE FROM activity_requirement_matches
+                 WHERE id = 'match-archive-guard'`,
+              )
+              .run(),
+          /activity_match_not_mutable/i,
+        );
+        assert.throws(
+          () =>
+            raw
+              .prepare(
+                `DELETE FROM activity_allocations
+                 WHERE id = 'allocation-archive-guard'`,
+              )
+              .run(),
+          /activity_allocation_not_mutable/i,
+        );
+        assert.throws(
+          () =>
+            raw
+              .prepare(
+                `UPDATE checklist_tasks
+                 SET title = 'Changed after close'
+                 WHERE id = 'task-archive-guard'`,
+              )
+              .run(),
+          /checklist_cycle_closed/i,
+        );
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT archived_at
+               FROM activities
+               WHERE id = 'activity-archive-guard'`,
+            )
+            .get().archived_at,
+          null,
+        );
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT allocated_units
+               FROM activity_allocations
+               WHERE id = 'allocation-archive-guard'`,
+            )
+            .get().allocated_units,
+          2,
+        );
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT title
+               FROM checklist_tasks
+               WHERE id = 'task-archive-guard'`,
+            )
+            .get().title,
+          "Guarded task",
+        );
+        raw
+          .prepare(
+            `DELETE FROM credential_requirements
+             WHERE id = 'requirement-archive-guard'`,
+          )
+          .run();
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM activity_requirement_matches
+               WHERE id = 'match-archive-guard'`,
+            )
+            .get().count,
+          0,
+        );
+        raw
+          .prepare(
+            `DELETE FROM activities
+             WHERE id = 'activity-archive-guard'`,
+          )
+          .run();
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM activity_allocations
+               WHERE id = 'allocation-archive-guard'`,
+            )
+            .get().count,
+          0,
+        );
+
+        const repeatRuntime = await importTypeScriptModule(
+          `${runtimeSource}\nexport const __archiveGuardTestNonce = "archive-guard-repeat";`,
+        );
+        await repeatRuntime.initializeDatabase(database);
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM pragma_table_info('activities')
+               WHERE name IN ('revision', 'archived_at')`,
+            )
+            .get().count,
+          2,
+        );
+      } finally {
+        database.close();
+      }
+    },
+  );
 
   await t.test(
     "returns concise level, weekly quest, and grace-week progression",
@@ -4109,13 +4661,20 @@ test("License Lantern product contract", async (t) => {
       const taskDatabase = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT[\s\S]*?task\.id,[\s\S]*?task\.credential_id AS credentialId,[\s\S]*?credential\.status AS credentialStatus[\s\S]*?FROM checklist_tasks task/i.test(
+            /SELECT[\s\S]*?task\.id,[\s\S]*?task\.credential_id AS credentialId,[\s\S]*?task\.revision,[\s\S]*?task\.is_personal AS isPersonal,[\s\S]*?task\.archived_at AS archivedAt,[\s\S]*?credential\.status AS credentialStatus[\s\S]*?FROM checklist_tasks task/i.test(
               call.sql,
             )
           ) {
+            const completedUpdates = flattenedStatements(this).filter(
+              (statement) =>
+                /^UPDATE checklist_tasks SET/i.test(statement.sql),
+            ).length;
             return {
               id: call.bindings[0],
               credentialId: "credential-task-stable",
+              revision: completedUpdates + 1,
+              isPersonal: 0,
+              archivedAt: null,
               credentialStatus: "active",
             };
           }
@@ -4123,10 +4682,11 @@ test("License Lantern product contract", async (t) => {
         },
       });
       testCloudflareEnv.DB = taskDatabase;
-      for (const completed of [true, false, true]) {
+      for (const [index, completed] of [true, false, true].entries()) {
         const response = await postWorkspace("toggleTask", {
           taskId: "task-stable",
           completed,
+          expectedRevision: index + 1,
         });
         assert.equal(response.status, 200);
       }
@@ -7814,12 +8374,12 @@ test("License Lantern product contract", async (t) => {
       const bucket = new FakeEvidenceBucket();
       const database = new FakeDatabase({
         resolveFirst(call) {
-          if (
-            /SELECT id FROM activities WHERE id = \? AND user_id = \?/i.test(
-              call.sql,
-            )
-          ) {
-            return { id: call.bindings[0] };
+          if (isOwnedMutableActivityLookup(call.sql)) {
+            return {
+              id: call.bindings[0],
+              archivedAt: null,
+              usedByClosedCycle: 0,
+            };
           }
           if (/SELECT COUNT\(\*\) AS count FROM evidence_files/i.test(call.sql)) {
             return { count: 0 };
@@ -7842,13 +8402,13 @@ test("License Lantern product contract", async (t) => {
             if (!inserted) return null;
             return {
               id: inserted.bindings[0],
-              activityId: inserted.bindings[2],
-              objectKey: inserted.bindings[3],
-              originalFilename: inserted.bindings[4],
-              contentType: inserted.bindings[5],
-              sizeBytes: inserted.bindings[6],
-              sha256: inserted.bindings[7],
-              storageEtag: inserted.bindings[8],
+              activityId: inserted.bindings[8],
+              objectKey: inserted.bindings[2],
+              originalFilename: inserted.bindings[3],
+              contentType: inserted.bindings[4],
+              sizeBytes: inserted.bindings[5],
+              sha256: inserted.bindings[6],
+              storageEtag: inserted.bindings[7],
               createdAt: "2026-07-25T12:00:00.000Z",
             };
           }
@@ -7927,21 +8487,141 @@ test("License Lantern product contract", async (t) => {
       assert.deepEqual(evidenceInsert.bindings.slice(0, 4), [
         result.evidence.id,
         userId,
-        "activity-owner",
         upload.key,
+        "ethics-certificate.pdf",
       ]);
+      assert.deepEqual(evidenceInsert.bindings.slice(-3), [
+        "activity-owner",
+        userId,
+        12,
+      ]);
+      assert.match(evidenceInsert.sql, /activity\.archived_at IS NULL/i);
+      assert.match(evidenceInsert.sql, /credential\.status = 'renewed'/i);
       assert.deepEqual(activityUpdate.bindings, [
         "ethics-certificate.pdf",
         "activity-owner",
         userId,
         result.evidence.id,
       ]);
+      assert.match(activityUpdate.sql, /revision = revision \+ 1/i);
+      assert.match(activityUpdate.sql, /archived_at IS NULL/i);
       assert.deepEqual(evidenceXpInsert.bindings.slice(1), [
         userId,
         `${userId}:activity:activity-owner:evidence-attached`,
-        "activity-owner",
         result.evidence.id,
         userId,
+      ]);
+    },
+  );
+
+  await t.test(
+    "blocks proof mutations for archived activities and closed cycles",
+    async () => {
+      const archivedBucket = new FakeEvidenceBucket();
+      const archivedDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (isOwnedMutableActivityLookup(call.sql)) {
+            return {
+              id: call.bindings[0],
+              archivedAt: "2026-07-25 12:00:00",
+              usedByClosedCycle: 0,
+            };
+          }
+          return null;
+        },
+      });
+      testCloudflareEnv.DB = archivedDatabase;
+      testCloudflareEnv.EVIDENCE = archivedBucket;
+
+      const bytes = new Uint8Array([
+        0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0a,
+      ]);
+      const form = new FormData();
+      form.set("activityId", "activity-archived-proof");
+      form.set(
+        "file",
+        new File([bytes], "archived.pdf", {
+          type: "application/pdf",
+        }),
+      );
+      const archivedUpload = await postEvidence(form);
+      assert.equal(archivedUpload.status, 409);
+      assert.deepEqual(await archivedUpload.json(), {
+        error: "Restore this archived activity before changing its proof.",
+        code: "activity_archived",
+      });
+      assert.equal(archivedBucket.puts.length, 0);
+      assert.equal(
+        flattenedStatements(archivedDatabase).some((statement) =>
+          /^INSERT INTO evidence_files|^UPDATE evidence_files/i.test(
+            statement.sql,
+          ),
+        ),
+        false,
+      );
+
+      const closedBucket = new FakeEvidenceBucket();
+      const evidenceId = "9f45f407-6424-47d2-9e4d-6e5971014701";
+      const closedDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (isOwnedEvidenceForDeletionLookup(call.sql)) {
+            return {
+              id: evidenceId,
+              activityId: "activity-closed-proof",
+              objectKey: "evidence/owner/activity-closed-proof/evidence",
+              originalFilename: "closed.pdf",
+              contentType: "application/pdf",
+              sizeBytes: 9,
+              sha256: "closed-proof-sha",
+              storageEtag: "closed-proof-etag",
+              createdAt: "2026-07-25T12:00:00.000Z",
+              status: "ready",
+            };
+          }
+          if (isOwnedMutableActivityLookup(call.sql)) {
+            return {
+              id: call.bindings[0],
+              archivedAt: null,
+              usedByClosedCycle: 1,
+            };
+          }
+          return null;
+        },
+      });
+      testCloudflareEnv.DB = closedDatabase;
+      testCloudflareEnv.EVIDENCE = closedBucket;
+
+      const closedDelete = await fetchWorker(
+        `https://license-lantern.example/api/evidence/${evidenceId}`,
+        {
+          method: "DELETE",
+          headers: authHeaders(),
+        },
+      );
+      assert.equal(closedDelete.status, 409);
+      assert.deepEqual(await closedDelete.json(), {
+        error:
+          "This record is used by a closed renewal cycle, so its proof is frozen.",
+        code: "cycle_closed",
+      });
+      assert.equal(closedBucket.deletes.length, 0);
+      assert.equal(
+        flattenedStatements(closedDatabase).some((statement) =>
+          /^UPDATE evidence_files SET status = 'deleting'/i.test(
+            statement.sql,
+          ),
+        ),
+        false,
+      );
+      const mutableLookup = closedDatabase.calls.find(
+        (call) =>
+          call.method === "first" &&
+          isOwnedMutableActivityLookup(call.sql),
+      );
+      assert.ok(mutableLookup);
+      assert.deepEqual(mutableLookup.bindings, [
+        "activity-closed-proof",
+        await expectedStableUserId("owner@example.com"),
       ]);
     },
   );
@@ -7965,15 +8645,12 @@ test("License Lantern product contract", async (t) => {
       const uploadBucket = new FakeEvidenceBucket();
       const uploadDatabase = new FakeDatabase({
         resolveFirst(call) {
-          if (
-            /SELECT id FROM activities WHERE id = \? AND user_id = \?/i.test(
-              call.sql,
-            )
-          ) {
-            return { id: call.bindings[0] };
-          }
-          if (/SELECT 1 AS isClosed FROM activity_allocations/i.test(call.sql)) {
-            return this.raceClosed ? { isClosed: 1 } : null;
+          if (isOwnedMutableActivityLookup(call.sql)) {
+            return {
+              id: call.bindings[0],
+              archivedAt: null,
+              usedByClosedCycle: this.raceClosed ? 1 : 0,
+            };
           }
           if (/SELECT COUNT\(\*\) AS count FROM evidence_files/i.test(call.sql)) {
             return { count: 0 };
@@ -8003,7 +8680,7 @@ test("License Lantern product contract", async (t) => {
       assert.equal(uploadResponse.status, 409);
       assert.deepEqual(await uploadResponse.json(), {
         error:
-          "Evidence linked to an accepted renewal cycle cannot be changed.",
+          "This record is used by a closed renewal cycle, so its proof is frozen.",
         code: "cycle_closed",
       });
       assert.equal(uploadBucket.puts.length, 1);
@@ -8014,18 +8691,14 @@ test("License Lantern product contract", async (t) => {
       assert.ok(guardedInsert);
       assert.match(
         guardedInsert.sql,
-        /SELECT \?, \?, \?, \?, \?, \?, \?, \?, \?, 'ready' WHERE NOT EXISTS \( SELECT 1 FROM activity_allocations allocation JOIN credentials credential[\s\S]*?credential\.status = 'renewed'/i,
+        /SELECT \?, \?, activity\.id,[\s\S]*?FROM activities activity[\s\S]*?activity\.archived_at IS NULL[\s\S]*?credential\.status = 'renewed'/i,
       );
 
       const evidenceId = "36d2e90b-a0e9-4f61-83a7-d14a5dd467a6";
       const deleteBucket = new FakeEvidenceBucket();
       const deleteDatabase = new FakeDatabase({
         resolveFirst(call) {
-          if (
-            /FROM evidence_files WHERE id = \? AND user_id = \? AND status = 'ready'/i.test(
-              call.sql,
-            )
-          ) {
+          if (isOwnedEvidenceForDeletionLookup(call.sql)) {
             return {
               id: evidenceId,
               activityId: "activity-racing-acceptance",
@@ -8036,10 +8709,15 @@ test("License Lantern product contract", async (t) => {
               sha256: "a".repeat(64),
               storageEtag: "test-etag",
               createdAt: "2026-07-25T12:00:00.000Z",
+              status: "ready",
             };
           }
-          if (/SELECT 1 AS isClosed FROM activity_allocations/i.test(call.sql)) {
-            return this.raceClosed ? { isClosed: 1 } : null;
+          if (isOwnedMutableActivityLookup(call.sql)) {
+            return {
+              id: call.bindings[0],
+              archivedAt: null,
+              usedByClosedCycle: this.raceClosed ? 1 : 0,
+            };
           }
           return null;
         },
@@ -8069,7 +8747,7 @@ test("License Lantern product contract", async (t) => {
       assert.equal(deleteResponse.status, 409);
       assert.deepEqual(await deleteResponse.json(), {
         error:
-          "Evidence linked to an accepted renewal cycle cannot be changed.",
+          "This record is used by a closed renewal cycle, so its proof is frozen.",
         code: "cycle_closed",
       });
       assert.equal(deleteBucket.deletes.length, 0);
@@ -8082,7 +8760,7 @@ test("License Lantern product contract", async (t) => {
       assert.ok(guardedTransition);
       assert.match(
         guardedTransition.sql,
-        /status = 'ready' AND NOT EXISTS \( SELECT 1 FROM activity_allocations allocation JOIN credentials credential[\s\S]*?credential\.status = 'renewed'/i,
+        /status = 'ready' AND EXISTS \( SELECT 1 FROM activities activity[\s\S]*?activity\.archived_at IS NULL[\s\S]*?credential\.status = 'renewed'/i,
       );
     },
   );
@@ -8118,9 +8796,7 @@ test("License Lantern product contract", async (t) => {
       const activityLookup = database.calls.find(
         (call) =>
           call.method === "first" &&
-          /SELECT id FROM activities WHERE id = \? AND user_id = \?/i.test(
-            call.sql,
-          ),
+          isOwnedMutableActivityLookup(call.sql),
       );
       assert.ok(activityLookup);
       assert.deepEqual(activityLookup.bindings, [
@@ -8414,6 +9090,9 @@ test("License Lantern product contract", async (t) => {
                 id: "activity-lcsw",
                 totalUnits: 1,
                 completionDate: "2027-02-15",
+                evidenceStatus: "missing",
+                revision: 1,
+                archivedAt: null,
               };
             }
             if (
@@ -9435,9 +10114,12 @@ test("License Lantern product contract", async (t) => {
         matchInserts.map((statement) => statement.bindings.slice(1)),
         requirementIds.map((requirementId) => [
           userId,
-          allocationId,
           requirementId,
           2,
+          allocationId,
+          activityInserts[0].bindings[0],
+          "credential-rich",
+          userId,
         ]),
       );
       const validationLookup = database.calls.find(
@@ -9574,6 +10256,9 @@ test("License Lantern product contract", async (t) => {
                 id: call.bindings[0],
                 totalUnits: 2,
                 completionDate: "2027-05-20",
+                evidenceStatus: "missing",
+                revision: 1,
+                archivedAt: null,
               };
             }
             if (isOwnedCredentialCycleLookup(call.sql)) {
@@ -9664,7 +10349,7 @@ test("License Lantern product contract", async (t) => {
         ),
       );
       assert.equal(catchAllMatches.length, 1);
-      assert.equal(catchAllMatches[0].bindings[3], "requirement-other");
+      assert.equal(catchAllMatches[0].bindings[2], "requirement-other");
     },
   );
 
@@ -9684,7 +10369,11 @@ test("License Lantern product contract", async (t) => {
                 id: "allocation-legacy",
                 credentialId: "credential-arrt",
                 allocatedUnits: 4,
+                activityId: "activity-legacy",
+                activityRevision: 1,
                 completionDate: "2027-05-20",
+                evidenceStatus: "missing",
+                archivedAt: null,
                 status: "active",
                 cycleStart: "2027-01-01",
                 deadline: "2027-12-31",
@@ -9770,11 +10459,13 @@ test("License Lantern product contract", async (t) => {
         "requirement-other",
         "allocation-legacy",
         "credential-arrt",
+        1,
         userId,
       ]);
       assert.deepEqual(priorMatchDelete.bindings, [
         "allocation-legacy",
         userId,
+        1,
         userId,
       ]);
       assert.deepEqual(replacementMatch.bindings.slice(1), [
@@ -9782,7 +10473,19 @@ test("License Lantern product contract", async (t) => {
         "requirement-other",
         "allocation-legacy",
         "credential-arrt",
+        1,
         userId,
+      ]);
+      const revisionUpdate = statements.find((statement) =>
+        /^UPDATE activities SET revision = revision \+ 1/i.test(statement.sql),
+      );
+      assert.ok(revisionUpdate);
+      assert.deepEqual(revisionUpdate.bindings, [
+        "activity-legacy",
+        userId,
+        1,
+        "allocation-legacy",
+        "credential-arrt",
       ]);
       assert.match(
         allocationUpdate.sql,
@@ -9836,6 +10539,9 @@ test("License Lantern product contract", async (t) => {
                 id: call.bindings[0],
                 totalUnits: 2,
                 completionDate: "2027-05-20",
+                evidenceStatus: "missing",
+                revision: 1,
+                archivedAt: null,
               };
             }
             if (isOwnedCredentialCycleLookup(call.sql)) {
@@ -9948,7 +10654,11 @@ test("License Lantern product contract", async (t) => {
               id: "allocation-legacy-ptcb",
               credentialId: "credential-legacy-ptcb",
               allocatedUnits: 1,
+              activityId: "activity-legacy-ptcb",
+              activityRevision: 1,
               completionDate: "2027-05-20",
+              evidenceStatus: "missing",
+              archivedAt: null,
               status: "submitted",
               cycleStart: "2027-01-01",
               deadline: "2027-12-31",
@@ -10196,6 +10906,9 @@ test("License Lantern product contract", async (t) => {
               id: call.bindings[0],
               totalUnits: 3,
               completionDate: "2027-01-01",
+              evidenceStatus: "missing",
+              revision: 1,
+              archivedAt: null,
             };
           }
           if (isOwnedCredentialCycleLookup(call.sql)) {
@@ -10352,6 +11065,8 @@ test("License Lantern product contract", async (t) => {
               totalUnits: 2,
               completionDate: "2027-04-20",
               evidenceStatus: "attached",
+              revision: 1,
+              archivedAt: null,
             };
           }
           return carryoverResolver.resolveFirst(call);
@@ -10741,6 +11456,8 @@ test("License Lantern product contract", async (t) => {
               totalUnits: 10,
               completionDate: "2025-11-15",
               evidenceStatus: "attached",
+              revision: 1,
+              archivedAt: null,
             };
           }
           if (isOwnedCredentialCycleLookup(call.sql)) {
@@ -10846,7 +11563,11 @@ test("License Lantern product contract", async (t) => {
               id: "allocation-pa-carryover",
               credentialId: "credential-pa-current",
               allocatedUnits: 10,
+              activityId: "activity-pa-prior",
+              activityRevision: 1,
               completionDate: "2025-11-15",
+              evidenceStatus: "attached",
+              archivedAt: null,
               status: "active",
               cycleStart: "2026-01-01",
               deadline: "2026-12-31",
@@ -11242,6 +11963,8 @@ test("License Lantern product contract", async (t) => {
         acceptedEducationAttested: true,
       });
       assert.equal(activityResponse.status, 200);
+      const activityId = (await activityResponse.json()).id;
+      assert.ok(activityId);
       const raw = database.raw;
       const persistedMatches = Object.fromEntries(
         raw
@@ -11371,11 +12094,141 @@ test("License Lantern product contract", async (t) => {
         (await wrongNextDeadline.json()).code,
         "nremt_next_deadline_invalid",
       );
+
+      const batchBeforeArchiveRace = database.batch.bind(database);
+      let archiveRaceInjected = false;
+      database.batch = async (statements) => {
+        if (
+          !archiveRaceInjected &&
+          statements.some((statement) =>
+            /UPDATE credentials SET status = 'renewed'/i.test(
+              normalizedSql(statement.sql),
+            ),
+          )
+        ) {
+          raw
+            .prepare(
+              `UPDATE activities
+               SET
+                 archived_at = CURRENT_TIMESTAMP,
+                 revision = revision + 1
+               WHERE id = ?`,
+            )
+            .run(activityId);
+          archiveRaceInjected = true;
+        }
+        return batchBeforeArchiveRace(statements);
+      };
+      const racedAcceptance = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...acceptancePayload,
+          officialDatesAttested: true,
+        },
+      );
+      database.batch = batchBeforeArchiveRace;
+      assert.equal(archiveRaceInjected, true);
+      assert.equal(racedAcceptance.status, 409);
+      assert.equal(
+        (await racedAcceptance.json()).code,
+        "acceptance_activity_state_changed",
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT status
+               FROM credentials
+               WHERE id = ?`,
+            )
+            .get(credentialId),
+        },
+        { status: "submitted" },
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM renewal_acceptances
+             WHERE credential_id = ?`,
+          )
+          .get(credentialId).count,
+        0,
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM credentials
+             WHERE user_id = ?`,
+          )
+          .get(await expectedStableUserId("owner@example.com")).count,
+        1,
+      );
+      const archivedActivity = raw
+        .prepare(
+          `SELECT
+             revision,
+             archived_at AS archivedAt
+           FROM activities
+           WHERE id = ?`,
+        )
+        .get(activityId);
+      assert.ok(archivedActivity.archivedAt);
+      const restoreResponse = await postWorkspace("restoreActivity", {
+        activityId,
+        expectedRevision: Number(archivedActivity.revision),
+      });
+      assert.equal(restoreResponse.status, 200);
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT archived_at AS archivedAt
+             FROM activities
+             WHERE id = ?`,
+          )
+          .get(activityId).archivedAt,
+        null,
+      );
+
+      const acceptancePreparedStatements = [];
+      const prepareBeforeAcceptance = database.prepare.bind(database);
+      database.prepare = (sql) => {
+        const statement = prepareBeforeAcceptance(sql);
+        const bindBeforeAcceptance = statement.bind.bind(statement);
+        statement.bind = (...bindings) => {
+          acceptancePreparedStatements.push({
+            sql: normalizedSql(sql),
+            bindingCount: bindings.length,
+          });
+          return bindBeforeAcceptance(...bindings);
+        };
+        return statement;
+      };
       const acceptance = await postWorkspace("markRenewalAccepted", {
         ...acceptancePayload,
         officialDatesAttested: true,
       });
+      database.prepare = prepareBeforeAcceptance;
       assert.equal(acceptance.status, 200);
+      const catalogGuardStatement = acceptancePreparedStatements.find(
+        (statement) =>
+          /UPDATE credentials SET status = 'renewed'/i.test(statement.sql),
+      );
+      assert.ok(catalogGuardStatement);
+      assert.match(
+        catalogGuardStatement.sql,
+        /json_each\(\?\) snapshot_category/i,
+      );
+      const maximumBindingCount = Math.max(
+        ...acceptancePreparedStatements.map(
+          (statement) => statement.bindingCount,
+        ),
+      );
+      assert.ok(
+        maximumBindingCount <= 100,
+        `markRenewalAccepted prepared a statement with ${maximumBindingCount} bindings; D1 allows at most 100`,
+      );
       const nextCredentialId = (await acceptance.json()).id;
       assert.ok(nextCredentialId);
       assert.deepEqual(
@@ -12817,6 +13670,9 @@ test("License Lantern product contract", async (t) => {
               id: call.bindings[0],
               totalUnits: 3,
               completionDate: "2027-05-20",
+              evidenceStatus: "missing",
+              revision: 1,
+              archivedAt: null,
             };
           }
           if (isOwnedCredentialCycleLookup(call.sql)) {
@@ -12877,6 +13733,8 @@ test("License Lantern product contract", async (t) => {
         3,
         "credential-second",
         userId,
+        "activity-shared",
+        1,
       ]);
       assert.match(
         allocationInsert.sql,
@@ -12890,9 +13748,13 @@ test("License Lantern product contract", async (t) => {
         matchInserts.map((statement) => statement.bindings.slice(1)),
         requirementIds.map((requirementId) => [
           userId,
-          allocationInsert.bindings[0],
           requirementId,
           3,
+          allocationInsert.bindings[0],
+          "activity-shared",
+          "credential-second",
+          userId,
+          1,
         ]),
       );
       const activityLookup = database.calls.find(
@@ -14270,7 +15132,11 @@ test("License Lantern product contract", async (t) => {
           /FROM credentials c LEFT JOIN rule_sets rs/i.test(call.sql),
       );
       assert.ok(totalQuery);
-      assert.match(totalQuery.sql, /SUM\(alloc\.allocated_units\)/i);
+      assert.match(
+        totalQuery.sql,
+        /SUM\( CASE WHEN counted_activity\.id IS NULL THEN 0 ELSE MIN\( alloc\.allocated_units, counted_activity\.total_units \) END \)/i,
+      );
+      assert.match(totalQuery.sql, /counted_activity\.archived_at IS NULL/i);
       assert.doesNotMatch(
         totalQuery.sql,
         /activity_requirement_matches|SUM\(DISTINCT/i,
@@ -14768,19 +15634,37 @@ test("License Lantern product contract", async (t) => {
           2,
         );
 
-        raw
-          .prepare(
-            `DELETE FROM activity_requirement_matches
-             WHERE allocation_id = 'allocation-nasm-real'`,
-          )
-          .run();
-        raw
-          .prepare(
-            `UPDATE activity_allocations
-             SET requirement_id = NULL
-             WHERE id = 'allocation-nasm-real'`,
-          )
-          .run();
+        assert.throws(
+          () =>
+            raw
+              .prepare(
+                `DELETE FROM activity_requirement_matches
+                 WHERE allocation_id = 'allocation-nasm-real'`,
+              )
+              .run(),
+          /activity_match_not_mutable/i,
+        );
+        assert.throws(
+          () =>
+            raw
+              .prepare(
+                `UPDATE activity_allocations
+                 SET requirement_id = NULL
+                 WHERE id = 'allocation-nasm-real'`,
+              )
+              .run(),
+          /activity_allocation_not_mutable/i,
+        );
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM activity_requirement_matches
+               WHERE allocation_id = 'allocation-nasm-real'`,
+            )
+            .get().count,
+          1,
+        );
         assert.deepEqual(
           {
             ...raw
@@ -15399,6 +16283,958 @@ test("License Lantern product contract", async (t) => {
         ),
         false,
       );
+    },
+  );
+
+  await t.test(
+    "guards activity corrections, archive transitions, and National Registry exact amounts",
+    async () => {
+      const userId = await expectedStableUserId("owner@example.com");
+      const activityId = "activity-correction";
+      const isActivityMutationLookup = (sql) =>
+        /SELECT id, revision, archived_at AS archivedAt, completion_date AS completionDate, total_units AS totalUnits, provider, evidence_status AS evidenceStatus FROM activities WHERE id = \? AND user_id = \?/i.test(
+          sql,
+        );
+      const isAllocationValidationLookup = (sql) =>
+        /SELECT allocation\.id, allocation\.credential_id AS credentialId, allocation\.requirement_id AS requirementId, allocation\.allocated_units AS allocatedUnits, credential\.rule_set_id AS ruleSetId, credential\.status AS credentialStatus/i.test(
+          sql,
+        );
+      const isMatchValidationLookup = (sql) =>
+        /SELECT match\.allocation_id AS allocationId, match\.requirement_id AS requirementId, match\.matched_units AS matchedUnits/i.test(
+          sql,
+        );
+      const hasActivityMutationWrite = (database) =>
+        database.calls.some((call) =>
+          /^UPDATE (?:activity_allocations|activity_requirement_matches|activities) /i.test(
+            call.sql,
+          ),
+        );
+      const activeActivity = {
+        id: activityId,
+        revision: 3,
+        archivedAt: null,
+        completionDate: "2027-05-20",
+        totalUnits: 2,
+        provider: "Original Provider",
+        evidenceStatus: "missing",
+      };
+      const genericRequirement = {
+        id: "requirement-general",
+        name: "General CE",
+        ruleCategoryId: null,
+        kind: "minimum",
+        relation: "independent",
+        parentRequirementId: null,
+        isActive: 1,
+        applicabilityStatus: "applies",
+        exclusiveGroup: null,
+      };
+      const successDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (isActivityMutationLookup(call.sql)) return activeActivity;
+          return null;
+        },
+        resolveAll(call) {
+          if (isAllocationValidationLookup(call.sql)) {
+            return [
+              {
+                id: "allocation-general",
+                credentialId: "credential-general",
+                requirementId: genericRequirement.id,
+                allocatedUnits: 2,
+                ruleSetId: null,
+                credentialStatus: "active",
+                cycleStart: "2027-01-01",
+                deadline: "2027-12-31",
+              },
+            ];
+          }
+          if (isMatchValidationLookup(call.sql)) {
+            return [
+              {
+                allocationId: "allocation-general",
+                requirementId: genericRequirement.id,
+                matchedUnits: 2,
+              },
+            ];
+          }
+          if (isRequirementTagLookup(call.sql)) return [genericRequirement];
+          return [];
+        },
+        resolveBatch(statements) {
+          return statements.map(() => ({
+            success: true,
+            results: [],
+            meta: { changes: 1 },
+          }));
+        },
+      });
+      testCloudflareEnv.DB = successDatabase;
+      const updateResponse = await postWorkspace("updateActivity", {
+        activityId,
+        expectedRevision: 3,
+        title: "Corrected course title",
+        provider: "Corrected Provider",
+        completionDate: "2027-05-21",
+        totalUnits: 3,
+      });
+      assert.equal(updateResponse.status, 200);
+      assert.deepEqual(await updateResponse.json(), {
+        ok: true,
+        action: "updateActivity",
+        id: activityId,
+      });
+      const correctionBatch = successDatabase.batches.at(-1);
+      assert.equal(correctionBatch.length, 3);
+      const allocationCorrection = correctionBatch[0];
+      const matchCorrection = correctionBatch[1];
+      const activityCorrection = correctionBatch[2];
+      assert.match(
+        allocationCorrection.sql,
+        /SET allocated_units = CASE WHEN EXISTS \([\s\S]*?rule_set_id LIKE 'nremt-%'[\s\S]*?THEN MIN\(allocated_units, \?\) WHEN allocated_units = \? THEN \? ELSE MIN\(allocated_units, \?\) END/i,
+      );
+      assert.deepEqual(allocationCorrection.bindings, [
+        3,
+        2,
+        3,
+        3,
+        activityId,
+        activityId,
+        userId,
+        3,
+      ]);
+      assert.match(
+        matchCorrection.sql,
+        /SET matched_units = \( SELECT allocation\.allocated_units/i,
+      );
+      assert.match(
+        matchCorrection.sql,
+        /credentials\.rule_set_id NOT LIKE 'nremt-%'/i,
+      );
+      assert.deepEqual(activityCorrection.bindings, [
+        "Corrected course title",
+        "Corrected Provider",
+        "2027-05-21",
+        3,
+        activityId,
+        userId,
+        3,
+      ]);
+      assert.match(activityCorrection.sql, /revision = revision \+ 1/i);
+      assert.match(
+        activityCorrection.sql,
+        /guarded_credential\.status NOT IN \('active', 'submitted'\)/i,
+      );
+
+      const crossOwnerDatabase = new FakeDatabase();
+      testCloudflareEnv.DB = crossOwnerDatabase;
+      const crossOwnerResponse = await postWorkspace("updateActivity", {
+        activityId: "activity-other-owner",
+        expectedRevision: 1,
+        title: "Unauthorized correction",
+        provider: "",
+        completionDate: "2027-05-20",
+        totalUnits: 1,
+      });
+      assert.equal(crossOwnerResponse.status, 404);
+      assert.deepEqual(await crossOwnerResponse.json(), {
+        error: "Activity not found.",
+        code: "activity_not_found",
+      });
+      assert.equal(hasActivityMutationWrite(crossOwnerDatabase), false);
+
+      const staleDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (isActivityMutationLookup(call.sql)) {
+            return { ...activeActivity, revision: 4 };
+          }
+          return null;
+        },
+      });
+      testCloudflareEnv.DB = staleDatabase;
+      const staleResponse = await postWorkspace("updateActivity", {
+        activityId,
+        expectedRevision: 3,
+        title: "Stale correction",
+        provider: "Original Provider",
+        completionDate: "2027-05-20",
+        totalUnits: 2,
+      });
+      assert.equal(staleResponse.status, 409);
+      assert.deepEqual(await staleResponse.json(), {
+        error:
+          "This learning record changed in another session. Refresh and try again.",
+        code: "activity_version_conflict",
+      });
+      assert.equal(hasActivityMutationWrite(staleDatabase), false);
+
+      const makeArchiveDatabase = ({ archivedAt, revision }) =>
+        new FakeDatabase({
+          resolveFirst(call) {
+            if (isActivityMutationLookup(call.sql)) {
+              return { ...activeActivity, archivedAt, revision };
+            }
+            return null;
+          },
+          resolveRun(call) {
+            if (/^UPDATE activities SET archived_at =/i.test(call.sql)) {
+              return { success: true, results: [], meta: { changes: 1 } };
+            }
+            return undefined;
+          },
+        });
+      const archiveDatabase = makeArchiveDatabase({
+        archivedAt: null,
+        revision: 4,
+      });
+      testCloudflareEnv.DB = archiveDatabase;
+      const archiveResponse = await postWorkspace("archiveActivity", {
+        activityId,
+        expectedRevision: 4,
+      });
+      assert.equal(archiveResponse.status, 200);
+      const archiveWrite = archiveDatabase.calls.find(
+        (call) =>
+          call.method === "run" &&
+          /^UPDATE activities SET archived_at = CURRENT_TIMESTAMP/i.test(
+            call.sql,
+          ),
+      );
+      assert.ok(archiveWrite);
+      assert.deepEqual(archiveWrite.bindings, [activityId, userId, 4]);
+      assert.match(archiveWrite.sql, /revision = revision \+ 1/i);
+      assert.match(
+        archiveWrite.sql,
+        /deleting_evidence\.status = 'deleting'/i,
+      );
+      assert.match(
+        archiveWrite.sql,
+        /guarded_credential\.status NOT IN \('active', 'submitted'\)/i,
+      );
+
+      const restoreDatabase = makeArchiveDatabase({
+        archivedAt: "2027-06-01 12:00:00",
+        revision: 5,
+      });
+      testCloudflareEnv.DB = restoreDatabase;
+      const restoreResponse = await postWorkspace("restoreActivity", {
+        activityId,
+        expectedRevision: 5,
+      });
+      assert.equal(restoreResponse.status, 200);
+      const restoreWrite = restoreDatabase.calls.find(
+        (call) =>
+          call.method === "run" &&
+          /^UPDATE activities SET archived_at = NULL/i.test(call.sql),
+      );
+      assert.ok(restoreWrite);
+      assert.deepEqual(restoreWrite.bindings, [activityId, userId, 5]);
+      assert.match(restoreWrite.sql, /archived_at IS NOT NULL/i);
+      assert.match(restoreWrite.sql, /revision = revision \+ 1/i);
+
+      const makeClosedDatabase = (archivedAt) =>
+        new FakeDatabase({
+          resolveFirst(call) {
+            if (isActivityMutationLookup(call.sql)) {
+              return {
+                ...activeActivity,
+                archivedAt,
+                revision: 7,
+              };
+            }
+            return null;
+          },
+          resolveAll(call) {
+            if (isAllocationValidationLookup(call.sql)) {
+              return [
+                {
+                  id: "allocation-closed",
+                  credentialId: "credential-closed",
+                  requirementId: null,
+                  allocatedUnits: 2,
+                  ruleSetId: null,
+                  credentialStatus: "renewed",
+                  cycleStart: "2027-01-01",
+                  deadline: "2027-12-31",
+                },
+              ];
+            }
+            return [];
+          },
+        });
+      const closedCases = [
+        {
+          action: "updateActivity",
+          archivedAt: null,
+          payload: {
+            activityId,
+            expectedRevision: 7,
+            title: "Closed correction",
+            provider: "Original Provider",
+            completionDate: "2027-05-20",
+            totalUnits: 2,
+          },
+        },
+        {
+          action: "archiveActivity",
+          archivedAt: null,
+          payload: { activityId, expectedRevision: 7 },
+        },
+        {
+          action: "restoreActivity",
+          archivedAt: "2027-06-01 12:00:00",
+          payload: { activityId, expectedRevision: 7 },
+        },
+      ];
+      for (const closedCase of closedCases) {
+        const closedDatabase = makeClosedDatabase(closedCase.archivedAt);
+        testCloudflareEnv.DB = closedDatabase;
+        const response = await postWorkspace(
+          closedCase.action,
+          closedCase.payload,
+        );
+        assert.equal(response.status, 409, closedCase.action);
+        assert.equal((await response.json()).code, "cycle_closed");
+        assert.equal(
+          closedDatabase.calls.some(
+            (call) =>
+              call.method === "run" &&
+              /^UPDATE activities SET/i.test(call.sql),
+          ),
+          false,
+          `${closedCase.action} must not mutate a closed-cycle activity`,
+        );
+        assert.equal(hasActivityMutationWrite(closedDatabase), false);
+      }
+
+      const nremtRequirements = [
+        {
+          id: "nremt-national",
+          name: "National Component",
+          ruleCategoryId: "nremt-emt-2025-national",
+          relation: "independent",
+          parentRequirementId: null,
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: "nremt-emt-2025-component",
+        },
+        {
+          id: "nremt-local",
+          name: "Local or State Component",
+          ruleCategoryId: "nremt-emt-2025-local",
+          relation: "independent",
+          parentRequirementId: null,
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: "nremt-emt-2025-component",
+        },
+        {
+          id: "nremt-individual",
+          name: "Individual Component",
+          ruleCategoryId: "nremt-emt-2025-individual",
+          relation: "independent",
+          parentRequirementId: null,
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: "nremt-emt-2025-component",
+        },
+        ...[
+          "airway",
+          "cardiology",
+          "trauma",
+          "medical",
+          "operations",
+        ].map((topic) => ({
+          id: `nremt-${topic}`,
+          name: topic,
+          ruleCategoryId: `nremt-emt-2025-national-${topic}`,
+          relation: "nested",
+          parentRequirementId: "nremt-national",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: null,
+        })),
+        {
+          id: "nremt-pediatric",
+          name: "Pediatric",
+          ruleCategoryId: "nremt-emt-2025-national-pediatric",
+          relation: "overlapping",
+          parentRequirementId: null,
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: null,
+        },
+      ];
+      const makeNremtDatabase = () =>
+        new FakeDatabase({
+          resolveFirst(call) {
+            if (isActivityMutationLookup(call.sql)) return activeActivity;
+            if (
+              /SELECT 1 AS isNremt FROM activity_allocations allocation JOIN credentials credential/i.test(
+                call.sql,
+              )
+            ) {
+              return { isNremt: 1 };
+            }
+            return null;
+          },
+          resolveAll(call) {
+            if (isAllocationValidationLookup(call.sql)) {
+              return [
+                {
+                  id: "allocation-nremt",
+                  credentialId: "credential-nremt",
+                  requirementId: "nremt-national",
+                  allocatedUnits: 2,
+                  ruleSetId: "nremt-emt-2025-v1",
+                  credentialStatus: "active",
+                  cycleStart: "2027-01-01",
+                  deadline: "2027-12-31",
+                },
+              ];
+            }
+            if (isMatchValidationLookup(call.sql)) {
+              return [
+                {
+                  allocationId: "allocation-nremt",
+                  requirementId: "nremt-national",
+                  matchedUnits: 2,
+                },
+                {
+                  allocationId: "allocation-nremt",
+                  requirementId: "nremt-airway",
+                  matchedUnits: 2,
+                },
+              ];
+            }
+            if (
+              /FROM credential_requirements requirement JOIN credentials credential ON credential\.id = requirement\.credential_id WHERE requirement\.credential_id = \? AND credential\.user_id = \?/i.test(
+                call.sql,
+              )
+            ) {
+              return nremtRequirements;
+            }
+            return [];
+          },
+          resolveBatch(statements) {
+            return statements.map(() => ({
+              success: true,
+              results: [],
+              meta: { changes: 1 },
+            }));
+          },
+        });
+
+      const unattestedCorrectionDatabase = makeNremtDatabase();
+      testCloudflareEnv.DB = unattestedCorrectionDatabase;
+      const unattestedCorrection = await postWorkspace("updateActivity", {
+        activityId,
+        expectedRevision: 3,
+        title: "Unattested National Registry correction",
+        provider: "Original Provider",
+        completionDate: "2027-05-20",
+        totalUnits: 2,
+      });
+      assert.equal(unattestedCorrection.status, 409);
+      assert.equal(
+        (await unattestedCorrection.json()).code,
+        "nremt_accepted_education_attestation_required",
+      );
+      const nremtCorrectionLookup =
+        unattestedCorrectionDatabase.calls.find(
+          (call) =>
+            call.method === "first" &&
+            /SELECT 1 AS isNremt FROM activity_allocations allocation JOIN credentials credential/i.test(
+              call.sql,
+            ),
+        );
+      assert.ok(nremtCorrectionLookup);
+      assert.deepEqual(nremtCorrectionLookup.bindings, [
+        activityId,
+        userId,
+      ]);
+      assert.equal(
+        hasActivityMutationWrite(unattestedCorrectionDatabase),
+        false,
+      );
+
+      const exactDatabase = makeNremtDatabase();
+      testCloudflareEnv.DB = exactDatabase;
+      const exactResponse = await postWorkspace("updateActivity", {
+        activityId,
+        expectedRevision: 3,
+        title: "Corrected National Registry title",
+        provider: "Original Provider",
+        completionDate: "2027-05-20",
+        totalUnits: 2,
+        acceptedEducationAttested: true,
+      });
+      assert.equal(exactResponse.status, 200);
+      assert.match(
+        exactDatabase.batches.at(-1)[1].sql,
+        /credentials\.rule_set_id NOT LIKE 'nremt-%'/i,
+        "metadata-only corrections must retain exact National Registry amounts",
+      );
+
+      const closedNremtDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (isActivityMutationLookup(call.sql)) return activeActivity;
+          if (
+            /SELECT 1 AS isNremt FROM activity_allocations allocation JOIN credentials credential/i.test(
+              call.sql,
+            )
+          ) {
+            return { isNremt: 1 };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (isAllocationValidationLookup(call.sql)) {
+            return [
+              {
+                id: "allocation-nremt-closed",
+                credentialId: "credential-nremt-closed",
+                requirementId: "nremt-national",
+                allocatedUnits: 2,
+                ruleSetId: "nremt-emt-2025-v1",
+                credentialStatus: "renewed",
+                cycleStart: "2027-01-01",
+                deadline: "2027-12-31",
+              },
+            ];
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = closedNremtDatabase;
+      const closedNremtResponse = await postWorkspace("updateActivity", {
+        activityId,
+        expectedRevision: 3,
+        title: "Closed National Registry correction",
+        provider: "",
+        completionDate: "2027-05-20",
+        totalUnits: 2,
+      });
+      assert.equal(closedNremtResponse.status, 409);
+      assert.equal((await closedNremtResponse.json()).code, "cycle_closed");
+      assert.equal(hasActivityMutationWrite(closedNremtDatabase), false);
+
+      const expandedDatabase = makeNremtDatabase();
+      testCloudflareEnv.DB = expandedDatabase;
+      const expandedResponse = await postWorkspace("updateActivity", {
+        activityId,
+        expectedRevision: 3,
+        title: "Invalid total-only National Registry correction",
+        provider: "Original Provider",
+        completionDate: "2027-05-20",
+        totalUnits: 3,
+        acceptedEducationAttested: true,
+      });
+      assert.equal(expandedResponse.status, 200);
+      const expandedAllocationWrite = expandedDatabase.batches.at(-1)[0];
+      assert.match(
+        expandedAllocationWrite.sql,
+        /rule_set_id LIKE 'nremt-%'[\s\S]*?THEN MIN\(allocated_units, \?\)/i,
+      );
+      assert.equal(
+        expandedAllocationWrite.bindings[0],
+        3,
+        "raising the activity total must retain the exact two-unit National Registry allocation",
+      );
+
+      const reducedDatabase = makeNremtDatabase();
+      testCloudflareEnv.DB = reducedDatabase;
+      const reducedResponse = await postWorkspace("updateActivity", {
+        activityId,
+        expectedRevision: 3,
+        title: "Invalid National Registry reduction",
+        provider: "Original Provider",
+        completionDate: "2027-05-20",
+        totalUnits: 1,
+        acceptedEducationAttested: true,
+      });
+      assert.equal(reducedResponse.status, 409);
+      assert.equal(
+        (await reducedResponse.json()).code,
+        "nremt_allocation_revision_required",
+      );
+      assert.equal(hasActivityMutationWrite(reducedDatabase), false);
+    },
+  );
+
+  await t.test(
+    "supports personal task CRUD while keeping managed tasks immutable and XP-free",
+    async () => {
+      const userId = await expectedStableUserId("owner@example.com");
+      const taskId = "personal-task";
+      const isTaskMutationLookup = (sql) =>
+        /SELECT task\.id, task\.credential_id AS credentialId, task\.revision, task\.is_personal AS isPersonal, task\.archived_at AS archivedAt, credential\.status AS credentialStatus FROM checklist_tasks task/i.test(
+          sql,
+        );
+      const successfulRun = {
+        success: true,
+        results: [],
+        meta: { changes: 1 },
+      };
+      const assertNoTaskXp = (database) => {
+        assert.equal(
+          database.calls.some((call) => /xp_events/i.test(call.sql)),
+          false,
+        );
+      };
+
+      const createDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /SELECT id, status FROM credentials WHERE id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return { id: "credential-personal", status: "active" };
+          }
+          if (
+            /SELECT COUNT\(\*\) AS count FROM checklist_tasks/i.test(call.sql)
+          ) {
+            return { count: 0 };
+          }
+          return null;
+        },
+        resolveRun(call) {
+          if (/^INSERT INTO checklist_tasks \(/i.test(call.sql)) {
+            return successfulRun;
+          }
+          return undefined;
+        },
+      });
+      testCloudflareEnv.DB = createDatabase;
+      const createResponse = await postWorkspace("createPersonalTask", {
+        credentialId: "credential-personal",
+        title: "Request transcript",
+        dueDate: "",
+      });
+      assert.equal(createResponse.status, 200);
+      const createdTaskId = (await createResponse.json()).id;
+      const createWrite = createDatabase.calls.find(
+        (call) =>
+          call.method === "run" &&
+          /^INSERT INTO checklist_tasks \(/i.test(call.sql),
+      );
+      assert.ok(createWrite);
+      assert.equal(createWrite.bindings[0], createdTaskId);
+      assert.deepEqual(createWrite.bindings.slice(1), [
+        "Request transcript",
+        null,
+        "credential-personal",
+        userId,
+      ]);
+      assert.match(
+        createWrite.sql,
+        /'personal', 'pending', \?, NULL,[\s\S]*?1, 1, NULL/i,
+      );
+      assert.match(
+        createWrite.sql,
+        /credential\.status IN \('active', 'submitted'\)/i,
+      );
+      assert.match(createWrite.sql, /\) < 50/i);
+      assertNoTaskXp(createDatabase);
+
+      const makeTaskDatabase = ({
+        revision,
+        isPersonal = 1,
+        archivedAt = null,
+        resolveBatch,
+      }) =>
+        new FakeDatabase({
+          resolveFirst(call) {
+            if (isTaskMutationLookup(call.sql)) {
+              return {
+                id: taskId,
+                credentialId: "credential-personal",
+                revision,
+                isPersonal,
+                archivedAt,
+                credentialStatus: "active",
+              };
+            }
+            return null;
+          },
+          resolveRun(call) {
+            if (/^UPDATE checklist_tasks SET/i.test(call.sql)) {
+              return successfulRun;
+            }
+            return undefined;
+          },
+          resolveBatch:
+            resolveBatch ??
+            ((statements) =>
+              statements.map(() => ({
+                success: true,
+                results: [],
+                meta: { changes: 1 },
+              }))),
+        });
+
+      const updateDatabase = makeTaskDatabase({ revision: 1 });
+      testCloudflareEnv.DB = updateDatabase;
+      const updateResponse = await postWorkspace("updatePersonalTask", {
+        taskId,
+        expectedRevision: 1,
+        title: "Request official transcript",
+        dueDate: "2027-08-15",
+      });
+      assert.equal(updateResponse.status, 200);
+      const updateWrite = updateDatabase.calls.find(
+        (call) =>
+          call.method === "run" &&
+          /^UPDATE checklist_tasks SET title = \?/i.test(call.sql),
+      );
+      assert.ok(updateWrite);
+      assert.deepEqual(updateWrite.bindings, [
+        "Request official transcript",
+        "2027-08-15",
+        taskId,
+        userId,
+        1,
+      ]);
+      assert.match(updateWrite.sql, /is_personal = 1/i);
+      assert.match(updateWrite.sql, /revision = revision \+ 1/i);
+      assert.match(updateWrite.sql, /archived_at IS NULL/i);
+      assertNoTaskXp(updateDatabase);
+
+      const toggleDatabase = makeTaskDatabase({ revision: 2 });
+      testCloudflareEnv.DB = toggleDatabase;
+      const toggleResponse = await postWorkspace("toggleTask", {
+        taskId,
+        expectedRevision: 2,
+        completed: true,
+      });
+      assert.equal(toggleResponse.status, 200);
+      const toggleBatch = toggleDatabase.batches.at(-1);
+      assert.equal(
+        toggleBatch.length,
+        1,
+        "personal task completion must not enqueue an XP write",
+      );
+      assert.match(toggleBatch[0].sql, /revision = revision \+ 1/i);
+      assert.deepEqual(toggleBatch[0].bindings.slice(-3), [
+        taskId,
+        userId,
+        2,
+      ]);
+      assertNoTaskXp(toggleDatabase);
+
+      const archiveDatabase = makeTaskDatabase({ revision: 3 });
+      testCloudflareEnv.DB = archiveDatabase;
+      const archiveResponse = await postWorkspace("archivePersonalTask", {
+        taskId,
+        expectedRevision: 3,
+      });
+      assert.equal(archiveResponse.status, 200);
+      const archiveWrite = archiveDatabase.calls.find(
+        (call) =>
+          call.method === "run" &&
+          /^UPDATE checklist_tasks SET archived_at = CURRENT_TIMESTAMP/i.test(
+            call.sql,
+          ),
+      );
+      assert.ok(archiveWrite);
+      assert.deepEqual(archiveWrite.bindings, [taskId, userId, 3]);
+      assert.match(archiveWrite.sql, /is_personal = 1/i);
+      assert.match(archiveWrite.sql, /revision = revision \+ 1/i);
+      assertNoTaskXp(archiveDatabase);
+
+      const restoreDatabase = makeTaskDatabase({
+        revision: 4,
+        archivedAt: "2027-08-20 12:00:00",
+      });
+      testCloudflareEnv.DB = restoreDatabase;
+      const restoreResponse = await postWorkspace("restorePersonalTask", {
+        taskId,
+        expectedRevision: 4,
+      });
+      assert.equal(restoreResponse.status, 200);
+      const restoreWrite = restoreDatabase.calls.find(
+        (call) =>
+          call.method === "run" &&
+          /^UPDATE checklist_tasks SET archived_at = NULL/i.test(call.sql),
+      );
+      assert.ok(restoreWrite);
+      assert.deepEqual(restoreWrite.bindings, [taskId, userId, 4]);
+      assert.match(restoreWrite.sql, /archived_at IS NOT NULL/i);
+      assert.match(restoreWrite.sql, /\) < 50/i);
+      assertNoTaskXp(restoreDatabase);
+
+      for (const action of ["updatePersonalTask", "archivePersonalTask"]) {
+        const managedDatabase = makeTaskDatabase({
+          revision: 1,
+          isPersonal: 0,
+        });
+        testCloudflareEnv.DB = managedDatabase;
+        const response = await postWorkspace(
+          action,
+          action === "updatePersonalTask"
+            ? {
+                taskId,
+                expectedRevision: 1,
+                title: "Attempted managed edit",
+                dueDate: null,
+              }
+            : { taskId, expectedRevision: 1 },
+        );
+        assert.equal(response.status, 409, action);
+        assert.deepEqual(await response.json(), {
+          error: "Managed renewal tasks cannot be edited or archived.",
+          code: "managed_task_immutable",
+        });
+        assert.equal(
+          managedDatabase.calls.some(
+            (call) =>
+              call.method === "run" &&
+              /^UPDATE checklist_tasks SET/i.test(call.sql),
+          ),
+          false,
+        );
+        assertNoTaskXp(managedDatabase);
+      }
+    },
+  );
+
+  await t.test(
+    "keeps failed R2 evidence deletion tombstoned and retries it durably",
+    async () => {
+      const userId = await expectedStableUserId("owner@example.com");
+      const evidenceId = "9f45f407-6424-47d2-9e4d-6e5971014701";
+      const activityId = "activity-evidence-rollback";
+      const objectKey = `evidence/${userId}/${activityId}/${evidenceId}`;
+      const evidenceRow = {
+        id: evidenceId,
+        activityId,
+        objectKey,
+        originalFilename: "certificate.pdf",
+        contentType: "application/pdf",
+        sizeBytes: 9,
+        sha256: "proof-sha",
+        storageEtag: "proof-etag",
+        createdAt: "2027-05-20T12:00:00.000Z",
+      };
+      const isDeletionLookup = (sql) =>
+        /FROM evidence_files WHERE id = \? AND user_id = \? AND status IN \('ready', 'deleting'\)/i.test(
+          sql,
+        );
+
+      class FailingDeleteBucket extends FakeEvidenceBucket {
+        async delete(keyOrKeys) {
+          const keys = Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys];
+          this.deletes.push(...keys);
+          throw new Error("simulated R2 delete failure");
+        }
+      }
+
+      const failingBucket = new FailingDeleteBucket();
+      const tombstoneDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (isDeletionLookup(call.sql)) {
+            return { ...evidenceRow, status: "ready" };
+          }
+          if (isOwnedMutableActivityLookup(call.sql)) {
+            return {
+              id: activityId,
+              archivedAt: null,
+              usedByClosedCycle: 0,
+            };
+          }
+          return null;
+        },
+        resolveBatch(statements) {
+          return statements.map(() => ({
+            success: true,
+            results: [],
+            meta: { changes: 1 },
+          }));
+        },
+      });
+      testCloudflareEnv.DB = tombstoneDatabase;
+      testCloudflareEnv.EVIDENCE = failingBucket;
+      const failedResponse = await fetchWorker(
+        `https://license-lantern.example/api/evidence/${evidenceId}`,
+        {
+          method: "DELETE",
+          headers: authHeaders(),
+        },
+      );
+      assert.equal(failedResponse.status, 503);
+      assert.deepEqual(await failedResponse.json(), {
+        error:
+          "The proof file is queued for removal. Retry removal when storage is available.",
+        code: "evidence_delete_retry",
+      });
+      assert.deepEqual(failingBucket.deletes, [objectKey]);
+      const transitionBatch = tombstoneDatabase.batches.find((batch) =>
+        /^UPDATE evidence_files SET status = 'deleting'/i.test(batch[0]?.sql),
+      );
+      const rollbackBatch = tombstoneDatabase.batches.find((batch) =>
+        /^UPDATE evidence_files SET status = 'ready'/i.test(batch[0]?.sql),
+      );
+      assert.ok(transitionBatch);
+      assert.equal(transitionBatch.length, 2);
+      assert.match(transitionBatch[1].sql, /revision = revision \+ 1/i);
+      assert.equal(
+        rollbackBatch,
+        undefined,
+        "storage failure must preserve the logical deletion tombstone for retry",
+      );
+
+      const retryBucket = new FakeEvidenceBucket();
+      const retryDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (isDeletionLookup(call.sql)) {
+            return { ...evidenceRow, status: "deleting" };
+          }
+          return null;
+        },
+        resolveRun(call) {
+          if (/^DELETE FROM evidence_files/i.test(call.sql)) {
+            return { success: true, results: [], meta: { changes: 1 } };
+          }
+          return undefined;
+        },
+      });
+      testCloudflareEnv.DB = retryDatabase;
+      testCloudflareEnv.EVIDENCE = retryBucket;
+      const retryResponse = await fetchWorker(
+        `https://license-lantern.example/api/evidence/${evidenceId}`,
+        {
+          method: "DELETE",
+          headers: authHeaders(),
+        },
+      );
+      assert.equal(retryResponse.status, 200);
+      assert.deepEqual(await retryResponse.json(), {
+        ok: true,
+        id: evidenceId,
+      });
+      assert.deepEqual(retryBucket.deletes, [objectKey]);
+      assert.equal(
+        retryDatabase.batches.some((batch) =>
+          /^UPDATE evidence_files SET status = 'deleting'/i.test(
+            batch[0]?.sql,
+          ),
+        ),
+        false,
+        "a durable tombstone retry must not require the activity to remain mutable",
+      );
+      const tombstoneDelete = retryDatabase.calls.find(
+        (call) =>
+          call.method === "run" &&
+          /^DELETE FROM evidence_files/i.test(call.sql),
+      );
+      assert.ok(tombstoneDelete);
+      assert.deepEqual(tombstoneDelete.bindings, [
+        evidenceId,
+        userId,
+        activityId,
+      ]);
+      assert.match(tombstoneDelete.sql, /status = 'deleting'/i);
     },
   );
 });

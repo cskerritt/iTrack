@@ -1,9 +1,10 @@
 import {
-  assertActivityEvidenceMutable,
   EvidenceApiError,
+  assertOwnedActivityEvidenceMutable,
   evidenceErrorResponse,
   evidenceIdFromContext,
   findOwnedEvidence,
+  findOwnedEvidenceForDeletion,
   jsonNoStore,
   query,
   requireEvidenceContext,
@@ -43,7 +44,7 @@ export async function DELETE(request: Request, context: RouteContext) {
     const evidenceId = await evidenceIdFromContext(context);
     const { database, bucket, identity } =
       await requireEvidenceContext(request);
-    const evidence = await findOwnedEvidence(
+    const evidence = await findOwnedEvidenceForDeletion(
       database,
       identity.userId,
       evidenceId,
@@ -56,30 +57,39 @@ export async function DELETE(request: Request, context: RouteContext) {
       );
     }
 
-    await assertActivityEvidenceMutable(
-      database,
-      identity.userId,
-      evidence.activityId,
-    );
+    if (evidence.status === "ready") {
+      await assertOwnedActivityEvidenceMutable(
+        database,
+        identity.userId,
+        evidence.activityId,
+      );
 
-    const transitionResults = await database.batch([
+      const transitionResults = await database.batch([
       query(
         database,
         `UPDATE evidence_files
          SET status = 'deleting', updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
            AND user_id = ?
+           AND activity_id = ?
            AND status = 'ready'
-           AND NOT EXISTS (
+           AND EXISTS (
              SELECT 1
-             FROM activity_allocations allocation
-             JOIN credentials credential
-               ON credential.id = allocation.credential_id
-              AND credential.user_id = evidence_files.user_id
-             WHERE allocation.activity_id = evidence_files.activity_id
-               AND credential.status = 'renewed'
+             FROM activities activity
+             WHERE activity.id = evidence_files.activity_id
+               AND activity.user_id = evidence_files.user_id
+               AND activity.archived_at IS NULL
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM activity_allocations allocation
+                 JOIN credentials credential
+                   ON credential.id = allocation.credential_id
+                 WHERE allocation.activity_id = activity.id
+                   AND credential.user_id = activity.user_id
+                   AND credential.status = 'renewed'
+               )
            )`,
-        [evidenceId, identity.userId],
+        [evidenceId, identity.userId, evidence.activityId],
       ),
       query(
         database,
@@ -104,9 +114,11 @@ export async function DELETE(request: Request, context: RouteContext) {
              ORDER BY stored.created_at DESC, stored.id DESC
              LIMIT 1
            ),
+           revision = revision + 1,
            updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
            AND user_id = ?
+           AND archived_at IS NULL
            AND EXISTS (
              SELECT 1
              FROM evidence_files deleting
@@ -114,72 +126,86 @@ export async function DELETE(request: Request, context: RouteContext) {
                AND deleting.activity_id = activities.id
                AND deleting.user_id = activities.user_id
                AND deleting.status = 'deleting'
+           )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM activity_allocations allocation
+             JOIN credentials credential
+               ON credential.id = allocation.credential_id
+             WHERE allocation.activity_id = activities.id
+               AND credential.user_id = activities.user_id
+               AND credential.status = 'renewed'
            )`,
         [evidence.activityId, identity.userId, evidenceId],
       ),
-    ]);
-    if (
-      Number(transitionResults[0]?.meta?.changes ?? Number.NaN) === 0
-    ) {
-      await assertActivityEvidenceMutable(
-        database,
-        identity.userId,
-        evidence.activityId,
-      );
-      throw new EvidenceApiError(
-        "Evidence file not found.",
-        404,
-        "evidence_not_found",
-      );
+      ]);
+      if (
+        Number(transitionResults[0]?.meta?.changes ?? Number.NaN) !== 1 ||
+        Number(transitionResults[1]?.meta?.changes ?? Number.NaN) !== 1
+      ) {
+        if (
+          Number(transitionResults[0]?.meta?.changes ?? Number.NaN) === 1
+        ) {
+          await query(
+            database,
+            `UPDATE evidence_files
+             SET status = 'ready', updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?
+               AND user_id = ?
+               AND activity_id = ?
+               AND status = 'deleting'
+               AND EXISTS (
+                 SELECT 1
+                 FROM activities activity
+                 WHERE activity.id = evidence_files.activity_id
+                   AND activity.user_id = evidence_files.user_id
+                   AND activity.archived_at IS NULL
+                   AND NOT EXISTS (
+                     SELECT 1
+                     FROM activity_allocations allocation
+                     JOIN credentials credential
+                       ON credential.id = allocation.credential_id
+                     WHERE allocation.activity_id = activity.id
+                       AND credential.user_id = activity.user_id
+                       AND credential.status = 'renewed'
+                   )
+               )`,
+            [evidenceId, identity.userId, evidence.activityId],
+          )
+            .run()
+            .catch(() => undefined);
+        }
+        await assertOwnedActivityEvidenceMutable(
+          database,
+          identity.userId,
+          evidence.activityId,
+        );
+        throw new EvidenceApiError(
+          "The proof file changed while it was being removed. Refresh and try again.",
+          409,
+          "evidence_changed",
+        );
+      }
     }
 
     try {
       await bucket.delete(evidence.objectKey);
-    } catch (error) {
-      await database.batch([
-        query(
-          database,
-          `UPDATE evidence_files
-           SET status = 'ready', updated_at = CURRENT_TIMESTAMP
-           WHERE id = ? AND user_id = ? AND status = 'deleting'`,
-          [evidenceId, identity.userId],
-        ),
-        query(
-          database,
-          `UPDATE activities
-           SET
-             evidence_status = CASE
-               WHEN EXISTS (
-                 SELECT 1
-                 FROM evidence_files stored
-                 WHERE stored.activity_id = activities.id
-                   AND stored.user_id = activities.user_id
-                   AND stored.status = 'ready'
-               ) THEN 'attached'
-               ELSE 'missing'
-             END,
-             evidence_reference = (
-               SELECT stored.original_filename
-               FROM evidence_files stored
-               WHERE stored.activity_id = activities.id
-                 AND stored.user_id = activities.user_id
-                 AND stored.status = 'ready'
-               ORDER BY stored.created_at DESC, stored.id DESC
-               LIMIT 1
-             ),
-             updated_at = CURRENT_TIMESTAMP
-           WHERE id = ? AND user_id = ?`,
-          [evidence.activityId, identity.userId],
-        ),
-      ]);
-      throw error;
+    } catch {
+      throw new EvidenceApiError(
+        "The proof file is queued for removal. Retry removal when storage is available.",
+        503,
+        "evidence_delete_retry",
+      );
     }
 
     await query(
       database,
       `DELETE FROM evidence_files
-       WHERE id = ? AND user_id = ? AND status = 'deleting'`,
-      [evidenceId, identity.userId],
+       WHERE id = ?
+         AND user_id = ?
+         AND activity_id = ?
+         AND status = 'deleting'`,
+      [evidenceId, identity.userId, evidence.activityId],
     ).run();
 
     return jsonNoStore({ ok: true, id: evidenceId });

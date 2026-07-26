@@ -153,6 +153,8 @@ const TABLE_STATEMENTS = [
     total_units REAL NOT NULL,
     evidence_status TEXT NOT NULL DEFAULT 'missing',
     evidence_reference TEXT,
+    revision INTEGER NOT NULL DEFAULT 1,
+    archived_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -227,6 +229,9 @@ const TABLE_STATEMENTS = [
     due_date TEXT,
     completed_at TEXT,
     sort_order INTEGER NOT NULL DEFAULT 0,
+    is_personal INTEGER NOT NULL DEFAULT 0,
+    revision INTEGER NOT NULL DEFAULT 1,
+    archived_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -395,6 +400,231 @@ const INTEGRITY_TRIGGER_STATEMENTS = [
    BEGIN
      SELECT RAISE(ABORT, 'activity_requirement_inactive');
    END`,
+  `CREATE TRIGGER IF NOT EXISTS activity_requirement_matches_active_update_guard_v2
+   BEFORE UPDATE OF requirement_id ON activity_requirement_matches
+   FOR EACH ROW
+   WHEN NOT EXISTS (
+     SELECT 1
+     FROM credential_requirements requirement
+     JOIN activity_allocations allocation
+       ON allocation.id = NEW.allocation_id
+     JOIN credentials credential
+       ON credential.id = allocation.credential_id
+     JOIN activities activity
+       ON activity.id = allocation.activity_id
+     WHERE requirement.id = NEW.requirement_id
+       AND requirement.credential_id = allocation.credential_id
+       AND requirement.is_active = 1
+       AND requirement.applicability_status = 'applies'
+       AND credential.user_id = NEW.user_id
+       AND activity.user_id = NEW.user_id
+   )
+   BEGIN
+     SELECT RAISE(ABORT, 'activity_requirement_inactive');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS activities_closed_cycle_core_guard_v2
+   BEFORE UPDATE OF title, provider, completion_date, total_units,
+     evidence_status, evidence_reference, archived_at
+   ON activities
+   FOR EACH ROW
+   WHEN EXISTS (
+     SELECT 1
+     FROM activity_allocations allocation
+     JOIN credentials credential
+       ON credential.id = allocation.credential_id
+     WHERE allocation.activity_id = OLD.id
+       AND (
+         credential.user_id <> OLD.user_id
+         OR credential.status = 'renewed'
+       )
+   )
+   BEGIN
+     SELECT RAISE(ABORT, 'activity_cycle_closed');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS activities_evidence_transition_guard_v2
+   BEFORE UPDATE OF archived_at ON activities
+   FOR EACH ROW
+   WHEN NEW.archived_at IS NOT OLD.archived_at
+     AND EXISTS (
+       SELECT 1
+       FROM evidence_files evidence
+       WHERE evidence.activity_id = OLD.id
+         AND evidence.user_id = OLD.user_id
+         AND evidence.status = 'deleting'
+     )
+   BEGIN
+     SELECT RAISE(ABORT, 'activity_evidence_busy');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS credentials_evidence_transition_guard_v2
+   BEFORE UPDATE OF status ON credentials
+   FOR EACH ROW
+   WHEN NEW.status = 'renewed'
+     AND OLD.status <> 'renewed'
+     AND EXISTS (
+       SELECT 1
+       FROM activity_allocations allocation
+       JOIN activities activity
+         ON activity.id = allocation.activity_id
+       JOIN evidence_files evidence
+         ON evidence.activity_id = activity.id
+         AND evidence.user_id = activity.user_id
+       WHERE allocation.credential_id = OLD.id
+         AND activity.user_id = OLD.user_id
+         AND evidence.status = 'deleting'
+     )
+   BEGIN
+     SELECT RAISE(ABORT, 'credential_evidence_busy');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS activity_allocations_mutable_guard_v2
+   BEFORE INSERT ON activity_allocations
+   FOR EACH ROW
+   WHEN NOT EXISTS (
+     SELECT 1
+     FROM activities activity
+     JOIN credentials credential
+       ON credential.id = NEW.credential_id
+     WHERE activity.id = NEW.activity_id
+       AND activity.archived_at IS NULL
+       AND credential.user_id = activity.user_id
+       AND credential.status IN ('active', 'submitted')
+   )
+   BEGIN
+     SELECT RAISE(ABORT, 'activity_allocation_not_mutable');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS activity_allocations_update_guard_v2
+   BEFORE UPDATE OF requirement_id, allocated_units ON activity_allocations
+   FOR EACH ROW
+   WHEN NOT EXISTS (
+     SELECT 1
+     FROM activities activity
+     JOIN credentials credential
+       ON credential.id = OLD.credential_id
+     WHERE activity.id = OLD.activity_id
+       AND activity.archived_at IS NULL
+       AND credential.user_id = activity.user_id
+       AND credential.status IN ('active', 'submitted')
+   )
+   BEGIN
+     SELECT RAISE(ABORT, 'activity_allocation_not_mutable');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS activity_allocations_identity_guard_v2
+   BEFORE UPDATE OF id, activity_id, credential_id ON activity_allocations
+   FOR EACH ROW
+   BEGIN
+     SELECT RAISE(ABORT, 'activity_allocation_identity_immutable');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS activity_allocations_delete_guard_v2
+   BEFORE DELETE ON activity_allocations
+   FOR EACH ROW
+   WHEN EXISTS (
+     SELECT 1 FROM activities activity_parent
+     WHERE activity_parent.id = OLD.activity_id
+   )
+     AND EXISTS (
+       SELECT 1 FROM credentials credential_parent
+       WHERE credential_parent.id = OLD.credential_id
+     )
+     AND NOT EXISTS (
+     SELECT 1
+     FROM activities activity
+     JOIN credentials credential
+       ON credential.id = OLD.credential_id
+     WHERE activity.id = OLD.activity_id
+       AND activity.archived_at IS NULL
+       AND credential.user_id = activity.user_id
+       AND credential.status IN ('active', 'submitted')
+   )
+   BEGIN
+     SELECT RAISE(ABORT, 'activity_allocation_not_mutable');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS activity_requirement_matches_mutable_insert_guard_v2
+   BEFORE INSERT ON activity_requirement_matches
+   FOR EACH ROW
+   WHEN NOT EXISTS (
+     SELECT 1
+     FROM activity_allocations allocation
+     JOIN activities activity
+       ON activity.id = allocation.activity_id
+     JOIN credentials credential
+       ON credential.id = allocation.credential_id
+     WHERE allocation.id = NEW.allocation_id
+       AND activity.archived_at IS NULL
+       AND activity.user_id = NEW.user_id
+       AND credential.user_id = NEW.user_id
+       AND credential.status IN ('active', 'submitted')
+   )
+   BEGIN
+     SELECT RAISE(ABORT, 'activity_match_not_mutable');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS activity_requirement_matches_mutable_update_guard_v2
+   BEFORE UPDATE OF requirement_id, matched_units
+   ON activity_requirement_matches
+   FOR EACH ROW
+   WHEN NOT EXISTS (
+     SELECT 1
+     FROM activity_allocations allocation
+     JOIN activities activity
+       ON activity.id = allocation.activity_id
+     JOIN credentials credential
+       ON credential.id = allocation.credential_id
+     WHERE allocation.id = OLD.allocation_id
+       AND activity.archived_at IS NULL
+       AND activity.user_id = OLD.user_id
+       AND credential.user_id = OLD.user_id
+       AND credential.status IN ('active', 'submitted')
+   )
+   BEGIN
+     SELECT RAISE(ABORT, 'activity_match_not_mutable');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS activity_requirement_matches_identity_guard_v2
+   BEFORE UPDATE OF id, user_id, allocation_id
+   ON activity_requirement_matches
+   FOR EACH ROW
+   BEGIN
+     SELECT RAISE(ABORT, 'activity_match_identity_immutable');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS activity_requirement_matches_mutable_delete_guard_v2
+   BEFORE DELETE ON activity_requirement_matches
+   FOR EACH ROW
+   WHEN EXISTS (
+     SELECT 1 FROM activity_allocations allocation_parent
+     WHERE allocation_parent.id = OLD.allocation_id
+   )
+     AND EXISTS (
+       SELECT 1 FROM credential_requirements requirement_parent
+       WHERE requirement_parent.id = OLD.requirement_id
+     )
+     AND NOT EXISTS (
+     SELECT 1
+     FROM activity_allocations allocation
+     JOIN activities activity
+       ON activity.id = allocation.activity_id
+     JOIN credentials credential
+       ON credential.id = allocation.credential_id
+     WHERE allocation.id = OLD.allocation_id
+       AND activity.archived_at IS NULL
+       AND activity.user_id = OLD.user_id
+       AND credential.user_id = OLD.user_id
+       AND credential.status IN ('active', 'submitted')
+   )
+   BEGIN
+     SELECT RAISE(ABORT, 'activity_match_not_mutable');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS checklist_tasks_closed_cycle_guard_v2
+   BEFORE UPDATE OF title, kind, status, due_date, completed_at, is_personal,
+     archived_at
+   ON checklist_tasks
+   FOR EACH ROW
+   WHEN NOT EXISTS (
+     SELECT 1
+     FROM credentials credential
+     WHERE credential.id = OLD.credential_id
+       AND credential.user_id = OLD.user_id
+       AND credential.status IN ('active', 'submitted')
+   )
+   BEGIN
+     SELECT RAISE(ABORT, 'checklist_cycle_closed');
+   END`,
 ] as const;
 
 const RICH_RULE_COLUMNS = [
@@ -480,6 +710,31 @@ const RICH_RULE_COLUMNS = [
     name: "official_record_attested_at",
     definition: "official_record_attested_at TEXT",
   },
+  {
+    table: "activities",
+    name: "revision",
+    definition: "revision INTEGER NOT NULL DEFAULT 1",
+  },
+  {
+    table: "activities",
+    name: "archived_at",
+    definition: "archived_at TEXT",
+  },
+  {
+    table: "checklist_tasks",
+    name: "is_personal",
+    definition: "is_personal INTEGER NOT NULL DEFAULT 0",
+  },
+  {
+    table: "checklist_tasks",
+    name: "revision",
+    definition: "revision INTEGER NOT NULL DEFAULT 1",
+  },
+  {
+    table: "checklist_tasks",
+    name: "archived_at",
+    definition: "archived_at TEXT",
+  },
 ] as const;
 
 const RICH_RULE_INDEX_STATEMENTS = [
@@ -487,6 +742,10 @@ const RICH_RULE_INDEX_STATEMENTS = [
     ON rule_categories (parent_category_id)`,
   `CREATE INDEX IF NOT EXISTS credential_requirements_parent_idx
     ON credential_requirements (parent_requirement_id)`,
+  `CREATE INDEX IF NOT EXISTS activities_user_archive_date_idx
+    ON activities (user_id, archived_at, completion_date)`,
+  `CREATE INDEX IF NOT EXISTS checklist_tasks_user_credential_archive_idx
+    ON checklist_tasks (user_id, credential_id, archived_at, sort_order)`,
 ] as const;
 
 const RULE_SET_ID = "nj-lcsw-sample-v1";
@@ -2191,6 +2450,10 @@ SELECT
   target_requirement.id,
   source_match.matched_units
 FROM activity_requirement_matches source_match
+JOIN activity_allocations allocation
+  ON allocation.id = source_match.allocation_id
+JOIN activities activity
+  ON activity.id = allocation.activity_id
 JOIN credential_requirements source_requirement
   ON source_requirement.id = source_match.requirement_id
 JOIN credentials credential
@@ -2200,6 +2463,7 @@ JOIN credential_requirements target_requirement
   AND target_requirement.is_active = 1
 WHERE credential.rule_set_id = 'tx-attorney-active-2026-v1'
   AND credential.status = 'active'
+  AND activity.archived_at IS NULL
   AND (
     (
       source_requirement.rule_category_id =
@@ -4518,6 +4782,10 @@ SELECT
   MAX(source_match.matched_units),
   MIN(source_match.created_at)
 FROM activity_requirement_matches source_match
+JOIN activity_allocations allocation
+  ON allocation.id = source_match.allocation_id
+JOIN activities activity
+  ON activity.id = allocation.activity_id
 JOIN credential_requirements source_requirement
   ON source_requirement.id = source_match.requirement_id
 JOIN credentials credential
@@ -4528,6 +4796,7 @@ JOIN credential_requirements target_requirement
     'cfp-professional-2027-general'
 WHERE credential.rule_set_id = 'cfp-professional-2027-v1'
   AND credential.status = 'active'
+  AND activity.archived_at IS NULL
   AND credential.cycle_start >= '2027-01-01'
   AND credential.cycle_start < '2027-04-01'
   AND source_requirement.rule_category_id IN (
@@ -4581,7 +4850,13 @@ WHERE requirement_id IN (
       'cfp-professional-2027-principal-topics',
       'cfp-professional-2027-practice-management'
     )
-)`;
+ )
+  AND EXISTS (
+    SELECT 1
+    FROM activities activity
+    WHERE activity.id = activity_allocations.activity_id
+      AND activity.archived_at IS NULL
+  )`;
 
 const DELETE_CFP_BOUNDARY_SOURCE_MATCHES_SQL = `DELETE FROM activity_requirement_matches
 WHERE requirement_id IN (
@@ -4597,7 +4872,14 @@ WHERE requirement_id IN (
       'cfp-professional-2027-principal-topics',
       'cfp-professional-2027-practice-management'
     )
-)`;
+ )
+  AND EXISTS (
+    SELECT 1
+    FROM activity_allocations allocation
+    JOIN activities activity ON activity.id = allocation.activity_id
+    WHERE allocation.id = activity_requirement_matches.allocation_id
+      AND activity.archived_at IS NULL
+  )`;
 
 const DELETE_CFP_BOUNDARY_OBSOLETE_REQUIREMENTS_SQL = `DELETE FROM credential_requirements
 WHERE rule_category_id IN (
@@ -4771,6 +5053,8 @@ async function ensureRichRuleColumns(database: D1Database) {
     "credential_requirements",
     "renewal_submissions",
     "renewal_acceptances",
+    "activities",
+    "checklist_tasks",
   ] as const) {
     const result = await database
       .prepare(`PRAGMA table_info(${table})`)
@@ -5034,6 +5318,8 @@ export async function ensureUser(
       ON requirement.id = allocation.requirement_id
       AND requirement.credential_id = allocation.credential_id
     WHERE activity.user_id = ?
+      AND activity.archived_at IS NULL
+      AND credential.status IN ('active', 'submitted')
       AND allocation.requirement_id IS NOT NULL
       AND requirement.is_active = 1
       AND requirement.applicability_status = 'applies'`,
