@@ -1725,13 +1725,11 @@ test("License Lantern product contract", async (t) => {
       exclusiveGroupSnapshot.tables.rule_categories.columns.exclusive_group,
       expectedExclusiveGroupColumn,
     );
-    assert.match(
+    assert.match(attestationMigration, /Compatibility marker only/i);
+    assert.match(attestationMigration, /SELECT 1/i);
+    assert.doesNotMatch(
       attestationMigration,
-      /ALTER TABLE `renewal_acceptances` ADD `official_record_attested_at` text/i,
-    );
-    assert.match(
-      attestationMigration,
-      /ALTER TABLE `renewal_submissions` ADD `attestation_kind` text/i,
+      /ALTER TABLE[\s\S]*?(official_record_attested_at|attestation_kind)/i,
     );
     const attestationSnapshot = JSON.parse(attestationSnapshotSource);
     assert.equal(
@@ -4448,6 +4446,11 @@ test("License Lantern product contract", async (t) => {
         `${runtimeSource}\nexport const __attestationMigrationNonce = "bootstrap";`,
       );
       await bootstrapRuntime.initializeDatabase(database);
+      const attestationMigration = await readFile(
+        new URL("../drizzle/0006_graceful_jackal.sql", import.meta.url),
+        "utf8",
+      );
+      assert.doesNotThrow(() => database.raw.exec(attestationMigration));
       database.raw.exec(
         `ALTER TABLE renewal_submissions DROP COLUMN attestation_kind;
          ALTER TABLE renewal_acceptances DROP COLUMN official_record_attested_at;`,
@@ -4469,6 +4472,7 @@ test("License Lantern product contract", async (t) => {
         false,
       );
 
+      assert.doesNotThrow(() => database.raw.exec(attestationMigration));
       const upgradeRuntime = await importTypeScriptModule(
         `${runtimeSource}\nexport const __attestationMigrationNonce = "upgrade";`,
       );
