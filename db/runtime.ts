@@ -31,6 +31,12 @@ import {
   PHARMACY_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
   PHARMACY_RULE_SET_SEED_BINDINGS,
 } from "./catalog/pharmacy";
+import {
+  NURSING_CATEGORY_SEED_BINDINGS,
+  NURSING_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+  NURSING_RENEWAL_TASK_COPY_BINDINGS,
+  NURSING_RULE_SET_SEED_BINDINGS,
+} from "./catalog/nursing";
 
 const TABLE_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS users (
@@ -873,90 +879,6 @@ WHERE id = ?`;
 
 const RICH_RULE_CATEGORY_SEED_BINDINGS = [
   [
-    "ca-rn-2026-implicit-bias",
-    "ca-rn-2026-v1",
-    "Implicit Bias",
-    1,
-    "minimum",
-    "independent",
-    null,
-    "conditional",
-    "One hour of direct participation within the first two years after initial licensure; still applies when the examination-based first-renewal 30-hour requirement is waived.",
-    0,
-  ],
-  [
-    "ca-rn-2026-gerontology",
-    "ca-rn-2026-v1",
-    "Gerontology and Care of Older Patients",
-    6,
-    "minimum",
-    "independent",
-    null,
-    "conditional",
-    "Applies to nurse practitioners providing primary care when more than 25% of the patient population is age 65 or older; 6 of the 30 hours.",
-    1,
-  ],
-  [
-    "tx-rn-2026-jurisprudence-ethics",
-    "tx-rn-2026-v1",
-    "Nursing Jurisprudence and Nursing Ethics",
-    2,
-    "minimum",
-    "independent",
-    null,
-    "conditional",
-    "Applies before the end of every third two-year licensing period; certification cannot satisfy this targeted requirement.",
-    0,
-  ],
-  [
-    "tx-rn-2026-older-adult-geriatric",
-    "tx-rn-2026-v1",
-    "Older Adult or Geriatric Care",
-    2,
-    "minimum",
-    "independent",
-    null,
-    "conditional",
-    "Applies each licensing period when practice includes older adult or geriatric populations; a qualifying Board-approved certification may satisfy it.",
-    1,
-  ],
-  [
-    "tx-rn-2026-forensic-evidence",
-    "tx-rn-2026-v1",
-    "Forensic Evidence Collection",
-    2,
-    "minimum",
-    "independent",
-    null,
-    "conditional",
-    "One-time within two years after initial emergency-room employment for a nurse who works or may float to an ER; a qualifying certification may satisfy it.",
-    2,
-  ],
-  [
-    "fl-rn-2026-workplace-impairment",
-    "fl-rn-2026-v1",
-    "Recognizing Impairment in the Workplace",
-    2,
-    "minimum",
-    "independent",
-    null,
-    "conditional",
-    "Required every other renewal.",
-    3,
-  ],
-  [
-    "fl-rn-2026-hiv-aids",
-    "fl-rn-2026-v1",
-    "HIV/AIDS",
-    1,
-    "minimum",
-    "independent",
-    null,
-    "conditional",
-    "One-time requirement before the first renewal; first-cycle total and proration rules must also be applied.",
-    4,
-  ],
-  [
     "ca-attorney-active-2026-participatory",
     "ca-attorney-active-2026-v1",
     "Participatory Credit",
@@ -1595,30 +1517,6 @@ const RICH_RULE_CATEGORY_SEED_BINDINGS = [
 ] as const;
 
 const RICH_RULE_CATEGORY_UPDATE_BINDINGS = [
-  [
-    "minimum",
-    "independent",
-    null,
-    "always",
-    "Required every renewal and must be Board approved.",
-    "fl-rn-2026-medical-errors",
-  ],
-  [
-    "minimum",
-    "independent",
-    null,
-    "always",
-    "Required every renewal and must be Board approved.",
-    "fl-rn-2026-laws-rules",
-  ],
-  [
-    "minimum",
-    "independent",
-    null,
-    "always",
-    "Required every renewal; the specialty-certification CE exemption does not waive this requirement.",
-    "fl-rn-2026-human-trafficking",
-  ],
   [
     "minimum",
     "independent",
@@ -3629,6 +3527,7 @@ const CATALOG_2026_RULE_SET_SEED_BINDINGS = [
   ...EDUCATION_RULE_SET_SEED_BINDINGS,
   ...MENTAL_HEALTH_RULE_SET_SEED_BINDINGS,
   ...PHARMACY_RULE_SET_SEED_BINDINGS,
+  ...NURSING_RULE_SET_SEED_BINDINGS,
 ] as const;
 
 const CATALOG_2026_CATEGORY_INSERT_SQL = `INSERT INTO rule_categories (
@@ -4396,6 +4295,7 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
   ...EDUCATION_CATEGORY_SEED_BINDINGS,
   ...MENTAL_HEALTH_CATEGORY_SEED_BINDINGS,
   ...PHARMACY_CATEGORY_SEED_BINDINGS,
+  ...NURSING_CATEGORY_SEED_BINDINGS,
 ] as const;
 
 const MANAGED_EXTERNAL_RULE_SET_IDS = [
@@ -4406,6 +4306,7 @@ const MANAGED_EXTERNAL_RULE_SET_IDS = [
   ...EDUCATION_RULE_SET_SEED_BINDINGS,
   ...MENTAL_HEALTH_RULE_SET_SEED_BINDINGS,
   ...PHARMACY_RULE_SET_SEED_BINDINGS,
+  ...NURSING_RULE_SET_SEED_BINDINGS,
 ].map((bindings) => bindings[0]);
 
 const MANAGED_EXTERNAL_CATEGORY_IDS = [
@@ -4416,6 +4317,7 @@ const MANAGED_EXTERNAL_CATEGORY_IDS = [
   ...EDUCATION_CATEGORY_SEED_BINDINGS,
   ...MENTAL_HEALTH_CATEGORY_SEED_BINDINGS,
   ...PHARMACY_CATEGORY_SEED_BINDINGS,
+  ...NURSING_CATEGORY_SEED_BINDINGS,
 ].map((bindings) => bindings[0]);
 
 function trustedSqlStringList(values: readonly string[]) {
@@ -4446,7 +4348,8 @@ const MANAGED_EXTERNAL_SCOPE_SQL = `(managed_rule.id LIKE 'isc2-%'
   OR managed_rule.id LIKE 'nj-lpc-%'
   OR managed_rule.id LIKE 'pa-lpc-%'
   OR managed_rule.id LIKE 'fl-lcsw-lmft-lmhc-%'
-  OR managed_rule.profession = 'Pharmacy')`;
+  OR managed_rule.profession = 'Pharmacy'
+  OR managed_rule.profession = 'Nursing')`;
 
 const RETIRE_MISSING_MANAGED_RULE_SETS_SQL = `UPDATE rule_sets AS managed_rule
 SET is_current = 0
@@ -4579,6 +4482,7 @@ const MAXIMUM_CLASSIFICATION_RULE_SET_IDS = [
   ...EDUCATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
   ...MENTAL_HEALTH_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
   ...PHARMACY_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+  ...NURSING_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
 ] as const;
 
 const ACTIVE_CATALOG_SNAPSHOT_RULE_SET_IDS = [
@@ -4770,6 +4674,76 @@ WHERE credential_id IN (
         OR credential_requirements.sort_order IS NOT category.sort_order
       )
   )`;
+
+const ACTIVE_FLORIDA_NURSING_TOTAL_SQL = `(
+  SELECT
+    catalog_rule.total_units +
+    COALESCE(
+      (
+        SELECT MAX(domestic_violence.required_units)
+        FROM credential_requirements domestic_violence
+        WHERE domestic_violence.credential_id = credentials.id
+          AND domestic_violence.rule_category_id = CASE
+            WHEN credentials.rule_set_id = 'fl-rn-2026-v1'
+              THEN 'fl-rn-2026-domestic-violence'
+            WHEN credentials.rule_set_id = 'fl-lpn-2026-v1'
+              THEN 'fl-lpn-2026-domestic-violence'
+          END
+          AND domestic_violence.applicability_status = 'applies'
+          AND domestic_violence.is_active = 1
+      ),
+      0
+    )
+  FROM rule_sets catalog_rule
+  WHERE catalog_rule.id = credentials.rule_set_id
+)`;
+
+const SYNC_ACTIVE_FLORIDA_NURSING_TOTAL_SQL = `UPDATE credentials
+SET
+  total_required = ${ACTIVE_FLORIDA_NURSING_TOTAL_SQL},
+  updated_at = CURRENT_TIMESTAMP
+WHERE status = 'active'
+  AND rule_set_id IN ('fl-rn-2026-v1', 'fl-lpn-2026-v1')
+  AND total_required IS NOT ${ACTIVE_FLORIDA_NURSING_TOTAL_SQL}`;
+
+const SYNC_NURSING_DEFAULT_TASK_SQL = `UPDATE checklist_tasks
+SET title = ?, updated_at = CURRENT_TIMESTAMP
+WHERE kind = ?
+  AND title = ?
+  AND status = 'pending'
+  AND is_personal = 0
+  AND archived_at IS NULL
+  AND credential_id IN (
+    SELECT credential.id
+    FROM credentials credential
+    WHERE credential.rule_set_id = ?
+      AND credential.status = 'active'
+  )`;
+
+const NURSING_DEFAULT_TASK_REFRESH_BINDINGS =
+  NURSING_RENEWAL_TASK_COPY_BINDINGS.flatMap(
+    ([ruleSetId, review, progress, submission]) =>
+      [
+        [
+          review,
+          "review",
+          "Review the renewal requirements",
+          ruleSetId,
+        ],
+        [
+          progress,
+          "progress",
+          "Complete and document required education",
+          ruleSetId,
+        ],
+        [
+          submission,
+          "submission",
+          "Submit renewal and save confirmation",
+          ruleSetId,
+        ],
+      ] as const,
+  );
 
 const MERGE_CFP_BOUNDARY_GENERAL_MATCHES_SQL = `INSERT INTO activity_requirement_matches (
   id, user_id, allocation_id, requirement_id, matched_units, created_at
@@ -5206,6 +5180,7 @@ export async function initializeDatabase(database: D1Database): Promise<void> {
         ]),
         statement(database, BACKFILL_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL),
         statement(database, SYNC_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL),
+        statement(database, SYNC_ACTIVE_FLORIDA_NURSING_TOTAL_SQL),
         statement(database, MERGE_CFP_BOUNDARY_GENERAL_MATCHES_SQL),
         statement(database, REPOINT_CFP_BOUNDARY_ALLOCATIONS_SQL),
         statement(database, DELETE_CFP_BOUNDARY_SOURCE_MATCHES_SQL),
@@ -5231,6 +5206,11 @@ export async function initializeDatabase(database: D1Database): Promise<void> {
           ),
         ),
       ]);
+      await database.batch(
+        NURSING_DEFAULT_TASK_REFRESH_BINDINGS.map((bindings) =>
+          statement(database, SYNC_NURSING_DEFAULT_TASK_SQL, bindings),
+        ),
+      );
       await database.batch(
         INTEGRITY_TRIGGER_STATEMENTS.map((sql) => database.prepare(sql)),
       );

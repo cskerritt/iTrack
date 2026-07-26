@@ -1,4 +1,5 @@
 import { getD1 } from "@/db";
+import { NURSING_RENEWAL_TASK_COPY_BINDINGS } from "@/db/catalog/nursing";
 import {
   type RequestIdentity,
   resolveRequestIdentity,
@@ -102,6 +103,13 @@ const TX_PHARMACIST_DTM_YEAR_WINDOWS = new Map<
     { startsAfterMonths: 12, endsAfterMonths: 24 },
   ],
 ]);
+const FLORIDA_NURSING_DOMESTIC_VIOLENCE_CATEGORY_BY_RULE_SET = new Map([
+  ["fl-rn-2026-v1", "fl-rn-2026-domestic-violence"],
+  ["fl-lpn-2026-v1", "fl-lpn-2026-domestic-violence"],
+]);
+const FLORIDA_NURSING_DOMESTIC_VIOLENCE_CATEGORY_IDS = new Set(
+  FLORIDA_NURSING_DOMESTIC_VIOLENCE_CATEGORY_BY_RULE_SET.values(),
+);
 const PHARMACIST_RENEWAL_TASK_COPY = new Map<
   string,
   readonly [review: string, progress: string, submission: string]
@@ -155,6 +163,15 @@ const PHARMACIST_RENEWAL_TASK_COPY = new Map<
     ],
   ],
 ]);
+const NURSING_RENEWAL_TASK_COPY = new Map<
+  string,
+  readonly [review: string, progress: string, submission: string]
+>(
+  NURSING_RENEWAL_TASK_COPY_BINDINGS.map(
+    ([ruleSetId, review, progress, submission]) =>
+      [ruleSetId, [review, progress, submission] as const] as const,
+  ),
+);
 const CARRYOVER_REVIEW_TASK_TITLES = new Map([
   [
     CFP_2027_RULE_SET_ID,
@@ -179,6 +196,14 @@ const CARRYOVER_REVIEW_TASK_TITLES = new Map([
   [
     "nj-pharmacist-2026-v1",
     "Confirm Board-eligible New Jersey pharmacist carryover, then record only evidence-backed credit",
+  ],
+  [
+    "nj-rn-2026-v1",
+    "Confirm Board-eligible New Jersey RN carryover, then record only evidence-backed credit",
+  ],
+  [
+    "nj-lpn-2026-v1",
+    "Confirm Board-eligible New Jersey LPN carryover, then record only evidence-backed credit",
   ],
 ]);
 const REQUIREMENT_INCOMPATIBILITY_VALUES_SQL =
@@ -1036,6 +1061,40 @@ function isManagedPharmacistCredential(
   return profession === "Pharmacy" && Boolean(ruleSetId);
 }
 
+function isManagedNursingCredential(
+  profession: string,
+  ruleSetId: string | null,
+) {
+  return profession === "Nursing" && Boolean(ruleSetId);
+}
+
+function adjustedFloridaNursingTotal(
+  ruleSetId: string | null,
+  catalogTotal: number,
+  requirements: Array<{
+    ruleCategoryId: string | null;
+    requiredUnits: number;
+    applicabilityStatus: ApplicabilityStatus;
+  }>,
+) {
+  if (!ruleSetId) return catalogTotal;
+  const domesticViolenceCategoryId =
+    FLORIDA_NURSING_DOMESTIC_VIOLENCE_CATEGORY_BY_RULE_SET.get(
+      ruleSetId,
+    );
+  if (!domesticViolenceCategoryId) return catalogTotal;
+  const domesticViolenceRequirement = requirements.find(
+    (requirement) =>
+      requirement.ruleCategoryId === domesticViolenceCategoryId,
+  );
+  return (
+    catalogTotal +
+    (domesticViolenceRequirement?.applicabilityStatus === "applies"
+      ? Number(domesticViolenceRequirement.requiredUnits)
+      : 0)
+  );
+}
+
 function nextTemplateFamily(ruleSetId: string | null) {
   if (ruleSetId?.startsWith(FLORIDA_INSURANCE_RULE_SET_PREFIX)) {
     return "florida_insurance" as const;
@@ -1054,20 +1113,33 @@ function renewalTaskSpecs(
   const pharmacistTaskCopy = ruleSetId
     ? PHARMACIST_RENEWAL_TASK_COPY.get(ruleSetId)
     : null;
-  if (pharmacistTaskCopy) {
+  const nursingTaskCopy = ruleSetId
+    ? NURSING_RENEWAL_TASK_COPY.get(ruleSetId)
+    : null;
+  const managedTaskCopy = pharmacistTaskCopy ?? nursingTaskCopy;
+  if (managedTaskCopy) {
+    const isTexasNursing =
+      ruleSetId === "tx-rn-2026-v1" ||
+      ruleSetId === "tx-lvn-2026-v1";
+    const submissionTitle =
+      isTexasNursing
+        ? deadline < "2026-09-01"
+          ? "Renew in the Nurse Portal and save confirmation; keep certificates ready for audit"
+          : "Upload all required verification in the Nurse Portal before renewing, then save confirmation"
+        : managedTaskCopy[2];
     return [
       {
-        title: reviewTitle ?? pharmacistTaskCopy[0],
+        title: reviewTitle ?? managedTaskCopy[0],
         kind: "review",
         dueDate: daysBefore(deadline, 120),
       },
       {
-        title: pharmacistTaskCopy[1],
+        title: managedTaskCopy[1],
         kind: "progress",
         dueDate: daysBefore(deadline, 30),
       },
       {
-        title: pharmacistTaskCopy[2],
+        title: submissionTitle,
         kind: "submission",
         dueDate: deadline,
       },
@@ -4395,6 +4467,19 @@ async function createCredential(
       );
     }
     if (
+      rule.profession === "Nursing" &&
+      payload.templateEligibilityAttested !== true
+    ) {
+      throw new RequestError(
+        ruleSetId === "tx-rn-2026-v1" ||
+          ruleSetId === "tx-lvn-2026-v1"
+          ? "Confirm that the official record matches a standard full Texas nursing renewal using the 20-hour CNE path—not the certification alternative—and that no initial, shortened, inactive, exempt, or other adjusted-status path applies."
+          : "Confirm that the official record matches this standard full nursing renewal or registration period and that no initial, shortened, inactive, prorated, exempt, or other adjusted-status path applies.",
+        409,
+        "nursing_template_eligibility_required",
+      );
+    }
+    if (
       rule.profession === "Pharmacy" &&
       !matchesFullCycleWindow(
         cycleStart,
@@ -4406,6 +4491,20 @@ async function createCredential(
         `This pharmacist template requires a standard full ${rule.cycleMonths}-month period. Use the exact regulator dates or create a custom plan for a shortened or adjusted period.`,
         409,
         "pharmacist_standard_cycle_dates_required",
+      );
+    }
+    if (
+      rule.profession === "Nursing" &&
+      !matchesFullCycleWindow(
+        cycleStart,
+        deadline,
+        Number(rule.cycleMonths),
+      )
+    ) {
+      throw new RequestError(
+        `This nursing template requires a standard full ${rule.cycleMonths}-month period. Use the exact regulator dates or create a custom plan for an initial, shortened, or adjusted period.`,
+        409,
+        "nursing_standard_cycle_dates_required",
       );
     }
     if (
@@ -4477,6 +4576,11 @@ async function createCredential(
         sortOrder: index,
       };
     });
+    totalRequired = adjustedFloridaNursingTotal(
+      ruleSetId,
+      Number(rule.totalUnits),
+      categories,
+    );
   } else {
     credentialName = textField(payload, "credentialName", {
       required: true,
@@ -7282,17 +7386,23 @@ async function markRenewalAccepted(
     credential.profession,
     credential.ruleSetId,
   );
+  const isManagedNursingRenewal = isManagedNursingCredential(
+    credential.profession,
+    credential.ruleSetId,
+  );
   const requiresOfficialNextPeriodAttestation =
     isIsc2AutomaticRenewal ||
     isCompliancePeriod ||
     replacementTemplateFamily === "florida_mental_health" ||
     isNremtRenewal ||
-    isManagedPharmacistRenewal;
+    isManagedPharmacistRenewal ||
+    isManagedNursingRenewal;
   const requiresNonOverlappingNextPeriod =
     isIsc2AutomaticRenewal ||
     isCompliancePeriod ||
     replacementTemplateFamily === "florida_mental_health" ||
-    isManagedPharmacistRenewal;
+    isManagedPharmacistRenewal ||
+    isManagedNursingRenewal;
   if (
     requiresOfficialNextPeriodAttestation &&
     payload.officialDatesAttested !== true
@@ -7348,6 +7458,19 @@ async function markRenewalAccepted(
       "Confirm that the official next-period record is a standard full pharmacist renewal and that no shortened, inactive, prorated, exempt, or other adjusted-status variant applies.",
       409,
       "pharmacist_next_template_eligibility_required",
+    );
+  }
+  if (
+    isManagedNursingRenewal &&
+    payload.templateEligibilityAttested !== true
+  ) {
+    throw new RequestError(
+      credential.ruleSetId === "tx-rn-2026-v1" ||
+        credential.ruleSetId === "tx-lvn-2026-v1"
+        ? "Confirm that the official next-period record matches a standard full Texas nursing renewal using the 20-hour CNE path—not the certification alternative—and that no initial, shortened, inactive, exempt, or other adjusted-status path applies."
+        : "Confirm that the official next-period record matches a standard full nursing renewal or registration period and that no initial, shortened, inactive, prorated, exempt, or other adjusted-status path applies.",
+      409,
+      "nursing_next_template_eligibility_required",
     );
   }
   if (isIsc2AutomaticRenewal && acceptedAt < credential.deadline) {
@@ -7512,6 +7635,55 @@ async function markRenewalAccepted(
         "pharmacist_next_cycle_dates_required",
       );
     }
+  } else if (isManagedNursingRenewal) {
+    if (requestedNextRuleSetId) {
+      throw new RequestError(
+        "Nursing renewals automatically use the latest current version of the same official template.",
+        400,
+        "nursing_next_template_not_selectable",
+      );
+    }
+    selectedNextRule = await query(
+      database,
+      `SELECT
+        current_rule.id,
+        current_rule.credential_name AS credentialName,
+        current_rule.profession,
+        current_rule.jurisdiction,
+        current_rule.issuer,
+        current_rule.total_units AS totalUnits,
+        current_rule.unit_label AS unitLabel,
+        current_rule.cycle_months AS cycleMonths
+       FROM rule_sets prior_rule
+       JOIN rule_sets current_rule
+         ON current_rule.stable_key = prior_rule.stable_key
+       WHERE prior_rule.id = ?
+         AND current_rule.is_current = 1
+         AND current_rule.profession = 'Nursing'
+       ORDER BY current_rule.version DESC
+       LIMIT 1`,
+      [credential.ruleSetId],
+    ).first<NextRuleTemplate>();
+    if (!selectedNextRule) {
+      throw new RequestError(
+        "The current nursing template is unavailable. Review the official rule and create the next plan manually.",
+        409,
+        "nursing_current_template_unavailable",
+      );
+    }
+    if (
+      !matchesFullCycleWindow(
+        nextCycleStart,
+        nextDeadline,
+        Number(selectedNextRule.cycleMonths),
+      )
+    ) {
+      throw new RequestError(
+        `The next nursing plan must use the official standard ${selectedNextRule.cycleMonths}-month period. Create a custom plan if the regulator assigned an initial, shortened, or adjusted cycle.`,
+        409,
+        "nursing_next_cycle_dates_required",
+      );
+    }
   } else if (requestedNextRuleSetId) {
     throw new RequestError(
       "A replacement rule template may be selected only for a supported Florida rollover.",
@@ -7656,6 +7828,8 @@ async function markRenewalAccepted(
     throw new RequestError(
       isManagedPharmacistRenewal
         ? "The current pharmacist template changed while the next renewal period was being created. Review the current template and try again."
+        : isManagedNursingRenewal
+          ? "The current nursing template changed while the next renewal period was being created. Review the current template and try again."
         : isNremtRenewal
         ? "The selected National Registry template changed while the next cycle was being created. Review the current dashboard model and catalog template, then try again."
         : replacementTemplateFamily === "florida_mental_health"
@@ -7664,6 +7838,8 @@ async function markRenewalAccepted(
       409,
       isManagedPharmacistRenewal
         ? "pharmacist_current_template_changed"
+        : isManagedNursingRenewal
+          ? "nursing_current_template_changed"
         : isNremtRenewal
         ? "nremt_next_template_changed"
         : replacementTemplateFamily === "florida_mental_health"
@@ -8516,6 +8692,7 @@ async function updateRequirementApplicability(
     id: string;
     name: string;
     ruleCategoryId: string | null;
+    requiredUnits: number;
     relation: RequirementRelation;
     parentRequirementId: string | null;
     applicability: RequirementApplicability;
@@ -8535,6 +8712,7 @@ async function updateRequirementApplicability(
         requirement.id,
         requirement.name,
         requirement.rule_category_id AS ruleCategoryId,
+        requirement.required_units AS requiredUnits,
         requirement.relation,
         requirement.parent_requirement_id AS parentRequirementId,
         requirement.applicability,
@@ -8660,7 +8838,39 @@ async function updateRequirementApplicability(
       applicabilityStatus: effectiveStatus(requirement.id),
     })),
   );
+  const floridaNursingDomesticViolenceRequirement =
+    [...requirementsById.values()].find(
+      (requirement) =>
+        requirement.ruleCategoryId !== null &&
+        FLORIDA_NURSING_DOMESTIC_VIOLENCE_CATEGORY_IDS.has(
+          requirement.ruleCategoryId,
+        ),
+    ) ?? null;
+  const floridaNursingDomesticViolenceCategoryId =
+    floridaNursingDomesticViolenceRequirement?.ruleCategoryId ?? null;
+  const floridaNursingDomesticViolenceStatus =
+    floridaNursingDomesticViolenceRequirement
+      ? effectiveStatus(floridaNursingDomesticViolenceRequirement.id)
+      : null;
+  const floridaNursingDomesticViolenceUnits =
+    floridaNursingDomesticViolenceRequirement &&
+    floridaNursingDomesticViolenceStatus
+      ? floridaNursingDomesticViolenceStatus === "applies"
+        ? Number(floridaNursingDomesticViolenceRequirement.requiredUnits)
+        : 0
+      : null;
 
+  const normalizedChoiceRows = [...normalizedChoices].map(
+    ([requirementId, status]) => ({
+      requirementId,
+      status,
+      isActive: status === "applies" ? 1 : 0,
+    }),
+  );
+  const normalizedChoicesJson = JSON.stringify(normalizedChoiceRows);
+  const deactivatingRequirementIdsJson = JSON.stringify(
+    deactivatingRequirementIds,
+  );
   const deactivationGuardSql =
     deactivatingRequirementIds.length === 0
       ? ""
@@ -8678,10 +8888,12 @@ async function updateRequirementApplicability(
              credential_requirements.credential_id
              AND (
                guarded_allocation.requirement_id IN (
-                 ${deactivatingRequirementIds.map(() => "?").join(", ")}
+                 SELECT deactivating.value
+                 FROM json_each(?) deactivating
                )
                OR guarded_match.requirement_id IN (
-                 ${deactivatingRequirementIds.map(() => "?").join(", ")}
+                 SELECT deactivating.value
+                 FROM json_each(?) deactivating
                )
              )
          )`;
@@ -8691,37 +8903,62 @@ async function updateRequirementApplicability(
       : [
           identity.userId,
           identity.userId,
-          ...deactivatingRequirementIds,
-          ...deactivatingRequirementIds,
+          deactivatingRequirementIdsJson,
+          deactivatingRequirementIdsJson,
         ];
-  const statements: D1PreparedStatement[] = [];
-  const updateResultIndexes: number[] = [];
-  for (const [requirementId, status] of normalizedChoices) {
-    updateResultIndexes.push(statements.length);
-    const update = query(
+  const statements: D1PreparedStatement[] = [
+    query(
       database,
       `UPDATE credential_requirements
-         SET applicability_status = ?, is_active = ?
-         WHERE id = ?
-           AND credential_id = ?
-           AND EXISTS (
-             SELECT 1
-             FROM credentials credential
-             WHERE credential.id = credential_requirements.credential_id
-               AND credential.user_id = ?
-               AND credential.status IN ('active', 'submitted')
-           )
-           ${deactivationGuardSql}`,
+       SET
+         applicability_status = (
+           SELECT json_extract(choice.value, '$.status')
+           FROM json_each(?) choice
+           WHERE json_extract(choice.value, '$.requirementId') =
+             credential_requirements.id
+         ),
+         is_active = (
+           SELECT json_extract(choice.value, '$.isActive')
+           FROM json_each(?) choice
+           WHERE json_extract(choice.value, '$.requirementId') =
+             credential_requirements.id
+         )
+       WHERE credential_id = ?
+         AND id IN (
+           SELECT json_extract(choice.value, '$.requirementId')
+           FROM json_each(?) choice
+         )
+         AND EXISTS (
+           SELECT 1
+           FROM credentials credential
+           WHERE credential.id = credential_requirements.credential_id
+             AND credential.user_id = ?
+             AND credential.status IN ('active', 'submitted')
+         )
+         AND (
+           SELECT COUNT(*)
+           FROM credential_requirements candidate
+           WHERE candidate.credential_id = ?
+             AND candidate.id IN (
+               SELECT json_extract(choice.value, '$.requirementId')
+               FROM json_each(?) choice
+             )
+         ) = json_array_length(?)
+         ${deactivationGuardSql}`,
       [
-        status,
-        status === "applies" ? 1 : 0,
-        requirementId,
+        normalizedChoicesJson,
+        normalizedChoicesJson,
         credentialId,
+        normalizedChoicesJson,
         identity.userId,
+        credentialId,
+        normalizedChoicesJson,
+        normalizedChoicesJson,
         ...deactivationGuardBindings,
       ],
-    );
-    statements.push(update);
+    ),
+  ];
+  for (const [requirementId, status] of normalizedChoices) {
     if (status !== "needs_confirmation") {
       statements.push(
         query(
@@ -8737,7 +8974,28 @@ async function updateRequirementApplicability(
           WHERE requirement.id = ?
             AND requirement.credential_id = ?
             AND credential.user_id = ?
-            AND credential.status IN ('active', 'submitted')`,
+            AND credential.status IN ('active', 'submitted')
+            AND requirement.applicability_status = ?
+            AND requirement.is_active = ?
+            AND NOT EXISTS (
+              SELECT 1
+              FROM json_each(?) requested_choice
+              WHERE NOT EXISTS (
+                SELECT 1
+                FROM credential_requirements applied_requirement
+                WHERE applied_requirement.credential_id =
+                    requirement.credential_id
+                  AND applied_requirement.id =
+                    json_extract(
+                      requested_choice.value,
+                      '$.requirementId'
+                    )
+                  AND applied_requirement.applicability_status =
+                    json_extract(requested_choice.value, '$.status')
+                  AND applied_requirement.is_active =
+                    json_extract(requested_choice.value, '$.isActive')
+              )
+            )`,
           [
             crypto.randomUUID(),
             identity.userId,
@@ -8746,10 +9004,80 @@ async function updateRequirementApplicability(
             requirementId,
             credentialId,
             identity.userId,
+            status,
+            status === "applies" ? 1 : 0,
+            normalizedChoicesJson,
           ],
         ),
       );
     }
+  }
+  const applicabilityUpdateResultIndex = 0;
+  let adjustedTotalResultIndex: number | null = null;
+  if (
+    floridaNursingDomesticViolenceUnits !== null &&
+    floridaNursingDomesticViolenceRequirement &&
+    floridaNursingDomesticViolenceCategoryId &&
+    floridaNursingDomesticViolenceStatus
+  ) {
+    adjustedTotalResultIndex = statements.length;
+    statements.push(
+      query(
+        database,
+        `UPDATE credentials
+         SET
+           total_required = (
+             SELECT catalog_rule.total_units + ?
+             FROM rule_sets catalog_rule
+             WHERE catalog_rule.id = credentials.rule_set_id
+           ),
+           updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+           AND user_id = ?
+           AND status IN ('active', 'submitted')
+           AND EXISTS (
+             SELECT 1
+             FROM rule_sets catalog_rule
+             WHERE catalog_rule.id = credentials.rule_set_id
+               AND catalog_rule.profession = 'Nursing'
+           )
+           AND EXISTS (
+             SELECT 1
+             FROM credential_requirements requirement
+             WHERE requirement.id = ?
+               AND requirement.credential_id = credentials.id
+               AND requirement.rule_category_id = ?
+               AND requirement.applicability_status = ?
+           )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM json_each(?) requested_choice
+             WHERE NOT EXISTS (
+               SELECT 1
+               FROM credential_requirements applied_requirement
+               WHERE applied_requirement.credential_id = credentials.id
+                 AND applied_requirement.id =
+                   json_extract(
+                     requested_choice.value,
+                     '$.requirementId'
+                   )
+                 AND applied_requirement.applicability_status =
+                   json_extract(requested_choice.value, '$.status')
+                 AND applied_requirement.is_active =
+                   json_extract(requested_choice.value, '$.isActive')
+             )
+           )`,
+        [
+          floridaNursingDomesticViolenceUnits,
+          credentialId,
+          identity.userId,
+          floridaNursingDomesticViolenceRequirement.id,
+          floridaNursingDomesticViolenceCategoryId,
+          floridaNursingDomesticViolenceStatus,
+          normalizedChoicesJson,
+        ],
+      ),
+    );
   }
   let results: D1Result[];
   try {
@@ -8763,10 +9091,14 @@ async function updateRequirementApplicability(
       error,
     );
   }
+  const applicabilityChangeCount = Number(
+    results[applicabilityUpdateResultIndex]?.meta?.changes,
+  );
   if (
-    updateResultIndexes.some(
-      (index) => Number(results[index]?.meta?.changes) === 0,
-    )
+    (Number.isFinite(applicabilityChangeCount) &&
+      applicabilityChangeCount !== normalizedChoices.size) ||
+    (adjustedTotalResultIndex !== null &&
+      Number(results[adjustedTotalResultIndex]?.meta?.changes) === 0)
   ) {
     const racedAllocatedDeactivation = await findAllocatedDeactivation();
     if (racedAllocatedDeactivation) {

@@ -460,6 +460,16 @@ const runtimeCatalogModules = [
       "PHARMACY_RULE_SET_SEED_BINDINGS",
     ],
   },
+  {
+    moduleName: "nursing",
+    sourceUrl: new URL("../db/catalog/nursing.ts", import.meta.url),
+    exports: [
+      "NURSING_CATEGORY_SEED_BINDINGS",
+      "NURSING_MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+      "NURSING_RENEWAL_TASK_COPY_BINDINGS",
+      "NURSING_RULE_SET_SEED_BINDINGS",
+    ],
+  },
 ];
 
 async function importTypeScriptModule(source) {
@@ -785,7 +795,7 @@ test("License Lantern product contract", async (t) => {
       assert.equal(
         raw.prepare("SELECT COUNT(*) AS count FROM rule_categories").get()
           .count,
-        474,
+        505,
       );
 
       assert.deepEqual(
@@ -1808,6 +1818,1595 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
+    "seeds twelve source-linked nursing renewals with explicit zero-hour and conditional rules",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const [
+        runtimeSource,
+        nursingSource,
+        carryoverSource,
+        workspaceRouteSource,
+        clientSource,
+      ] = await Promise.all([
+        readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
+        readFile(new URL("../db/catalog/nursing.ts", import.meta.url), "utf8"),
+        readFile(new URL("../app/lib/carryover.ts", import.meta.url), "utf8"),
+        readFile(
+          new URL("../app/api/workspace/route.ts", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+          "utf8",
+        ),
+      ]);
+      const [runtimeModule, nursingModule, carryoverModule] =
+        await Promise.all([
+          importTypeScriptModule(
+            `${runtimeSource}\nexport const __nursingCatalogNonce = "catalog";`,
+          ),
+          importTypeScriptModule(nursingSource),
+          importTypeScriptModule(carryoverSource),
+        ]);
+      await runtimeModule.initializeDatabase(database);
+      const raw = database.raw;
+      const rows = (sql) =>
+        raw
+          .prepare(sql)
+          .all()
+          .map((row) => ({ ...row }));
+
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(*) AS totalRules,
+                 SUM(CASE WHEN is_current = 1 THEN 1 ELSE 0 END) AS currentRules
+               FROM rule_sets`,
+            )
+            .get(),
+        },
+        { totalRules: 105, currentRules: 104 },
+      );
+      assert.equal(
+        raw.prepare("SELECT COUNT(*) AS count FROM rule_categories").get()
+          .count,
+        505,
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(DISTINCT rule.id) AS ruleCount,
+                 COUNT(category.id) AS categoryCount,
+                 COUNT(DISTINCT
+                   CASE
+                     WHEN rule.is_current = 1
+                       AND rule.last_verified_at = '2026-07-26'
+                       AND rule.review_status = 'source_linked_check_conditions'
+                       AND rule.source_url LIKE 'https://%'
+                     THEN rule.id
+                   END
+                 ) AS sourceLinkedRuleCount
+               FROM rule_sets rule
+               LEFT JOIN rule_categories category
+                 ON category.rule_set_id = rule.id
+               WHERE rule.profession = 'Nursing'`,
+            )
+            .get(),
+        },
+        {
+          ruleCount: 12,
+          categoryCount: 43,
+          sourceLinkedRuleCount: 12,
+        },
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT id, total_units AS totalUnits
+           FROM rule_sets
+           WHERE profession = 'Nursing'
+           ORDER BY id`,
+        ),
+        [
+          { id: "ca-lvn-2026-v1", totalUnits: 30 },
+          { id: "ca-rn-2026-v1", totalUnits: 30 },
+          { id: "fl-lpn-2026-v1", totalUnits: 24 },
+          { id: "fl-rn-2026-v1", totalUnits: 24 },
+          { id: "nj-lpn-2026-v1", totalUnits: 30 },
+          { id: "nj-rn-2026-v1", totalUnits: 30 },
+          { id: "ny-lpn-2026-v1", totalUnits: 0 },
+          { id: "ny-rn-2026-v1", totalUnits: 0 },
+          { id: "pa-lpn-2026-v1", totalUnits: 2 },
+          { id: "pa-rn-2026-v1", totalUnits: 30 },
+          { id: "tx-lvn-2026-v1", totalUnits: 20 },
+          { id: "tx-rn-2026-v1", totalUnits: 20 },
+        ],
+      );
+
+      const priorNursingRuleSetIds = new Set([
+        "ca-rn-2026-v1",
+        "fl-rn-2026-v1",
+        "nj-rn-2026-v1",
+        "pa-rn-2026-v1",
+        "tx-rn-2026-v1",
+      ]);
+      assert.deepEqual(
+        nursingModule.NURSING_RULE_SET_SEED_BINDINGS.map(
+          (binding) => binding[0],
+        ).filter((ruleSetId) => !priorNursingRuleSetIds.has(ruleSetId)),
+        [
+          "ca-lvn-2026-v1",
+          "fl-lpn-2026-v1",
+          "nj-lpn-2026-v1",
+          "ny-rn-2026-v1",
+          "ny-lpn-2026-v1",
+          "pa-lpn-2026-v1",
+          "tx-lvn-2026-v1",
+        ],
+      );
+      assert.equal(
+        new Set(
+          nursingModule.NURSING_RULE_SET_SEED_BINDINGS.map(
+            (binding) => binding[0],
+          ),
+        ).size,
+        12,
+      );
+      assert.equal(
+        new Set(
+          nursingModule.NURSING_CATEGORY_SEED_BINDINGS.map(
+            (binding) => binding[0],
+          ),
+        ).size,
+        43,
+      );
+      assert.equal(
+        nursingModule.NURSING_CATEGORY_SEED_BINDINGS.length - 12,
+        31,
+      );
+      assert.deepEqual(
+        [...nursingModule.NURSING_MAXIMUM_CLASSIFICATION_RULE_SET_IDS],
+        ["nj-rn-2026-v1", "nj-lpn-2026-v1"],
+      );
+
+      assert.deepEqual(
+        rows(
+          `SELECT
+             rule_set_id AS ruleSetId,
+             id,
+             required_units AS requiredUnits,
+             kind,
+             applicability
+           FROM rule_categories
+           WHERE id IN (
+             'ny-rn-2026-bsn-in-10',
+             'ny-rn-2026-child-abuse',
+             'ny-rn-2026-updated-mandated-reporter',
+             'ny-lpn-2026-updated-mandated-reporter'
+           )
+           ORDER BY id`,
+        ),
+        [
+          {
+            ruleSetId: "ny-lpn-2026-v1",
+            id: "ny-lpn-2026-updated-mandated-reporter",
+            requiredUnits: 0,
+            kind: "informational",
+            applicability: "conditional",
+          },
+          {
+            ruleSetId: "ny-rn-2026-v1",
+            id: "ny-rn-2026-bsn-in-10",
+            requiredUnits: 0,
+            kind: "informational",
+            applicability: "conditional",
+          },
+          {
+            ruleSetId: "ny-rn-2026-v1",
+            id: "ny-rn-2026-child-abuse",
+            requiredUnits: 2,
+            kind: "minimum",
+            applicability: "conditional",
+          },
+          {
+            ruleSetId: "ny-rn-2026-v1",
+            id: "ny-rn-2026-updated-mandated-reporter",
+            requiredUnits: 0,
+            kind: "informational",
+            applicability: "conditional",
+          },
+        ],
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(*) AS categoryCount,
+                 SUM(CASE WHEN kind = 'informational' THEN 1 ELSE 0 END)
+                   AS informationalCount,
+                 SUM(required_units) AS requiredUnits
+               FROM rule_categories
+               WHERE rule_set_id IN ('ny-rn-2026-v1', 'ny-lpn-2026-v1')`,
+            )
+            .get(),
+        },
+        {
+          categoryCount: 6,
+          informationalCount: 5,
+          requiredUnits: 2,
+        },
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 rule.total_units AS totalUnits,
+                 category.required_units AS requiredUnits,
+                 category.kind,
+                 category.applicability
+               FROM rule_sets rule
+               JOIN rule_categories category
+                 ON category.rule_set_id = rule.id
+               WHERE rule.id = 'pa-lpn-2026-v1'
+                 AND category.id = 'pa-lpn-2026-child-abuse'`,
+            )
+            .get(),
+        },
+        {
+          totalUnits: 2,
+          requiredUnits: 2,
+          kind: "minimum",
+          applicability: "always",
+        },
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT
+             rule_set_id AS ruleSetId,
+             required_units AS requiredUnits,
+             kind,
+             applicability,
+             exclusive_group AS exclusiveGroup
+           FROM rule_categories
+           WHERE id IN (
+             'nj-rn-2026-confirmed-carryover',
+             'nj-lpn-2026-confirmed-carryover'
+           )
+           ORDER BY rule_set_id`,
+        ),
+        [
+          {
+            ruleSetId: "nj-lpn-2026-v1",
+            requiredUnits: 15,
+            kind: "maximum",
+            applicability: "conditional",
+            exclusiveGroup: "New Jersey nursing period source",
+          },
+          {
+            ruleSetId: "nj-rn-2026-v1",
+            requiredUnits: 15,
+            kind: "maximum",
+            applicability: "conditional",
+            exclusiveGroup: "New Jersey nursing period source",
+          },
+        ],
+      );
+      for (const categoryId of [
+        "nj-rn-2026-confirmed-carryover",
+        "nj-lpn-2026-confirmed-carryover",
+      ]) {
+        assert.equal(
+          carryoverModule.portalCarryoverLookbackMonths(categoryId),
+          24,
+        );
+      }
+      assert.deepEqual(
+        rows(
+          `SELECT
+             rule_set_id AS ruleSetId,
+             required_units AS requiredUnits,
+             kind,
+             relation,
+             applicability
+           FROM rule_categories
+           WHERE id IN (
+             'tx-rn-2026-human-trafficking',
+             'tx-lvn-2026-human-trafficking'
+           )
+           ORDER BY rule_set_id`,
+        ),
+        [
+          {
+            ruleSetId: "tx-lvn-2026-v1",
+            requiredUnits: 0,
+            kind: "informational",
+            relation: "overlapping",
+            applicability: "conditional",
+          },
+          {
+            ruleSetId: "tx-rn-2026-v1",
+            requiredUnits: 0,
+            kind: "informational",
+            relation: "overlapping",
+            applicability: "conditional",
+          },
+        ],
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT
+             rule_set_id AS ruleSetId,
+             required_units AS requiredUnits,
+             kind,
+             relation,
+             applicability
+           FROM rule_categories
+           WHERE id IN (
+             'fl-rn-2026-domestic-violence',
+             'fl-lpn-2026-domestic-violence'
+           )
+           ORDER BY rule_set_id`,
+        ),
+        [
+          {
+            ruleSetId: "fl-lpn-2026-v1",
+            requiredUnits: 2,
+            kind: "minimum",
+            relation: "independent",
+            applicability: "conditional",
+          },
+          {
+            ruleSetId: "fl-rn-2026-v1",
+            requiredUnits: 2,
+            kind: "minimum",
+            relation: "independent",
+            applicability: "conditional",
+          },
+        ],
+      );
+      assert.match(
+        raw
+          .prepare(
+            `SELECT condition_note AS conditionNote
+             FROM rule_categories
+             WHERE id = 'tx-rn-2026-human-trafficking'`,
+          )
+          .get().conditionNote,
+        /fixes no numeric duration/i,
+      );
+      assert.match(
+        raw
+          .prepare(
+            `SELECT condition_note AS conditionNote
+             FROM rule_categories
+             WHERE id = 'fl-rn-2026-domestic-violence'`,
+          )
+          .get().conditionNote,
+        /raises the credential total to 26/i,
+      );
+      assert.match(
+        raw
+          .prepare(
+            `SELECT condition_note AS conditionNote
+             FROM rule_categories
+             WHERE id = 'ny-rn-2026-infection-control'`,
+          )
+          .get().conditionNote,
+        /sepsis[\s\S]*HIV, HBV, HCV[\s\S]*infections that could lead to sepsis/i,
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT id, effective_date AS effectiveDate
+           FROM rule_sets
+           WHERE id IN (
+             'ny-rn-2026-v1',
+             'ny-lpn-2026-v1',
+             'tx-rn-2026-v1',
+             'tx-lvn-2026-v1'
+           )
+           ORDER BY id`,
+        ),
+        [
+          { id: "ny-lpn-2026-v1", effectiveDate: "2025-12-22" },
+          { id: "ny-rn-2026-v1", effectiveDate: "2025-12-22" },
+          { id: "tx-lvn-2026-v1", effectiveDate: "2026-09-01" },
+          { id: "tx-rn-2026-v1", effectiveDate: "2026-09-01" },
+        ],
+      );
+      assert.match(
+        raw
+          .prepare(
+            `SELECT condition_note AS conditionNote
+             FROM rule_categories
+             WHERE id = 'tx-rn-2026-jurisprudence-ethics'`,
+          )
+          .get().conditionNote,
+        /once at any point[\s\S]*three-cycle[\s\S]*six-year window[\s\S]*earlier period[\s\S]*Not this cycle/i,
+      );
+      assert.match(
+        raw
+          .prepare(
+            `SELECT condition_note AS conditionNote
+             FROM rule_categories
+             WHERE id = 'tx-rn-2026-sb25-nutrition-rule-refresh'`,
+          )
+          .get().conditionNote,
+        /on or after January 1, 2027[\s\S]*had not yet prescribed the hours[\s\S]*does not invent a number/i,
+      );
+      assert.match(
+        raw
+          .prepare(
+            `SELECT condition_note AS conditionNote
+             FROM rule_categories
+             WHERE id = 'pa-rn-2026-organ-tissue-donation'`,
+          )
+          .get().conditionNote,
+        /licensed before[\s\S]*initially licensed[\s\S]*reactivated[\s\S]*five years/i,
+      );
+      assert.match(
+        runtimeSource,
+        /\.\.\.NURSING_RULE_SET_SEED_BINDINGS[\s\S]*?\.\.\.NURSING_CATEGORY_SEED_BINDINGS[\s\S]*?managed_rule\.profession = 'Nursing'[\s\S]*?\.\.\.NURSING_MAXIMUM_CLASSIFICATION_RULE_SET_IDS/,
+      );
+      assert.match(
+        workspaceRouteSource,
+        /isManagedNursingRenewal[\s\S]*?current_rule\.stable_key = prior_rule\.stable_key[\s\S]*?current_rule\.is_current = 1[\s\S]*?current_rule\.profession = 'Nursing'[\s\S]*?ORDER BY current_rule\.version DESC[\s\S]*?defaultApplicabilityStatus\(\s*category\.applicability/,
+      );
+      assert.match(
+        workspaceRouteSource,
+        /isTexasNursing[\s\S]*?deadline < "2026-09-01"[\s\S]*?keep certificates ready for audit[\s\S]*?Upload all required verification in the Nurse Portal/,
+      );
+      assert.match(
+        workspaceRouteSource,
+        /isManagedNursingRenewal[\s\S]*?nursing_current_template_changed/,
+      );
+      const floridaNursingTotalUpdate = workspaceRouteSource.match(
+        /const applicabilityUpdateResultIndex[\s\S]*?let results: D1Result\[\];/,
+      )?.[0];
+      assert.ok(floridaNursingTotalUpdate);
+      assert.match(
+        floridaNursingTotalUpdate,
+        /catalog_rule\.profession = 'Nursing'/,
+      );
+      assert.doesNotMatch(
+        floridaNursingTotalUpdate,
+        /catalog_rule\.is_current/,
+      );
+      assert.match(
+        clientSource,
+        /selectedRule\.totalUnits > 0[\s\S]*?No general numeric CE total[\s\S]*?credential\.totalRequired > 0[\s\S]*?Mandated training is tracked in conditions and the checklist/,
+      );
+      assert.match(
+        clientSource,
+        /selected\.totalRequired > 0[\s\S]*?"Checklist"[\s\S]*?selected\.totalRequired > 0[\s\S]*?This regulator does not set a general numeric nursing CE\s+total/,
+      );
+      assert.match(
+        clientSource,
+        /category\.kind === "informational"[\s\S]*?Track \$\{category\.name\}[\s\S]*?credential\.totalRequired <= 0[\s\S]*?requirementProgressValue \* 60[\s\S]*?taskProgress \* 40/,
+      );
+      assert.match(
+        clientSource,
+        /"Training and checklist"[\s\S]*?`\$\{readiness\}% ready`[\s\S]*?No general numeric CE total applies[\s\S]*?Checklist checkpoint/,
+      );
+      assert.match(
+        clientSource,
+        /I confirmed the next period is a standard full-cycle[\s\S]*?isManagedNursingCredential\(selectedCredential\)[\s\S]*?renewal or registration/,
+      );
+      assert.match(
+        clientSource,
+        /requirement\.exclusiveGroup[\s\S]*?Choose only one activity type from this group[\s\S]*?requirement\.relation === "overlapping"[\s\S]*?May overlap another selected requirement/,
+      );
+      database.close();
+    },
+  );
+
+  await t.test(
+    "preserves legacy New Jersey RN opioid snapshots and restores archived matched credit after a managed refresh",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const setupRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __nursingLegacySetupNonce = "setup";`,
+      );
+      await setupRuntime.initializeDatabase(database);
+      const raw = database.raw;
+      const userId = await expectedStableUserId("owner@example.com");
+      const legacyCategoryId = "nj-rn-2026-opioids";
+      const activeCredentialId = "credential-nj-rn-legacy-active";
+      const submittedCredentialId = "credential-nj-rn-legacy-submitted";
+      const renewedCredentialId = "credential-nj-rn-legacy-renewed";
+      const activeRequirementId = "requirement-nj-rn-legacy-active-opioids";
+      const submittedRequirementId =
+        "requirement-nj-rn-legacy-submitted-opioids";
+      const renewedRequirementId =
+        "requirement-nj-rn-legacy-renewed-opioids";
+      const activityId = "activity-nj-rn-legacy-opioids";
+      const allocationId = "allocation-nj-rn-legacy-opioids";
+
+      raw
+        .prepare(
+          `INSERT INTO rule_categories (
+             id, rule_set_id, name, required_units, kind, relation,
+             applicability, condition_note, sort_order
+           ) VALUES (?, 'nj-rn-2026-v1', ?, 1, 'minimum', 'independent',
+             'always', ?, 0)
+           ON CONFLICT(id) DO UPDATE SET
+             name = excluded.name,
+             required_units = excluded.required_units,
+             kind = excluded.kind,
+             relation = excluded.relation,
+             applicability = excluded.applicability,
+             condition_note = excluded.condition_note,
+             sort_order = excluded.sort_order`,
+        )
+        .run(
+          legacyCategoryId,
+          "Legacy prescription opioids",
+          "Legacy snapshot marker",
+        );
+      raw
+        .prepare(
+          `INSERT INTO users (id, email, display_name, is_demo)
+           VALUES (?, 'owner@example.com', 'Casey Owner', 0)`,
+        )
+        .run(userId);
+
+      const insertCredential = raw.prepare(
+        `INSERT INTO credentials (
+           id, user_id, rule_set_id, credential_name, profession, jurisdiction,
+           issuer, cycle_start, deadline, total_required, unit_label, status
+         ) VALUES (
+           ?, ?, 'nj-rn-2026-v1', 'Registered Nurse', 'Nursing', 'New Jersey',
+           'New Jersey Board of Nursing', '2026-01-01', '2027-12-31', 30,
+           'contact hours', ?
+         )`,
+      );
+      for (const [credentialId, status] of [
+        [activeCredentialId, "active"],
+        [submittedCredentialId, "submitted"],
+        [renewedCredentialId, "renewed"],
+      ]) {
+        insertCredential.run(credentialId, userId, status);
+      }
+
+      const insertRequirement = raw.prepare(
+        `INSERT INTO credential_requirements (
+           id, credential_id, rule_category_id, name, required_units, kind,
+           relation, applicability, applicability_status, condition_note,
+           is_active, sort_order
+         ) VALUES (
+           ?, ?, ?, ?, 1, 'minimum', 'independent', 'always', 'applies',
+           ?, 1, 0
+         )`,
+      );
+      insertRequirement.run(
+        activeRequirementId,
+        activeCredentialId,
+        legacyCategoryId,
+        "Legacy active opioid snapshot",
+        "Legacy active condition",
+      );
+      insertRequirement.run(
+        submittedRequirementId,
+        submittedCredentialId,
+        legacyCategoryId,
+        "Legacy submitted opioid snapshot",
+        "Legacy submitted condition",
+      );
+      insertRequirement.run(
+        renewedRequirementId,
+        renewedCredentialId,
+        legacyCategoryId,
+        "Legacy renewed opioid snapshot",
+        "Legacy renewed condition",
+      );
+
+      raw
+        .prepare(
+          `INSERT INTO activities (
+             id, user_id, title, provider, completion_date, total_units,
+             evidence_status, revision, archived_at
+           ) VALUES (?, ?, 'Legacy opioid course', 'Legacy Provider',
+             '2027-05-01', 1, 'ready', 2, NULL)`,
+        )
+        .run(activityId, userId);
+      raw
+        .prepare(
+          `INSERT INTO activity_allocations (
+             id, activity_id, credential_id, requirement_id, allocated_units
+           ) VALUES (?, ?, ?, ?, 1)`,
+        )
+        .run(
+          allocationId,
+          activityId,
+          activeCredentialId,
+          activeRequirementId,
+        );
+      raw
+        .prepare(
+          `INSERT INTO activity_requirement_matches (
+             id, user_id, allocation_id, requirement_id, matched_units
+           ) VALUES (
+             'match-nj-rn-legacy-opioids', ?, ?, ?, 1
+           )`,
+        )
+        .run(userId, allocationId, activeRequirementId);
+      raw
+        .prepare(
+          `UPDATE activities
+           SET archived_at = '2027-06-01 12:00:00', revision = 3
+           WHERE id = ?`,
+        )
+        .run(activityId);
+
+      const upgradeRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __nursingLegacyUpgradeNonce = "upgrade";`,
+      );
+      await upgradeRuntime.initializeDatabase(database);
+
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT id, rule_set_id AS ruleSetId
+               FROM rule_categories
+               WHERE id = ?`,
+            )
+            .get(legacyCategoryId),
+        },
+        {
+          id: legacyCategoryId,
+          ruleSetId: "nj-rn-2026-v1",
+        },
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 rule_category_id AS ruleCategoryId,
+                 applicability_status AS applicabilityStatus,
+                 is_active AS isActive
+               FROM credential_requirements
+               WHERE id = ?`,
+            )
+            .get(activeRequirementId),
+        },
+        {
+          ruleCategoryId: legacyCategoryId,
+          applicabilityStatus: "applies",
+          isActive: 1,
+        },
+      );
+      for (const [requirementId, expectedName, expectedCondition] of [
+        [
+          submittedRequirementId,
+          "Legacy submitted opioid snapshot",
+          "Legacy submitted condition",
+        ],
+        [
+          renewedRequirementId,
+          "Legacy renewed opioid snapshot",
+          "Legacy renewed condition",
+        ],
+      ]) {
+        assert.deepEqual(
+          {
+            ...raw
+              .prepare(
+                `SELECT
+                   rule_category_id AS ruleCategoryId,
+                   name,
+                   applicability_status AS applicabilityStatus,
+                   condition_note AS conditionNote,
+                   is_active AS isActive
+                 FROM credential_requirements
+                 WHERE id = ?`,
+              )
+              .get(requirementId),
+          },
+          {
+            ruleCategoryId: legacyCategoryId,
+            name: expectedName,
+            applicabilityStatus: "applies",
+            conditionNote: expectedCondition,
+            isActive: 1,
+          },
+        );
+      }
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 allocation.requirement_id AS allocationRequirementId,
+                 match.requirement_id AS matchRequirementId
+               FROM activity_allocations allocation
+               JOIN activity_requirement_matches match
+                 ON match.allocation_id = allocation.id
+               WHERE allocation.id = ?`,
+            )
+            .get(allocationId),
+        },
+        {
+          allocationRequirementId: activeRequirementId,
+          matchRequirementId: activeRequirementId,
+        },
+      );
+
+      testCloudflareEnv.DB = database;
+      const restoreResponse = await postWorkspace("restoreActivity", {
+        activityId,
+        expectedRevision: 3,
+      });
+      assert.equal(
+        restoreResponse.status,
+        200,
+        JSON.stringify(await restoreResponse.clone().json()),
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT archived_at AS archivedAt, revision
+               FROM activities
+               WHERE id = ?`,
+            )
+            .get(activityId),
+        },
+        {
+          archivedAt: null,
+          revision: 4,
+        },
+      );
+      database.close();
+    },
+  );
+
+  await t.test(
+    "reconciles active Florida nursing totals and buddy tasks without changing submitted snapshots",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const setupRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __nursingRefreshSetupNonce = "setup";`,
+      );
+      await setupRuntime.initializeDatabase(database);
+      const raw = database.raw;
+      const userId = await expectedStableUserId("owner@example.com");
+      raw
+        .prepare(
+          `INSERT INTO users (id, email, display_name, is_demo)
+           VALUES (?, 'owner@example.com', 'Casey Owner', 0)`,
+        )
+        .run(userId);
+      const insertCredential = raw.prepare(
+        `INSERT INTO credentials (
+           id, user_id, rule_set_id, credential_name, profession,
+           jurisdiction, issuer, cycle_start, deadline, total_required,
+           unit_label, status
+         ) VALUES (
+           ?, ?, 'fl-rn-2026-v1', 'Registered Nurse', 'Nursing', 'Florida',
+           'Florida Board of Nursing', '2026-01-01', '2027-12-31', ?,
+           'CE hours', ?
+         )`,
+      );
+      insertCredential.run(
+        "credential-fl-rn-active-refresh",
+        userId,
+        24,
+        "active",
+      );
+      insertCredential.run(
+        "credential-fl-rn-submitted-refresh",
+        userId,
+        77,
+        "submitted",
+      );
+      raw
+        .prepare(
+          `INSERT INTO credential_requirements (
+             id, credential_id, rule_category_id, name, required_units, kind,
+             relation, applicability, applicability_status, condition_note,
+             is_active, sort_order
+           ) VALUES (
+             'requirement-fl-rn-active-domestic-violence',
+             'credential-fl-rn-active-refresh',
+             'fl-rn-2026-domestic-violence',
+             'Domestic Violence — additional two hours',
+             2,
+             'minimum',
+             'independent',
+             'conditional',
+             'applies',
+             'Legacy condition copy',
+             1,
+             4
+           )`,
+        )
+        .run();
+      const insertTask = raw.prepare(
+        `INSERT INTO checklist_tasks (
+           id, user_id, credential_id, title, kind, status, due_date,
+           sort_order
+         ) VALUES (?, ?, 'credential-fl-rn-active-refresh', ?, ?, 'pending',
+           ?, ?)`,
+      );
+      for (const [id, title, kind, dueDate, sortOrder] of [
+        [
+          "task-fl-rn-active-review",
+          "Review the renewal requirements",
+          "review",
+          "2027-09-02",
+          0,
+        ],
+        [
+          "task-fl-rn-active-progress",
+          "Complete and document required education",
+          "progress",
+          "2027-12-01",
+          1,
+        ],
+        [
+          "task-fl-rn-active-submit",
+          "Submit renewal and save confirmation",
+          "submission",
+          "2027-12-31",
+          2,
+        ],
+      ]) {
+        insertTask.run(id, userId, title, kind, dueDate, sortOrder);
+      }
+      raw
+        .prepare(
+          `UPDATE rule_categories
+           SET
+             relation = 'independent',
+             condition_note = 'Stale legacy Florida category copy'
+           WHERE id IN (
+             'fl-rn-2026-medical-errors',
+             'fl-rn-2026-laws-rules',
+             'fl-rn-2026-human-trafficking'
+           )`,
+        )
+        .run();
+
+      const refreshRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __nursingRefreshUpgradeNonce = "upgrade";`,
+      );
+      await refreshRuntime.initializeDatabase(database);
+      assert.deepEqual(
+        raw
+          .prepare(
+            `SELECT id, relation
+             FROM rule_categories
+             WHERE id IN (
+               'fl-rn-2026-medical-errors',
+               'fl-rn-2026-laws-rules',
+               'fl-rn-2026-human-trafficking'
+             )
+             ORDER BY id`,
+          )
+          .all()
+          .map((row) => ({ ...row })),
+        [
+          {
+            id: "fl-rn-2026-human-trafficking",
+            relation: "overlapping",
+          },
+          {
+            id: "fl-rn-2026-laws-rules",
+            relation: "overlapping",
+          },
+          {
+            id: "fl-rn-2026-medical-errors",
+            relation: "overlapping",
+          },
+        ],
+      );
+      assert.match(
+        raw
+          .prepare(
+            `SELECT condition_note AS conditionNote
+             FROM rule_categories
+             WHERE id = 'fl-rn-2026-human-trafficking'`,
+          )
+          .get().conditionNote,
+        /does not have to be offered by a Florida Board of Nursing-approved provider/i,
+      );
+      assert.deepEqual(
+        raw
+          .prepare(
+            `SELECT id, total_required AS totalRequired
+             FROM credentials
+             WHERE id IN (
+               'credential-fl-rn-active-refresh',
+               'credential-fl-rn-submitted-refresh'
+             )
+             ORDER BY id`,
+          )
+          .all()
+          .map((row) => ({ ...row })),
+        [
+          {
+            id: "credential-fl-rn-active-refresh",
+            totalRequired: 26,
+          },
+          {
+            id: "credential-fl-rn-submitted-refresh",
+            totalRequired: 77,
+          },
+        ],
+      );
+      const expectedTaskTitles = [
+        "Confirm MQA and CE Broker dates, impairment cadence, domestic-violence cycle, and fingerprints",
+        "Complete and verify every applicable Florida nursing topic in CE Broker",
+        "Renew through MQA and save the updated RN license and CE Broker record",
+      ];
+      assert.deepEqual(
+        raw
+          .prepare(
+            `SELECT title
+             FROM checklist_tasks
+             WHERE credential_id = 'credential-fl-rn-active-refresh'
+             ORDER BY sort_order`,
+          )
+          .all()
+          .map((task) => task.title),
+        expectedTaskTitles,
+      );
+
+      const repeatRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __nursingRefreshRepeatNonce = "repeat";`,
+      );
+      await repeatRuntime.initializeDatabase(database);
+      assert.deepEqual(
+        raw
+          .prepare(
+            `SELECT title
+             FROM checklist_tasks
+             WHERE credential_id = 'credential-fl-rn-active-refresh'
+             ORDER BY sort_order`,
+          )
+          .all()
+          .map((task) => task.title),
+        expectedTaskTitles,
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM credential_requirements
+             WHERE credential_id = 'credential-fl-rn-active-refresh'
+               AND rule_category_id = 'fl-rn-2026-domestic-violence'`,
+          )
+          .get().count,
+        1,
+      );
+      database.close();
+    },
+  );
+
+  await t.test(
+    "creates zero-total New York nursing plans and atomically adjusts Florida domestic-violence totals",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __nursingWorkflowNonce = "zero-and-dynamic";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      testCloudflareEnv.DB = database;
+      const raw = database.raw;
+
+      const floridaDates = {
+        ruleSetId: "fl-rn-2026-v1",
+        cycleStart: "2026-01-01",
+        deadline: "2027-12-31",
+      };
+      const unattestedFloridaResponse = await postWorkspace(
+        "createCredential",
+        floridaDates,
+      );
+      assert.equal(unattestedFloridaResponse.status, 409);
+      assert.equal(
+        (await unattestedFloridaResponse.json()).code,
+        "nursing_template_eligibility_required",
+      );
+      const shortenedFloridaResponse = await postWorkspace(
+        "createCredential",
+        {
+          ...floridaDates,
+          deadline: "2027-11-30",
+          templateEligibilityAttested: true,
+        },
+      );
+      assert.equal(shortenedFloridaResponse.status, 409);
+      assert.equal(
+        (await shortenedFloridaResponse.json()).code,
+        "nursing_standard_cycle_dates_required",
+      );
+
+      const floridaPayload = {
+        ...floridaDates,
+        templateEligibilityAttested: true,
+      };
+      const floridaDueResponse = await postWorkspace("createCredential", {
+        ...floridaPayload,
+        applicabilityChoices: [
+          {
+            ruleCategoryId: "fl-rn-2026-domestic-violence",
+            status: "applies",
+          },
+        ],
+      });
+      assert.equal(
+        floridaDueResponse.status,
+        200,
+        JSON.stringify(await floridaDueResponse.clone().json()),
+      );
+      const floridaDueCredentialId = (await floridaDueResponse.json()).id;
+
+      const floridaNotDueResponse = await postWorkspace(
+        "createCredential",
+        {
+          ...floridaPayload,
+          applicabilityChoices: [
+            {
+              ruleCategoryId: "fl-rn-2026-domestic-violence",
+              status: "not_applicable",
+            },
+          ],
+        },
+      );
+      assert.equal(
+        floridaNotDueResponse.status,
+        200,
+        JSON.stringify(await floridaNotDueResponse.clone().json()),
+      );
+      const floridaNotDueCredentialId =
+        (await floridaNotDueResponse.json()).id;
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT total_required AS totalRequired
+               FROM credentials
+               WHERE id = ?`,
+            )
+            .get(floridaDueCredentialId),
+        },
+        { totalRequired: 26 },
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT total_required AS totalRequired
+               FROM credentials
+               WHERE id = ?`,
+            )
+            .get(floridaNotDueCredentialId),
+        },
+        { totalRequired: 24 },
+      );
+
+      const domesticViolenceRequirementId = raw
+        .prepare(
+          `SELECT id
+           FROM credential_requirements
+           WHERE credential_id = ?
+             AND rule_category_id = 'fl-rn-2026-domestic-violence'`,
+        )
+        .get(floridaNotDueCredentialId).id;
+      const activateResponse = await postWorkspace(
+        "updateRequirementApplicability",
+        {
+          credentialId: floridaNotDueCredentialId,
+          choices: [
+            {
+              requirementId: domesticViolenceRequirementId,
+              status: "applies",
+            },
+          ],
+        },
+      );
+      assert.equal(
+        activateResponse.status,
+        200,
+        JSON.stringify(await activateResponse.clone().json()),
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 credential.total_required AS totalRequired,
+                 requirement.applicability_status AS applicabilityStatus,
+                 requirement.is_active AS isActive
+               FROM credentials credential
+               JOIN credential_requirements requirement
+                 ON requirement.credential_id = credential.id
+               WHERE credential.id = ?
+                 AND requirement.id = ?`,
+            )
+            .get(
+              floridaNotDueCredentialId,
+              domesticViolenceRequirementId,
+            ),
+        },
+        {
+          totalRequired: 26,
+          applicabilityStatus: "applies",
+          isActive: 1,
+        },
+      );
+      const deactivateResponse = await postWorkspace(
+        "updateRequirementApplicability",
+        {
+          credentialId: floridaNotDueCredentialId,
+          choices: [
+            {
+              requirementId: domesticViolenceRequirementId,
+              status: "not_applicable",
+            },
+          ],
+        },
+      );
+      assert.equal(
+        deactivateResponse.status,
+        200,
+        JSON.stringify(await deactivateResponse.clone().json()),
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 credential.total_required AS totalRequired,
+                 requirement.applicability_status AS applicabilityStatus,
+                 requirement.is_active AS isActive
+               FROM credentials credential
+               JOIN credential_requirements requirement
+                 ON requirement.credential_id = credential.id
+               WHERE credential.id = ?
+                 AND requirement.id = ?`,
+            )
+            .get(
+              floridaNotDueCredentialId,
+              domesticViolenceRequirementId,
+            ),
+        },
+        {
+          totalRequired: 24,
+          applicabilityStatus: "not_applicable",
+          isActive: 0,
+        },
+      );
+
+      const floridaSubmissionResponse = await postWorkspace(
+        "markSubmitted",
+        {
+          credentialId: floridaDueCredentialId,
+          submissionDate: "2027-12-31",
+          confirmationNumber: "MQA-NURSING-COMPLETE",
+        },
+      );
+      assert.equal(
+        floridaSubmissionResponse.status,
+        200,
+        JSON.stringify(await floridaSubmissionResponse.clone().json()),
+      );
+      const floridaAcceptancePayload = {
+        credentialId: floridaDueCredentialId,
+        acceptedAt: "2028-01-01",
+        reference: "MQA-RENEWED",
+        nextCycleStart: "2028-01-01",
+        nextDeadline: "2029-12-31",
+      };
+      const unattestedFloridaAcceptance = await postWorkspace(
+        "markRenewalAccepted",
+        floridaAcceptancePayload,
+      );
+      assert.equal(unattestedFloridaAcceptance.status, 409);
+      assert.equal(
+        (await unattestedFloridaAcceptance.json()).code,
+        "official_next_period_attestation_required",
+      );
+      const ineligibleFloridaAcceptance = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...floridaAcceptancePayload,
+          officialDatesAttested: true,
+        },
+      );
+      assert.equal(ineligibleFloridaAcceptance.status, 409);
+      assert.equal(
+        (await ineligibleFloridaAcceptance.json()).code,
+        "nursing_next_template_eligibility_required",
+      );
+      const floridaAcceptanceResponse = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...floridaAcceptancePayload,
+          officialDatesAttested: true,
+          templateEligibilityAttested: true,
+        },
+      );
+      assert.equal(
+        floridaAcceptanceResponse.status,
+        200,
+        JSON.stringify(await floridaAcceptanceResponse.clone().json()),
+      );
+      const nextFloridaCredentialId =
+        (await floridaAcceptanceResponse.json()).id;
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 rule_set_id AS ruleSetId,
+                 cycle_start AS cycleStart,
+                 deadline,
+                 total_required AS totalRequired,
+                 status
+               FROM credentials
+               WHERE id = ?`,
+            )
+            .get(nextFloridaCredentialId),
+        },
+        {
+          ruleSetId: "fl-rn-2026-v1",
+          cycleStart: "2028-01-01",
+          deadline: "2029-12-31",
+          totalRequired: 24,
+          status: "active",
+        },
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 applicability_status AS applicabilityStatus,
+                 is_active AS isActive
+               FROM credential_requirements
+               WHERE credential_id = ?
+                 AND rule_category_id =
+                   'fl-rn-2026-domestic-violence'`,
+            )
+            .get(nextFloridaCredentialId),
+        },
+        {
+          applicabilityStatus: "needs_confirmation",
+          isActive: 0,
+        },
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(*) AS conditionalCount,
+                 SUM(
+                   CASE
+                     WHEN applicability_status = 'needs_confirmation'
+                       AND is_active = 0
+                     THEN 1 ELSE 0
+                   END
+                 ) AS resetCount
+               FROM credential_requirements
+               WHERE credential_id = ?
+                 AND applicability = 'conditional'`,
+            )
+            .get(nextFloridaCredentialId),
+        },
+        { conditionalCount: 3, resetCount: 3 },
+      );
+
+      const newYorkResponse = await postWorkspace("createCredential", {
+        ruleSetId: "ny-rn-2026-v1",
+        cycleStart: "2026-01-01",
+        deadline: "2028-12-31",
+        templateEligibilityAttested: true,
+      });
+      assert.equal(
+        newYorkResponse.status,
+        200,
+        JSON.stringify(await newYorkResponse.clone().json()),
+      );
+      const newYorkCredentialId = (await newYorkResponse.json()).id;
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT total_required AS totalRequired, unit_label AS unitLabel
+               FROM credentials
+               WHERE id = ?`,
+            )
+            .get(newYorkCredentialId),
+        },
+        { totalRequired: 0, unitLabel: "training hours" },
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(*) AS requirementCount,
+                 SUM(CASE WHEN required_units = 0 THEN 1 ELSE 0 END)
+                   AS zeroUnitCount,
+                 SUM(CASE WHEN required_units = 2 THEN 1 ELSE 0 END)
+                   AS twoHourCount,
+                 SUM(CASE WHEN applicability_status = 'needs_confirmation'
+                   THEN 1 ELSE 0 END) AS pendingConditionCount
+               FROM credential_requirements
+               WHERE credential_id = ?`,
+            )
+            .get(newYorkCredentialId),
+        },
+        {
+          requirementCount: 4,
+          zeroUnitCount: 3,
+          twoHourCount: 1,
+          pendingConditionCount: 4,
+        },
+      );
+      assert.deepEqual(
+        raw
+          .prepare(
+            `SELECT title
+             FROM checklist_tasks
+             WHERE credential_id = ?
+             ORDER BY sort_order`,
+          )
+          .all(newYorkCredentialId)
+          .map((task) => task.title),
+        [
+          "Confirm NYSED dates, New York practice, exemptions, child-abuse status, and any BSN-in-10 milestone",
+          "Complete due infection-control and mandated-reporter training; track any BSN-in-10 milestone separately without treating it as CE",
+          "Re-register with NYSED, complete the RN workforce survey, and save confirmation",
+        ],
+      );
+
+      const texasBeforeUploadResponse = await postWorkspace(
+        "createCredential",
+        {
+          ruleSetId: "tx-rn-2026-v1",
+          cycleStart: "2024-09-01",
+          deadline: "2026-08-31",
+          templateEligibilityAttested: true,
+        },
+      );
+      assert.equal(
+        texasBeforeUploadResponse.status,
+        200,
+        JSON.stringify(await texasBeforeUploadResponse.clone().json()),
+      );
+      const texasBeforeUploadCredentialId =
+        (await texasBeforeUploadResponse.json()).id;
+      const texasUploadResponse = await postWorkspace(
+        "createCredential",
+        {
+          ruleSetId: "tx-lvn-2026-v1",
+          cycleStart: "2024-09-02",
+          deadline: "2026-09-01",
+          templateEligibilityAttested: true,
+        },
+      );
+      assert.equal(
+        texasUploadResponse.status,
+        200,
+        JSON.stringify(await texasUploadResponse.clone().json()),
+      );
+      const texasUploadCredentialId = (await texasUploadResponse.json()).id;
+      assert.deepEqual(
+        raw
+          .prepare(
+            `SELECT title
+             FROM checklist_tasks
+             WHERE credential_id = ? AND kind = 'submission'`,
+          )
+          .all(texasBeforeUploadCredentialId)
+          .map((task) => task.title),
+        [
+          "Renew in the Nurse Portal and save confirmation; keep certificates ready for audit",
+        ],
+      );
+      assert.deepEqual(
+        raw
+          .prepare(
+            `SELECT title
+             FROM checklist_tasks
+             WHERE credential_id = ? AND kind = 'submission'`,
+          )
+          .all(texasUploadCredentialId)
+          .map((task) => task.title),
+        [
+          "Upload all required verification in the Nurse Portal before renewing, then save confirmation",
+        ],
+      );
+      assert.match(
+        raw
+          .prepare(
+            `SELECT title
+             FROM checklist_tasks
+             WHERE credential_id = ? AND kind = 'review'`,
+          )
+          .get(texasUploadCredentialId).title,
+        /standard 20-hour CNE path[\s\S]*jurisprudence and ethics six-year window[\s\S]*2027 nutrition-rule update/i,
+      );
+
+      const workspaceResponse = await fetchWorker(
+        "https://license-lantern.example/api/workspace",
+        { headers: authHeaders() },
+      );
+      assert.equal(workspaceResponse.status, 200);
+      const workspace = await workspaceResponse.json();
+      const newYorkCredential = workspace.credentials.find(
+        (credential) => credential.id === newYorkCredentialId,
+      );
+      assert.ok(newYorkCredential);
+      assert.equal(newYorkCredential.totalRequired, 0);
+      assert.equal(newYorkCredential.requirements.length, 4);
+      database.close();
+    },
+  );
+
+  await t.test(
+    "blocks New Jersey nursing carryover from satisfying the current-biennium opioid minimum",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __nursingCarryoverNonce = "opioid-incompatibility";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      testCloudflareEnv.DB = database;
+      const raw = database.raw;
+
+      const createResponse = await postWorkspace("createCredential", {
+        ruleSetId: "nj-rn-2026-v1",
+        cycleStart: "2026-01-01",
+        deadline: "2027-12-31",
+        templateEligibilityAttested: true,
+        applicabilityChoices: [
+          {
+            ruleCategoryId: "nj-rn-2026-confirmed-carryover",
+            status: "applies",
+          },
+          {
+            ruleCategoryId: "nj-rn-2026-perinatal-bias",
+            status: "not_applicable",
+          },
+        ],
+      });
+      assert.equal(
+        createResponse.status,
+        200,
+        JSON.stringify(await createResponse.clone().json()),
+      );
+      const credentialId = (await createResponse.json()).id;
+      const requirementRows = raw
+        .prepare(
+          `SELECT id, rule_category_id AS ruleCategoryId
+           FROM credential_requirements
+           WHERE credential_id = ?
+             AND rule_category_id IN (
+               'nj-rn-2026-confirmed-carryover',
+               'nj-rn-2026-opioids'
+             )`,
+        )
+        .all(credentialId);
+      const requirementId = (categoryId) =>
+        requirementRows.find(
+          (requirement) => requirement.ruleCategoryId === categoryId,
+        )?.id;
+      const carryoverRequirementId = requirementId(
+        "nj-rn-2026-confirmed-carryover",
+      );
+      const opioidRequirementId = requirementId("nj-rn-2026-opioids");
+      assert.ok(carryoverRequirementId);
+      assert.ok(opioidRequirementId);
+
+      const invalidAdd = await postWorkspace("addActivity", {
+        title: "Prior-biennium opioid course",
+        provider: "Board-accepted provider",
+        completionDate: "2025-12-15",
+        totalUnits: 1,
+        credentialId,
+        requirementIds: [
+          carryoverRequirementId,
+          opioidRequirementId,
+        ],
+        evidenceStatus: "attached",
+        evidenceReference: "NJ Board carryover record 2026",
+        portalCarryoverAttested: true,
+      });
+      assert.equal(invalidAdd.status, 409);
+      assert.equal(
+        (await invalidAdd.json()).code,
+        "incompatible_requirement_conflict",
+      );
+
+      const validCarryover = await postWorkspace("addActivity", {
+        title: "Board-confirmed prior-biennium carryover",
+        provider: "New Jersey Board record",
+        completionDate: "2025-12-15",
+        totalUnits: 1,
+        credentialId,
+        requirementIds: [carryoverRequirementId],
+        evidenceStatus: "attached",
+        evidenceReference: "NJ Board carryover record 2026",
+        portalCarryoverAttested: true,
+      });
+      assert.equal(
+        validCarryover.status,
+        200,
+        JSON.stringify(await validCarryover.clone().json()),
+      );
+      const activityId = (await validCarryover.json()).id;
+      const allocationId = raw
+        .prepare(
+          `SELECT id
+           FROM activity_allocations
+           WHERE activity_id = ? AND credential_id = ?`,
+        )
+        .get(activityId, credentialId).id;
+
+      const invalidRetag = await postWorkspace(
+        "updateActivityAllocationRequirements",
+        {
+          allocationId,
+          requirementIds: [
+            carryoverRequirementId,
+            opioidRequirementId,
+          ],
+        },
+      );
+      assert.equal(invalidRetag.status, 409);
+      assert.equal(
+        (await invalidRetag.json()).code,
+        "incompatible_requirement_conflict",
+      );
+      assert.deepEqual(
+        raw
+          .prepare(
+            `SELECT requirement_id AS requirementId
+             FROM activity_requirement_matches
+             WHERE allocation_id = ?
+             ORDER BY requirement_id`,
+          )
+          .all(allocationId)
+          .map((match) => match.requirementId),
+        [carryoverRequirementId],
+      );
+      database.close();
+    },
+  );
+
+  await t.test(
     "round-trips opaque owner-scoped drafts, salvages fields, and expires them",
     async () => {
       const draftSource = await readFile(
@@ -2151,6 +3750,26 @@ test("License Lantern product contract", async (t) => {
         name: "Prescription Opioid Risks",
         ruleCategoryId: "nj-lpc-standard-renewal-2026-opioid",
       };
+      const newJerseyRnCarryover = {
+        id: "requirement-nj-rn-carryover",
+        name: "Board-Eligible Confirmed Carryover",
+        ruleCategoryId: "nj-rn-2026-confirmed-carryover",
+      };
+      const newJerseyRnOpioid = {
+        id: "requirement-nj-rn-opioid",
+        name: "Prescription Opioids",
+        ruleCategoryId: "nj-rn-2026-opioids",
+      };
+      const newJerseyLpnCarryover = {
+        id: "requirement-nj-lpn-carryover",
+        name: "Board-Eligible Confirmed Carryover",
+        ruleCategoryId: "nj-lpn-2026-confirmed-carryover",
+      };
+      const newJerseyLpnOpioid = {
+        id: "requirement-nj-lpn-opioid",
+        name: "Prescription Opioids",
+        ruleCategoryId: "nj-lpn-2026-prescription-opioids",
+      };
       const pennsylvaniaEthics = {
         id: "requirement-pa-ethics",
         name: "Ethics",
@@ -2187,6 +3806,16 @@ test("License Lantern product contract", async (t) => {
           newJerseyCarryover,
           newJerseyOpioid,
           /carryover cannot satisfy the current-period prescription-opioid/i,
+        ],
+        [
+          newJerseyRnCarryover,
+          newJerseyRnOpioid,
+          /RN carryover cannot satisfy the current-biennium prescription-opioid/i,
+        ],
+        [
+          newJerseyLpnCarryover,
+          newJerseyLpnOpioid,
+          /LPN carryover cannot satisfy the current-biennium prescription-opioid/i,
         ],
         [
           pennsylvaniaEthics,
@@ -6138,7 +7767,7 @@ test("License Lantern product contract", async (t) => {
             )
             .get(),
         },
-        { totalRules: 98, currentRules: 97 },
+        { totalRules: 105, currentRules: 104 },
       );
       assert.equal(
         raw
@@ -9767,21 +11396,31 @@ test("License Lantern product contract", async (t) => {
       assert.equal(updateResponse.status, 200);
       const applicabilityUpdate = flattenedStatements(updateDatabase).find(
         (statement) =>
-          /^UPDATE credential_requirements SET applicability_status = \?, is_active = \?/i.test(
+          /^UPDATE credential_requirements SET applicability_status = \( SELECT json_extract\(choice\.value, '\$\.status'\) FROM json_each\(\?\) choice/i.test(
             statement.sql,
           ),
       );
       assert.ok(applicabilityUpdate);
       assert.match(
         applicabilityUpdate.sql,
-        /WHERE id = \? AND credential_id = \? AND EXISTS \( SELECT 1 FROM credentials credential[\s\S]*?credential\.user_id = \? AND credential\.status IN \('active', 'submitted'\) \)/i,
+        /WHERE credential_id = \? AND id IN \( SELECT json_extract\(choice\.value, '\$\.requirementId'\) FROM json_each\(\?\) choice \)[\s\S]*?credential\.user_id = \? AND credential\.status IN \('active', 'submitted'\)[\s\S]*?json_array_length\(\?\)/i,
       );
+      const normalizedChoiceJson = JSON.stringify([
+        {
+          requirementId: "requirement-special-role",
+          status: "applies",
+          isActive: 1,
+        },
+      ]);
       assert.deepEqual(applicabilityUpdate.bindings, [
-        "applies",
-        1,
-        "requirement-special-role",
+        normalizedChoiceJson,
+        normalizedChoiceJson,
         "credential-rich",
+        normalizedChoiceJson,
         userId,
+        "credential-rich",
+        normalizedChoiceJson,
+        normalizedChoiceJson,
       ]);
       const confirmationXpInsert = flattenedStatements(updateDatabase).find(
         (statement) =>
@@ -9797,6 +11436,9 @@ test("License Lantern product contract", async (t) => {
         "requirement-special-role",
         "credential-rich",
         userId,
+        "applies",
+        1,
+        normalizedChoiceJson,
       ]);
 
       const optionalCapDatabase = new FakeDatabase({
@@ -9937,6 +11579,237 @@ test("License Lantern product contract", async (t) => {
         ),
         false,
       );
+    },
+  );
+
+  await t.test(
+    "keeps 50-condition updates within D1 limits and leaves no XP after an allocation race",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __applicabilityBudgetNonce = "fifty-and-race";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      testCloudflareEnv.DB = database;
+      const raw = database.raw;
+      const userId = await expectedStableUserId("owner@example.com");
+      raw
+        .prepare(
+          `INSERT INTO users (id, email, display_name, is_demo)
+           VALUES (?, 'owner@example.com', 'Casey Owner', 0)
+           ON CONFLICT(id) DO NOTHING`,
+        )
+        .run(userId);
+      const insertCredential = raw.prepare(
+        `INSERT INTO credentials (
+           id, user_id, rule_set_id, credential_name, profession,
+           jurisdiction, issuer, cycle_start, deadline, total_required,
+           unit_label, status
+         ) VALUES (?, ?, NULL, ?, 'Testing', 'Test State', 'Test Board',
+           '2027-01-01', '2027-12-31', 50, 'hours', 'active')`,
+      );
+      insertCredential.run(
+        "credential-fifty-conditions",
+        userId,
+        "Fifty-condition plan",
+      );
+      const insertRequirement = raw.prepare(
+        `INSERT INTO credential_requirements (
+           id, credential_id, rule_category_id, name, required_units, kind,
+           relation, applicability, applicability_status, is_active,
+           sort_order
+         ) VALUES (?, ?, NULL, ?, 1, 'minimum', 'independent',
+           'conditional', 'needs_confirmation', 0, ?)`,
+      );
+      const fiftyChoices = [];
+      for (let index = 0; index < 50; index += 1) {
+        const requirementId = `requirement-budget-${index}`;
+        insertRequirement.run(
+          requirementId,
+          "credential-fifty-conditions",
+          `Condition ${index + 1}`,
+          index,
+        );
+        fiftyChoices.push({
+          requirementId,
+          status: "not_applicable",
+        });
+      }
+
+      const preparedBindingCounts = [];
+      const prepareBeforeBudget = database.prepare.bind(database);
+      database.prepare = (sql) => {
+        const prepared = prepareBeforeBudget(sql);
+        const bindBeforeBudget = prepared.bind.bind(prepared);
+        prepared.bind = (...bindings) => {
+          preparedBindingCounts.push({
+            sql: normalizedSql(sql),
+            bindingCount: bindings.length,
+          });
+          return bindBeforeBudget(...bindings);
+        };
+        return prepared;
+      };
+      const fiftyResponse = await postWorkspace(
+        "updateRequirementApplicability",
+        {
+          credentialId: "credential-fifty-conditions",
+          choices: fiftyChoices,
+        },
+      );
+      assert.equal(
+        fiftyResponse.status,
+        200,
+        JSON.stringify(await fiftyResponse.clone().json()),
+      );
+      assert.equal(
+        Math.max(...preparedBindingCounts.map((item) => item.bindingCount)),
+        52,
+        "the 50-ID preflight lookup is the largest statement and stays below D1's 100-binding limit",
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(*) AS requirementCount,
+                 SUM(
+                   CASE
+                     WHEN applicability_status = 'not_applicable'
+                       AND is_active = 0
+                     THEN 1 ELSE 0
+                   END
+                 ) AS updatedCount
+               FROM credential_requirements
+               WHERE credential_id = 'credential-fifty-conditions'`,
+            )
+            .get(),
+        },
+        { requirementCount: 50, updatedCount: 50 },
+      );
+
+      insertCredential.run(
+        "credential-applicability-race",
+        userId,
+        "Allocation-race plan",
+      );
+      raw
+        .prepare(
+          `INSERT INTO credential_requirements (
+             id, credential_id, rule_category_id, name, required_units, kind,
+             relation, applicability, applicability_status, is_active,
+             sort_order
+           ) VALUES (
+             'requirement-applicability-race',
+             'credential-applicability-race',
+             NULL,
+             'Conditional requirement',
+             1,
+             'minimum',
+             'independent',
+             'conditional',
+             'applies',
+             1,
+             0
+           )`,
+        )
+        .run();
+
+      const batchBeforeRace = database.batch.bind(database);
+      let allocationInjected = false;
+      database.batch = async (statements) => {
+        if (
+          !allocationInjected &&
+          statements.some((statement) =>
+            /^UPDATE credential_requirements SET applicability_status =/i.test(
+              normalizedSql(statement.sql),
+            ),
+          )
+        ) {
+          allocationInjected = true;
+          raw
+            .prepare(
+              `INSERT INTO activities (
+                 id, user_id, title, provider, completion_date, total_units,
+                 evidence_status
+               ) VALUES (
+                 'activity-applicability-race',
+                 ?,
+                 'Racing course',
+                 'Test Provider',
+                 '2027-05-01',
+                 1,
+                 'missing'
+               )`,
+            )
+            .run(userId);
+          raw
+            .prepare(
+              `INSERT INTO activity_allocations (
+                 id, activity_id, credential_id, requirement_id,
+                 allocated_units
+               ) VALUES (
+                 'allocation-applicability-race',
+                 'activity-applicability-race',
+                 'credential-applicability-race',
+                 'requirement-applicability-race',
+                 1
+               )`,
+            )
+            .run();
+        }
+        return batchBeforeRace(statements);
+      };
+
+      const raceResponse = await postWorkspace(
+        "updateRequirementApplicability",
+        {
+          credentialId: "credential-applicability-race",
+          choices: [
+            {
+              requirementId: "requirement-applicability-race",
+              status: "not_applicable",
+            },
+          ],
+        },
+      );
+      assert.equal(raceResponse.status, 409);
+      assert.equal(
+        (await raceResponse.json()).code,
+        "requirement_has_allocated_credit",
+      );
+      assert.equal(allocationInjected, true);
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 applicability_status AS applicabilityStatus,
+                 is_active AS isActive
+               FROM credential_requirements
+               WHERE id = 'requirement-applicability-race'`,
+            )
+            .get(),
+        },
+        { applicabilityStatus: "applies", isActive: 1 },
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM xp_events
+             WHERE related_id = 'requirement-applicability-race'`,
+          )
+          .get().count,
+        0,
+        "the failed raced update must not commit confirmation XP",
+      );
+      database.close();
     },
   );
 
@@ -13069,6 +14942,106 @@ test("License Lantern product contract", async (t) => {
       assert.equal(
         (await raced.json()).code,
         "pharmacist_current_template_changed",
+      );
+    },
+  );
+
+  await t.test(
+    "reports a nursing-specific conflict when the managed catalog changes during rollover",
+    async () => {
+      const resolver = {
+        resolveFirst(call) {
+          if (
+            /SELECT next_credential_id AS nextCredentialId FROM renewal_acceptances/i.test(
+              call.sql,
+            )
+          ) {
+            return null;
+          }
+          if (
+            /FROM credentials credential\s+LEFT JOIN credential_cycle_links cycle/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "credential-tx-rn-submitted-race",
+              ruleSetId: "tx-rn-2026-v1",
+              credentialName: "Registered Nurse — standard 20-hour CNE path",
+              profession: "Nursing",
+              jurisdiction: "Texas",
+              issuer: "Texas Board of Nursing",
+              status: "submitted",
+              deadline: "2028-08-31",
+              totalRequired: 20,
+              unitLabel: "CNE contact hours",
+              seriesId: "series-tx-rn-race",
+              cycleMonths: 24,
+            };
+          }
+          if (
+            /FROM renewal_submissions WHERE credential_id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "submission-tx-rn-race",
+              submittedAt: "2028-08-20T12:00:00.000Z",
+            };
+          }
+          if (
+            /FROM rule_sets prior_rule\s+JOIN rule_sets current_rule/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "tx-rn-2026-v1",
+              credentialName: "Registered Nurse — standard 20-hour CNE path",
+              profession: "Nursing",
+              jurisdiction: "Texas",
+              issuer: "Texas Board of Nursing",
+              totalUnits: 20,
+              unitLabel: "CNE contact hours",
+              cycleMonths: 24,
+            };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (/FROM rule_categories WHERE rule_set_id = \?/i.test(call.sql)) {
+            return [];
+          }
+          return [];
+        },
+      };
+      class RacingNursingDatabase extends FakeDatabase {
+        async batch(statementsToRun) {
+          if (
+            statementsToRun.some((statement) =>
+              /UPDATE credentials SET status = 'renewed'/i.test(
+                normalizedSql(statement.sql),
+              ),
+            )
+          ) {
+            throw new Error("simulated nursing catalog race");
+          }
+          return super.batch(statementsToRun);
+        }
+      }
+      testCloudflareEnv.DB = new RacingNursingDatabase(resolver);
+
+      const response = await postWorkspace("markRenewalAccepted", {
+        credentialId: "credential-tx-rn-submitted-race",
+        acceptedAt: "2028-09-01",
+        reference: "TX-NURSE-RENEWED-RACE",
+        nextCycleStart: "2028-09-01",
+        nextDeadline: "2030-08-31",
+        officialDatesAttested: true,
+        templateEligibilityAttested: true,
+      });
+      assert.equal(response.status, 409);
+      assert.equal(
+        (await response.json()).code,
+        "nursing_current_template_changed",
       );
     },
   );

@@ -99,6 +99,22 @@ export const REQUIREMENT_INCOMPATIBILITIES: readonly RequirementIncompatibility[
     },
     {
       categoryIds: [
+        "nj-rn-2026-confirmed-carryover",
+        "nj-rn-2026-opioids",
+      ],
+      message:
+        "New Jersey RN carryover cannot satisfy the current-biennium prescription-opioid requirement.",
+    },
+    {
+      categoryIds: [
+        "nj-lpn-2026-confirmed-carryover",
+        "nj-lpn-2026-prescription-opioids",
+      ],
+      message:
+        "New Jersey LPN carryover cannot satisfy the current-biennium prescription-opioid requirement.",
+    },
+    {
+      categoryIds: [
         "pa-lpc-standard-renewal-2026-ethics",
         "pa-lpc-standard-renewal-2026-suicide-prevention",
       ],

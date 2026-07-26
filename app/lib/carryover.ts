@@ -7,6 +7,8 @@ const PORTAL_CARRYOVER_LOOKBACK_MONTHS = new Map<string, number>([
   ["nj-lpc-standard-renewal-2026-confirmed-carryover", 24],
   ["pa-professional-educator-act-48-2026-confirmed-carryover", 24],
   ["nj-pharmacist-2026-confirmed-carryover", 6],
+  ["nj-rn-2026-confirmed-carryover", 24],
+  ["nj-lpn-2026-confirmed-carryover", 24],
 ]);
 
 export function portalCarryoverLookbackMonths(

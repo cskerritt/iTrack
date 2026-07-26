@@ -29,8 +29,8 @@ rewards meaningful record-keeping without punitive daily streaks.
 - responsive dashboard with home-screen and standalone-app support
 - server-derived ownership from authenticated workspace identity
 
-The catalog contains 97 current, source-linked templates across 24 profession
-labels and 55 issuing bodies. Sixty templates are state-specific across
+The catalog contains 104 current, source-linked templates across 24 profession
+labels and 56 issuing bodies. Sixty-seven templates are state-specific across
 California, Florida, New Jersey, New York, Pennsylvania, and Texas; the
 remainder are United States-wide or global. A template can represent a
 phase, tenure tier, or other variant of the same credential, so this count

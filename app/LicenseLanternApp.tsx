@@ -365,6 +365,14 @@ function addMonthsIso(value: string, months: number) {
   return date.toISOString().slice(0, 10);
 }
 
+function defaultCatalogCycleStart(
+  rule: CatalogRule | null | undefined,
+) {
+  return rule
+    ? addMonthsIso(nextYearIso(), -rule.cycleMonths)
+    : yearAgoIso();
+}
+
 function confirmedCarryoverWindowStart(
   credential: Credential | null | undefined,
 ) {
@@ -471,11 +479,14 @@ function allocationCategoryLabel(allocation: ActivityAllocation) {
 }
 
 function catalogCategorySummary(category: CatalogCategory) {
+  const qualifier =
+    category.applicability === "conditional" ? " if applicable" : "";
+  if (category.kind === "informational") {
+    return `Track ${category.name}${qualifier}`;
+  }
   const units = compactNumber(category.requiredUnits);
   const prefix =
     category.kind === "maximum" ? `Up to ${units}` : `${units}`;
-  const qualifier =
-    category.applicability === "conditional" ? " if applicable" : "";
   return `${prefix} ${category.name}${qualifier}`;
 }
 
@@ -546,9 +557,14 @@ function readinessScore(credential: Credential) {
     (item) => item.status === "completed",
   ).length;
   const taskProgress = taskCount === 0 ? 1 : completedTasks / taskCount;
-  const score = clampPercent(
-    unitProgress * 70 + requirementProgressValue * 15 + taskProgress * 15,
-  );
+  const score =
+    credential.totalRequired <= 0
+      ? clampPercent(requirementProgressValue * 60 + taskProgress * 40)
+      : clampPercent(
+          unitProgress * 70 +
+            requirementProgressValue * 15 +
+            taskProgress * 15,
+        );
   return credential.classificationIssues?.length
     ? Math.min(99, score)
     : score;
@@ -730,6 +746,14 @@ function isManagedPharmacistCredential(
   );
 }
 
+function isManagedNursingCredential(
+  credential: Credential | null | undefined,
+) {
+  return Boolean(
+    credential?.profession === "Nursing" && credential.ruleSetId,
+  );
+}
+
 function isCompliancePeriodCredential(
   credential: Credential | null | undefined,
 ) {
@@ -777,7 +801,8 @@ function requiresOfficialNextPeriodAttestation(
     isCompliancePeriodCredential(credential) ||
     isFloridaMentalHealthPhaseCredential(credential) ||
     isNremtCredential(credential) ||
-    isManagedPharmacistCredential(credential)
+    isManagedPharmacistCredential(credential) ||
+    isManagedNursingCredential(credential)
   );
 }
 
@@ -788,7 +813,8 @@ function requiresNonOverlappingNextPeriod(
     isIsc2AutomaticRenewalCredential(credential) ||
     isCompliancePeriodCredential(credential) ||
     isFloridaMentalHealthPhaseCredential(credential) ||
-    isManagedPharmacistCredential(credential)
+    isManagedPharmacistCredential(credential) ||
+    isManagedNursingCredential(credential)
   );
 }
 
@@ -2084,7 +2110,8 @@ export function LicenseLanternApp() {
         cycleStart: String(form.get("cycleStart") ?? ""),
         deadline: String(form.get("deadline") ?? ""),
         templateEligibilityAttested:
-          rule?.profession === "Pharmacy"
+          rule?.profession === "Pharmacy" ||
+          rule?.profession === "Nursing"
             ? form.get("templateEligibilityAttested") === "on"
             : undefined,
         totalRequired,
@@ -2168,9 +2195,9 @@ export function LicenseLanternApp() {
           requiresOfficialNextPeriodAttestation(selectedCredential)
             ? form.get("officialDatesAttested") === "on"
             : undefined,
-        templateEligibilityAttested: isManagedPharmacistCredential(
-          selectedCredential,
-        )
+        templateEligibilityAttested:
+          isManagedPharmacistCredential(selectedCredential) ||
+          isManagedNursingCredential(selectedCredential)
           ? form.get("templateEligibilityAttested") === "on"
           : undefined,
       },
@@ -3345,10 +3372,13 @@ export function LicenseLanternApp() {
                       </span>
                     </div>
                     <strong>
-                      {compactNumber(selectedRule.totalUnits)}{" "}
-                      {selectedRule.unitLabel} every{" "}
-                      {selectedRule.cycleMonths / 12}{" "}
-                      {selectedRule.cycleMonths === 12 ? "year" : "years"}
+                      {selectedRule.totalUnits > 0
+                        ? `${compactNumber(selectedRule.totalUnits)} ${
+                            selectedRule.unitLabel
+                          } every ${selectedRule.cycleMonths / 12} ${
+                            selectedRule.cycleMonths === 12 ? "year" : "years"
+                          }`
+                        : "No general numeric CE total · mandated training is tracked by condition and checklist"}
                     </strong>
                     <p>
                       {selectedRule.categories
@@ -3429,16 +3459,21 @@ export function LicenseLanternApp() {
                     </div>
                   </fieldset>
                 ) : null}
-                {selectedRule?.profession === "Pharmacy" ? (
+                {selectedRule?.profession === "Pharmacy" ||
+                selectedRule?.profession === "Nursing" ? (
                   <label className="switch-row">
                     <span>
                       <strong>
-                        I confirmed this is a standard full-cycle renewal
+                        I confirmed this is a standard full-cycle{" "}
+                        {selectedRule.profession === "Nursing"
+                          ? "renewal or registration"
+                          : "renewal"}
                       </strong>
                       <small>
-                        The regulator record matches the dates below, and no
-                        shortened, inactive, prorated, exempt, or other
-                        adjusted-status variant applies.
+                        {selectedRule.id === "tx-rn-2026-v1" ||
+                        selectedRule.id === "tx-lvn-2026-v1"
+                          ? "The regulator record matches the dates below, I am using the 20-hour CNE path rather than the certification alternative, and no initial, shortened, inactive, exempt, or other adjusted-status variant applies."
+                          : "The regulator record matches the dates below, and no initial, shortened, inactive, prorated, exempt, or other adjusted-status variant applies."}
                       </small>
                     </span>
                     <input
@@ -3461,7 +3496,7 @@ export function LicenseLanternApp() {
                   defaultValue={
                     requiresOfficialCatalogDates(selectedRule)
                       ? ""
-                      : yearAgoIso()
+                      : defaultCatalogCycleStart(selectedRule)
                   }
                   required
                 />
@@ -3926,16 +3961,21 @@ export function LicenseLanternApp() {
                 />
               </label>
             ) : null}
-            {isManagedPharmacistCredential(selectedCredential) ? (
+            {isManagedPharmacistCredential(selectedCredential) ||
+            isManagedNursingCredential(selectedCredential) ? (
               <label className="switch-row">
                 <span>
                   <strong>
                     I confirmed the next period is a standard full-cycle
-                    renewal
+                    {isManagedNursingCredential(selectedCredential)
+                      ? " renewal or registration"
+                      : " renewal"}
                   </strong>
                   <small>
-                    No shortened, inactive, prorated, exempt, or other
-                    adjusted-status variant applies to the next period.
+                    {selectedCredential.ruleSetId === "tx-rn-2026-v1" ||
+                    selectedCredential.ruleSetId === "tx-lvn-2026-v1"
+                      ? "I am using the 20-hour CNE path rather than the certification alternative, and no initial, shortened, inactive, exempt, or other adjusted-status variant applies."
+                      : "No shortened, inactive, prorated, exempt, or other adjusted-status variant applies to the next period."}
                   </small>
                 </span>
                 <input
@@ -3956,6 +3996,8 @@ export function LicenseLanternApp() {
                       ? "Do not infer the new cycle start from the old expiration. National Registry can assign an early rolling start while retaining the fixed expiration; the dashboard dates control."
                       : isManagedPharmacistCredential(selectedCredential)
                         ? "The next renewal will use the latest current version of this state pharmacist template and reset every conditional authorization for review."
+                        : isManagedNursingCredential(selectedCredential)
+                          ? "The next period will use the latest current version of this nursing template and reset every conditional training rule for review."
                         : "Requirements are copied as a starting snapshot. Review the current official rules before relying on the new plan."}
               </p>
             </div>
@@ -4788,16 +4830,26 @@ function TodayView({
             </div>
             <div className="deadline-detail">
               <span>Due {formatDate(credential.deadline)}</span>
-              <div className="progress-track progress-track-light">
-                <span style={{ width: `${progress}%` }} />
-              </div>
-              <p>
-                <strong>
-                  {compactNumber(credential.totalEarned)} of{" "}
-                  {compactNumber(credential.totalRequired)}
-                </strong>{" "}
-                {credential.unitLabel} counted
-              </p>
+              {credential.totalRequired > 0 ? (
+                <>
+                  <div className="progress-track progress-track-light">
+                    <span style={{ width: `${progress}%` }} />
+                  </div>
+                  <p>
+                    <strong>
+                      {compactNumber(credential.totalEarned)} of{" "}
+                      {compactNumber(credential.totalRequired)}
+                    </strong>{" "}
+                    {credential.unitLabel} counted
+                  </p>
+                </>
+              ) : (
+                <p>
+                  <strong>No general numeric CE total</strong>
+                  <br />
+                  Mandated training is tracked in conditions and the checklist.
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -4827,7 +4879,9 @@ function TodayView({
             </span>
           </div>
           <p>
-            Based on countable units, active minimums, and checklist steps.
+            {credential.totalRequired > 0
+              ? "Based on countable units, active minimums, and checklist steps."
+              : "Based on applicable training conditions and checklist steps."}
           </p>
         </div>
       </section>
@@ -4905,17 +4959,33 @@ function TodayView({
           <div className="card-heading">
             <div>
               <span className="section-kicker">Requirements</span>
-              <h2 id="progress-title">Credit progress</h2>
+              <h2 id="progress-title">
+                {credential.totalRequired > 0
+                  ? "Credit progress"
+                  : "Training and checklist"}
+              </h2>
             </div>
-            <span className="card-summary">{progress}% counted</span>
+            <span className="card-summary">
+              {credential.totalRequired > 0
+                ? `${progress}% counted`
+                : `${readiness}% ready`}
+            </span>
           </div>
           <div className="requirement-list">
-            <ProgressRow
-              name="Overall"
-              earned={credential.totalEarned}
-              required={credential.totalRequired}
-              unit={credential.unitLabel}
-            />
+            {credential.totalRequired > 0 ? (
+              <ProgressRow
+                name="Overall"
+                earned={credential.totalEarned}
+                required={credential.totalRequired}
+                unit={credential.unitLabel}
+              />
+            ) : (
+              <p className="total-excess-note">
+                No general numeric CE total applies. Resolve each training
+                condition and use the renewal checklist as the completion
+                record.
+              </p>
+            )}
             {Number(credential.totalExcessUnits ?? 0) > 0 ? (
               <p className="total-excess-note">
                 {compactNumber(credential.totalRawEarned ?? 0)}{" "}
@@ -5431,7 +5501,9 @@ function CredentialsView({
                   </small>
                 </span>
                 <span className="picker-progress">
-                  {credentialProgress(credential)}%
+                  {credential.totalRequired > 0
+                    ? `${credentialProgress(credential)}%`
+                    : `${readinessScore(credential)}% ready`}
                 </span>
               </button>
             ))}
@@ -5502,10 +5574,17 @@ function CredentialsView({
               <div>
                 <span>Counted</span>
                 <strong>
-                  {compactNumber(selected.totalEarned)} /{" "}
-                  {compactNumber(selected.totalRequired)}
+                  {selected.totalRequired > 0
+                    ? `${compactNumber(selected.totalEarned)} / ${compactNumber(
+                        selected.totalRequired,
+                      )}`
+                    : "Checklist"}
                 </strong>
-                <small>{selected.unitLabel}</small>
+                <small>
+                  {selected.totalRequired > 0
+                    ? selected.unitLabel
+                    : "no general CE total"}
+                </small>
               </div>
               <div>
                 <span>Readiness</span>
@@ -5533,12 +5612,20 @@ function CredentialsView({
                   <h3>Rule progress and limits</h3>
                 </div>
               </div>
-              <ProgressRow
-                name="Overall"
-                earned={selected.totalEarned}
-                required={selected.totalRequired}
-                unit={selected.unitLabel}
-              />
+              {selected.totalRequired > 0 ? (
+                <ProgressRow
+                  name="Overall"
+                  earned={selected.totalEarned}
+                  required={selected.totalRequired}
+                  unit={selected.unitLabel}
+                />
+              ) : (
+                <p className="total-excess-note">
+                  This regulator does not set a general numeric nursing CE
+                  total. Complete the applicable training conditions and
+                  checklist using the official record.
+                </p>
+              )}
               {Number(selected.totalExcessUnits ?? 0) > 0 ? (
                 <p className="total-excess-note">
                   {compactNumber(selected.totalRawEarned ?? 0)}{" "}
@@ -6778,6 +6865,36 @@ function ProgressRow({
     );
   }
 
+  if (kind === "informational") {
+    return (
+      <div
+        className={`progress-row requirement-condition ${
+          nested ? "nested" : ""
+        }`}
+      >
+        <div>
+          <span>
+            <strong>{name}</strong>
+            <small>Checklist checkpoint</small>
+          </span>
+          {requirement?.conditionNote ? (
+            <p>{requirement.conditionNote}</p>
+          ) : null}
+        </div>
+        {conditional && onApplicability ? (
+          <div className="requirement-condition-actions">
+            <button
+              type="button"
+              onClick={() => onApplicability("not_applicable")}
+            >
+              Not this cycle
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   const progress =
     required <= 0
       ? kind === "maximum"
@@ -6790,11 +6907,9 @@ function ProgressRow({
       ? excess > 0
         ? `${compactNumber(excess)} over limit`
         : "Within limit"
-      : kind === "informational"
-        ? "Track only"
-        : met
-          ? "Minimum met"
-          : null;
+      : met
+        ? "Minimum met"
+        : null;
   return (
     <div
       className={`progress-row ${nested ? "nested" : ""} ${
@@ -7081,10 +7196,10 @@ function RequirementPicker({
                           )} ${credential?.unitLabel ?? "units"}`
                         : requirement.relation === "nested"
                           ? "Also rolls up to its parent requirement"
-                          : requirement.relation === "overlapping"
-                            ? "May overlap another selected requirement"
-                            : requirement.exclusiveGroup
-                              ? "Choose only one activity type from this group"
+                          : requirement.exclusiveGroup
+                            ? "Choose only one activity type from this group"
+                            : requirement.relation === "overlapping"
+                              ? "May overlap another selected requirement"
                               : "Counts within the overall total")}
                 </small>
               </span>
