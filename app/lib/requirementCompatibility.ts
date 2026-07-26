@@ -31,6 +31,22 @@ export const REQUIREMENT_INCOMPATIBILITIES: readonly RequirementIncompatibility[
       message:
         "BLS, CPR, or AED training cannot satisfy Patient Safety for the same activity. Choose only one of those tags.",
     },
+    {
+      categoryIds: [
+        "ny-pharmacist-2026-self-study",
+        "ny-pharmacist-2026-cdtm",
+      ],
+      message:
+        "New York collaborative drug-therapy-management protocol hours cannot be self-study. Classify those hours as live or interactive.",
+    },
+    {
+      categoryIds: [
+        "nj-pharmacist-2026-confirmed-carryover",
+        "nj-pharmacist-2026-prescription-opioids",
+      ],
+      message:
+        "New Jersey prescription-opioid credit cannot carry forward. Use current-period credit for that subject.",
+    },
     ...incompatibleWithEach(
       "ptcb-cpht-2026-bls-cpr-aed",
       [

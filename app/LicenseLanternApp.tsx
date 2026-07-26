@@ -484,6 +484,24 @@ function isNremtCredential(credential: Credential | null | undefined) {
   return credential?.ruleSetId?.startsWith("nremt-") ?? false;
 }
 
+const PHARMACIST_RULE_SET_IDS = new Set([
+  "ca-pharmacist-2026-v1",
+  "tx-pharmacist-2026-v1",
+  "fl-pharmacist-2026-v1",
+  "ny-pharmacist-2026-v1",
+  "nj-pharmacist-2026-v1",
+  "pa-pharmacist-2026-v1",
+]);
+
+function isManagedPharmacistCredential(
+  credential: Credential | null | undefined,
+) {
+  return Boolean(
+    credential?.ruleSetId &&
+      PHARMACIST_RULE_SET_IDS.has(credential.ruleSetId),
+  );
+}
+
 function isCompliancePeriodCredential(
   credential: Credential | null | undefined,
 ) {
@@ -528,7 +546,8 @@ function requiresOfficialNextPeriodAttestation(
     isIsc2AutomaticRenewalCredential(credential) ||
     isCompliancePeriodCredential(credential) ||
     isFloridaMentalHealthPhaseCredential(credential) ||
-    isNremtCredential(credential)
+    isNremtCredential(credential) ||
+    isManagedPharmacistCredential(credential)
   );
 }
 
@@ -538,7 +557,8 @@ function requiresNonOverlappingNextPeriod(
   return (
     isIsc2AutomaticRenewalCredential(credential) ||
     isCompliancePeriodCredential(credential) ||
-    isFloridaMentalHealthPhaseCredential(credential)
+    isFloridaMentalHealthPhaseCredential(credential) ||
+    isManagedPharmacistCredential(credential)
   );
 }
 

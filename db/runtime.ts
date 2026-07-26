@@ -26,6 +26,11 @@ import {
   MENTAL_HEALTH_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
   MENTAL_HEALTH_RULE_SET_SEED_BINDINGS,
 } from "./catalog/mentalHealth";
+import {
+  PHARMACY_CATEGORY_SEED_BINDINGS,
+  PHARMACY_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+  PHARMACY_RULE_SET_SEED_BINDINGS,
+} from "./catalog/pharmacy";
 
 const TABLE_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS users (
@@ -3175,24 +3180,6 @@ const CATALOG_2026_RULE_SET_SEED_BINDINGS = [
     1,
   ],
   [
-    "ca-pharmacist-2026-v1",
-    "ca-pharmacist-standard",
-    1,
-    "Pharmacy",
-    "Pharmacist — standard active renewal",
-    "California",
-    "California State Board of Pharmacy",
-    30,
-    "CE hours",
-    24,
-    "https://www.pharmacy.ca.gov/licensees/personal/ce.shtml",
-    "California Board of Pharmacy CE guidance for an active, second-or-later standard pharmacist renewal. The first renewal is exempt; Advanced Practice Pharmacists need 10 additional hours. Inactive status, hardship, and student exemptions are outside this template. Keep CE records for four years.",
-    null,
-    "2026-07-26",
-    "source_linked_check_conditions",
-    1,
-  ],
-  [
     "ny-architect-2026-v1",
     "ny-architect",
     1,
@@ -3342,6 +3329,7 @@ const CATALOG_2026_RULE_SET_SEED_BINDINGS = [
   ...NREMT_RULE_SET_SEED_BINDINGS,
   ...EDUCATION_RULE_SET_SEED_BINDINGS,
   ...MENTAL_HEALTH_RULE_SET_SEED_BINDINGS,
+  ...PHARMACY_RULE_SET_SEED_BINDINGS,
 ] as const;
 
 const CATALOG_2026_CATEGORY_INSERT_SQL = `INSERT INTO rule_categories (
@@ -3529,45 +3517,6 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
     "Applies to brokers and delegated supervisors. Beginning in 2026, TREC requires this six-hour course for all brokers; confirm the holder's role and assigned renewal cycle.",
     "TREC course type",
     3,
-  ],
-  [
-    "ca-pharmacist-2026-law-webinar",
-    "ca-pharmacist-2026-v1",
-    "Board-Provided Law Webinar",
-    1,
-    "minimum",
-    "independent",
-    null,
-    "always",
-    "Complete at least one hour of the California Board-provided law webinar.",
-    "California pharmacist mandatory course",
-    0,
-  ],
-  [
-    "ca-pharmacist-2026-ethics-webinar",
-    "ca-pharmacist-2026-v1",
-    "Board-Provided Ethics Webinar",
-    1,
-    "minimum",
-    "independent",
-    null,
-    "always",
-    "Complete at least one hour of the California Board-provided ethics webinar.",
-    "California pharmacist mandatory course",
-    1,
-  ],
-  [
-    "ca-pharmacist-2026-cultural-competency",
-    "ca-pharmacist-2026-v1",
-    "Cultural Competency",
-    1,
-    "minimum",
-    "independent",
-    null,
-    "always",
-    "Complete at least one hour of approved cultural-competency continuing education.",
-    "California pharmacist mandatory course",
-    2,
   ],
   [
     "ny-architect-2026-hsw",
@@ -4147,6 +4096,7 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
   ...NREMT_CATEGORY_SEED_BINDINGS,
   ...EDUCATION_CATEGORY_SEED_BINDINGS,
   ...MENTAL_HEALTH_CATEGORY_SEED_BINDINGS,
+  ...PHARMACY_CATEGORY_SEED_BINDINGS,
 ] as const;
 
 const MANAGED_EXTERNAL_RULE_SET_IDS = [
@@ -4156,6 +4106,7 @@ const MANAGED_EXTERNAL_RULE_SET_IDS = [
   ...NREMT_RULE_SET_SEED_BINDINGS,
   ...EDUCATION_RULE_SET_SEED_BINDINGS,
   ...MENTAL_HEALTH_RULE_SET_SEED_BINDINGS,
+  ...PHARMACY_RULE_SET_SEED_BINDINGS,
 ].map((bindings) => bindings[0]);
 
 const MANAGED_EXTERNAL_CATEGORY_IDS = [
@@ -4165,6 +4116,7 @@ const MANAGED_EXTERNAL_CATEGORY_IDS = [
   ...NREMT_CATEGORY_SEED_BINDINGS,
   ...EDUCATION_CATEGORY_SEED_BINDINGS,
   ...MENTAL_HEALTH_CATEGORY_SEED_BINDINGS,
+  ...PHARMACY_CATEGORY_SEED_BINDINGS,
 ].map((bindings) => bindings[0]);
 
 function trustedSqlStringList(values: readonly string[]) {
@@ -4194,7 +4146,8 @@ const MANAGED_EXTERNAL_SCOPE_SQL = `(managed_rule.id LIKE 'isc2-%'
   OR managed_rule.id LIKE 'ny-lmsw-lcsw-%'
   OR managed_rule.id LIKE 'nj-lpc-%'
   OR managed_rule.id LIKE 'pa-lpc-%'
-  OR managed_rule.id LIKE 'fl-lcsw-lmft-lmhc-%')`;
+  OR managed_rule.id LIKE 'fl-lcsw-lmft-lmhc-%'
+  OR managed_rule.profession = 'Pharmacy')`;
 
 const RETIRE_MISSING_MANAGED_RULE_SETS_SQL = `UPDATE rule_sets AS managed_rule
 SET is_current = 0
@@ -4326,6 +4279,7 @@ const MAXIMUM_CLASSIFICATION_RULE_SET_IDS = [
   ...COMPTIA_RULE_SET_IDS,
   ...EDUCATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
   ...MENTAL_HEALTH_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+  ...PHARMACY_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
 ] as const;
 
 const ACTIVE_CATALOG_SNAPSHOT_RULE_SET_IDS = [

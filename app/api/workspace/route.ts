@@ -61,6 +61,67 @@ const NREMT_RULE_SET_PREFIX = "nremt-";
 const TEXAS_LPC_RULE_SET_ID = "tx-lpc-standard-renewal-2026-v1";
 const FLORIDA_INSURANCE_RULE_SET_PREFIX = "fl-insurance-producer-";
 const FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX = "fl-lcsw-lmft-lmhc-";
+const PHARMACIST_RULE_SET_IDS = new Set([
+  "ca-pharmacist-2026-v1",
+  "tx-pharmacist-2026-v1",
+  "fl-pharmacist-2026-v1",
+  "ny-pharmacist-2026-v1",
+  "nj-pharmacist-2026-v1",
+  "pa-pharmacist-2026-v1",
+]);
+const PHARMACIST_RENEWAL_TASK_COPY = new Map<
+  string,
+  readonly [review: string, progress: string, submission: string]
+>([
+  [
+    "ca-pharmacist-2026-v1",
+    [
+      "Confirm Board dates, first-renewal or APP status, and the mandatory Board webinars",
+      "Complete 30 hours plus law, ethics, and cultural competency, then retain every certificate",
+      "Submit the California renewal and save the updated Board license record",
+    ],
+  ],
+  [
+    "tx-pharmacist-2026-v1",
+    [
+      "Confirm TSBP birth-month dates, initial-period status, and every held authorization",
+      "Complete 30 hours, Texas pharmacy law, and the HHSC-approved trafficking course",
+      "Submit the renewal under current TSBP tracking instructions and save confirmation",
+    ],
+  ],
+  [
+    "fl-pharmacist-2026-v1",
+    [
+      "Confirm MQA and CE Broker dates, first-renewal status, certifications, and fingerprints",
+      "Complete and report the 26/2/2 credit buckets plus every applicable certification course",
+      "Submit the Florida renewal and save both CE Broker and updated MQA proof",
+    ],
+  ],
+  [
+    "ny-pharmacist-2026-v1",
+    [
+      "Confirm NYSED registration dates, short-period proration, and CDTM participation",
+      "Complete 45 hours, classify delivery mode, and finish the error and compounding topics",
+      "Re-register with NYSED and save the official new registration period",
+    ],
+  ],
+  [
+    "nj-pharmacist-2026-v1",
+    [
+      "Confirm Board dates, first or reciprocal status, authorizations, CDTM protocols, and carryover",
+      "Complete 30 credits and classify every activity by delivery mode and period source",
+      "Submit the New Jersey renewal and save the updated Board license record",
+    ],
+  ],
+  [
+    "pa-pharmacist-2026-v1",
+    [
+      "Confirm PALS dates, graduate or reciprocity status, injectable authority, and DEA use",
+      "Complete patient-safety and child-abuse training plus every applicable conditional topic",
+      "Certify the Pennsylvania renewal in PALS and save the updated license record",
+    ],
+  ],
+]);
 const CARRYOVER_REVIEW_TASK_TITLES = new Map([
   [
     CFP_2027_RULE_SET_ID,
@@ -81,6 +142,10 @@ const CARRYOVER_REVIEW_TASK_TITLES = new Map([
   [
     "shrm-scp-2026-v1",
     "Confirm SHRM carryover in the portal, then record only posted Advance Your Education PDCs",
+  ],
+  [
+    "nj-pharmacist-2026-v1",
+    "Confirm Board-eligible New Jersey pharmacist carryover, then record only evidence-backed credit",
   ],
 ]);
 const REQUIREMENT_INCOMPATIBILITY_VALUES_SQL =
@@ -315,6 +380,10 @@ function isIsc2AutomaticRenewalRuleSet(ruleSetId: string | null) {
   return ruleSetId?.startsWith(ISC2_AUTOMATIC_RENEWAL_RULE_SET_PREFIX) ?? false;
 }
 
+function isManagedPharmacistRuleSet(ruleSetId: string | null) {
+  return Boolean(ruleSetId && PHARMACIST_RULE_SET_IDS.has(ruleSetId));
+}
+
 function nextTemplateFamily(ruleSetId: string | null) {
   if (ruleSetId?.startsWith(FLORIDA_INSURANCE_RULE_SET_PREFIX)) {
     return "florida_insurance" as const;
@@ -330,6 +399,28 @@ function renewalTaskSpecs(
   deadline: string,
   reviewTitle?: string | null,
 ) {
+  const pharmacistTaskCopy = ruleSetId
+    ? PHARMACIST_RENEWAL_TASK_COPY.get(ruleSetId)
+    : null;
+  if (pharmacistTaskCopy) {
+    return [
+      {
+        title: reviewTitle ?? pharmacistTaskCopy[0],
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title: pharmacistTaskCopy[1],
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title: pharmacistTaskCopy[2],
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
   if (isIsc2AutomaticRenewalRuleSet(ruleSetId)) {
     return [
       {
@@ -4215,11 +4306,13 @@ async function markRenewalAccepted(
     isIsc2AutomaticRenewal ||
     isCompliancePeriod ||
     replacementTemplateFamily === "florida_mental_health" ||
-    isNremtRenewal;
+    isNremtRenewal ||
+    isManagedPharmacistRuleSet(credential.ruleSetId);
   const requiresNonOverlappingNextPeriod =
     isIsc2AutomaticRenewal ||
     isCompliancePeriod ||
-    replacementTemplateFamily === "florida_mental_health";
+    replacementTemplateFamily === "florida_mental_health" ||
+    isManagedPharmacistRuleSet(credential.ruleSetId);
   if (
     requiresOfficialNextPeriodAttestation &&
     payload.officialDatesAttested !== true
