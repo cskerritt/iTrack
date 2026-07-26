@@ -4,7 +4,10 @@ import {
   resolveRequestIdentity,
 } from "@/db/identity";
 import { ensureUser, initializeDatabase } from "@/db/runtime";
-import { findRequirementIncompatibility } from "../../lib/requirementCompatibility";
+import {
+  findRequirementIncompatibility,
+  REQUIREMENT_INCOMPATIBILITIES,
+} from "../../lib/requirementCompatibility";
 
 export const dynamic = "force-dynamic";
 
@@ -48,6 +51,34 @@ const CFP_2027_ACTIVITY_TYPE_CATEGORY_IDS = new Set([
 ]);
 const NJ_LCSW_RULE_SET_ID = "nj-lcsw-sample-v1";
 const NJ_LCSW_CREDIT_CATEGORY_GROUP = "New Jersey LCSW credit category";
+const CARRYOVER_REVIEW_TASK_TITLES = new Map([
+  [
+    CFP_2027_RULE_SET_ID,
+    "Confirm CFP Board carryover, then manually record only approved general CE",
+  ],
+  [
+    "hrci-phr-2026-v1",
+    "Confirm HRCI carryover in the portal, then record only posted General HR credits",
+  ],
+  [
+    "hrci-sphr-2026-v1",
+    "Confirm HRCI carryover in the portal, then record only posted General HR credits",
+  ],
+  [
+    "shrm-cp-2026-v1",
+    "Confirm SHRM carryover in the portal, then record only posted Advance Your Education PDCs",
+  ],
+  [
+    "shrm-scp-2026-v1",
+    "Confirm SHRM carryover in the portal, then record only posted Advance Your Education PDCs",
+  ],
+]);
+const REQUIREMENT_INCOMPATIBILITY_VALUES_SQL =
+  REQUIREMENT_INCOMPATIBILITIES.map(() => "(?, ?)").join(", ");
+const REQUIREMENT_INCOMPATIBILITY_BINDINGS =
+  REQUIREMENT_INCOMPATIBILITIES.flatMap(
+    ({ categoryIds }) => categoryIds,
+  );
 
 class RequestError extends Error {
   constructor(
@@ -1032,8 +1063,23 @@ async function validateRequirementTags(
         AND requirement.is_active = 1
         AND requirement.applicability_status = 'applies'
         AND requirement.exclusive_group IS NOT NULL
+        AND (
+          credential.status = 'active'
+          OR credential.rule_set_id = ?
+          OR EXISTS (
+            SELECT 1
+            FROM credential_requirements complete_group
+            WHERE complete_group.credential_id =
+              requirement.credential_id
+              AND complete_group.kind = 'informational'
+              AND complete_group.is_active = 1
+              AND complete_group.applicability_status = 'applies'
+              AND complete_group.exclusive_group =
+                requirement.exclusive_group
+          )
+        )
       ORDER BY requirement.exclusive_group`,
-      [credentialId, identity.userId],
+      [credentialId, identity.userId, CFP_2027_RULE_SET_ID],
     ).all<RequiredMaximumGroupRow>();
   const credential = await query(
     database,
@@ -1181,6 +1227,184 @@ async function validateRequirementTags(
     );
   }
   return selectedRequirements;
+}
+
+async function findUnresolvedCredentialClassification(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+  ruleSetId: string | null,
+) {
+  type ClassificationRequirementRow = {
+    id: string;
+    name: string;
+    ruleCategoryId: string | null;
+    kind: RequirementKind;
+    isActive: number;
+    applicabilityStatus: ApplicabilityStatus;
+    exclusiveGroup: string | null;
+  };
+  type ClassificationAllocationRow = {
+    id: string;
+  };
+  type ClassificationMatchRow = {
+    allocationId: string;
+    requirementId: string;
+  };
+  const [requirementResult, allocationResult, matchResult] =
+    await Promise.all([
+      query(
+        database,
+        `SELECT
+          requirement.id,
+          requirement.name,
+          requirement.rule_category_id AS ruleCategoryId,
+          requirement.kind,
+          requirement.is_active AS isActive,
+          requirement.applicability_status AS applicabilityStatus,
+          requirement.exclusive_group AS exclusiveGroup
+        FROM credential_requirements requirement
+        JOIN credentials credential
+          ON credential.id = requirement.credential_id
+        WHERE requirement.credential_id = ?
+          AND credential.user_id = ?`,
+        [credentialId, identity.userId],
+      ).all<ClassificationRequirementRow>(),
+      query(
+        database,
+        `SELECT allocation.id
+         FROM activity_allocations allocation
+         JOIN activities activity ON activity.id = allocation.activity_id
+         JOIN credentials credential
+           ON credential.id = allocation.credential_id
+         WHERE allocation.credential_id = ?
+           AND activity.user_id = ?
+           AND credential.user_id = ?`,
+        [credentialId, identity.userId, identity.userId],
+      ).all<ClassificationAllocationRow>(),
+      query(
+        database,
+        `SELECT
+          match.allocation_id AS allocationId,
+          match.requirement_id AS requirementId
+         FROM activity_requirement_matches match
+         JOIN activity_allocations allocation
+           ON allocation.id = match.allocation_id
+         JOIN activities activity ON activity.id = allocation.activity_id
+         JOIN credentials credential
+           ON credential.id = allocation.credential_id
+         WHERE allocation.credential_id = ?
+           AND match.user_id = ?
+           AND activity.user_id = match.user_id
+           AND credential.user_id = match.user_id`,
+        [credentialId, identity.userId],
+      ).all<ClassificationMatchRow>(),
+    ]);
+  const activeRequirements = requirementResult.results.filter(
+    (requirement) =>
+      Boolean(requirement.isActive) &&
+      requirement.applicabilityStatus === "applies",
+  );
+  const requirementsById = new Map(
+    activeRequirements.map((requirement) => [requirement.id, requirement]),
+  );
+  const completeClassificationGroups = new Set(
+    activeRequirements
+      .filter(
+        (requirement) =>
+          requirement.kind === "informational" &&
+          requirement.exclusiveGroup,
+      )
+      .map((requirement) => requirement.exclusiveGroup!),
+  );
+  const requiredGroups = new Set(
+    activeRequirements
+      .filter(
+        (requirement) =>
+          requirement.kind === "maximum" &&
+          requirement.exclusiveGroup &&
+          (ruleSetId === CFP_2027_RULE_SET_ID ||
+            completeClassificationGroups.has(requirement.exclusiveGroup)),
+      )
+      .map((requirement) => requirement.exclusiveGroup!),
+  );
+  if (ruleSetId === NJ_LCSW_RULE_SET_ID) {
+    requiredGroups.add(NJ_LCSW_CREDIT_CATEGORY_GROUP);
+  }
+  const matchesByAllocation = new Map<
+    string,
+    ClassificationRequirementRow[]
+  >();
+  for (const match of matchResult.results) {
+    const requirement = requirementsById.get(match.requirementId);
+    if (!requirement) continue;
+    const matches = matchesByAllocation.get(match.allocationId) ?? [];
+    matches.push(requirement);
+    matchesByAllocation.set(match.allocationId, matches);
+  }
+  for (const allocation of allocationResult.results) {
+    const matches = matchesByAllocation.get(allocation.id) ?? [];
+    const selectedGroupCounts = new Map<string, number>();
+    for (const requirement of matches) {
+      if (!requirement.exclusiveGroup) continue;
+      selectedGroupCounts.set(
+        requirement.exclusiveGroup,
+        (selectedGroupCounts.get(requirement.exclusiveGroup) ?? 0) + 1,
+      );
+    }
+    const unresolvedExclusiveGroups = [...requiredGroups].filter(
+      (group) => (selectedGroupCounts.get(group) ?? 0) !== 1,
+    );
+    const incompatibility = findRequirementIncompatibility(matches);
+    if (unresolvedExclusiveGroups.length > 0 || incompatibility) {
+      return {
+        allocationId: allocation.id,
+        unresolvedExclusiveGroups,
+        classificationMessage:
+          incompatibility?.incompatibility.message ?? null,
+      };
+    }
+  }
+  return null;
+}
+
+async function assertCredentialStillMutable(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+  message: string,
+) {
+  const credential = await query(
+    database,
+    `SELECT status FROM credentials WHERE id = ? AND user_id = ?`,
+    [credentialId, identity.userId],
+  ).first<{ status: string }>();
+  if (!credential) {
+    throw new RequestError(
+      "Credential not found.",
+      404,
+      "credential_not_found",
+    );
+  }
+  if (!["active", "submitted"].includes(credential.status)) {
+    throw new RequestError(message, 409, "cycle_closed");
+  }
+}
+
+async function rethrowClosedCycleWrite(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+  message: string,
+  error: unknown,
+): Promise<never> {
+  await assertCredentialStillMutable(
+    database,
+    identity,
+    credentialId,
+    message,
+  );
+  throw error;
 }
 
 async function getWorkspace(
@@ -1604,12 +1828,40 @@ async function getWorkspace(
     selectedGroupCountsByAllocation.set(match.allocationId, groupCounts);
   }
   const requiredMaximumGroupsByCredential = new Map<string, Set<string>>();
-  const trackedCredentialIds = new Set(
-    credentialResult.results.map((credential) => credential.id),
+  const credentialById = new Map(
+    credentialResult.results.map((credential) => [
+      credential.id,
+      credential,
+    ]),
   );
+  const completeClassificationGroupsByCredential = new Map<
+    string,
+    Set<string>
+  >();
   for (const requirement of requirementResult.results) {
     if (
-      !trackedCredentialIds.has(requirement.credentialId) ||
+      requirement.kind !== "informational" ||
+      !requirement.exclusiveGroup ||
+      !Boolean(requirement.isActive) ||
+      requirement.applicabilityStatus !== "applies"
+    ) {
+      continue;
+    }
+    const groups =
+      completeClassificationGroupsByCredential.get(
+        requirement.credentialId,
+      ) ?? new Set<string>();
+    groups.add(requirement.exclusiveGroup);
+    completeClassificationGroupsByCredential.set(
+      requirement.credentialId,
+      groups,
+    );
+  }
+  for (const requirement of requirementResult.results) {
+    const credential = credentialById.get(requirement.credentialId);
+    if (
+      !credential ||
+      !["active", "submitted"].includes(credential.status) ||
       requirement.kind !== "maximum" ||
       !requirement.exclusiveGroup ||
       !Boolean(requirement.isActive) ||
@@ -1617,6 +1869,13 @@ async function getWorkspace(
     ) {
       continue;
     }
+    const snapshotSupportsCompleteClassification =
+      credential.status === "active" ||
+      credential.ruleSetId === CFP_2027_RULE_SET_ID ||
+      completeClassificationGroupsByCredential
+        .get(requirement.credentialId)
+        ?.has(requirement.exclusiveGroup);
+    if (!snapshotSupportsCompleteClassification) continue;
     const groups =
       requiredMaximumGroupsByCredential.get(requirement.credentialId) ??
       new Set<string>();
@@ -1625,7 +1884,7 @@ async function getWorkspace(
   }
   for (const credential of credentialResult.results) {
     if (
-      credential.status !== "active" ||
+      !["active", "submitted"].includes(credential.status) ||
       credential.ruleSetId !== NJ_LCSW_RULE_SET_ID
     ) {
       continue;
@@ -1646,9 +1905,14 @@ async function getWorkspace(
   >();
   const unclassifiedUnitsByCredential = new Map<string, number>();
   for (const activity of activityResult.results) {
+    const credential = activity.credentialId
+      ? credentialById.get(activity.credentialId)
+      : null;
     if (
       !activity.allocationId ||
       !activity.credentialId ||
+      !credential ||
+      !["active", "submitted"].includes(credential.status) ||
       classificationIssueByAllocation.has(activity.allocationId)
     ) {
       continue;
@@ -1657,7 +1921,6 @@ async function getWorkspace(
       ...(requiredMaximumGroupsByCredential.get(activity.credentialId) ??
         new Set<string>()),
     ];
-    if (requiredGroups.length === 0) continue;
     const selectedGroupCounts = selectedGroupCountsByAllocation.get(
       activity.allocationId,
     );
@@ -2605,7 +2868,12 @@ async function addActivity(
       `INSERT INTO activities (
         id, user_id, title, provider, completion_date, total_units,
         evidence_status, evidence_reference
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?
+      FROM credentials credential
+      WHERE credential.id = ?
+        AND credential.user_id = ?
+        AND credential.status IN ('active', 'submitted')`,
       [
         activityId,
         identity.userId,
@@ -2615,6 +2883,8 @@ async function addActivity(
         totalUnits,
         evidenceStatus,
         evidenceReference,
+        credentialId,
+        identity.userId,
       ],
     ),
     query(
@@ -2689,7 +2959,17 @@ async function addActivity(
     );
   }
 
-  await database.batch(statements);
+  try {
+    await database.batch(statements);
+  } catch (error) {
+    return rethrowClosedCycleWrite(
+      database,
+      identity,
+      credentialId,
+      "This renewal cycle is closed and cannot receive activities.",
+      error,
+    );
+  }
   return activityId;
 }
 
@@ -2800,14 +3080,21 @@ async function toggleTask(
   const completed = payload.completed;
   const task = await query(
     database,
-    `SELECT task.id, credential.status AS credentialStatus
+    `SELECT
+      task.id,
+      task.credential_id AS credentialId,
+      credential.status AS credentialStatus
      FROM checklist_tasks task
      JOIN credentials credential ON credential.id = task.credential_id
      WHERE task.id = ?
        AND task.user_id = ?
        AND credential.user_id = task.user_id`,
     [taskId, identity.userId],
-  ).first<{ id: string; credentialStatus: string }>();
+  ).first<{
+    id: string;
+    credentialId: string;
+    credentialStatus: string;
+  }>();
   if (!task) {
     throw new RequestError("Task not found.", 404, "task_not_found");
   }
@@ -2827,7 +3114,14 @@ async function toggleTask(
          status = ?,
          completed_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE NULL END,
          updated_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND user_id = ?`,
+       WHERE id = ? AND user_id = ?
+         AND EXISTS (
+           SELECT 1
+           FROM credentials credential
+           WHERE credential.id = checklist_tasks.credential_id
+             AND credential.user_id = checklist_tasks.user_id
+             AND credential.status IN ('active', 'submitted')
+         )`,
       [
         completed ? "completed" : "pending",
         completed ? 1 : 0,
@@ -2842,17 +3136,45 @@ async function toggleTask(
         database,
         `INSERT OR IGNORE INTO xp_events (
           id, user_id, idempotency_key, event_type, points, related_type, related_id
-        ) VALUES (?, ?, ?, 'task_completed', 30, 'task', ?)`,
+        )
+        SELECT ?, ?, ?, 'task_completed', 30, 'task', ?
+        FROM checklist_tasks task
+        JOIN credentials credential ON credential.id = task.credential_id
+        WHERE task.id = ?
+          AND task.user_id = ?
+          AND credential.user_id = task.user_id
+          AND credential.status IN ('active', 'submitted')`,
         [
           crypto.randomUUID(),
           identity.userId,
           `${identity.userId}:task:${taskId}:completed`,
           taskId,
+          taskId,
+          identity.userId,
         ],
       ),
     );
   }
-  await database.batch(statements);
+  let results: D1Result[];
+  try {
+    results = await database.batch(statements);
+  } catch (error) {
+    return rethrowClosedCycleWrite(
+      database,
+      identity,
+      task.credentialId,
+      "This renewal cycle is closed and its checklist is frozen.",
+      error,
+    );
+  }
+  if (Number(results[0]?.meta?.changes ?? Number.NaN) === 0) {
+    await assertCredentialStillMutable(
+      database,
+      identity,
+      task.credentialId,
+      "This renewal cycle is closed and its checklist is frozen.",
+    );
+  }
   return taskId;
 }
 
@@ -2898,13 +3220,29 @@ async function markSubmitted(
   ).first<{ id: string }>();
   const submissionId = existing?.id ?? crypto.randomUUID();
 
-  await database.batch([
+  let results: D1Result[];
+  try {
+    results = await database.batch([
+      query(
+        database,
+        `UPDATE credentials
+         SET status = 'submitted', updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+           AND user_id = ?
+           AND status IN ('active', 'submitted')`,
+        [credentialId, identity.userId],
+      ),
     query(
       database,
       `INSERT INTO renewal_submissions (
         id, user_id, credential_id, submitted_at, confirmation_number,
         proof_reference
-      ) VALUES (?, ?, ?, ?, ?, ?)
+      )
+      SELECT ?, credential.user_id, credential.id, ?, ?, ?
+      FROM credentials credential
+      WHERE credential.id = ?
+        AND credential.user_id = ?
+        AND credential.status = 'submitted'
       ON CONFLICT(credential_id) DO UPDATE SET
         submitted_at = excluded.submitted_at,
         confirmation_number = excluded.confirmation_number,
@@ -2912,19 +3250,12 @@ async function markSubmitted(
         updated_at = CURRENT_TIMESTAMP`,
       [
         submissionId,
-        identity.userId,
-        credentialId,
         submissionDate,
         confirmationNumber,
         (proofReference ?? confirmationNumber) || null,
+        credentialId,
+        identity.userId,
       ],
-    ),
-    query(
-      database,
-      `UPDATE credentials
-       SET status = 'submitted', updated_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND user_id = ?`,
-      [credentialId, identity.userId],
     ),
     query(
       database,
@@ -2933,34 +3264,72 @@ async function markSubmitted(
          status = 'completed',
          completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
          updated_at = CURRENT_TIMESTAMP
-       WHERE credential_id = ? AND user_id = ? AND kind = 'submission'`,
+       WHERE credential_id = ? AND user_id = ? AND kind = 'submission'
+         AND EXISTS (
+           SELECT 1
+           FROM credentials credential
+           WHERE credential.id = checklist_tasks.credential_id
+             AND credential.user_id = checklist_tasks.user_id
+             AND credential.status = 'submitted'
+         )`,
       [credentialId, identity.userId],
     ),
     query(
       database,
       `INSERT OR IGNORE INTO xp_events (
         id, user_id, idempotency_key, event_type, points, related_type, related_id
-      ) VALUES (?, ?, ?, 'renewal_submitted', 150, 'submission', ?)`,
+      )
+      SELECT ?, ?, ?, 'renewal_submitted', 150, 'submission', ?
+      FROM credentials credential
+      WHERE credential.id = ?
+        AND credential.user_id = ?
+        AND credential.status = 'submitted'`,
       [
         crypto.randomUUID(),
         identity.userId,
         `${identity.userId}:credential:${credentialId}:submitted`,
         submissionId,
+        credentialId,
+        identity.userId,
       ],
     ),
     query(
       database,
       `INSERT OR IGNORE INTO badge_events (
         id, user_id, badge_id, idempotency_key, related_type, related_id
-      ) VALUES (?, ?, 'renewal-filed', ?, 'submission', ?)`,
+      )
+      SELECT ?, ?, 'renewal-filed', ?, 'submission', ?
+      FROM credentials credential
+      WHERE credential.id = ?
+        AND credential.user_id = ?
+        AND credential.status = 'submitted'`,
       [
         crypto.randomUUID(),
         identity.userId,
         `${identity.userId}:badge:renewal-filed`,
         submissionId,
+        credentialId,
+        identity.userId,
       ],
     ),
-  ]);
+    ]);
+  } catch (error) {
+    return rethrowClosedCycleWrite(
+      database,
+      identity,
+      credentialId,
+      "This renewal cycle is closed and cannot be submitted again.",
+      error,
+    );
+  }
+  if (Number(results[0]?.meta?.changes ?? Number.NaN) === 0) {
+    await assertCredentialStillMutable(
+      database,
+      identity,
+      credentialId,
+      "This renewal cycle is closed and cannot be submitted again.",
+    );
+  }
   return submissionId;
 }
 
@@ -3072,13 +3441,19 @@ async function addActivityAllocation(
       database,
       `INSERT INTO activity_allocations (
         id, activity_id, credential_id, requirement_id, allocated_units
-      ) VALUES (?, ?, ?, ?, ?)`,
+      )
+      SELECT ?, ?, credential.id, ?, ?
+      FROM credentials credential
+      WHERE credential.id = ?
+        AND credential.user_id = ?
+        AND credential.status IN ('active', 'submitted')`,
       [
         allocationId,
         activityId,
-        credentialId,
         requirementId,
         allocatedUnits,
+        credentialId,
+        identity.userId,
       ],
     ),
   ];
@@ -3100,7 +3475,15 @@ async function addActivityAllocation(
     );
   }
   try {
-    await database.batch(statements);
+    const results = await database.batch(statements);
+    if (Number(results[0]?.meta?.changes ?? Number.NaN) === 0) {
+      await assertCredentialStillMutable(
+        database,
+        identity,
+        credentialId,
+        "This renewal cycle is closed and cannot receive activities.",
+      );
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
     if (message.includes("UNIQUE constraint")) {
@@ -3110,7 +3493,13 @@ async function addActivityAllocation(
         "allocation_exists",
       );
     }
-    throw error;
+    return rethrowClosedCycleWrite(
+      database,
+      identity,
+      credentialId,
+      "This renewal cycle is closed and cannot receive activities.",
+      error,
+    );
   }
   return allocationId;
 }
@@ -3174,14 +3563,36 @@ async function updateActivityAllocationRequirements(
       database,
       `UPDATE activity_allocations
        SET requirement_id = ?
-       WHERE id = ? AND credential_id = ?`,
-      [requirementId, allocationId, allocation.credentialId],
+       WHERE id = ? AND credential_id = ?
+         AND EXISTS (
+           SELECT 1
+           FROM credentials credential
+           WHERE credential.id = activity_allocations.credential_id
+             AND credential.user_id = ?
+             AND credential.status IN ('active', 'submitted')
+         )`,
+      [
+        requirementId,
+        allocationId,
+        allocation.credentialId,
+        identity.userId,
+      ],
     ),
     query(
       database,
       `DELETE FROM activity_requirement_matches
-       WHERE allocation_id = ? AND user_id = ?`,
-      [allocationId, identity.userId],
+       WHERE allocation_id = ? AND user_id = ?
+         AND EXISTS (
+           SELECT 1
+           FROM activity_allocations allocation
+           JOIN credentials credential
+             ON credential.id = allocation.credential_id
+           WHERE allocation.id =
+             activity_requirement_matches.allocation_id
+             AND credential.user_id = ?
+             AND credential.status IN ('active', 'submitted')
+         )`,
+      [allocationId, identity.userId, identity.userId],
     ),
   ];
   for (const matchedRequirementId of requirementIds) {
@@ -3190,18 +3601,46 @@ async function updateActivityAllocationRequirements(
         database,
         `INSERT INTO activity_requirement_matches (
           id, user_id, allocation_id, requirement_id, matched_units
-        ) VALUES (?, ?, ?, ?, ?)`,
+        )
+        SELECT ?, ?, allocation.id, ?, allocation.allocated_units
+        FROM activity_allocations allocation
+        JOIN credentials credential
+          ON credential.id = allocation.credential_id
+        WHERE allocation.id = ?
+          AND allocation.credential_id = ?
+          AND credential.user_id = ?
+          AND credential.status IN ('active', 'submitted')`,
         [
           crypto.randomUUID(),
           identity.userId,
-          allocationId,
           matchedRequirementId,
-          Number(allocation.allocatedUnits),
+          allocationId,
+          allocation.credentialId,
+          identity.userId,
         ],
       ),
     );
   }
-  await database.batch(statements);
+  let results: D1Result[];
+  try {
+    results = await database.batch(statements);
+  } catch (error) {
+    return rethrowClosedCycleWrite(
+      database,
+      identity,
+      allocation.credentialId,
+      "This renewal cycle is closed and cannot be changed.",
+      error,
+    );
+  }
+  if (Number(results[0]?.meta?.changes ?? Number.NaN) === 0) {
+    await assertCredentialStillMutable(
+      database,
+      identity,
+      allocation.credentialId,
+      "This renewal cycle is closed and cannot be changed.",
+    );
+  }
   return allocationId;
 }
 
@@ -3331,6 +3770,52 @@ async function markRenewalAccepted(
       "acceptance_before_submission",
     );
   }
+  const unresolvedClassification =
+    await findUnresolvedCredentialClassification(
+      database,
+      identity,
+      credentialId,
+      credential.ruleSetId,
+    );
+  if (unresolvedClassification) {
+    throw new RequestError(
+      "Resolve every activity classification conflict before marking this renewal accepted.",
+      409,
+      "classification_required_before_acceptance",
+    );
+  }
+  const assertSubmissionStillAcceptable = async () => {
+    const current = await query(
+      database,
+      `SELECT
+        credential.status,
+        submission.id AS submissionId,
+        submission.submitted_at AS submittedAt
+       FROM credentials credential
+       LEFT JOIN renewal_submissions submission
+         ON submission.credential_id = credential.id
+         AND submission.user_id = credential.user_id
+       WHERE credential.id = ? AND credential.user_id = ?`,
+      [credentialId, identity.userId],
+    ).first<{
+      status: string;
+      submissionId: string | null;
+      submittedAt: string | null;
+    }>();
+    if (
+      !current ||
+      current.status !== "submitted" ||
+      current.submissionId !== submission.id ||
+      !current.submittedAt ||
+      acceptedAt < current.submittedAt.slice(0, 10)
+    ) {
+      throw new RequestError(
+        "The renewal submission changed while acceptance was being recorded. Refresh and try again.",
+        409,
+        "submission_state_changed",
+      );
+    }
+  };
 
   const nextCredentialId = crypto.randomUUID();
   const acceptanceId = crypto.randomUUID();
@@ -3346,8 +3831,142 @@ async function markRenewalAccepted(
   const nextTotalRequired = transitionsToFortyHourCfp
     ? 40
     : Number(credential.totalRequired);
-  const needsCfpCarryoverReview = nextRuleSetId === CFP_2027_RULE_SET_ID;
+  const carryoverReviewTaskTitle =
+    nextRuleSetId === null
+      ? null
+      : (CARRYOVER_REVIEW_TASK_TITLES.get(nextRuleSetId) ?? null);
   const statements: D1PreparedStatement[] = [
+    query(
+      database,
+      `WITH
+        complete_classification_groups AS (
+          SELECT DISTINCT
+            requirement.credential_id AS credential_id,
+            requirement.exclusive_group AS exclusive_group
+          FROM credential_requirements requirement
+          WHERE requirement.kind = 'informational'
+            AND requirement.is_active = 1
+            AND requirement.applicability_status = 'applies'
+            AND requirement.exclusive_group IS NOT NULL
+        ),
+        required_classification_groups AS (
+          SELECT DISTINCT
+            requirement.credential_id AS credential_id,
+            requirement.exclusive_group AS exclusive_group
+          FROM credential_requirements requirement
+          JOIN credentials owner
+            ON owner.id = requirement.credential_id
+          WHERE requirement.kind = 'maximum'
+            AND requirement.is_active = 1
+            AND requirement.applicability_status = 'applies'
+            AND requirement.exclusive_group IS NOT NULL
+            AND (
+              owner.rule_set_id = ?
+              OR EXISTS (
+                SELECT 1
+                FROM complete_classification_groups complete_group
+                WHERE complete_group.credential_id =
+                  requirement.credential_id
+                  AND complete_group.exclusive_group =
+                    requirement.exclusive_group
+              )
+            )
+          UNION
+          SELECT credential.id, ?
+          FROM credentials credential
+          WHERE credential.rule_set_id = ?
+        ),
+        incompatible_categories (
+          first_category_id,
+          second_category_id
+        ) AS (
+          VALUES ${REQUIREMENT_INCOMPATIBILITY_VALUES_SQL}
+        )
+      UPDATE credentials
+      SET status = 'renewed', updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+        AND user_id = ?
+        AND status = 'submitted'
+        AND EXISTS (
+          SELECT 1
+          FROM renewal_submissions guarded_submission
+          WHERE guarded_submission.id = ?
+            AND guarded_submission.credential_id = credentials.id
+            AND guarded_submission.user_id = credentials.user_id
+            AND substr(guarded_submission.submitted_at, 1, 10) <= ?
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM activity_allocations allocation
+          JOIN required_classification_groups required_group
+            ON required_group.credential_id = allocation.credential_id
+          WHERE allocation.credential_id = credentials.id
+            AND (
+              SELECT COUNT(*)
+              FROM activity_requirement_matches match
+              JOIN credential_requirements selected_requirement
+                ON selected_requirement.id = match.requirement_id
+                AND selected_requirement.credential_id =
+                  allocation.credential_id
+              WHERE match.allocation_id = allocation.id
+                AND match.user_id = credentials.user_id
+                AND selected_requirement.is_active = 1
+                AND selected_requirement.applicability_status = 'applies'
+                AND selected_requirement.exclusive_group =
+                  required_group.exclusive_group
+            ) <> 1
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM activity_allocations allocation
+          JOIN activity_requirement_matches first_match
+            ON first_match.allocation_id = allocation.id
+          JOIN credential_requirements first_requirement
+            ON first_requirement.id = first_match.requirement_id
+            AND first_requirement.credential_id =
+              allocation.credential_id
+          JOIN activity_requirement_matches second_match
+            ON second_match.allocation_id = allocation.id
+            AND second_match.requirement_id >
+              first_match.requirement_id
+          JOIN credential_requirements second_requirement
+            ON second_requirement.id = second_match.requirement_id
+            AND second_requirement.credential_id =
+              allocation.credential_id
+          JOIN incompatible_categories incompatibility
+            ON (
+              (
+                incompatibility.first_category_id =
+                  first_requirement.rule_category_id
+                AND incompatibility.second_category_id =
+                  second_requirement.rule_category_id
+              )
+              OR (
+                incompatibility.second_category_id =
+                  first_requirement.rule_category_id
+                AND incompatibility.first_category_id =
+                  second_requirement.rule_category_id
+              )
+            )
+          WHERE allocation.credential_id = credentials.id
+            AND first_match.user_id = credentials.user_id
+            AND second_match.user_id = credentials.user_id
+            AND first_requirement.is_active = 1
+            AND first_requirement.applicability_status = 'applies'
+            AND second_requirement.is_active = 1
+            AND second_requirement.applicability_status = 'applies'
+        )`,
+      [
+        CFP_2027_RULE_SET_ID,
+        NJ_LCSW_CREDIT_CATEGORY_GROUP,
+        NJ_LCSW_RULE_SET_ID,
+        ...REQUIREMENT_INCOMPATIBILITY_BINDINGS,
+        credentialId,
+        identity.userId,
+        submission.id,
+        acceptedAt,
+      ],
+    ),
     query(
       database,
       `INSERT OR IGNORE INTO credential_cycle_links (
@@ -3367,7 +3986,18 @@ async function markRenewalAccepted(
       `INSERT INTO credentials (
         id, user_id, rule_set_id, credential_name, profession, jurisdiction,
         issuer, cycle_start, deadline, total_required, unit_label, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+      )
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active'
+      FROM credentials source
+      WHERE source.id = ?
+        AND source.user_id = ?
+        AND source.status = 'renewed'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM renewal_acceptances acceptance
+          WHERE acceptance.credential_id = source.id
+            AND acceptance.user_id = source.user_id
+        )`,
       [
         nextCredentialId,
         identity.userId,
@@ -3380,6 +4010,8 @@ async function markRenewalAccepted(
         nextDeadline,
         nextTotalRequired,
         credential.unitLabel,
+        credentialId,
+        identity.userId,
       ],
     ),
     query(
@@ -3526,9 +4158,7 @@ async function markRenewalAccepted(
   }
   const taskSpecs = [
     {
-      title: needsCfpCarryoverReview
-        ? "Confirm CFP Board carryover, then manually record only approved general CE"
-        : "Review the renewal requirements",
+      title: carryoverReviewTaskTitle ?? "Review the renewal requirements",
       kind: "review",
       dueDate: daysBefore(nextDeadline, 120),
     },
@@ -3581,13 +4211,6 @@ async function markRenewalAccepted(
     ),
     query(
       database,
-      `UPDATE credentials
-       SET status = 'renewed', updated_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND user_id = ? AND status = 'submitted'`,
-      [credentialId, identity.userId],
-    ),
-    query(
-      database,
       `INSERT OR IGNORE INTO xp_events (
         id, user_id, idempotency_key, event_type, points, related_type, related_id
       ) VALUES (?, ?, ?, 'renewal_accepted', 200, 'acceptance', ?)`,
@@ -3600,21 +4223,66 @@ async function markRenewalAccepted(
     ),
   );
 
+  let acceptanceResults: D1Result[];
   try {
-    await database.batch(statements);
+    acceptanceResults = await database.batch(statements);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "";
-    if (message.includes("UNIQUE constraint")) {
-      const racedAcceptance = await query(
+    const racedAcceptance = await query(
+      database,
+      `SELECT next_credential_id AS nextCredentialId
+       FROM renewal_acceptances
+       WHERE credential_id = ? AND user_id = ?`,
+      [credentialId, identity.userId],
+    ).first<{ nextCredentialId: string }>();
+    if (racedAcceptance) return racedAcceptance.nextCredentialId;
+    const racedClassification =
+      await findUnresolvedCredentialClassification(
         database,
-        `SELECT next_credential_id AS nextCredentialId
-         FROM renewal_acceptances
-         WHERE credential_id = ? AND user_id = ?`,
-        [credentialId, identity.userId],
-      ).first<{ nextCredentialId: string }>();
-      if (racedAcceptance) return racedAcceptance.nextCredentialId;
+        identity,
+        credentialId,
+        credential.ruleSetId,
+      );
+    if (racedClassification) {
+      throw new RequestError(
+        "Resolve every activity classification conflict before marking this renewal accepted.",
+        409,
+        "classification_required_before_acceptance",
+      );
     }
+    await assertSubmissionStillAcceptable();
     throw error;
+  }
+  if (
+    Number(acceptanceResults[0]?.meta?.changes ?? Number.NaN) === 0
+  ) {
+    const racedAcceptance = await query(
+      database,
+      `SELECT next_credential_id AS nextCredentialId
+       FROM renewal_acceptances
+       WHERE credential_id = ? AND user_id = ?`,
+      [credentialId, identity.userId],
+    ).first<{ nextCredentialId: string }>();
+    if (racedAcceptance) return racedAcceptance.nextCredentialId;
+    const racedClassification =
+      await findUnresolvedCredentialClassification(
+        database,
+        identity,
+        credentialId,
+        credential.ruleSetId,
+      );
+    if (racedClassification) {
+      throw new RequestError(
+        "Resolve every activity classification conflict before marking this renewal accepted.",
+        409,
+        "classification_required_before_acceptance",
+      );
+    }
+    await assertSubmissionStillAcceptable();
+    throw new RequestError(
+      "The renewal changed while acceptance was being recorded. Refresh and try again.",
+      409,
+      "acceptance_state_changed",
+    );
   }
   return nextCredentialId;
 }
@@ -3764,6 +4432,7 @@ async function updateRequirementApplicability(
              FROM credentials credential
              WHERE credential.id = credential_requirements.credential_id
                AND credential.user_id = ?
+               AND credential.status IN ('active', 'submitted')
            )`,
         [
           status,
@@ -3781,18 +4450,48 @@ async function updateRequirementApplicability(
           `INSERT OR IGNORE INTO xp_events (
             id, user_id, idempotency_key, event_type, points, related_type,
             related_id
-          ) VALUES (?, ?, ?, 'requirement_confirmed', 20, 'requirement', ?)`,
+          )
+          SELECT ?, ?, ?, 'requirement_confirmed', 20, 'requirement', ?
+          FROM credential_requirements requirement
+          JOIN credentials credential
+            ON credential.id = requirement.credential_id
+          WHERE requirement.id = ?
+            AND requirement.credential_id = ?
+            AND credential.user_id = ?
+            AND credential.status IN ('active', 'submitted')`,
           [
             crypto.randomUUID(),
             identity.userId,
             `${identity.userId}:requirement:${requirementId}:confirmed`,
             requirementId,
+            requirementId,
+            credentialId,
+            identity.userId,
           ],
         ),
       ];
     },
   );
-  await database.batch(statements);
+  let results: D1Result[];
+  try {
+    results = await database.batch(statements);
+  } catch (error) {
+    return rethrowClosedCycleWrite(
+      database,
+      identity,
+      credentialId,
+      "This renewal cycle is closed and its requirements are frozen.",
+      error,
+    );
+  }
+  if (Number(results[0]?.meta?.changes ?? Number.NaN) === 0) {
+    await assertCredentialStillMutable(
+      database,
+      identity,
+      credentialId,
+      "This renewal cycle is closed and its requirements are frozen.",
+    );
+  }
   return credentialId;
 }
 

@@ -2161,12 +2161,13 @@ test("License Lantern product contract", async (t) => {
       const taskDatabase = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT task\.id, credential\.status AS credentialStatus FROM checklist_tasks task/i.test(
+            /SELECT[\s\S]*?task\.id,[\s\S]*?task\.credential_id AS credentialId,[\s\S]*?credential\.status AS credentialStatus[\s\S]*?FROM checklist_tasks task/i.test(
               call.sql,
             )
           ) {
             return {
               id: call.bindings[0],
+              credentialId: "credential-task-stable",
               credentialStatus: "active",
             };
           }
@@ -2191,6 +2192,24 @@ test("License Lantern product contract", async (t) => {
       assert.equal(
         taskRewards[0].bindings[2],
         `${await expectedStableUserId("owner@example.com")}:task:task-stable:completed`,
+      );
+      assert.ok(
+        flattenedStatements(taskDatabase)
+          .filter((statement) =>
+            /^UPDATE checklist_tasks SET/i.test(statement.sql),
+          )
+          .every((statement) =>
+            /credential\.status IN \('active', 'submitted'\)/i.test(
+              statement.sql,
+            ),
+          ),
+      );
+      assert.ok(
+        taskRewards.every((statement) =>
+          /credential\.status IN \('active', 'submitted'\)/i.test(
+            statement.sql,
+          ),
+        ),
       );
     },
   );
@@ -2527,12 +2546,15 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
-    "keeps eight additional official templates bounded and internally coherent",
+    "keeps thirteen additional official templates bounded and internally coherent",
     async () => {
-      const runtimeSource = await readFile(
-        new URL("../db/runtime.ts", import.meta.url),
-        "utf8",
-      );
+      const [runtimeSource, workspaceRouteSource] = await Promise.all([
+        readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
+        readFile(
+          new URL("../app/api/workspace/route.ts", import.meta.url),
+          "utf8",
+        ),
+      ]);
       const ruleSource = runtimeSource.slice(
         runtimeSource.indexOf("const CATALOG_2026_RULE_SET_SEED_BINDINGS"),
         runtimeSource.indexOf("const CATALOG_2026_CATEGORY_INSERT_SQL"),
@@ -2650,6 +2672,71 @@ test("License Lantern product contract", async (t) => {
           "source_linked_check_conditions",
           "www.asha.org",
         ],
+        [
+          "nasm-cpt-2026-v1",
+          "nasm-cpt",
+          "Fitness and Personal Training",
+          "NASM Certified Personal Trainer (NASM-CPT) — standard recertification",
+          "United States",
+          "National Academy of Sports Medicine",
+          2,
+          "NASM CEUs",
+          24,
+          "source_linked_check_conditions",
+          "www.nasm.org",
+        ],
+        [
+          "hrci-phr-2026-v1",
+          "hrci-phr",
+          "Human Resources",
+          "Professional in Human Resources (PHR) — standard full-cycle recertification credit path",
+          "United States",
+          "HRCI",
+          60,
+          "recertification credits",
+          36,
+          "source_linked_check_conditions",
+          "www.hrci.org",
+        ],
+        [
+          "hrci-sphr-2026-v1",
+          "hrci-sphr",
+          "Human Resources",
+          "Senior Professional in Human Resources (SPHR) — standard full-cycle recertification credit path",
+          "United States",
+          "HRCI",
+          60,
+          "recertification credits",
+          36,
+          "source_linked_check_conditions",
+          "www.hrci.org",
+        ],
+        [
+          "shrm-cp-2026-v1",
+          "shrm-cp",
+          "Human Resources",
+          "SHRM Certified Professional (SHRM-CP) — PDC recertification path",
+          "Global",
+          "Society for Human Resource Management",
+          60,
+          "PDCs",
+          36,
+          "source_linked_check_conditions",
+          "www.shrm.org",
+        ],
+        [
+          "shrm-scp-2026-v1",
+          "shrm-scp",
+          "Human Resources",
+          "SHRM Senior Certified Professional (SHRM-SCP) — PDC recertification path",
+          "Global",
+          "Society for Human Resource Management",
+          60,
+          "PDCs",
+          36,
+          "source_linked_check_conditions",
+          "www.shrm.org",
+        ],
       ];
       const expectedEffectiveDates = new Map([
         ["cisco-ccna-2026-v1", null],
@@ -2660,21 +2747,26 @@ test("License Lantern product contract", async (t) => {
         ["ny-architect-2026-v1", null],
         ["ptcb-cpht-2026-v1", "2026-05-01"],
         ["asha-ccc-2026-v1", "2026-01-01"],
+        ["nasm-cpt-2026-v1", null],
+        ["hrci-phr-2026-v1", "2021-01-01"],
+        ["hrci-sphr-2026-v1", "2021-01-01"],
+        ["shrm-cp-2026-v1", null],
+        ["shrm-scp-2026-v1", null],
       ]);
       assert.equal(
         [...ruleSource.matchAll(/\n  \[\n    "/g)].length,
-        9,
-        "eight current rules plus one hidden CFP transition rule are expected",
+        14,
+        "thirteen current rules plus one hidden CFP transition rule are expected",
       );
       assert.equal(
         [...categorySource.matchAll(/\n  \[\n    "/g)].length,
-        27,
-        "twenty-three current categories plus four hidden CFP transition categories are expected",
+        60,
+        "fifty-six current categories plus four hidden CFP transition categories are expected",
       );
       assert.equal(
         [...globalSeedSource.matchAll(/INSERT OR IGNORE INTO rule_sets/g)]
           .length + expectedRules.length,
-        31,
+        36,
       );
       for (const expected of expectedRules) {
         const rule = sourceLiteralArrayAround(ruleSource, expected[0]);
@@ -2731,6 +2823,148 @@ test("License Lantern product contract", async (t) => {
         /after Q1 2027[\s\S]*?April 1, 2027[\s\S]*?5[\s\S]*?Practice Management[\s\S]*?10 excess general[\s\S]*?Ethics CE cannot carry[\s\S]*?never copies/i,
       );
 
+      const expectedHrciCategories = (level, includeBusiness) => {
+        const prefix = `hrci-${level}-2026`;
+        const ruleSetId = `${prefix}-v1`;
+        return [
+          [
+            `${prefix}-professional-development`,
+            ruleSetId,
+            0,
+            "informational",
+            "independent",
+            "optional",
+            "HRCI activity type",
+          ],
+          [
+            `${prefix}-confirmed-carryover`,
+            ruleSetId,
+            15,
+            "maximum",
+            "independent",
+            "conditional",
+            "HRCI activity type",
+          ],
+          [
+            `${prefix}-self-directed-learning`,
+            ruleSetId,
+            30,
+            "maximum",
+            "independent",
+            "optional",
+            null,
+          ],
+          [
+            `${prefix}-other-self-directed-learning`,
+            ruleSetId,
+            0,
+            "informational",
+            "nested",
+            "optional",
+            "HRCI activity type",
+          ],
+          [
+            `${prefix}-audited-college-course`,
+            ruleSetId,
+            10,
+            "maximum",
+            "nested",
+            "optional",
+            "HRCI activity type",
+          ],
+          [
+            `${prefix}-professional-achievement`,
+            ruleSetId,
+            40,
+            "maximum",
+            "independent",
+            "optional",
+            null,
+          ],
+          [
+            `${prefix}-other-professional-achievement`,
+            ruleSetId,
+            0,
+            "informational",
+            "nested",
+            "optional",
+            "HRCI activity type",
+          ],
+          [
+            `${prefix}-hr-membership`,
+            ruleSetId,
+            12,
+            "maximum",
+            "nested",
+            "optional",
+            "HRCI activity type",
+          ],
+          [
+            `${prefix}-ethics`,
+            ruleSetId,
+            1,
+            "minimum",
+            "overlapping",
+            "always",
+            null,
+          ],
+          ...(includeBusiness
+            ? [
+                [
+                  `${prefix}-business-credit`,
+                  ruleSetId,
+                  15,
+                  "minimum",
+                  "overlapping",
+                  "always",
+                  null,
+                ],
+              ]
+            : []),
+        ];
+      };
+      const expectedShrmCategories = (level) => {
+        const prefix = `shrm-${level}-2026`;
+        const ruleSetId = `${prefix}-v1`;
+        return [
+          [
+            `${prefix}-education`,
+            ruleSetId,
+            0,
+            "informational",
+            "independent",
+            "optional",
+            "SHRM PDC category",
+          ],
+          [
+            `${prefix}-organization`,
+            ruleSetId,
+            30,
+            "maximum",
+            "independent",
+            "optional",
+            "SHRM PDC category",
+          ],
+          [
+            `${prefix}-profession`,
+            ruleSetId,
+            30,
+            "maximum",
+            "independent",
+            "optional",
+            "SHRM PDC category",
+          ],
+          [
+            `${prefix}-confirmed-carryover`,
+            ruleSetId,
+            20,
+            "maximum",
+            "nested",
+            "conditional",
+            "SHRM PDC category",
+          ],
+        ];
+      };
       const expectedCategories = [
         [
           "arrt-rt-standard-2026-applications-training",
@@ -2939,6 +3173,64 @@ test("License Lantern product contract", async (t) => {
           "always",
           "ASHA required content allocation",
         ],
+        [
+          "nasm-cpt-2026-non-cpr-recertification",
+          "nasm-cpt-2026-v1",
+          1.9,
+          "maximum",
+          "independent",
+          "optional",
+          null,
+        ],
+        [
+          "nasm-cpt-2026-category-a",
+          "nasm-cpt-2026-v1",
+          0,
+          "informational",
+          "nested",
+          "optional",
+          "NASM CEU activity type",
+        ],
+        [
+          "nasm-cpt-2026-category-b",
+          "nasm-cpt-2026-v1",
+          0,
+          "informational",
+          "nested",
+          "optional",
+          "NASM CEU activity type",
+        ],
+        [
+          "nasm-cpt-2026-category-c",
+          "nasm-cpt-2026-v1",
+          0,
+          "informational",
+          "nested",
+          "optional",
+          "NASM CEU activity type",
+        ],
+        [
+          "nasm-cpt-2026-category-d-cpr-aed",
+          "nasm-cpt-2026-v1",
+          0.1,
+          "maximum",
+          "independent",
+          "optional",
+          "NASM CEU activity type",
+        ],
+        [
+          "nasm-cpt-2026-current-adult-cpr-aed",
+          "nasm-cpt-2026-v1",
+          0.1,
+          "minimum",
+          "overlapping",
+          "always",
+          null,
+        ],
+        ...expectedHrciCategories("phr", false),
+        ...expectedHrciCategories("sphr", true),
+        ...expectedShrmCategories("cp"),
+        ...expectedShrmCategories("scp"),
       ];
       const categoryRows = expectedCategories.map((expected) =>
         sourceLiteralArrayAround(categorySource, expected[0]),
@@ -2955,7 +3247,7 @@ test("License Lantern product contract", async (t) => {
         ]),
         expectedCategories,
       );
-      assert.equal(new Set(categoryRows.map((category) => category[0])).size, 23);
+      assert.equal(new Set(categoryRows.map((category) => category[0])).size, 56);
       const futureCfpCategories = [
         sourceLiteralArrayAround(
           categorySource,
@@ -3036,7 +3328,251 @@ test("License Lantern product contract", async (t) => {
         futureCfpCategories[2][8],
         /No more than 5[\s\S]*?Practice Management[\s\S]*?Tag every/i,
       );
-      for (const rule of expectedRules) {
+      const expandedCategoryIds = [
+        ...categorySource.matchAll(
+          /\n  \[\n    "((?:nasm-cpt|hrci-(?:phr|sphr)|shrm-(?:cp|scp))-2026-[^"]+)"/g,
+        ),
+      ].map((match) => match[1]);
+      assert.equal(expandedCategoryIds.length, 33);
+      const expandedCategoryRows = expandedCategoryIds.map((id) =>
+        sourceLiteralArrayAround(categorySource, id),
+      );
+      const expandedCategoryCounts = new Map([
+        ["nasm-cpt-2026-v1", 6],
+        ["hrci-phr-2026-v1", 9],
+        ["hrci-sphr-2026-v1", 10],
+        ["shrm-cp-2026-v1", 4],
+        ["shrm-scp-2026-v1", 4],
+      ]);
+      const expectedExpandedParents = new Map([
+        ...["a", "b", "c"].map((suffix) => [
+          `nasm-cpt-2026-category-${suffix}`,
+          "nasm-cpt-2026-non-cpr-recertification",
+        ]),
+        ...["phr", "sphr"].flatMap((level) => {
+          const prefix = `hrci-${level}-2026`;
+          return [
+            [
+              `${prefix}-confirmed-carryover`,
+              null,
+            ],
+            [
+              `${prefix}-other-self-directed-learning`,
+              `${prefix}-self-directed-learning`,
+            ],
+            [
+              `${prefix}-audited-college-course`,
+              `${prefix}-professional-development`,
+            ],
+            [
+              `${prefix}-other-professional-achievement`,
+              `${prefix}-professional-achievement`,
+            ],
+            [
+              `${prefix}-hr-membership`,
+              `${prefix}-professional-achievement`,
+            ],
+          ];
+        }),
+        [
+          "shrm-cp-2026-confirmed-carryover",
+          "shrm-cp-2026-education",
+        ],
+        [
+          "shrm-scp-2026-confirmed-carryover",
+          "shrm-scp-2026-education",
+        ],
+      ]);
+      assert.equal(expectedExpandedParents.size, 15);
+      for (const [ruleSetId, expectedCount] of expandedCategoryCounts) {
+        const rows = expandedCategoryRows.filter(
+          (category) => category[1] === ruleSetId,
+        );
+        const categoryIds = new Set(rows.map((category) => category[0]));
+        assert.equal(rows.length, expectedCount);
+        assert.deepEqual(
+          rows.map((category) => category[10]),
+          rows.map((_, index) => index),
+          `${ruleSetId} category sort order must be contiguous`,
+        );
+        assert.ok(rows.every((category) => category[8].length > 40));
+        for (const category of rows) {
+          assert.equal(
+            category[6],
+            expectedExpandedParents.get(category[0]) ?? null,
+            `${category[0]} must keep its intended parent`,
+          );
+        }
+        assert.ok(
+          rows
+            .filter((category) => category[5] === "nested")
+            .every((category) => categoryIds.has(category[6])),
+        );
+        for (const category of rows.filter(
+          (candidate) => candidate[5] === "nested",
+        )) {
+          const parent = rows.find(
+            (candidate) => candidate[0] === category[6],
+          );
+          assert.ok(parent, `${category[0]} needs a parent in ${ruleSetId}`);
+          assert.ok(
+            parent[10] < category[10],
+            `${category[0]} must sort after its parent`,
+          );
+        }
+        assert.ok(
+          rows.some(
+            (category) =>
+              category[4] === "informational" && category[9],
+          ),
+        );
+        assert.ok(
+          rows.some(
+            (category) => category[4] === "maximum",
+          ),
+        );
+      }
+      assert.deepEqual(
+        sourceLiteralArrayAround(
+          categorySource,
+          "nasm-cpt-2026-current-adult-cpr-aed",
+        ).slice(3, 6),
+        [0.1, "minimum", "overlapping"],
+      );
+      assert.deepEqual(
+        sourceLiteralArrayAround(
+          categorySource,
+          "nasm-cpt-2026-non-cpr-recertification",
+        ).slice(3, 6),
+        [1.9, "maximum", "independent"],
+      );
+      for (const suffix of ["a", "b", "c"]) {
+        const category = sourceLiteralArrayAround(
+          categorySource,
+          `nasm-cpt-2026-category-${suffix}`,
+        );
+        assert.deepEqual(category.slice(3, 7), [
+          0,
+          "informational",
+          "nested",
+          "nasm-cpt-2026-non-cpr-recertification",
+        ]);
+      }
+      assert.equal(
+        sourceLiteralArrayAround(
+          categorySource,
+          "hrci-sphr-2026-business-credit",
+        )[3],
+        15,
+      );
+      assert.equal(
+        sourceLiteralArrayAround(
+          categorySource,
+          "hrci-phr-2026-ethics",
+        )[3],
+        1,
+      );
+      for (const prefix of ["hrci-phr", "hrci-sphr"]) {
+        assert.equal(
+          sourceLiteralArrayAround(
+            categorySource,
+            `${prefix}-2026-audited-college-course`,
+          )[6],
+          `${prefix}-2026-professional-development`,
+        );
+      }
+      for (const prefix of ["shrm-cp", "shrm-scp"]) {
+        assert.equal(
+          sourceLiteralArrayAround(
+            categorySource,
+            `${prefix}-2026-organization`,
+          )[3],
+          30,
+        );
+        assert.equal(
+          sourceLiteralArrayAround(
+            categorySource,
+            `${prefix}-2026-confirmed-carryover`,
+          )[3],
+          20,
+        );
+      }
+      const nasmRuleNote = sourceLiteralArrayAround(
+        ruleSource,
+        "nasm-cpt-2026-v1",
+      )[11];
+      assert.match(
+        nasmRuleNote,
+        /expiration date printed[\s\S]*?0\.1 CEU[\s\S]*?do not carry/i,
+      );
+      assert.match(
+        nasmRuleNote,
+        /ASTI online[\s\S]*?confirm acceptance[\s\S]*?third-party online-only/i,
+      );
+      for (const ruleSetId of [
+        "hrci-phr-2026-v1",
+        "hrci-sphr-2026-v1",
+      ]) {
+        const ruleNote = sourceLiteralArrayAround(
+          ruleSource,
+          ruleSetId,
+        )[11];
+        assert.match(
+          ruleNote,
+          /standard full-cycle[\s\S]*?HR-related credits[\s\S]*?exam content outline[\s\S]*?portal control[\s\S]*?retaking the exam/i,
+        );
+        assert.match(
+          ruleNote,
+          /30 credits[\s\S]*?10[\s\S]*?40 credits[\s\S]*?12/i,
+        );
+        assert.match(
+          ruleNote,
+          /HRCI posts[\s\S]*?15 surplus/i,
+        );
+        const carryover = sourceLiteralArrayAround(
+          categorySource,
+          ruleSetId.replace("-v1", "-confirmed-carryover"),
+        );
+        assert.deepEqual(carryover.slice(5, 7), ["independent", null]);
+        assert.match(
+          sourceLiteralArrayAround(
+            categorySource,
+            ruleSetId.replace("-v1", "-hr-membership"),
+          )[8],
+          /six months[\s\S]*?two credits[\s\S]*?12 per cycle/i,
+        );
+      }
+      assert.match(
+        sourceLiteralArrayAround(ruleSource, "hrci-sphr-2026-v1")[11],
+        /15 Business credits/i,
+      );
+      for (const ruleSetId of [
+        "shrm-cp-2026-v1",
+        "shrm-scp-2026-v1",
+      ]) {
+        assert.match(
+          sourceLiteralArrayAround(ruleSource, ruleSetId)[11],
+          /30[\s\S]*?Organization[\s\S]*?30[\s\S]*?Profession[\s\S]*?no general ethics[\s\S]*?portal-confirmed carryover[\s\S]*?20/i,
+        );
+        assert.match(
+          sourceLiteralArrayAround(ruleSource, ruleSetId)[11],
+          /conflict[\s\S]*?10[\s\S]*?membership[\s\S]*?3[\s\S]*?all excess[\s\S]*?Education[\s\S]*?does not auto-award/i,
+        );
+      }
+      for (const categoryId of [
+        "hrci-phr-2026-confirmed-carryover",
+        "hrci-sphr-2026-confirmed-carryover",
+        "shrm-cp-2026-confirmed-carryover",
+        "shrm-scp-2026-confirmed-carryover",
+      ]) {
+        const category = sourceLiteralArrayAround(
+          categorySource,
+          categoryId,
+        );
+        assert.equal(category[7], "conditional");
+        assert.match(category[8], /Record only[\s\S]*?posts/i);
+      }
+      for (const rule of expectedRules.slice(0, 8)) {
         const rows = categoryRows.filter((category) => category[1] === rule[0]);
         assert.deepEqual(
           rows.map((category) => category[10]),
@@ -3047,7 +3583,6 @@ test("License Lantern product contract", async (t) => {
         assert.ok(rows.every((category) => category[8].length > 40));
       }
       assert.doesNotMatch(categorySource, /elective minimum/i);
-      assert.doesNotMatch(ruleSource, /NASM|HRCI|SHRM/i);
       assert.match(
         sourceLiteralArrayAround(ruleSource, "cfp-professional-pre-2027-v1")[11],
         /before April 1, 2027[\s\S]*?after Q1 2027[\s\S]*?10 hours[\s\S]*?Ethics CE never carries/i,
@@ -3068,7 +3603,7 @@ test("License Lantern product contract", async (t) => {
       );
       assert.match(
         activeSnapshotRefreshSource,
-        /MAXIMUM_CLASSIFICATION_RULE_SET_IDS[\s\S]*?"cfp-professional-2027-v1"/,
+        /MAXIMUM_CLASSIFICATION_RULE_SET_IDS[\s\S]*?"cfp-professional-2027-v1"[\s\S]*?"nasm-cpt-2026-v1"[\s\S]*?"hrci-phr-2026-v1"[\s\S]*?"hrci-sphr-2026-v1"[\s\S]*?"shrm-cp-2026-v1"[\s\S]*?"shrm-scp-2026-v1"/,
       );
       assert.match(
         activeSnapshotRefreshSource,
@@ -3081,6 +3616,14 @@ test("License Lantern product contract", async (t) => {
       assert.doesNotMatch(
         activeSnapshotRefreshSource,
         /(?:credential\.)?status (?:!= 'renewed'|IN \('active', 'submitted'\))/,
+      );
+      assert.match(
+        workspaceRouteSource,
+        /CARRYOVER_REVIEW_TASK_TITLES[\s\S]*?hrci-phr-2026-v1[\s\S]*?posted General HR credits[\s\S]*?hrci-sphr-2026-v1[\s\S]*?posted General HR credits/i,
+      );
+      assert.match(
+        workspaceRouteSource,
+        /CARRYOVER_REVIEW_TASK_TITLES[\s\S]*?shrm-cp-2026-v1[\s\S]*?Advance Your Education PDCs[\s\S]*?shrm-scp-2026-v1[\s\S]*?Advance Your Education PDCs/i,
       );
     },
   );
@@ -5451,7 +5994,7 @@ test("License Lantern product contract", async (t) => {
       assert.ok(applicabilityUpdate);
       assert.match(
         applicabilityUpdate.sql,
-        /WHERE id = \? AND credential_id = \? AND EXISTS \( SELECT 1 FROM credentials credential[\s\S]*?credential\.user_id = \? \)/i,
+        /WHERE id = \? AND credential_id = \? AND EXISTS \( SELECT 1 FROM credentials credential[\s\S]*?credential\.user_id = \? AND credential\.status IN \('active', 'submitted'\) \)/i,
       );
       assert.deepEqual(applicabilityUpdate.bindings, [
         "applies",
@@ -5471,6 +6014,9 @@ test("License Lantern product contract", async (t) => {
         userId,
         `${userId}:requirement:requirement-special-role:confirmed`,
         "requirement-special-role",
+        "requirement-special-role",
+        "credential-rich",
+        userId,
       ]);
 
       const optionalCapDatabase = new FakeDatabase({
@@ -5710,6 +6256,10 @@ test("License Lantern product contract", async (t) => {
       assert.ok(allocationInsert);
       assert.equal(activityInsert.bindings[5], 1.24);
       assert.equal(activityInsert.bindings[6], "attached");
+      assert.match(
+        activityInsert.sql,
+        /credential\.status IN \('active', 'submitted'\)/i,
+      );
       assert.equal(allocationInsert.bindings[2], credentialResult.id);
       assert.equal(allocationInsert.bindings[4], 1.24);
     },
@@ -6116,17 +6666,32 @@ test("License Lantern product contract", async (t) => {
         "requirement-other",
         "allocation-legacy",
         "credential-arrt",
+        userId,
       ]);
       assert.deepEqual(priorMatchDelete.bindings, [
         "allocation-legacy",
         userId,
+        userId,
       ]);
       assert.deepEqual(replacementMatch.bindings.slice(1), [
         userId,
-        "allocation-legacy",
         "requirement-other",
-        4,
+        "allocation-legacy",
+        "credential-arrt",
+        userId,
       ]);
+      assert.match(
+        allocationUpdate.sql,
+        /credential\.status IN \('active', 'submitted'\)/i,
+      );
+      assert.match(
+        priorMatchDelete.sql,
+        /credential\.status IN \('active', 'submitted'\)/i,
+      );
+      assert.match(
+        replacementMatch.sql,
+        /credential\.status IN \('active', 'submitted'\)/i,
+      );
     },
   );
 
@@ -6266,6 +6831,51 @@ test("License Lantern product contract", async (t) => {
       assert.match(
         validationLookup.sql,
         /requirement\.rule_category_id AS ruleCategoryId/i,
+      );
+
+      const legacyRepairDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /FROM activity_allocations allocation JOIN activities activity ON activity\.id = allocation\.activity_id JOIN credentials credential ON credential\.id = allocation\.credential_id WHERE allocation\.id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "allocation-legacy-ptcb",
+              credentialId: "credential-legacy-ptcb",
+              allocatedUnits: 1,
+              status: "submitted",
+            };
+          }
+          if (
+            /SELECT rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return { ruleSetId: "ptcb-cpht-2026-v1" };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (isRequiredMaximumGroupLookup(call.sql)) return [];
+          if (isRequirementTagLookup(call.sql)) {
+            return [requirementRows[0]];
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = legacyRepairDatabase;
+      const legacyRepairResponse = await postWorkspace(
+        "updateActivityAllocationRequirements",
+        {
+          allocationId: "allocation-legacy-ptcb",
+          requirementIds: ["requirement-patient-safety"],
+        },
+      );
+      assert.equal(legacyRepairResponse.status, 200);
+      assert.equal(
+        (await legacyRepairResponse.json()).action,
+        "updateActivityAllocationRequirements",
       );
     },
   );
@@ -6501,16 +7111,21 @@ test("License Lantern product contract", async (t) => {
       );
       assert.ok(submissionInsert);
       assert.ok(credentialUpdate);
-      assert.deepEqual(submissionInsert.bindings.slice(2), [
-        "credential-owner",
+      assert.deepEqual(submissionInsert.bindings.slice(1), [
         "2028-02-20",
         "CONF-2028-0042",
         "CONF-2028-0042",
+        "credential-owner",
+        await expectedStableUserId("owner@example.com"),
       ]);
       assert.deepEqual(credentialUpdate.bindings, [
         "credential-owner",
         await expectedStableUserId("owner@example.com"),
       ]);
+      assert.match(
+        credentialUpdate.sql,
+        /status IN \('active', 'submitted'\)/i,
+      );
       assert.equal(
         statements.some((statement) =>
           /^INSERT INTO activities \(/i.test(statement.sql),
@@ -6591,10 +7206,15 @@ test("License Lantern product contract", async (t) => {
       assert.ok(allocationInsert);
       assert.deepEqual(allocationInsert.bindings.slice(1), [
         "activity-shared",
-        "credential-second",
         requirementIds[0],
         3,
+        "credential-second",
+        userId,
       ]);
+      assert.match(
+        allocationInsert.sql,
+        /credential\.status IN \('active', 'submitted'\)/i,
+      );
       const matchInserts = flattenedStatements(database).filter((statement) =>
         /^INSERT INTO activity_requirement_matches \(/i.test(statement.sql),
       );
@@ -6847,6 +7467,7 @@ test("License Lantern product contract", async (t) => {
     async () => {
       const credentialId = "credential-arrt-dual-caps";
       const ptcbCredentialId = "credential-ptcb-legacy-conflict";
+      const njLcswCredentialId = "credential-nj-lcsw-submitted";
       const requirementRows = [
         {
           id: "requirement-facility",
@@ -6931,6 +7552,22 @@ test("License Lantern product contract", async (t) => {
           isActive: 1,
           rawEarned: 1,
         },
+        {
+          id: "requirement-nj-lcsw-general",
+          credentialId: njLcswCredentialId,
+          ruleCategoryId: "nj-lcsw-general",
+          name: "General Social Work",
+          requiredUnits: 0,
+          kind: "informational",
+          relation: "independent",
+          parentRequirementId: null,
+          applicability: "always",
+          applicabilityStatus: "applies",
+          conditionNote: null,
+          exclusiveGroup: "New Jersey LCSW credit category",
+          isActive: 1,
+          rawEarned: 0,
+        },
       ];
       const activityRows = [
         ...[
@@ -6998,6 +7635,38 @@ test("License Lantern product contract", async (t) => {
           requirementId: "requirement-ptcb-bls",
           categoryName: "Eligible BLS, CPR, or AED Training",
           allocatedUnits: 1,
+        },
+        {
+          id: "activity-ptcb-grandfathered",
+          title: "Legacy ordinary pharmacy CE",
+          provider: "Legacy PTCB Provider",
+          completionDate: "2027-05-15",
+          totalUnits: 2,
+          evidenceStatus: "attached",
+          evidenceReference: null,
+          evidenceCount: 1,
+          allocationId: "allocation-ptcb-grandfathered",
+          credentialId: ptcbCredentialId,
+          credentialName: "PTCB CPhT",
+          requirementId: null,
+          categoryName: null,
+          allocatedUnits: 2,
+        },
+        {
+          id: "activity-nj-lcsw-unclassified",
+          title: "Legacy New Jersey social work CE",
+          provider: "Legacy Social Work Provider",
+          completionDate: "2027-04-15",
+          totalUnits: 2,
+          evidenceStatus: "attached",
+          evidenceReference: null,
+          evidenceCount: 1,
+          allocationId: "allocation-nj-lcsw-unclassified",
+          credentialId: njLcswCredentialId,
+          credentialName: "New Jersey LCSW",
+          requirementId: null,
+          categoryName: null,
+          allocatedUnits: 2,
         },
       ];
       const activityMatchRows = activityRows
@@ -7078,7 +7747,33 @@ test("License Lantern product contract", async (t) => {
                 sourceUrl: null,
                 sourceTitle: null,
                 ruleReviewStatus: "verified",
-                totalEarned: 1,
+                totalEarned: 3,
+              },
+              {
+                id: njLcswCredentialId,
+                ruleSetId: "nj-lcsw-sample-v1",
+                credentialName: "New Jersey LCSW",
+                profession: "Social Work",
+                jurisdiction: "New Jersey",
+                issuer: "New Jersey Board of Social Work Examiners",
+                deadline: "2027-08-31",
+                cycleStart: "2025-09-01",
+                totalRequired: 40,
+                unitLabel: "CE hours",
+                cycleMonths: 24,
+                seriesId: njLcswCredentialId,
+                previousCredentialId: null,
+                status: "submitted",
+                submittedAt: "2027-08-20T12:00:00.000Z",
+                confirmationNumber: "NJ-LCSW-SUBMITTED",
+                submissionProof: null,
+                acceptedAt: null,
+                acceptanceReference: null,
+                nextCredentialId: null,
+                sourceUrl: null,
+                sourceTitle: null,
+                ruleReviewStatus: "verified",
+                totalEarned: 2,
               },
             ];
           }
@@ -7185,10 +7880,10 @@ test("License Lantern product contract", async (t) => {
           totalEarned: ptcbCredential.totalEarned,
         },
         {
-          totalLoggedUnits: 1,
+          totalLoggedUnits: 3,
           unclassifiedUnits: 1,
-          totalRawEarned: 0,
-          totalEarned: 0,
+          totalRawEarned: 2,
+          totalEarned: 2,
         },
       );
       assert.deepEqual(ptcbCredential.classificationIssues, [
@@ -7213,6 +7908,42 @@ test("License Lantern product contract", async (t) => {
         ptcbAllocation.classificationMessage,
         ptcbCredential.classificationIssues[0].classificationMessage,
       );
+      const grandfatheredPtcbAllocation = workspace.activities
+        .find(
+          (activity) => activity.id === "activity-ptcb-grandfathered",
+        )
+        .allocations[0];
+      assert.equal(
+        grandfatheredPtcbAllocation.classificationStatus,
+        "classified",
+      );
+      const njLcswCredential = workspace.credentials.find(
+        (candidate) => candidate.id === njLcswCredentialId,
+      );
+      assert.ok(njLcswCredential);
+      assert.deepEqual(
+        {
+          totalLoggedUnits: njLcswCredential.totalLoggedUnits,
+          unclassifiedUnits: njLcswCredential.unclassifiedUnits,
+          totalEarned: njLcswCredential.totalEarned,
+        },
+        {
+          totalLoggedUnits: 2,
+          unclassifiedUnits: 2,
+          totalEarned: 0,
+        },
+      );
+      assert.deepEqual(njLcswCredential.classificationIssues, [
+        {
+          allocationId: "allocation-nj-lcsw-unclassified",
+          activityId: "activity-nj-lcsw-unclassified",
+          activityTitle: "Legacy New Jersey social work CE",
+          unresolvedExclusiveGroups: [
+            "New Jersey LCSW credit category",
+          ],
+          allocatedUnits: 2,
+        },
+      ]);
     },
   );
 
@@ -7717,6 +8448,412 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
+    "blocks renewal acceptance while a capped-category allocation remains unclassified",
+    async () => {
+      const database = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /SELECT next_credential_id AS nextCredentialId FROM renewal_acceptances/i.test(
+              call.sql,
+            )
+          ) {
+            return null;
+          }
+          if (
+            /FROM credentials credential LEFT JOIN credential_cycle_links cycle/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "credential-nasm-submitted",
+              ruleSetId: "nasm-cpt-2026-v1",
+              credentialName:
+                "NASM Certified Personal Trainer (NASM-CPT) — standard recertification",
+              profession: "Fitness and Personal Training",
+              jurisdiction: "United States",
+              issuer: "National Academy of Sports Medicine",
+              status: "submitted",
+              totalRequired: 2,
+              unitLabel: "NASM CEUs",
+              seriesId: "credential-nasm-submitted",
+              cycleMonths: 24,
+            };
+          }
+          if (
+            /FROM renewal_submissions WHERE credential_id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "submission-nasm",
+              submittedAt: "2028-02-20T15:00:00.000Z",
+            };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (
+            /requirement\.is_active AS isActive/i.test(call.sql)
+          ) {
+            return [
+              {
+                id: "requirement-nasm-category-a",
+                name: "Category A — NASM/AFAA Approved Provider Education",
+                ruleCategoryId: "nasm-cpt-2026-category-a",
+                kind: "informational",
+                isActive: 1,
+                applicabilityStatus: "applies",
+                exclusiveGroup: "NASM CEU activity type",
+              },
+              {
+                id: "requirement-nasm-category-d",
+                name: "Category D — Adult CPR/AED",
+                ruleCategoryId: "nasm-cpt-2026-category-d-cpr-aed",
+                kind: "maximum",
+                isActive: 1,
+                applicabilityStatus: "applies",
+                exclusiveGroup: "NASM CEU activity type",
+              },
+            ];
+          }
+          if (
+            /SELECT allocation\.id FROM activity_allocations allocation/i.test(
+              call.sql,
+            )
+          ) {
+            return [{ id: "allocation-nasm-unclassified" }];
+          }
+          if (
+            /match\.allocation_id AS allocationId/i.test(call.sql)
+          ) {
+            return [];
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = database;
+
+      const response = await postWorkspace("markRenewalAccepted", {
+        credentialId: "credential-nasm-submitted",
+        acceptedAt: "2028-02-25",
+        reference: "NASM-ACCEPTANCE-PENDING",
+        nextCycleStart: "2028-03-01",
+        nextDeadline: "2030-03-01",
+      });
+      assert.equal(response.status, 409);
+      assert.deepEqual(await response.json(), {
+        error:
+          "Resolve every activity classification conflict before marking this renewal accepted.",
+        code: "classification_required_before_acceptance",
+      });
+      assert.equal(
+        flattenedStatements(database).some(
+          (statement) =>
+            /UPDATE credentials[\s\S]*?SET status = 'renewed'|INSERT INTO renewal_acceptances/i.test(
+              statement.sql,
+            ),
+        ),
+        false,
+      );
+    },
+  );
+
+  await t.test(
+    "atomically blocks, repairs, and closes a submitted NASM cycle while preserving its history",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const isolatedRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __nasmAcceptanceTestNonce = "nasm-acceptance";`,
+      );
+      await isolatedRuntime.initializeDatabase(database);
+      const userId = await expectedStableUserId("owner@example.com");
+      const raw = database.raw;
+
+      try {
+        raw
+          .prepare(
+            `INSERT INTO users (id, email, display_name, is_demo)
+             VALUES (?, ?, ?, 0)`,
+          )
+          .run(userId, "owner@example.com", "Casey Owner");
+        raw
+          .prepare(
+            `INSERT INTO credentials (
+               id, user_id, rule_set_id, credential_name, profession,
+               jurisdiction, issuer, cycle_start, deadline, total_required,
+               unit_label, status
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted')`,
+          )
+          .run(
+            "credential-nasm-real",
+            userId,
+            "nasm-cpt-2026-v1",
+            "NASM Certified Personal Trainer (NASM-CPT) — standard recertification",
+            "Fitness and Personal Training",
+            "United States",
+            "National Academy of Sports Medicine",
+            "2026-03-01",
+            "2028-02-29",
+            2,
+            "NASM CEUs",
+          );
+        raw
+          .prepare(
+            `INSERT INTO credential_cycle_links (
+               id, user_id, credential_id, series_id,
+               previous_credential_id, cycle_months
+             ) VALUES (?, ?, ?, ?, NULL, 24)`,
+          )
+          .run(
+            "cycle-link-nasm-real",
+            userId,
+            "credential-nasm-real",
+            "series-nasm-real",
+          );
+        const insertRequirement = raw.prepare(
+          `INSERT INTO credential_requirements (
+             id, credential_id, rule_category_id, name, required_units, kind,
+             relation, parent_requirement_id, applicability,
+             applicability_status, condition_note, exclusive_group, is_active,
+             sort_order
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, 'applies', ?, ?, 1, ?)`,
+        );
+        insertRequirement.run(
+          "requirement-nasm-real-a",
+          "credential-nasm-real",
+          "nasm-cpt-2026-category-a",
+          "Category A — NASM/AFAA Approved Provider Education",
+          0,
+          "informational",
+          "independent",
+          "optional",
+          "Use this classifier for NASM-approved education.",
+          "NASM CEU activity type",
+          0,
+        );
+        insertRequirement.run(
+          "requirement-nasm-real-d",
+          "credential-nasm-real",
+          "nasm-cpt-2026-category-d-cpr-aed",
+          "Category D — Adult CPR/AED",
+          0.1,
+          "maximum",
+          "independent",
+          "optional",
+          "At most 0.1 CEU counts for current adult CPR/AED.",
+          "NASM CEU activity type",
+          1,
+        );
+        raw
+          .prepare(
+            `INSERT INTO renewal_submissions (
+               id, user_id, credential_id, submitted_at,
+               confirmation_number
+             ) VALUES (?, ?, ?, ?, ?)`,
+          )
+          .run(
+            "submission-nasm-real",
+            userId,
+            "credential-nasm-real",
+            "2028-02-20T15:00:00.000Z",
+            "NASM-SUBMITTED",
+          );
+        raw
+          .prepare(
+            `INSERT INTO activities (
+               id, user_id, title, provider, completion_date, total_units,
+               evidence_status
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            "activity-nasm-real",
+            userId,
+            "NASM approved education",
+            "NASM Provider",
+            "2027-10-15",
+            1.9,
+            "attached",
+          );
+        raw
+          .prepare(
+            `INSERT INTO activity_allocations (
+               id, activity_id, credential_id, requirement_id,
+               allocated_units
+             ) VALUES (?, ?, ?, NULL, ?)`,
+          )
+          .run(
+            "allocation-nasm-real",
+            "activity-nasm-real",
+            "credential-nasm-real",
+            1.9,
+          );
+        testCloudflareEnv.DB = database;
+
+        const acceptancePayload = {
+          credentialId: "credential-nasm-real",
+          acceptedAt: "2028-02-25",
+          reference: "NASM-ACCEPTED",
+          nextCycleStart: "2028-03-01",
+          nextDeadline: "2030-03-01",
+        };
+        const blocked = await postWorkspace(
+          "markRenewalAccepted",
+          acceptancePayload,
+        );
+        assert.equal(blocked.status, 409);
+        assert.equal(
+          (await blocked.json()).code,
+          "classification_required_before_acceptance",
+        );
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT status FROM credentials
+               WHERE id = 'credential-nasm-real'`,
+            )
+            .get().status,
+          "submitted",
+        );
+        assert.equal(
+          raw.prepare(`SELECT COUNT(*) AS count FROM renewal_acceptances`).get()
+            .count,
+          0,
+        );
+
+        const repaired = await postWorkspace(
+          "updateActivityAllocationRequirements",
+          {
+            allocationId: "allocation-nasm-real",
+            requirementIds: ["requirement-nasm-real-a"],
+          },
+        );
+        assert.equal(repaired.status, 200);
+
+        const batchWithoutRace = database.batch.bind(database);
+        let raceNextAcceptance = true;
+        database.batch = async (statements) => {
+          if (
+            raceNextAcceptance &&
+            /SET status = 'renewed'/i.test(statements[0]?.sql ?? "")
+          ) {
+            raceNextAcceptance = false;
+            raw
+              .prepare(
+                `UPDATE renewal_submissions
+                 SET submitted_at = '2028-02-26T09:00:00.000Z'
+                 WHERE id = 'submission-nasm-real'`,
+              )
+              .run();
+          }
+          return batchWithoutRace(statements);
+        };
+        const racedAcceptance = await postWorkspace(
+          "markRenewalAccepted",
+          acceptancePayload,
+        );
+        assert.equal(racedAcceptance.status, 409);
+        assert.equal(
+          (await racedAcceptance.json()).code,
+          "submission_state_changed",
+        );
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT status FROM credentials
+               WHERE id = 'credential-nasm-real'`,
+            )
+            .get().status,
+          "submitted",
+        );
+        assert.equal(
+          raw.prepare(`SELECT COUNT(*) AS count FROM renewal_acceptances`).get()
+            .count,
+          0,
+        );
+        raw
+          .prepare(
+            `UPDATE renewal_submissions
+             SET submitted_at = '2028-02-20T15:00:00.000Z'
+             WHERE id = 'submission-nasm-real'`,
+          )
+          .run();
+        database.batch = batchWithoutRace;
+
+        const accepted = await postWorkspace(
+          "markRenewalAccepted",
+          acceptancePayload,
+        );
+        assert.equal(accepted.status, 200);
+        const nextCredentialId = (await accepted.json()).id;
+        assert.match(nextCredentialId, /^[0-9a-f-]{36}$/i);
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT status FROM credentials
+               WHERE id = 'credential-nasm-real'`,
+            )
+            .get().status,
+          "renewed",
+        );
+        assert.equal(
+          raw.prepare(`SELECT COUNT(*) AS count FROM renewal_acceptances`).get()
+            .count,
+          1,
+        );
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT COUNT(*) AS count FROM credentials
+               WHERE user_id = ?`,
+            )
+            .get(userId).count,
+          2,
+        );
+
+        raw
+          .prepare(
+            `DELETE FROM activity_requirement_matches
+             WHERE allocation_id = 'allocation-nasm-real'`,
+          )
+          .run();
+        const workspaceResponse = await fetchWorker(
+          "https://license-lantern.example/api/workspace",
+          { headers: authHeaders() },
+        );
+        assert.equal(workspaceResponse.status, 200);
+        const workspace = await workspaceResponse.json();
+        const historical = workspace.credentials.find(
+          (credential) => credential.id === "credential-nasm-real",
+        );
+        assert.ok(historical);
+        assert.deepEqual(
+          {
+            status: historical.status,
+            totalLoggedUnits: historical.totalLoggedUnits,
+            unclassifiedUnits: historical.unclassifiedUnits,
+            totalEarned: historical.totalEarned,
+            classificationIssues: historical.classificationIssues,
+          },
+          {
+            status: "renewed",
+            totalLoggedUnits: 1.9,
+            unclassifiedUnits: 0,
+            totalEarned: 1.9,
+            classificationIssues: [],
+          },
+        );
+      } finally {
+        database.close();
+      }
+    },
+  );
+
+  await t.test(
     "rolls rich requirement snapshots forward idempotently without credit carryover",
     async () => {
       const userId = await expectedStableUserId("owner@example.com");
@@ -7839,7 +8976,7 @@ test("License Lantern product contract", async (t) => {
         /^INSERT INTO renewal_acceptances \(/i.test(statement.sql),
       );
       const oldCycleUpdate = statements.find((statement) =>
-        /^UPDATE credentials SET status = 'renewed'/i.test(statement.sql),
+        /UPDATE credentials SET status = 'renewed'/i.test(statement.sql),
       );
       const requirementSnapshots = statements.filter((statement) =>
         /^INSERT INTO credential_requirements \(/i.test(statement.sql),
@@ -7863,6 +9000,8 @@ test("License Lantern product contract", async (t) => {
         "2030-03-01",
         12,
         "hours",
+        "credential-prior",
+        userId,
       ]);
       assert.deepEqual(nextCycleLink.bindings.slice(1), [
         userId,
@@ -7956,10 +9095,25 @@ test("License Lantern product contract", async (t) => {
         "ACCEPT-204",
         nextCredentialId,
       ]);
-      assert.deepEqual(oldCycleUpdate.bindings, [
+      assert.deepEqual(oldCycleUpdate.bindings.slice(-4), [
         "credential-prior",
         userId,
+        "submission-prior",
+        "2028-02-25",
       ]);
+      assert.match(
+        oldCycleUpdate.sql,
+        /required_classification_groups[\s\S]*?incompatible_categories[\s\S]*?status = 'submitted'[\s\S]*?guarded_submission[\s\S]*?submitted_at, 1, 10\) <= \?/i,
+      );
+      assert.equal(
+        database.batches.at(-1)[0],
+        oldCycleUpdate,
+        "the atomic classification/status guard must lead the acceptance batch",
+      );
+      assert.match(
+        nextCredentialInsert.sql,
+        /FROM credentials source[\s\S]*?source\.status = 'renewed'[\s\S]*?NOT EXISTS \([\s\S]*?FROM renewal_acceptances acceptance/i,
+      );
       assert.equal(
         statements.some((statement) =>
           /^INSERT INTO (activities|activity_allocations|activity_requirement_matches|renewal_submissions) \(/i.test(
@@ -8128,6 +9282,8 @@ test("License Lantern product contract", async (t) => {
         "2029-03-31",
         40,
         "CE hours",
+        "credential-cfp-prior",
+        await expectedStableUserId("owner@example.com"),
       ]);
       const requirementSnapshots = statements.filter((statement) =>
         /^INSERT INTO credential_requirements \(/i.test(statement.sql),
