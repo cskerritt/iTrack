@@ -1102,9 +1102,20 @@ async function addActivity(
 
   const credential = await query(
     database,
-    `SELECT id, status FROM credentials WHERE id = ? AND user_id = ?`,
+    `SELECT
+      id,
+      status,
+      cycle_start AS cycleStart,
+      deadline
+     FROM credentials
+     WHERE id = ? AND user_id = ?`,
     [credentialId, identity.userId],
-  ).first<{ id: string; status: string }>();
+  ).first<{
+    id: string;
+    status: string;
+    cycleStart: string;
+    deadline: string;
+  }>();
   if (!credential) {
     throw new RequestError(
       "Credential not found.",
@@ -1117,6 +1128,16 @@ async function addActivity(
       "This renewal cycle is closed and cannot receive activities.",
       409,
       "cycle_closed",
+    );
+  }
+  if (
+    completionDate < credential.cycleStart ||
+    completionDate > credential.deadline
+  ) {
+    throw new RequestError(
+      `The completion date must fall within this renewal cycle (${credential.cycleStart} through ${credential.deadline}).`,
+      409,
+      "activity_outside_cycle",
     );
   }
 
@@ -1416,18 +1437,30 @@ async function addActivityAllocation(
   const [activity, credential, existing] = await Promise.all([
     query(
       database,
-      `SELECT id, total_units AS totalUnits
+      `SELECT
+        id,
+        total_units AS totalUnits,
+        completion_date AS completionDate
        FROM activities
        WHERE id = ? AND user_id = ?`,
       [activityId, identity.userId],
-    ).first<{ id: string; totalUnits: number }>(),
+    ).first<{ id: string; totalUnits: number; completionDate: string }>(),
     query(
       database,
-      `SELECT id, status
+      `SELECT
+        id,
+        status,
+        cycle_start AS cycleStart,
+        deadline
        FROM credentials
        WHERE id = ? AND user_id = ?`,
       [credentialId, identity.userId],
-    ).first<{ id: string; status: string }>(),
+    ).first<{
+      id: string;
+      status: string;
+      cycleStart: string;
+      deadline: string;
+    }>(),
     query(
       database,
       `SELECT id
@@ -1452,6 +1485,16 @@ async function addActivityAllocation(
       "This renewal cycle is closed and cannot receive activities.",
       409,
       "cycle_closed",
+    );
+  }
+  if (
+    activity.completionDate < credential.cycleStart ||
+    activity.completionDate > credential.deadline
+  ) {
+    throw new RequestError(
+      `The activity date must fall within the target renewal cycle (${credential.cycleStart} through ${credential.deadline}).`,
+      409,
+      "activity_outside_cycle",
     );
   }
   if (existing) {

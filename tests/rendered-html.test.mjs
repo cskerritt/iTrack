@@ -36,6 +36,18 @@ function normalizedSql(value) {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function isOwnedCredentialCycleLookup(sql) {
+  return /SELECT id, status, cycle_start AS cycleStart, deadline FROM credentials WHERE id = \? AND user_id = \?/i.test(
+    sql,
+  );
+}
+
+function isOwnedActivityCycleLookup(sql) {
+  return /SELECT id, total_units AS totalUnits, completion_date AS completionDate FROM activities WHERE id = \? AND user_id = \?/i.test(
+    sql,
+  );
+}
+
 class FakeStatement {
   constructor(database, sql) {
     this.database = database;
@@ -652,9 +664,7 @@ test("License Lantern product contract", async (t) => {
       const ownerLookup = database.calls.find(
         (call) =>
           call.method === "first" &&
-          /SELECT id(?:, status)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
-            call.sql,
-          ),
+          isOwnedCredentialCycleLookup(call.sql),
       );
       assert.ok(ownerLookup, "credential lookup must include the owner");
       assert.deepEqual(ownerLookup.bindings, [
@@ -831,8 +841,13 @@ test("License Lantern product contract", async (t) => {
     async () => {
       const database = new FakeDatabase({
         resolveFirst(call) {
-          if (/SELECT id(?:, status)? FROM credentials WHERE id = \? AND user_id = \?/i.test(call.sql)) {
-            return { id: call.bindings[0], status: "active" };
+          if (isOwnedCredentialCycleLookup(call.sql)) {
+            return {
+              id: call.bindings[0],
+              status: "active",
+              cycleStart: "2026-03-01",
+              deadline: "2028-03-01",
+            };
           }
           return null;
         },
@@ -923,6 +938,96 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
+    "rejects activity dates outside the target renewal cycle before writing",
+    async () => {
+      const directActivityDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (isOwnedCredentialCycleLookup(call.sql)) {
+            return {
+              id: call.bindings[0],
+              status: "active",
+              cycleStart: "2026-01-01",
+              deadline: "2026-12-31",
+            };
+          }
+          return null;
+        },
+      });
+      testCloudflareEnv.DB = directActivityDatabase;
+
+      const directActivityResponse = await postWorkspace("addActivity", {
+        title: "Prior-cycle ethics course",
+        provider: "Professional Institute",
+        completionDate: "2025-12-31",
+        totalUnits: 2,
+        credentialId: "credential-current-cycle",
+        requirementId: null,
+        evidenceStatus: "missing",
+      });
+      assert.equal(directActivityResponse.status, 409);
+      assert.deepEqual(await directActivityResponse.json(), {
+        error:
+          "The completion date must fall within this renewal cycle (2026-01-01 through 2026-12-31).",
+        code: "activity_outside_cycle",
+      });
+      assert.equal(
+        flattenedStatements(directActivityDatabase).some((statement) =>
+          /^INSERT INTO (activities|activity_allocations) \(/i.test(
+            statement.sql,
+          ),
+        ),
+        false,
+      );
+
+      const reusedActivityDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (isOwnedActivityCycleLookup(call.sql)) {
+            return {
+              id: call.bindings[0],
+              totalUnits: 3,
+              completionDate: "2027-01-01",
+            };
+          }
+          if (isOwnedCredentialCycleLookup(call.sql)) {
+            return {
+              id: call.bindings[0],
+              status: "active",
+              cycleStart: "2026-01-01",
+              deadline: "2026-12-31",
+            };
+          }
+          return null;
+        },
+      });
+      testCloudflareEnv.DB = reusedActivityDatabase;
+
+      const reusedActivityResponse = await postWorkspace(
+        "addActivityAllocation",
+        {
+          activityId: "activity-next-cycle",
+          credentialId: "credential-current-cycle",
+          requirementId: null,
+          allocatedUnits: 3,
+        },
+      );
+      assert.equal(reusedActivityResponse.status, 409);
+      assert.deepEqual(await reusedActivityResponse.json(), {
+        error:
+          "The activity date must fall within the target renewal cycle (2026-01-01 through 2026-12-31).",
+        code: "activity_outside_cycle",
+      });
+      assert.equal(
+        reusedActivityDatabase.calls.some(
+          (call) =>
+            call.method === "run" &&
+            /^INSERT INTO activity_allocations \(/i.test(call.sql),
+        ),
+        false,
+      );
+    },
+  );
+
+  await t.test(
     "records a submission without fabricating a learning activity",
     async () => {
       const database = new FakeDatabase({
@@ -983,22 +1088,22 @@ test("License Lantern product contract", async (t) => {
       const userId = await expectedStableUserId("owner@example.com");
       const database = new FakeDatabase({
         resolveFirst(call) {
-          if (
-            /FROM activities WHERE id = \? AND user_id = \?/i.test(call.sql)
-          ) {
-            return { id: call.bindings[0], totalUnits: 3 };
+          if (isOwnedActivityCycleLookup(call.sql)) {
+            return {
+              id: call.bindings[0],
+              totalUnits: 3,
+              completionDate: "2027-05-20",
+            };
           }
-          if (
-            /SELECT id, status FROM credentials WHERE id = \? AND user_id = \?/i.test(
-              call.sql,
-            )
-          ) {
+          if (isOwnedCredentialCycleLookup(call.sql)) {
             return {
               id: call.bindings[0],
               status:
                 call.bindings[0] === "credential-renewed"
                   ? "renewed"
                   : "active",
+              cycleStart: "2027-01-01",
+              deadline: "2028-01-01",
             };
           }
           if (
@@ -1045,15 +1150,12 @@ test("License Lantern product contract", async (t) => {
       ]);
       const activityLookup = database.calls.find(
         (call) =>
-          call.method === "first" &&
-          /FROM activities WHERE id = \? AND user_id = \?/i.test(call.sql),
+          call.method === "first" && isOwnedActivityCycleLookup(call.sql),
       );
       const credentialLookup = database.calls.find(
         (call) =>
           call.method === "first" &&
-          /SELECT id, status FROM credentials WHERE id = \? AND user_id = \?/i.test(
-            call.sql,
-          ),
+          isOwnedCredentialCycleLookup(call.sql),
       );
       const requirementLookup = database.calls.find(
         (call) =>

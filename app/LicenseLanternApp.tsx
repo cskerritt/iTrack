@@ -420,7 +420,10 @@ export function LicenseLanternApp() {
     );
     return workspace.credentials.filter(
       (credential) =>
-        credential.status !== "renewed" && !existingIds.has(credential.id),
+        credential.status !== "renewed" &&
+        !existingIds.has(credential.id) &&
+        allocationActivity.completionDate >= credential.cycleStart &&
+        allocationActivity.completionDate <= credential.deadline,
     );
   }, [allocationActivity, workspace]);
 
@@ -950,8 +953,13 @@ export function LicenseLanternApp() {
                     name="completionDate"
                     type="date"
                     defaultValue={todayIso()}
+                    min={activityCredential?.cycleStart}
+                    max={activityCredential?.deadline}
                     required
                   />
+                  <small>
+                    Must fall within the selected renewal cycle.
+                  </small>
                 </label>
                 <label className="field">
                   <span>Credits earned</span>
