@@ -35,7 +35,7 @@ import {
   normalizedCalendarLeadDays,
   reminderCalendarEvent,
 } from "./lib/checkInCalendar";
-import { portalCarryoverLookbackYears } from "./lib/carryover";
+import { portalCarryoverLookbackMonths } from "./lib/carryover";
 import {
   oppositeFloridaMentalHealthRuleSetId,
 } from "./lib/floridaMentalHealth";
@@ -353,6 +353,46 @@ function addMonthsIso(value: string, months: number) {
   return date.toISOString().slice(0, 10);
 }
 
+function confirmedCarryoverWindowStart(
+  credential: Credential | null | undefined,
+) {
+  if (!credential) return null;
+  const lookbacks = credential.requirements.flatMap((requirement) => {
+    if (
+      requirement.isActive === false ||
+      requirement.applicabilityStatus !== "applies" ||
+      !requirement.ruleCategoryId
+    ) {
+      return [];
+    }
+    const months = portalCarryoverLookbackMonths(
+      requirement.ruleCategoryId,
+    );
+    return months === null ? [] : [months];
+  });
+  return lookbacks.length
+    ? addMonthsIso(credential.cycleStart, -Math.max(...lookbacks))
+    : null;
+}
+
+function activityDateFitsCredential(
+  completionDate: string,
+  credential: Credential,
+) {
+  if (
+    completionDate >= credential.cycleStart &&
+    completionDate <= credential.deadline
+  ) {
+    return true;
+  }
+  const carryoverStart = confirmedCarryoverWindowStart(credential);
+  return Boolean(
+    carryoverStart &&
+      completionDate >= carryoverStart &&
+      completionDate < credential.cycleStart,
+  );
+}
+
 function allocationsFor(activity: Activity): ActivityAllocation[] {
   if (activity.allocations?.length) return activity.allocations;
   if (!activity.credentialId || !activity.credentialName) return [];
@@ -640,7 +680,7 @@ function hasPortalConfirmedCarryover(
       (requirement) =>
         requirement.isActive !== false &&
         requirement.applicabilityStatus !== "not_applicable" &&
-        portalCarryoverLookbackYears(requirement.ruleCategoryId) !== null,
+        portalCarryoverLookbackMonths(requirement.ruleCategoryId) !== null,
     ),
   );
 }
@@ -654,6 +694,14 @@ function isPriorPeriodCarryoverEntry(
       credential &&
       completionDate < credential.cycleStart &&
       hasPortalConfirmedCarryover(credential),
+  );
+}
+
+function isManagedPharmacistCredential(
+  credential: Credential | null | undefined,
+) {
+  return Boolean(
+    credential?.profession === "Pharmacy" && credential.ruleSetId,
   );
 }
 
@@ -703,7 +751,8 @@ function requiresOfficialNextPeriodAttestation(
     isIsc2AutomaticRenewalCredential(credential) ||
     isCompliancePeriodCredential(credential) ||
     isFloridaMentalHealthPhaseCredential(credential) ||
-    isNremtCredential(credential)
+    isNremtCredential(credential) ||
+    isManagedPharmacistCredential(credential)
   );
 }
 
@@ -713,7 +762,8 @@ function requiresNonOverlappingNextPeriod(
   return (
     isIsc2AutomaticRenewalCredential(credential) ||
     isCompliancePeriodCredential(credential) ||
-    isFloridaMentalHealthPhaseCredential(credential)
+    isFloridaMentalHealthPhaseCredential(credential) ||
+    isManagedPharmacistCredential(credential)
   );
 }
 
@@ -1358,9 +1408,10 @@ export function LicenseLanternApp() {
       (credential) =>
         credential.status !== "renewed" &&
         !existingIds.has(credential.id) &&
-        (allocationActivity.completionDate >= credential.cycleStart ||
-          hasPortalConfirmedCarryover(credential)) &&
-        allocationActivity.completionDate <= credential.deadline,
+        activityDateFitsCredential(
+          allocationActivity.completionDate,
+          credential,
+        ),
     );
   }, [allocationActivity, workspace]);
 
@@ -1953,6 +2004,10 @@ export function LicenseLanternApp() {
           : (rule?.issuer ?? ""),
         cycleStart: String(form.get("cycleStart") ?? ""),
         deadline: String(form.get("deadline") ?? ""),
+        templateEligibilityAttested:
+          rule?.profession === "Pharmacy"
+            ? form.get("templateEligibilityAttested") === "on"
+            : undefined,
         totalRequired,
         unitLabel: customCredential
           ? String(form.get("unitLabel") ?? "hours")
@@ -2034,6 +2089,11 @@ export function LicenseLanternApp() {
           requiresOfficialNextPeriodAttestation(selectedCredential)
             ? form.get("officialDatesAttested") === "on"
             : undefined,
+        templateEligibilityAttested: isManagedPharmacistCredential(
+          selectedCredential,
+        )
+          ? form.get("templateEligibilityAttested") === "on"
+          : undefined,
       },
       isCompliancePeriodCredential(selectedCredential)
         ? "Compliance period completed. Your next period is ready."
@@ -2607,9 +2667,8 @@ export function LicenseLanternApp() {
                       }))
                     }
                     min={
-                      hasPortalConfirmedCarryover(activityCredential)
-                        ? undefined
-                        : activityCredential?.cycleStart
+                      confirmedCarryoverWindowStart(activityCredential) ??
+                      activityCredential?.cycleStart
                     }
                     max={activityCredential?.deadline}
                     required
@@ -2621,12 +2680,10 @@ export function LicenseLanternApp() {
                         : undefined
                     }
                   >
-                    {activityScan.suggestions.completionDate
-                      ? hasPortalConfirmedCarryover(activityCredential)
-                        ? "Suggested from the scan — confirm it is in this cycle, or tag it only as portal-confirmed carryover."
-                        : "Suggested from the scan — confirm it falls within this renewal cycle."
-                      : hasPortalConfirmedCarryover(activityCredential)
-                        ? "Use the actual date. A prior-period date is accepted only when tagged solely as portal-confirmed carryover."
+                    {confirmedCarryoverWindowStart(activityCredential)
+                      ? "Use a current-cycle date, or the actual prior-cycle date when selecting confirmed carryover."
+                      : activityScan.suggestions.completionDate
+                        ? "Suggested from the scan — confirm it falls within this renewal cycle."
                         : "Must fall within the selected renewal cycle."}
                   </small>
                 </label>
@@ -2721,10 +2778,11 @@ export function LicenseLanternApp() {
                       The issuing portal posted this carryover
                     </strong>
                     <small>
-                      I selected only the portal-confirmed carryover
-                      classifier, entered the actual eligible prior-period
-                      date, and will retain the portal record. A reference or
-                      uploaded proof is required before cycle completion.
+                      I selected the portal-confirmed carryover source plus
+                      only compatible classifiers, entered the actual
+                      eligible prior-period date, and will retain the portal
+                      record. A reference or uploaded proof is required
+                      before cycle completion.
                     </small>
                   </span>
                   <input
@@ -3069,6 +3127,25 @@ export function LicenseLanternApp() {
                         ))}
                     </div>
                   </fieldset>
+                ) : null}
+                {selectedRule?.profession === "Pharmacy" ? (
+                  <label className="switch-row">
+                    <span>
+                      <strong>
+                        I confirmed this is a standard full-cycle renewal
+                      </strong>
+                      <small>
+                        The regulator record matches the dates below, and no
+                        shortened, inactive, prorated, exempt, or other
+                        adjusted-status variant applies.
+                      </small>
+                    </span>
+                    <input
+                      name="templateEligibilityAttested"
+                      type="checkbox"
+                      required
+                    />
+                  </label>
                 ) : null}
               </>
             )}
@@ -3548,6 +3625,25 @@ export function LicenseLanternApp() {
                 />
               </label>
             ) : null}
+            {isManagedPharmacistCredential(selectedCredential) ? (
+              <label className="switch-row">
+                <span>
+                  <strong>
+                    I confirmed the next period is a standard full-cycle
+                    renewal
+                  </strong>
+                  <small>
+                    No shortened, inactive, prorated, exempt, or other
+                    adjusted-status variant applies to the next period.
+                  </small>
+                </span>
+                <input
+                  name="templateEligibilityAttested"
+                  type="checkbox"
+                  required
+                />
+              </label>
+            ) : null}
             <div className="advisory-note">
               <span aria-hidden="true">i</span>
               <p>
@@ -3557,7 +3653,9 @@ export function LicenseLanternApp() {
                     ? "The next renewal will use the CE Broker-confirmed phase and reset every third-biennium and supervisor condition for review."
                     : isNremtCredential(selectedCredential)
                       ? "Do not infer the new cycle start from the old expiration. National Registry can assign an early rolling start while retaining the fixed expiration; the dashboard dates control."
-                  : "Requirements are copied as a starting snapshot. Review the current official rules before relying on the new plan."}
+                      : isManagedPharmacistCredential(selectedCredential)
+                        ? "The next renewal will use the latest current version of this state pharmacist template and reset every conditional authorization for review."
+                        : "Requirements are copied as a starting snapshot. Review the current official rules before relying on the new plan."}
               </p>
             </div>
             <div className="form-actions">
@@ -3729,9 +3827,9 @@ export function LicenseLanternApp() {
                       The target portal posted this carryover
                     </strong>
                     <small>
-                      Apply this prior-period record only to the
-                      portal-confirmed carryover classifier and retain the
-                      issuer’s supporting record.
+                      Apply this prior-period record to the
+                      portal-confirmed carryover source plus only compatible
+                      classifiers, and retain the issuer’s supporting record.
                     </small>
                   </span>
                   <input
@@ -3841,9 +3939,9 @@ export function LicenseLanternApp() {
                       The issuing portal posted this carryover
                     </strong>
                     <small>
-                      Keep this prior-period activity tagged only to the
-                      portal-confirmed carryover classifier and retain the
-                      official supporting record.
+                      Keep this prior-period activity tagged to the
+                      portal-confirmed carryover source plus only compatible
+                      classifiers, and retain the official supporting record.
                     </small>
                   </span>
                   <input

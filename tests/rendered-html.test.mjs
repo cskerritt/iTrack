@@ -65,7 +65,7 @@ function isRequiredMaximumGroupLookup(sql) {
 }
 
 function isApplicabilityRequirementsLookup(sql) {
-  return /SELECT requirement\.id, requirement\.name, requirement\.relation, requirement\.parent_requirement_id AS parentRequirementId, requirement\.applicability, requirement\.applicability_status AS applicabilityStatus FROM credential_requirements requirement JOIN credentials credential/i.test(
+  return /SELECT requirement\.id, requirement\.name,[\s\S]*?requirement\.relation,[\s\S]*?requirement\.parent_requirement_id AS parentRequirementId,[\s\S]*?requirement\.applicability,[\s\S]*?requirement\.applicability_status AS applicabilityStatus[\s\S]*?FROM credential_requirements requirement JOIN credentials credential/i.test(
     sql,
   );
 }
@@ -436,6 +436,15 @@ const runtimeCatalogModules = [
       "MENTAL_HEALTH_RULE_SET_SEED_BINDINGS",
     ],
   },
+  {
+    moduleName: "pharmacy",
+    sourceUrl: new URL("../db/catalog/pharmacy.ts", import.meta.url),
+    exports: [
+      "PHARMACY_CATEGORY_SEED_BINDINGS",
+      "PHARMACY_MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+      "PHARMACY_RULE_SET_SEED_BINDINGS",
+    ],
+  },
 ];
 
 async function importTypeScriptModule(source) {
@@ -761,7 +770,7 @@ test("License Lantern product contract", async (t) => {
       assert.equal(
         raw.prepare("SELECT COUNT(*) AS count FROM rule_categories").get()
           .count,
-        440,
+        474,
       );
 
       assert.deepEqual(
@@ -1375,6 +1384,415 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
+    "seeds six source-linked pharmacist renewals with bounded credit and rollover rules",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const [
+        runtimeSource,
+        pharmacySource,
+        workspaceRouteSource,
+        clientSource,
+        compatibilitySource,
+      ] = await Promise.all([
+        readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
+        readFile(new URL("../db/catalog/pharmacy.ts", import.meta.url), "utf8"),
+        readFile(
+          new URL("../app/api/workspace/route.ts", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL("../app/lib/requirementCompatibility.ts", import.meta.url),
+          "utf8",
+        ),
+      ]);
+      const [runtimeModule, pharmacyModule, compatibilityModule] =
+        await Promise.all([
+          importTypeScriptModule(
+            `${runtimeSource}\nexport const __pharmacistCatalogNonce = "catalog";`,
+          ),
+          importTypeScriptModule(pharmacySource),
+          importTypeScriptModule(compatibilitySource),
+        ]);
+      await runtimeModule.initializeDatabase(database);
+      const raw = database.raw;
+      const rows = (sql) =>
+        raw
+          .prepare(sql)
+          .all()
+          .map((row) => ({ ...row }));
+
+      assert.deepEqual(
+        rows(
+          `SELECT
+             id,
+             jurisdiction,
+             total_units AS totalUnits,
+             cycle_months AS cycleMonths,
+             effective_date AS effectiveDate
+           FROM rule_sets
+           WHERE profession = 'Pharmacy'
+           ORDER BY jurisdiction`,
+        ),
+        [
+          {
+            id: "ca-pharmacist-2026-v1",
+            jurisdiction: "California",
+            totalUnits: 30,
+            cycleMonths: 24,
+            effectiveDate: null,
+          },
+          {
+            id: "fl-pharmacist-2026-v1",
+            jurisdiction: "Florida",
+            totalUnits: 30,
+            cycleMonths: 24,
+            effectiveDate: "2025-05-22",
+          },
+          {
+            id: "nj-pharmacist-2026-v1",
+            jurisdiction: "New Jersey",
+            totalUnits: 30,
+            cycleMonths: 24,
+            effectiveDate: null,
+          },
+          {
+            id: "ny-pharmacist-2026-v1",
+            jurisdiction: "New York",
+            totalUnits: 45,
+            cycleMonths: 36,
+            effectiveDate: "2023-01-01",
+          },
+          {
+            id: "pa-pharmacist-2026-v1",
+            jurisdiction: "Pennsylvania",
+            totalUnits: 30,
+            cycleMonths: 24,
+            effectiveDate: "2026-04-11",
+          },
+          {
+            id: "tx-pharmacist-2026-v1",
+            jurisdiction: "Texas",
+            totalUnits: 30,
+            cycleMonths: 24,
+            effectiveDate: null,
+          },
+        ],
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(DISTINCT rule.id) AS ruleCount,
+                 COUNT(category.id) AS categoryCount,
+                 SUM(CASE WHEN category.kind = 'maximum' THEN 1 ELSE 0 END) AS maximumCount,
+                 SUM(CASE WHEN category.applicability = 'conditional' THEN 1 ELSE 0 END) AS conditionalCount,
+                 SUM(
+                   CASE
+                     WHEN rule.is_current = 1
+                       AND rule.last_verified_at = '2026-07-26'
+                       AND rule.review_status = 'source_linked_check_conditions'
+                       AND rule.source_url LIKE 'https://%'
+                     THEN 1 ELSE 0
+                   END
+                 ) AS sourceLinkedCategoryRows
+               FROM rule_sets rule
+               JOIN rule_categories category ON category.rule_set_id = rule.id
+               WHERE rule.profession = 'Pharmacy'`,
+            )
+            .get(),
+        },
+        {
+          ruleCount: 6,
+          categoryCount: 37,
+          maximumCount: 6,
+          conditionalCount: 15,
+          sourceLinkedCategoryRows: 37,
+        },
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT
+             rule_set_id AS ruleSetId,
+             COUNT(*) AS categoryCount,
+             MIN(sort_order) AS firstSort,
+             MAX(sort_order) AS lastSort
+           FROM rule_categories
+           WHERE rule_set_id LIKE '%-pharmacist-2026-v1'
+           GROUP BY rule_set_id
+           ORDER BY rule_set_id`,
+        ),
+        [
+          {
+            ruleSetId: "ca-pharmacist-2026-v1",
+            categoryCount: 3,
+            firstSort: 0,
+            lastSort: 2,
+          },
+          {
+            ruleSetId: "fl-pharmacist-2026-v1",
+            categoryCount: 10,
+            firstSort: 0,
+            lastSort: 9,
+          },
+          {
+            ruleSetId: "nj-pharmacist-2026-v1",
+            categoryCount: 8,
+            firstSort: 0,
+            lastSort: 7,
+          },
+          {
+            ruleSetId: "ny-pharmacist-2026-v1",
+            categoryCount: 5,
+            firstSort: 0,
+            lastSort: 4,
+          },
+          {
+            ruleSetId: "pa-pharmacist-2026-v1",
+            categoryCount: 4,
+            firstSort: 0,
+            lastSort: 3,
+          },
+          {
+            ruleSetId: "tx-pharmacist-2026-v1",
+            categoryCount: 7,
+            firstSort: 0,
+            lastSort: 6,
+          },
+        ],
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 SUM(required_units) AS requiredTotal,
+                 COUNT(*) AS bucketCount,
+                 COUNT(DISTINCT exclusive_group) AS groupCount
+               FROM rule_categories
+               WHERE rule_set_id = 'fl-pharmacist-2026-v1'
+                 AND kind = 'minimum'
+                 AND relation = 'independent'`,
+            )
+            .get(),
+        },
+        { requiredTotal: 30, bucketCount: 3, groupCount: 1 },
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT
+             id,
+             required_units AS requiredUnits,
+             applicability,
+             exclusive_group AS exclusiveGroup
+           FROM rule_categories
+           WHERE rule_set_id = 'tx-pharmacist-2026-v1'
+           ORDER BY sort_order`,
+        ),
+        [
+          {
+            id: "tx-pharmacist-2026-texas-law-rules",
+            requiredUnits: 1,
+            applicability: "always",
+            exclusiveGroup: null,
+          },
+          {
+            id: "tx-pharmacist-2026-sterile-standard",
+            requiredUnits: 2,
+            applicability: "conditional",
+            exclusiveGroup: "Texas pharmacist sterile-compounding tier",
+          },
+          {
+            id: "tx-pharmacist-2026-sterile-high-risk",
+            requiredUnits: 4,
+            applicability: "conditional",
+            exclusiveGroup: "Texas pharmacist sterile-compounding tier",
+          },
+          {
+            id: "tx-pharmacist-2026-immunizer",
+            requiredUnits: 3,
+            applicability: "conditional",
+            exclusiveGroup: null,
+          },
+          {
+            id: "tx-pharmacist-2026-preceptor",
+            requiredUnits: 3,
+            applicability: "conditional",
+            exclusiveGroup: null,
+          },
+          {
+            id:
+              "tx-pharmacist-2026-drug-therapy-management-year-1",
+            requiredUnits: 6,
+            applicability: "conditional",
+            exclusiveGroup: "Texas pharmacist drug-therapy year",
+          },
+          {
+            id:
+              "tx-pharmacist-2026-drug-therapy-management-year-2",
+            requiredUnits: 6,
+            applicability: "conditional",
+            exclusiveGroup: "Texas pharmacist drug-therapy year",
+          },
+        ],
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT
+             exclusive_group AS exclusiveGroup,
+             COUNT(*) AS optionCount,
+             SUM(CASE WHEN kind = 'maximum' THEN 1 ELSE 0 END) AS maximumCount,
+             SUM(CASE WHEN kind = 'informational' THEN 1 ELSE 0 END) AS informationalCount
+           FROM rule_categories
+           WHERE rule_set_id IN (
+             'fl-pharmacist-2026-v1',
+             'ny-pharmacist-2026-v1',
+             'nj-pharmacist-2026-v1'
+           )
+             AND exclusive_group IS NOT NULL
+             AND (
+               kind = 'maximum'
+               OR kind = 'informational'
+             )
+           GROUP BY exclusive_group
+           HAVING maximumCount > 0
+           ORDER BY exclusive_group`,
+        ),
+        [
+          {
+            exclusiveGroup: "Florida pharmacist credit source",
+            optionCount: 4,
+            maximumCount: 3,
+            informationalCount: 1,
+          },
+          {
+            exclusiveGroup: "New Jersey pharmacist delivery mode",
+            optionCount: 2,
+            maximumCount: 1,
+            informationalCount: 1,
+          },
+          {
+            exclusiveGroup: "New Jersey pharmacist period source",
+            optionCount: 2,
+            maximumCount: 1,
+            informationalCount: 1,
+          },
+          {
+            exclusiveGroup: "New York pharmacist delivery mode",
+            optionCount: 2,
+            maximumCount: 1,
+            informationalCount: 1,
+          },
+        ],
+      );
+      assert.deepEqual(
+        [...pharmacyModule.PHARMACY_MAXIMUM_CLASSIFICATION_RULE_SET_IDS],
+        [
+          "fl-pharmacist-2026-v1",
+          "ny-pharmacist-2026-v1",
+          "nj-pharmacist-2026-v1",
+        ],
+      );
+      assert.equal(
+        new Set(
+          pharmacyModule.PHARMACY_RULE_SET_SEED_BINDINGS.map(
+            (binding) => binding[0],
+          ),
+        ).size,
+        6,
+      );
+      assert.equal(
+        new Set(
+          pharmacyModule.PHARMACY_CATEGORY_SEED_BINDINGS.map(
+            (binding) => binding[0],
+          ),
+        ).size,
+        37,
+      );
+
+      const caveats = rows(
+        `SELECT id, source_title AS sourceTitle
+         FROM rule_sets
+         WHERE profession = 'Pharmacy'
+         ORDER BY id`,
+      );
+      assert.match(
+        caveats.find((rule) => rule.id.startsWith("ca-")).sourceTitle,
+        /first pharmacist renewal is exempt[\s\S]*?Advanced Practice[\s\S]*?four years/i,
+      );
+      assert.match(
+        caveats.find((rule) => rule.id.startsWith("tx-")).sourceTitle,
+        /human-trafficking[\s\S]*?does not prescribe a numeric duration[\s\S]*?two sterile-compounding hours[\s\S]*?four hours[\s\S]*?six drug-therapy-management hours annually[\s\S]*?No CE carries/i,
+      );
+      assert.match(
+        caveats.find((rule) => rule.id.startsWith("fl-")).sourceTitle,
+        /26 General[\s\S]*?stale 10-hour live[\s\S]*?one-time 2021[\s\S]*?fingerprint/i,
+      );
+      assert.match(
+        caveats.find((rule) => rule.id.startsWith("ny-")).sourceTitle,
+        /no more than 22[\s\S]*?shorter than 36 months[\s\S]*?No credit carries/i,
+      );
+      assert.match(
+        caveats.find((rule) => rule.id.startsWith("nj-")).sourceTitle,
+        /first renewal is exempt[\s\S]*?10 eligible excess[\s\S]*?never copies/i,
+      );
+      assert.match(
+        caveats.find((rule) => rule.id.startsWith("pa-")).sourceTitle,
+        /DEA registration[\s\S]*?No hours carry[\s\S]*?Newly graduated[\s\S]*?reciprocal/i,
+      );
+
+      assert.equal(
+        compatibilityModule.requirementsAreIncompatible(
+          {
+            id: "ny-self-study",
+            name: "Self-Study",
+            ruleCategoryId: "ny-pharmacist-2026-self-study",
+          },
+          {
+            id: "ny-cdtm",
+            name: "CDTM",
+            ruleCategoryId: "ny-pharmacist-2026-cdtm",
+          },
+        ),
+        true,
+      );
+      assert.equal(
+        compatibilityModule.requirementsAreIncompatible(
+          {
+            id: "nj-carryover",
+            name: "Carryover",
+            ruleCategoryId: "nj-pharmacist-2026-confirmed-carryover",
+          },
+          {
+            id: "nj-opioids",
+            name: "Opioids",
+            ruleCategoryId: "nj-pharmacist-2026-prescription-opioids",
+          },
+        ),
+        true,
+      );
+      assert.match(
+        runtimeSource,
+        /\.\.\.PHARMACY_RULE_SET_SEED_BINDINGS[\s\S]*?\.\.\.PHARMACY_CATEGORY_SEED_BINDINGS[\s\S]*?managed_rule\.profession = 'Pharmacy'[\s\S]*?\.\.\.PHARMACY_MAXIMUM_CLASSIFICATION_RULE_SET_IDS/,
+      );
+      assert.match(
+        workspaceRouteSource,
+        /PHARMACIST_RENEWAL_TASK_COPY[\s\S]*?every applicable certification requirement[\s\S]*?classify every activity by delivery mode and period source[\s\S]*?isManagedPharmacistCredential/,
+      );
+      assert.match(
+        clientSource,
+        /isManagedPharmacistCredential[\s\S]*?profession === "Pharmacy"[\s\S]*?requiresOfficialNextPeriodAttestation[\s\S]*?isManagedPharmacistCredential/,
+      );
+      database.close();
+    },
+  );
+
+  await t.test(
     "round-trips opaque owner-scoped drafts, salvages fields, and expires them",
     async () => {
       const draftSource = await readFile(
@@ -1875,6 +2293,16 @@ test("License Lantern product contract", async (t) => {
           "invented-confirmed-carryover",
         ),
         null,
+      );
+      assert.equal(
+        carryoverModule.portalCarryoverLookbackMonths(
+          "nj-pharmacist-2026-confirmed-carryover",
+        ),
+        6,
+      );
+      assert.equal(
+        carryoverModule.calendarMonthsBefore("2028-08-31", 6),
+        "2028-02-29",
       );
       assert.equal(
         carryoverModule.calendarYearsBefore("2028-02-29", 1),
@@ -3800,7 +4228,7 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
-    "keeps thirteen additional official templates bounded and internally coherent",
+    "keeps twelve additional inline official templates bounded and internally coherent",
     async () => {
       const [runtimeSource, workspaceRouteSource] = await Promise.all([
         readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
@@ -3873,19 +4301,6 @@ test("License Lantern product contract", async (t) => {
           24,
           "source_linked_check_conditions",
           "www.trec.texas.gov",
-        ],
-        [
-          "ca-pharmacist-2026-v1",
-          "ca-pharmacist-standard",
-          "Pharmacy",
-          "Pharmacist — standard active renewal",
-          "California",
-          "California State Board of Pharmacy",
-          30,
-          "CE hours",
-          24,
-          "source_linked_check_conditions",
-          "www.pharmacy.ca.gov",
         ],
         [
           "ny-architect-2026-v1",
@@ -3997,7 +4412,6 @@ test("License Lantern product contract", async (t) => {
         ["arrt-rt-standard-2026-v1", null],
         ["cfp-professional-pre-2027-v1", null],
         ["tx-real-estate-2026-v1", "2026-01-01"],
-        ["ca-pharmacist-2026-v1", null],
         ["ny-architect-2026-v1", null],
         ["ptcb-cpht-2026-v1", "2026-05-01"],
         ["asha-ccc-2026-v1", "2026-01-01"],
@@ -4009,18 +4423,18 @@ test("License Lantern product contract", async (t) => {
       ]);
       assert.equal(
         [...ruleSource.matchAll(/\n  \[\n    "/g)].length,
-        14,
-        "thirteen current rules plus one hidden CFP transition rule are expected",
+        13,
+        "twelve current rules plus one hidden CFP transition rule are expected",
       );
       assert.equal(
         [...categorySource.matchAll(/\n  \[\n    "/g)].length,
-        60,
-        "fifty-six current categories plus four hidden CFP transition categories are expected",
+        57,
+        "fifty-three current categories plus four hidden CFP transition categories are expected",
       );
       assert.equal(
         [...globalSeedSource.matchAll(/INSERT OR IGNORE INTO rule_sets/g)]
           .length + expectedRules.length,
-        36,
+        35,
       );
       for (const expected of expectedRules) {
         const rule = sourceLiteralArrayAround(ruleSource, expected[0]);
@@ -4302,33 +4716,6 @@ test("License Lantern product contract", async (t) => {
           "TREC course type",
         ],
         [
-          "ca-pharmacist-2026-law-webinar",
-          "ca-pharmacist-2026-v1",
-          1,
-          "minimum",
-          "independent",
-          "always",
-          "California pharmacist mandatory course",
-        ],
-        [
-          "ca-pharmacist-2026-ethics-webinar",
-          "ca-pharmacist-2026-v1",
-          1,
-          "minimum",
-          "independent",
-          "always",
-          "California pharmacist mandatory course",
-        ],
-        [
-          "ca-pharmacist-2026-cultural-competency",
-          "ca-pharmacist-2026-v1",
-          1,
-          "minimum",
-          "independent",
-          "always",
-          "California pharmacist mandatory course",
-        ],
-        [
           "ny-architect-2026-hsw",
           "ny-architect-2026-v1",
           24,
@@ -4501,7 +4888,7 @@ test("License Lantern product contract", async (t) => {
         ]),
         expectedCategories,
       );
-      assert.equal(new Set(categoryRows.map((category) => category[0])).size, 56);
+      assert.equal(new Set(categoryRows.map((category) => category[0])).size, 53);
       const futureCfpCategories = [
         sourceLiteralArrayAround(
           categorySource,
@@ -4830,7 +5217,7 @@ test("License Lantern product contract", async (t) => {
         assert.equal(category[7], "conditional");
         assert.match(category[8], /Record only[\s\S]*?posts/i);
       }
-      for (const rule of expectedRules.slice(0, 8)) {
+      for (const rule of expectedRules.slice(0, 7)) {
         const rows = categoryRows.filter((category) => category[1] === rule[0]);
         assert.deepEqual(
           rows.map((category) => category[10]),
@@ -4925,7 +5312,7 @@ test("License Lantern product contract", async (t) => {
             )
             .get(),
         },
-        { totalRules: 93, currentRules: 92 },
+        { totalRules: 98, currentRules: 97 },
       );
       assert.equal(
         raw
@@ -5584,6 +5971,82 @@ test("License Lantern product contract", async (t) => {
       );
       await repeatRuntime.initializeDatabase(database);
       assert.equal(JSON.stringify(catalogState()), stableState);
+
+      raw
+        .prepare(
+          `UPDATE credential_requirements
+           SET applicability_status = 'not_applicable', is_active = 0
+           WHERE id = 'requirement-datasys-active-work'`,
+        )
+        .run();
+      await assert.rejects(
+        database.batch([
+          database
+            .prepare(
+              `INSERT INTO activities (
+                 id, user_id, title, provider, completion_date, total_units,
+                 evidence_status
+               ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .bind(
+              "activity-stale-requirement-race",
+              "user-managed-catalog",
+              "Stale requirement race",
+              "Test Provider",
+              "2027-06-01",
+              1,
+              "missing",
+            ),
+          database
+            .prepare(
+              `INSERT INTO activity_allocations (
+                 id, activity_id, credential_id, requirement_id,
+                 allocated_units
+               ) VALUES (?, ?, ?, ?, ?)`,
+            )
+            .bind(
+              "allocation-stale-requirement-race",
+              "activity-stale-requirement-race",
+              "credential-datasys-active",
+              "requirement-datasys-active-work",
+              1,
+            ),
+          database
+            .prepare(
+              `INSERT INTO activity_requirement_matches (
+                 id, user_id, allocation_id, requirement_id, matched_units
+               ) VALUES (?, ?, ?, ?, ?)`,
+            )
+            .bind(
+              "match-stale-requirement-race",
+              "user-managed-catalog",
+              "allocation-stale-requirement-race",
+              "requirement-datasys-active-work",
+              1,
+            ),
+        ]),
+        /activity_requirement_inactive/i,
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM activities
+             WHERE id = 'activity-stale-requirement-race'`,
+          )
+          .get().count,
+        0,
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM activity_allocations
+             WHERE id = 'allocation-stale-requirement-race'`,
+          )
+          .get().count,
+        0,
+      );
       database.close();
     },
   );
@@ -7960,6 +8423,218 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
+    "requires pharmacist template eligibility, full-cycle dates, and one sterile-compounding tier",
+    async () => {
+      const texasCategories = [
+        {
+          id: "tx-pharmacist-2026-texas-law-rules",
+          name: "Texas Pharmacy Law or Rules",
+          requiredUnits: 1,
+          kind: "minimum",
+          relation: "independent",
+          parentCategoryId: null,
+          applicability: "always",
+          conditionNote: null,
+          exclusiveGroup: null,
+        },
+        {
+          id: "tx-pharmacist-2026-sterile-standard",
+          name: "Sterile Compounding — Standard Practice",
+          requiredUnits: 2,
+          kind: "minimum",
+          relation: "independent",
+          parentCategoryId: null,
+          applicability: "conditional",
+          conditionNote:
+            "Applies when the pharmacist performs ordinary sterile compounding.",
+          exclusiveGroup: "Texas pharmacist sterile-compounding tier",
+        },
+        {
+          id: "tx-pharmacist-2026-sterile-high-risk",
+          name: "Sterile Compounding — Higher-Risk Practice",
+          requiredUnits: 4,
+          kind: "minimum",
+          relation: "independent",
+          parentCategoryId: null,
+          applicability: "conditional",
+          conditionNote:
+            "Applies instead for specified higher-risk Category 2 or Category 3 compounding.",
+          exclusiveGroup: "Texas pharmacist sterile-compounding tier",
+        },
+      ];
+      const database = new FakeDatabase({
+        resolveFirst(call) {
+          if (/FROM rule_sets WHERE id = \? AND is_current = 1/i.test(call.sql)) {
+            return {
+              id: "tx-pharmacist-2026-v1",
+              credentialName:
+                "Pharmacist — active full biennial renewal",
+              profession: "Pharmacy",
+              jurisdiction: "Texas",
+              issuer: "Texas State Board of Pharmacy",
+              totalUnits: 30,
+              unitLabel: "CE hours",
+              cycleMonths: 24,
+            };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (/FROM rule_categories WHERE rule_set_id = \?/i.test(call.sql)) {
+            return texasCategories;
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = database;
+      const basePayload = {
+        ruleSetId: "tx-pharmacist-2026-v1",
+        cycleStart: "2027-01-01",
+        deadline: "2028-12-31",
+      };
+
+      const unattested = await postWorkspace(
+        "createCredential",
+        basePayload,
+      );
+      assert.equal(unattested.status, 409);
+      const unattestedBody = await unattested.json();
+      assert.equal(
+        unattestedBody.code,
+        "pharmacist_template_eligibility_required",
+      );
+      assert.match(unattestedBody.error, /shortened[\s\S]*?adjusted-status/i);
+      assert.doesNotMatch(unattestedBody.error, /\binitial\b/i);
+
+      const shortened = await postWorkspace("createCredential", {
+        ...basePayload,
+        deadline: "2028-12-20",
+        templateEligibilityAttested: true,
+      });
+      assert.equal(shortened.status, 409);
+      assert.equal(
+        (await shortened.json()).code,
+        "pharmacist_standard_cycle_dates_required",
+      );
+
+      const conflicting = await postWorkspace("createCredential", {
+        ...basePayload,
+        templateEligibilityAttested: true,
+        applicabilityChoices: [
+          {
+            ruleCategoryId: "tx-pharmacist-2026-sterile-standard",
+            status: "applies",
+          },
+          {
+            ruleCategoryId: "tx-pharmacist-2026-sterile-high-risk",
+            status: "applies",
+          },
+        ],
+      });
+      assert.equal(conflicting.status, 409);
+      assert.equal(
+        (await conflicting.json()).code,
+        "conflicting_pharmacist_conditions",
+      );
+
+      const accepted = await postWorkspace("createCredential", {
+        ...basePayload,
+        templateEligibilityAttested: true,
+        applicabilityChoices: [
+          {
+            ruleCategoryId: "tx-pharmacist-2026-sterile-standard",
+            status: "applies",
+          },
+          {
+            ruleCategoryId: "tx-pharmacist-2026-sterile-high-risk",
+            status: "not_applicable",
+          },
+        ],
+      });
+      assert.equal(accepted.status, 200);
+      const requirementStatements = flattenedStatements(database).filter(
+        (statement) =>
+          /^INSERT INTO credential_requirements \(/i.test(statement.sql),
+      );
+      assert.equal(requirementStatements.length, 3);
+      const highRiskRequirement = requirementStatements.find(
+        (statement) =>
+          statement.bindings[2] ===
+          "tx-pharmacist-2026-sterile-high-risk",
+      );
+      assert.ok(highRiskRequirement);
+      assert.equal(highRiskRequirement.bindings[9], "not_applicable");
+      assert.equal(highRiskRequirement.bindings[12], 0);
+
+      const updateDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /SELECT id, status FROM credentials WHERE id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return { id: call.bindings[0], status: "active" };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (!isApplicabilityRequirementsLookup(call.sql)) return [];
+          return [
+            {
+              id: "requirement-sterile-standard",
+              name: "Sterile Compounding — Standard Practice",
+              ruleCategoryId:
+                "tx-pharmacist-2026-sterile-standard",
+              relation: "independent",
+              parentRequirementId: null,
+              applicability: "conditional",
+              applicabilityStatus: "not_applicable",
+            },
+            {
+              id: "requirement-sterile-high-risk",
+              name: "Sterile Compounding — Higher-Risk Practice",
+              ruleCategoryId:
+                "tx-pharmacist-2026-sterile-high-risk",
+              relation: "independent",
+              parentRequirementId: null,
+              applicability: "conditional",
+              applicabilityStatus: "needs_confirmation",
+            },
+          ];
+        },
+      });
+      testCloudflareEnv.DB = updateDatabase;
+      const conflictingUpdate = await postWorkspace(
+        "updateRequirementApplicability",
+        {
+          credentialId: "credential-tx-pharmacist",
+          choices: [
+            {
+              requirementId: "requirement-sterile-standard",
+              status: "applies",
+            },
+            {
+              requirementId: "requirement-sterile-high-risk",
+              status: "applies",
+            },
+          ],
+        },
+      );
+      assert.equal(conflictingUpdate.status, 409);
+      assert.equal(
+        (await conflictingUpdate.json()).code,
+        "conflicting_pharmacist_conditions",
+      );
+      assert.equal(
+        flattenedStatements(updateDatabase).some((statement) =>
+          /^UPDATE credential_requirements /i.test(statement.sql),
+        ),
+        false,
+      );
+    },
+  );
+
+  await t.test(
     "snapshots conditional rules, scopes updates, and rejects inactive tags",
     async () => {
       const userId = await expectedStableUserId("owner@example.com");
@@ -9293,6 +9968,404 @@ test("License Lantern product contract", async (t) => {
         ),
         false,
       );
+      {
+      const deliveryGroup = "New Jersey pharmacist delivery mode";
+      const periodSourceGroup = "New Jersey pharmacist period source";
+      const carryoverRequirements = [
+        {
+          id: "requirement-nj-pharmacist-live",
+          name: "Didactic CE With Live Interaction",
+          ruleCategoryId: "nj-pharmacist-2026-didactic-live",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: deliveryGroup,
+        },
+        {
+          id: "requirement-nj-pharmacist-carryover",
+          name: "Board-Eligible Confirmed Carryover",
+          ruleCategoryId: "nj-pharmacist-2026-confirmed-carryover",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: periodSourceGroup,
+        },
+      ];
+      const currentPeriodRequirement = {
+        id: "requirement-nj-pharmacist-current-period",
+        name: "Current-Period CE",
+        ruleCategoryId: "nj-pharmacist-2026-current-period",
+        isActive: 1,
+        applicabilityStatus: "applies",
+        exclusiveGroup: periodSourceGroup,
+      };
+      const carryoverResolver = {
+        resolveFirst(call) {
+          if (isOwnedCredentialCycleLookup(call.sql)) {
+            return {
+              id: call.bindings[0],
+              status: "active",
+              cycleStart: "2027-07-01",
+              deadline: "2029-06-30",
+            };
+          }
+          if (
+            /SELECT rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return { ruleSetId: "nj-pharmacist-2026-v1" };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (isRequiredMaximumGroupLookup(call.sql)) {
+            return [
+              { exclusiveGroup: deliveryGroup },
+              { exclusiveGroup: periodSourceGroup },
+            ];
+          }
+          if (isRequirementTagLookup(call.sql)) {
+            return [
+              ...carryoverRequirements,
+              currentPeriodRequirement,
+            ].filter((requirement) =>
+              call.bindings.includes(requirement.id),
+            );
+          }
+          return [];
+        },
+      };
+      const carryoverDatabase = new FakeDatabase(carryoverResolver);
+      testCloudflareEnv.DB = carryoverDatabase;
+      const carryoverResponse = await postWorkspace("addActivity", {
+        title: "Board-confirmed prior-cycle pharmacy law",
+        completionDate: "2027-03-15",
+        totalUnits: 2,
+        credentialId: "credential-nj-pharmacist",
+        requirementIds: carryoverRequirements.map(
+          (requirement) => requirement.id,
+        ),
+        evidenceStatus: "certificate saved",
+        portalCarryoverAttested: true,
+      });
+      assert.equal(
+        carryoverResponse.status,
+        200,
+        JSON.stringify(await carryoverResponse.clone().json()),
+      );
+      assert.ok(
+        flattenedStatements(carryoverDatabase).some((statement) =>
+          /^INSERT INTO activities \(/i.test(statement.sql),
+        ),
+      );
+
+      const staleCarryoverDatabase = new FakeDatabase(carryoverResolver);
+      testCloudflareEnv.DB = staleCarryoverDatabase;
+      const staleCarryoverResponse = await postWorkspace("addActivity", {
+        title: "Carryover outside the final six months",
+        completionDate: "2026-12-31",
+        totalUnits: 2,
+        credentialId: "credential-nj-pharmacist",
+        requirementIds: carryoverRequirements.map(
+          (requirement) => requirement.id,
+        ),
+        evidenceStatus: "certificate saved",
+        portalCarryoverAttested: true,
+      });
+      assert.equal(staleCarryoverResponse.status, 409);
+      assert.equal(
+        (await staleCarryoverResponse.json()).code,
+        "carryover_outside_eligible_lookback",
+      );
+
+      const reusedCarryoverDatabase = new FakeDatabase({
+        ...carryoverResolver,
+        resolveFirst(call) {
+          if (isOwnedActivityCycleLookup(call.sql)) {
+            return {
+              id: call.bindings[0],
+              totalUnits: 2,
+              completionDate: "2027-04-20",
+              evidenceStatus: "attached",
+            };
+          }
+          return carryoverResolver.resolveFirst(call);
+        },
+      });
+      testCloudflareEnv.DB = reusedCarryoverDatabase;
+      const reusedCarryover = await postWorkspace(
+        "addActivityAllocation",
+        {
+          activityId: "activity-prior-nj-cycle",
+          credentialId: "credential-nj-pharmacist",
+          requirementIds: carryoverRequirements.map(
+            (requirement) => requirement.id,
+          ),
+          allocatedUnits: 2,
+          portalCarryoverAttested: true,
+        },
+      );
+      assert.equal(reusedCarryover.status, 200);
+      assert.ok(
+        flattenedStatements(reusedCarryoverDatabase).some((statement) =>
+          /^INSERT INTO activity_allocations \(/i.test(statement.sql),
+        ),
+      );
+
+      const makeCarryoverRepairDatabase = (completionDate) =>
+        new FakeDatabase({
+          ...carryoverResolver,
+          resolveFirst(call) {
+            if (
+              /activity\.completion_date AS completionDate/i.test(
+                call.sql,
+              )
+            ) {
+              return {
+                id: "allocation-nj-pharmacist",
+                credentialId: "credential-nj-pharmacist",
+                allocatedUnits: 2,
+                completionDate,
+                status: "active",
+                cycleStart: "2027-07-01",
+                deadline: "2029-06-30",
+              };
+            }
+            return carryoverResolver.resolveFirst(call);
+          },
+        });
+
+      const currentDateRepairDatabase =
+        makeCarryoverRepairDatabase("2027-08-15");
+      testCloudflareEnv.DB = currentDateRepairDatabase;
+      const currentDateRetag = await postWorkspace(
+        "updateActivityAllocationRequirements",
+        {
+          allocationId: "allocation-nj-pharmacist",
+          requirementIds: carryoverRequirements.map(
+            (requirement) => requirement.id,
+          ),
+        },
+      );
+      assert.equal(currentDateRetag.status, 409);
+      assert.equal(
+        (await currentDateRetag.json()).code,
+        "carryover_requires_prior_period_date",
+      );
+
+      const priorDateRepairDatabase =
+        makeCarryoverRepairDatabase("2027-04-20");
+      testCloudflareEnv.DB = priorDateRepairDatabase;
+      const priorDateRetag = await postWorkspace(
+        "updateActivityAllocationRequirements",
+        {
+          allocationId: "allocation-nj-pharmacist",
+          requirementIds: [
+            "requirement-nj-pharmacist-live",
+            "requirement-nj-pharmacist-current-period",
+          ],
+        },
+      );
+      assert.equal(priorDateRetag.status, 409);
+      assert.equal(
+        (await priorDateRetag.json()).code,
+        "activity_outside_cycle",
+      );
+      for (const repairDatabase of [
+        currentDateRepairDatabase,
+        priorDateRepairDatabase,
+      ]) {
+        assert.equal(
+          flattenedStatements(repairDatabase).some((statement) =>
+            /^UPDATE activity_allocations /i.test(statement.sql),
+          ),
+          false,
+        );
+      }
+
+      const carryoverDeactivationDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /SELECT id, status FROM credentials WHERE id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "credential-nj-pharmacist",
+              status: "active",
+            };
+          }
+          if (
+            /SELECT requirement\.id, requirement\.name FROM credential_requirements requirement/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "requirement-nj-pharmacist-carryover",
+              name: "Board-Eligible Confirmed Carryover",
+            };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (!isApplicabilityRequirementsLookup(call.sql)) return [];
+          return [
+            {
+              id: "requirement-nj-pharmacist-carryover",
+              name: "Board-Eligible Confirmed Carryover",
+              ruleCategoryId:
+                "nj-pharmacist-2026-confirmed-carryover",
+              relation: "independent",
+              parentRequirementId: null,
+              applicability: "conditional",
+              applicabilityStatus: "applies",
+            },
+          ];
+        },
+      });
+      testCloudflareEnv.DB = carryoverDeactivationDatabase;
+      const carryoverDeactivation = await postWorkspace(
+        "updateRequirementApplicability",
+        {
+          credentialId: "credential-nj-pharmacist",
+          choices: [
+            {
+              requirementId:
+                "requirement-nj-pharmacist-carryover",
+              status: "not_applicable",
+            },
+          ],
+        },
+      );
+      assert.equal(carryoverDeactivation.status, 409);
+      assert.equal(
+        (await carryoverDeactivation.json()).code,
+        "requirement_has_allocated_credit",
+      );
+      assert.equal(
+        flattenedStatements(carryoverDeactivationDatabase).some(
+          (statement) =>
+            /^UPDATE credential_requirements /i.test(statement.sql),
+        ),
+        false,
+      );
+
+      const staleCarryoverWriteDatabase = new FakeDatabase(
+        carryoverResolver,
+      );
+      const ordinaryBatch =
+        staleCarryoverWriteDatabase.batch.bind(
+          staleCarryoverWriteDatabase,
+        );
+      staleCarryoverWriteDatabase.batch = async (statements) => {
+        if (
+          statements.some((statement) =>
+            /INSERT INTO activity_requirement_matches/i.test(
+              statement.sql,
+            ),
+          )
+        ) {
+          throw new Error("activity_requirement_inactive");
+        }
+        return ordinaryBatch(statements);
+      };
+      testCloudflareEnv.DB = staleCarryoverWriteDatabase;
+      const staleCarryoverWrite = await postWorkspace("addActivity", {
+        title: "Carryover racing a status change",
+        completionDate: "2027-03-15",
+        totalUnits: 2,
+        credentialId: "credential-nj-pharmacist",
+        requirementIds: carryoverRequirements.map(
+          (requirement) => requirement.id,
+        ),
+        evidenceStatus: "certificate saved",
+        portalCarryoverAttested: true,
+      });
+      assert.equal(staleCarryoverWrite.status, 409);
+      assert.equal(
+        (await staleCarryoverWrite.json()).code,
+        "requirement_inactive",
+      );
+
+      const dtmRequirements = [
+        {
+          id: "requirement-tx-dtm-year-1",
+          name: "Drug-Therapy-Management Practice — Registration Year 1",
+          ruleCategoryId:
+            "tx-pharmacist-2026-drug-therapy-management-year-1",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: "Texas pharmacist drug-therapy year",
+        },
+        {
+          id: "requirement-tx-dtm-year-2",
+          name: "Drug-Therapy-Management Practice — Registration Year 2",
+          ruleCategoryId:
+            "tx-pharmacist-2026-drug-therapy-management-year-2",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: "Texas pharmacist drug-therapy year",
+        },
+      ];
+      const makeDtmDatabase = () =>
+        new FakeDatabase({
+          resolveFirst(call) {
+            if (isOwnedCredentialCycleLookup(call.sql)) {
+              return {
+                id: "credential-tx-pharmacist",
+                status: "active",
+                cycleStart: "2027-01-01",
+                deadline: "2028-12-31",
+              };
+            }
+            if (
+              /SELECT rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+                call.sql,
+              )
+            ) {
+              return { ruleSetId: "tx-pharmacist-2026-v1" };
+            }
+            return null;
+          },
+          resolveAll(call) {
+            if (!isRequirementTagLookup(call.sql)) return [];
+            return dtmRequirements.filter((requirement) =>
+              call.bindings.includes(requirement.id),
+            );
+          },
+        });
+      const wrongDtmYearDatabase = makeDtmDatabase();
+      testCloudflareEnv.DB = wrongDtmYearDatabase;
+      const wrongDtmYear = await postWorkspace("addActivity", {
+        title: "Second-year drug-therapy program",
+        completionDate: "2028-01-01",
+        totalUnits: 3,
+        credentialId: "credential-tx-pharmacist",
+        requirementIds: ["requirement-tx-dtm-year-1"],
+        evidenceStatus: "certificate saved",
+      });
+      assert.equal(wrongDtmYear.status, 409);
+      assert.equal(
+        (await wrongDtmYear.json()).code,
+        "pharmacist_annual_requirement_outside_year",
+      );
+
+      const correctDtmYearDatabase = makeDtmDatabase();
+      testCloudflareEnv.DB = correctDtmYearDatabase;
+      const correctDtmYear = await postWorkspace("addActivity", {
+        title: "Second-year drug-therapy program",
+        completionDate: "2028-01-01",
+        totalUnits: 3,
+        credentialId: "credential-tx-pharmacist",
+        requirementIds: ["requirement-tx-dtm-year-2"],
+        evidenceStatus: "certificate saved",
+      });
+      assert.equal(correctDtmYear.status, 200);
+      assert.ok(
+        flattenedStatements(correctDtmYearDatabase).some((statement) =>
+          /^INSERT INTO activities \(/i.test(statement.sql),
+        ),
+      );
+      }
 
       const carryoverGroup = "Pennsylvania Act 48 activity type";
       const carryoverRequirement = {
@@ -10655,6 +11728,228 @@ test("License Lantern product contract", async (t) => {
           ),
         ),
         false,
+      );
+    },
+  );
+
+  await t.test(
+    "requires official non-overlapping pharmacist renewal dates and opens a state-specific next checklist",
+    async () => {
+      const database = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /SELECT next_credential_id AS nextCredentialId FROM renewal_acceptances/i.test(
+              call.sql,
+            )
+          ) {
+            return null;
+          }
+          if (
+            /FROM credentials credential\s+LEFT JOIN credential_cycle_links cycle/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "credential-nj-pharmacist-submitted",
+              ruleSetId: "nj-pharmacist-2025-v0",
+              credentialName:
+                "Pharmacist — established full biennial renewal",
+              profession: "Pharmacy",
+              jurisdiction: "New Jersey",
+              issuer: "New Jersey Board of Pharmacy",
+              status: "submitted",
+              deadline: "2028-06-30",
+              totalRequired: 30,
+              unitLabel: "CE credits",
+              seriesId: "series-nj-pharmacist",
+              cycleMonths: 24,
+            };
+          }
+          if (
+            /FROM renewal_submissions WHERE credential_id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "submission-nj-pharmacist",
+              submittedAt: "2028-06-20T12:00:00.000Z",
+            };
+          }
+          if (
+            /FROM rule_sets prior_rule\s+JOIN rule_sets current_rule/i.test(
+              call.sql,
+            )
+          ) {
+            assert.equal(call.bindings[0], "nj-pharmacist-2025-v0");
+            return {
+              id: "nj-pharmacist-2026-v1",
+              credentialName:
+                "Pharmacist — established full biennial renewal",
+              profession: "Pharmacy",
+              jurisdiction: "New Jersey",
+              issuer: "New Jersey Board of Pharmacy",
+              totalUnits: 30,
+              unitLabel: "CE credits",
+              cycleMonths: 24,
+            };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (/FROM rule_categories WHERE rule_set_id = \?/i.test(call.sql)) {
+            assert.equal(call.bindings[0], "nj-pharmacist-2026-v1");
+            return [
+              {
+                id: "nj-pharmacist-2026-confirmed-carryover",
+                name: "Board-Eligible Confirmed Carryover",
+                requiredUnits: 10,
+                kind: "maximum",
+                relation: "independent",
+                parentCategoryId: null,
+                applicability: "conditional",
+                conditionNote:
+                  "Use only after the Board confirms the credit is eligible.",
+                exclusiveGroup: "New Jersey pharmacist period source",
+                sortOrder: 0,
+              },
+            ];
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = database;
+      const payload = {
+        credentialId: "credential-nj-pharmacist-submitted",
+        acceptedAt: "2028-07-01",
+        reference: "NJ-BOP-RENEWED-0042",
+        nextCycleStart: "2028-07-01",
+        nextDeadline: "2030-06-30",
+      };
+
+      const unattested = await postWorkspace(
+        "markRenewalAccepted",
+        payload,
+      );
+      assert.equal(unattested.status, 409);
+      assert.equal(
+        (await unattested.json()).code,
+        "official_next_period_attestation_required",
+      );
+
+      const eligibilityUnattested = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...payload,
+          officialDatesAttested: true,
+        },
+      );
+      assert.equal(eligibilityUnattested.status, 409);
+      assert.equal(
+        (await eligibilityUnattested.json()).code,
+        "pharmacist_next_template_eligibility_required",
+      );
+
+      const overlapping = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...payload,
+          nextCycleStart: "2028-06-30",
+          officialDatesAttested: true,
+          templateEligibilityAttested: true,
+        },
+      );
+      assert.equal(overlapping.status, 409);
+      assert.equal(
+        (await overlapping.json()).code,
+        "next_cycle_overlaps_current_period",
+      );
+
+      const shortened = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...payload,
+          nextDeadline: "2030-06-20",
+          officialDatesAttested: true,
+          templateEligibilityAttested: true,
+        },
+      );
+      assert.equal(shortened.status, 409);
+      assert.equal(
+        (await shortened.json()).code,
+        "pharmacist_next_cycle_dates_required",
+      );
+
+      const accepted = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...payload,
+          officialDatesAttested: true,
+          templateEligibilityAttested: true,
+        },
+      );
+      assert.equal(accepted.status, 200);
+      const statements = flattenedStatements(database);
+      const nextCredential = statements.find((statement) =>
+        /^INSERT INTO credentials \(/i.test(statement.sql),
+      );
+      assert.ok(nextCredential);
+      assert.equal(nextCredential.bindings[2], "nj-pharmacist-2026-v1");
+      assert.equal(nextCredential.bindings[7], "2028-07-01");
+      assert.equal(nextCredential.bindings[8], "2030-06-30");
+      const carryoverRequirement = statements.find(
+        (statement) =>
+          /^INSERT INTO credential_requirements \(/i.test(statement.sql) &&
+          statement.bindings[1] ===
+            "nj-pharmacist-2026-confirmed-carryover",
+      );
+      assert.ok(carryoverRequirement);
+      assert.equal(carryoverRequirement.bindings[8], "needs_confirmation");
+      assert.equal(carryoverRequirement.bindings[11], 0);
+      assert.ok(
+        statements.some(
+          (statement) =>
+            /^INSERT INTO checklist_tasks \(/i.test(statement.sql) &&
+            statement.bindings[1] ===
+              "Confirm Board-eligible New Jersey pharmacist carryover, then record only evidence-backed credit",
+        ),
+      );
+      assert.ok(
+        statements.some(
+          (statement) =>
+            /^INSERT INTO checklist_tasks \(/i.test(statement.sql) &&
+            statement.bindings[1] ===
+              "Complete 30 credits and classify every activity by delivery mode and period source",
+        ),
+      );
+
+      class RacingPharmacistDatabase extends FakeDatabase {
+        async batch(statementsToRun) {
+          if (
+            statementsToRun.some((statement) =>
+              /UPDATE credentials SET status = 'renewed'/i.test(
+                normalizedSql(statement.sql),
+              ),
+            )
+          ) {
+            throw new Error("simulated pharmacist catalog race");
+          }
+          return super.batch(statementsToRun);
+        }
+      }
+      const racingDatabase = new RacingPharmacistDatabase({
+        resolveFirst: database.resolveFirst,
+        resolveAll: database.resolveAll,
+      });
+      testCloudflareEnv.DB = racingDatabase;
+      const raced = await postWorkspace("markRenewalAccepted", {
+        ...payload,
+        officialDatesAttested: true,
+        templateEligibilityAttested: true,
+      });
+      assert.equal(raced.status, 409);
+      assert.equal(
+        (await raced.json()).code,
+        "pharmacist_current_template_changed",
       );
     },
   );
