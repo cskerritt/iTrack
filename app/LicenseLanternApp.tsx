@@ -44,6 +44,7 @@ import { portalCarryoverLookbackMonths } from "./lib/carryover";
 import {
   oppositeFloridaMentalHealthRuleSetId,
 } from "./lib/floridaMentalHealth";
+import { isExpandedCertificationRuleSetId } from "./lib/expandedCertifications";
 import {
   nextRequirementSelection,
   requirementIncompatibilityMessage,
@@ -696,13 +697,26 @@ function isRehabilitationCertificationCatalogRule(
   return isCrccCatalogRule(rule) || isAbveCatalogRule(rule);
 }
 
+function isExpandedCertificationCatalogRule(
+  rule: CatalogRule | null | undefined,
+) {
+  return isExpandedCertificationRuleSetId(rule?.id);
+}
+
+function isExpandedCertificationCredential(
+  credential: Credential | null | undefined,
+) {
+  return isExpandedCertificationRuleSetId(credential?.ruleSetId);
+}
+
 function requiresOfficialCatalogDates(
   rule: CatalogRule | null | undefined,
 ) {
   return (
     isNremtCatalogRule(rule) ||
     isFloridaMentalHealthCatalogRule(rule) ||
-    isRehabilitationCertificationCatalogRule(rule)
+    isRehabilitationCertificationCatalogRule(rule) ||
+    isExpandedCertificationCatalogRule(rule)
   );
 }
 
@@ -1033,7 +1047,8 @@ function requiresOfficialNextPeriodAttestation(
     isManagedPharmacistCredential(credential) ||
     isManagedNursingCredential(credential) ||
     isManagedDentalCredential(credential) ||
-    isManagedRehabilitationCredential(credential)
+    isManagedRehabilitationCredential(credential) ||
+    isExpandedCertificationCredential(credential)
   );
 }
 
@@ -1047,7 +1062,8 @@ function requiresNonOverlappingNextPeriod(
     isManagedPharmacistCredential(credential) ||
     isManagedNursingCredential(credential) ||
     isManagedDentalCredential(credential) ||
-    isManagedRehabilitationCredential(credential)
+    isManagedRehabilitationCredential(credential) ||
+    isExpandedCertificationCredential(credential)
   );
 }
 
@@ -2828,7 +2844,8 @@ export function LicenseLanternApp() {
         templateEligibilityAttested:
           rule?.profession === "Pharmacy" ||
           rule?.profession === "Nursing" ||
-          rule?.profession === "Dental"
+          rule?.profession === "Dental" ||
+          isExpandedCertificationCatalogRule(rule)
             ? form.get("templateEligibilityAttested") === "on"
             : undefined,
         totalRequired,
@@ -2931,9 +2948,10 @@ export function LicenseLanternApp() {
         templateEligibilityAttested:
           isManagedPharmacistCredential(selectedCredential) ||
           isManagedNursingCredential(selectedCredential) ||
-          isManagedDentalCredential(selectedCredential)
-          ? form.get("templateEligibilityAttested") === "on"
-          : undefined,
+          isManagedDentalCredential(selectedCredential) ||
+          isExpandedCertificationCredential(selectedCredential)
+            ? form.get("templateEligibilityAttested") === "on"
+            : undefined,
       },
       isCompliancePeriodCredential(selectedCredential)
         ? "Compliance period completed. Your next period is ready."
@@ -4359,25 +4377,31 @@ export function LicenseLanternApp() {
                     </div>
                   </fieldset>
                 ) : null}
-                {selectedRule?.profession === "Pharmacy" ||
-                selectedRule?.profession === "Nursing" ||
-                selectedRule?.profession === "Dental" ? (
+                {selectedRule &&
+                (selectedRule.profession === "Pharmacy" ||
+                  selectedRule.profession === "Nursing" ||
+                  selectedRule.profession === "Dental" ||
+                  isExpandedCertificationCatalogRule(selectedRule)) ? (
                   <label className="switch-row">
                     <span>
                       <strong>
                         I confirmed this is a standard full-cycle{" "}
-                        {selectedRule.profession === "Nursing" ||
-                        selectedRule.profession === "Dental"
-                          ? "renewal or registration"
-                          : "renewal"}
+                        {isExpandedCertificationCatalogRule(selectedRule)
+                          ? "credential or license maintenance path"
+                          : selectedRule.profession === "Nursing" ||
+                              selectedRule.profession === "Dental"
+                            ? "renewal or registration"
+                            : "renewal"}
                       </strong>
                       <small>
-                        {selectedRule.id === "tx-rn-2026-v1" ||
+                        {isExpandedCertificationCatalogRule(selectedRule)
+                          ? "The official issuer or regulator record matches this exact credential, status, maintenance path, and the dates below. No initial, shortened, waiver, inactive, retired, reinstatement, synchronized or multi-credential, exam-alternative, or other adjusted variant applies."
+                          : selectedRule.id === "tx-rn-2026-v1" ||
                         selectedRule.id === "tx-lvn-2026-v1"
                           ? "The regulator record matches the dates below, I am using the 20-hour CNE path rather than the certification alternative, and no initial, shortened, inactive, exempt, or other adjusted-status variant applies."
                           : selectedRule.profession === "Dental"
                             ? "The regulator record matches the dates below, and no initial, shortened, inactive, retired, prorated, exempt, or other adjusted-status variant applies."
-                            : "The regulator record matches the dates below, and no initial, shortened, inactive, prorated, exempt, or other adjusted-status variant applies."}
+                            : "The official issuer or regulator record matches the dates below, and no initial, shortened, inactive, prorated, exempt, or other adjusted-status variant applies."}
                       </small>
                     </span>
                     <input
@@ -4499,6 +4523,23 @@ export function LicenseLanternApp() {
                   />
                 </label>
               </>
+            ) : null}
+            {isExpandedCertificationCatalogRule(selectedRule) ? (
+              <label className="switch-row">
+                <span>
+                  <strong>I checked the official credential record</strong>
+                  <small>
+                    The issuer, regulator, or official account shows this
+                    exact credential or license path, current status, cycle
+                    start, and deadline.
+                  </small>
+                </span>
+                <input
+                  name="officialDatesAttested"
+                  type="checkbox"
+                  required
+                />
+              </label>
             ) : null}
 
             <div className="advisory-note">
@@ -4865,7 +4906,8 @@ export function LicenseLanternApp() {
                     name="nextCycleStart"
                     type="date"
                     defaultValue={
-                      isNremtCredential(selectedCredential)
+                      isNremtCredential(selectedCredential) ||
+                      isExpandedCertificationCredential(selectedCredential)
                         ? undefined
                         : addDaysIso(selectedCredential.deadline, 1)
                     }
@@ -4891,7 +4933,8 @@ export function LicenseLanternApp() {
                     name="nextDeadline"
                     type="date"
                     defaultValue={
-                      isNremtCredential(selectedCredential)
+                      isNremtCredential(selectedCredential) ||
+                      isExpandedCertificationCredential(selectedCredential)
                         ? undefined
                         : addMonthsIso(
                             selectedCredential.deadline,
@@ -4926,18 +4969,23 @@ export function LicenseLanternApp() {
             ) : null}
             {isManagedPharmacistCredential(selectedCredential) ||
             isManagedNursingCredential(selectedCredential) ||
-            isManagedDentalCredential(selectedCredential) ? (
+            isManagedDentalCredential(selectedCredential) ||
+            isExpandedCertificationCredential(selectedCredential) ? (
               <label className="switch-row">
                 <span>
                   <strong>
                     I confirmed the next period is a standard full-cycle
-                    {isManagedNursingCredential(selectedCredential) ||
+                    {isExpandedCertificationCredential(selectedCredential)
+                      ? " credential or license maintenance path"
+                      : isManagedNursingCredential(selectedCredential) ||
                     isManagedDentalCredential(selectedCredential)
                       ? " renewal or registration"
                       : " renewal"}
                   </strong>
                   <small>
-                    {selectedCredential.ruleSetId === "tx-rn-2026-v1" ||
+                    {isExpandedCertificationCredential(selectedCredential)
+                      ? "The official account confirms the same credential and path. No initial, shortened, waiver, inactive, retired, reinstatement, synchronized or multi-credential, exam-alternative, or other adjusted variant applies."
+                      : selectedCredential.ruleSetId === "tx-rn-2026-v1" ||
                     selectedCredential.ruleSetId === "tx-lvn-2026-v1"
                       ? "I am using the 20-hour CNE path rather than the certification alternative, and no initial, shortened, inactive, exempt, or other adjusted-status variant applies."
                       : isManagedDentalCredential(selectedCredential)
@@ -4967,7 +5015,11 @@ export function LicenseLanternApp() {
                           ? "The next period will use the latest current version of this nursing template and reset every conditional training rule for review."
                           : isManagedDentalCredential(selectedCredential)
                             ? "The next period will use the latest current version of this dental template and reset every conditional permit, training, and cadence rule for review."
-                        : "Requirements are copied as a starting snapshot. Review the current official rules before relying on the new plan."}
+                            : isExpandedCertificationCredential(
+                                  selectedCredential,
+                                )
+                              ? "The next period will use the latest current version of the same credential template and reset every conditional rule for confirmation."
+                              : "Requirements are copied as a starting snapshot. Review the current official rules before relying on the new plan."}
               </p>
             </div>
             <div className="form-actions">

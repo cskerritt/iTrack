@@ -51,6 +51,24 @@ import {
   REHABILITATION_RENEWAL_TASK_COPY_BINDINGS,
   REHABILITATION_RULE_SET_SEED_BINDINGS,
 } from "./catalog/rehabilitation";
+import {
+  FINANCE_CERTIFICATION_CATEGORY_SEED_BINDINGS,
+  FINANCE_CERTIFICATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+  FINANCE_CERTIFICATION_RENEWAL_TASK_COPY_BINDINGS,
+  FINANCE_CERTIFICATION_RULE_SET_SEED_BINDINGS,
+} from "./catalog/finance-certifications";
+import {
+  PROFESSIONAL_CERTIFICATIONS_CATEGORY_SEED_BINDINGS,
+  PROFESSIONAL_CERTIFICATIONS_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+  PROFESSIONAL_CERTIFICATIONS_RENEWAL_TASK_COPY_BINDINGS,
+  PROFESSIONAL_CERTIFICATIONS_RULE_SET_SEED_BINDINGS,
+} from "./catalog/professional-certifications";
+import {
+  HEALTHCARE_CERTIFICATION_CATEGORY_SEED_BINDINGS,
+  HEALTHCARE_CERTIFICATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+  HEALTHCARE_CERTIFICATION_RENEWAL_TASK_COPY_BINDINGS,
+  HEALTHCARE_CERTIFICATION_RULE_SET_SEED_BINDINGS,
+} from "./catalog/healthcare-certifications";
 
 const DENTAL_ADDITIONAL_TOTAL_RELATION_SQL =
   DENTAL_ADDITIONAL_TOTAL_BINDINGS.map(
@@ -3825,6 +3843,9 @@ const CATALOG_2026_RULE_SET_SEED_BINDINGS = [
   ...NURSING_RULE_SET_SEED_BINDINGS,
   ...DENTAL_RULE_SET_SEED_BINDINGS,
   ...REHABILITATION_RULE_SET_SEED_BINDINGS,
+  ...FINANCE_CERTIFICATION_RULE_SET_SEED_BINDINGS,
+  ...PROFESSIONAL_CERTIFICATIONS_RULE_SET_SEED_BINDINGS,
+  ...HEALTHCARE_CERTIFICATION_RULE_SET_SEED_BINDINGS,
 ] as const;
 
 const CATALOG_2026_CATEGORY_INSERT_SQL = `INSERT INTO rule_categories (
@@ -4595,6 +4616,9 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
   ...NURSING_CATEGORY_SEED_BINDINGS,
   ...DENTAL_CATEGORY_SEED_BINDINGS,
   ...REHABILITATION_CATEGORY_SEED_BINDINGS,
+  ...FINANCE_CERTIFICATION_CATEGORY_SEED_BINDINGS,
+  ...PROFESSIONAL_CERTIFICATIONS_CATEGORY_SEED_BINDINGS,
+  ...HEALTHCARE_CERTIFICATION_CATEGORY_SEED_BINDINGS,
 ] as const;
 
 const MANAGED_EXTERNAL_RULE_SET_IDS = [
@@ -4608,6 +4632,9 @@ const MANAGED_EXTERNAL_RULE_SET_IDS = [
   ...NURSING_RULE_SET_SEED_BINDINGS,
   ...DENTAL_RULE_SET_SEED_BINDINGS,
   ...REHABILITATION_RULE_SET_SEED_BINDINGS,
+  ...FINANCE_CERTIFICATION_RULE_SET_SEED_BINDINGS,
+  ...PROFESSIONAL_CERTIFICATIONS_RULE_SET_SEED_BINDINGS,
+  ...HEALTHCARE_CERTIFICATION_RULE_SET_SEED_BINDINGS,
 ].map((bindings) => bindings[0]);
 
 const MANAGED_EXTERNAL_CATEGORY_IDS = [
@@ -4621,6 +4648,9 @@ const MANAGED_EXTERNAL_CATEGORY_IDS = [
   ...NURSING_CATEGORY_SEED_BINDINGS,
   ...DENTAL_CATEGORY_SEED_BINDINGS,
   ...REHABILITATION_CATEGORY_SEED_BINDINGS,
+  ...FINANCE_CERTIFICATION_CATEGORY_SEED_BINDINGS,
+  ...PROFESSIONAL_CERTIFICATIONS_CATEGORY_SEED_BINDINGS,
+  ...HEALTHCARE_CERTIFICATION_CATEGORY_SEED_BINDINGS,
 ].map((bindings) => bindings[0]);
 
 function trustedSqlStringList(values: readonly string[]) {
@@ -4655,6 +4685,40 @@ const MANAGED_EXTERNAL_SCOPE_SQL = `(managed_rule.id LIKE 'isc2-%'
   OR managed_rule.profession = 'Nursing'
   OR managed_rule.id LIKE 'crcc-%'
   OR managed_rule.id LIKE 'abve-%'
+  OR managed_rule.id LIKE 'ima-%'
+  OR managed_rule.id LIKE 'acfe-%'
+  OR managed_rule.id LIKE 'iia-%'
+  OR managed_rule.id LIKE 'irs-%'
+  OR managed_rule.id LIKE 'nasaa-%'
+  OR managed_rule.id LIKE 'nmls-%'
+  OR managed_rule.id LIKE 'finra-%'
+  OR managed_rule.id LIKE 'cfainstitute-%'
+  OR managed_rule.id LIKE 'acams-%'
+  OR managed_rule.id LIKE 'aba-%'
+  OR managed_rule.id LIKE 'ascm-%'
+  OR managed_rule.id LIKE 'asq-%'
+  OR managed_rule.id LIKE 'bcsp-%'
+  OR managed_rule.id LIKE 'gbci-%'
+  OR managed_rule.id LIKE 'icf-%'
+  OR managed_rule.id LIKE 'internachi-%'
+  OR managed_rule.id LIKE 'ifma-%'
+  OR managed_rule.id LIKE 'atd-%'
+  OR managed_rule.id LIKE 'giac-%'
+  OR managed_rule.id LIKE 'iapp-%'
+  OR managed_rule.id LIKE 'ace-%'
+  OR managed_rule.id LIKE 'ancc-%'
+  OR managed_rule.id LIKE 'aacn-%'
+  OR managed_rule.id LIKE 'nbcot-%'
+  OR managed_rule.id LIKE 'bacb-%'
+  OR managed_rule.id LIKE 'nbcc-%'
+  OR managed_rule.id LIKE 'ccmc-%'
+  OR managed_rule.id LIKE 'aapc-%'
+  OR managed_rule.id LIKE 'ahima-%'
+  OR managed_rule.id LIKE 'ascp-%'
+  OR managed_rule.id LIKE 'nbrc-%'
+  OR managed_rule.id LIKE 'ardms-%'
+  OR managed_rule.id LIKE 'aama-%'
+  OR managed_rule.id LIKE 'nahq-%'
   OR managed_rule.stable_key IN (
     'ca-dentist',
     'ca-dental-hygienist',
@@ -4804,6 +4868,9 @@ const MAXIMUM_CLASSIFICATION_RULE_SET_IDS = [
   ...NURSING_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
   ...DENTAL_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
   ...REHABILITATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+  ...FINANCE_CERTIFICATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+  ...PROFESSIONAL_CERTIFICATIONS_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+  ...HEALTHCARE_CERTIFICATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
 ] as const;
 
 const ACTIVE_CATALOG_SNAPSHOT_RULE_SET_IDS = [
@@ -5149,6 +5216,34 @@ const REHABILITATION_DEFAULT_TASK_REFRESH_BINDINGS =
       ] as const,
   );
 
+const EXPANDED_CERTIFICATION_DEFAULT_TASK_REFRESH_BINDINGS = [
+  ...FINANCE_CERTIFICATION_RENEWAL_TASK_COPY_BINDINGS,
+  ...PROFESSIONAL_CERTIFICATIONS_RENEWAL_TASK_COPY_BINDINGS,
+  ...HEALTHCARE_CERTIFICATION_RENEWAL_TASK_COPY_BINDINGS,
+].flatMap(
+  ([ruleSetId, review, progress, submission]) =>
+    [
+      [
+        review,
+        "review",
+        "Review the renewal requirements",
+        ruleSetId,
+      ],
+      [
+        progress,
+        "progress",
+        "Complete and document required education",
+        ruleSetId,
+      ],
+      [
+        submission,
+        "submission",
+        "Submit renewal and save confirmation",
+        ruleSetId,
+      ],
+    ] as const,
+);
+
 const MERGE_CFP_BOUNDARY_GENERAL_MATCHES_SQL = `INSERT INTO activity_requirement_matches (
   id, user_id, allocation_id, requirement_id, matched_units, created_at
 )
@@ -5425,6 +5520,54 @@ function statement(
   return database.prepare(sql).bind(...bindings);
 }
 
+function multiRowStatements(
+  database: D1Database,
+  singleRowSql: string,
+  bindingRows: readonly (readonly unknown[])[],
+  bindingsPerRow: number,
+) {
+  if (bindingRows.length === 0) return [];
+
+  const singleValueGroup = `(${Array.from(
+    { length: bindingsPerRow },
+    () => "?",
+  ).join(", ")})`;
+  const valuesMarker = `VALUES ${singleValueGroup}`;
+  const valuesIndex = singleRowSql.indexOf(valuesMarker);
+  if (valuesIndex < 0) {
+    throw new Error("Multi-row seed SQL is missing its VALUES marker.");
+  }
+
+  // D1 accepts at most 100 bound parameters per query.
+  const maximumBindingsPerStatement = 100;
+  const rowsPerStatement = Math.floor(
+    maximumBindingsPerStatement / bindingsPerRow,
+  );
+  const sqlPrefix = singleRowSql.slice(0, valuesIndex);
+  const sqlSuffix = singleRowSql.slice(valuesIndex + valuesMarker.length);
+  const statements: D1PreparedStatement[] = [];
+
+  for (let index = 0; index < bindingRows.length; index += rowsPerStatement) {
+    const rows = bindingRows.slice(index, index + rowsPerStatement);
+    const bindings: unknown[] = [];
+    for (const row of rows) {
+      if (row.length !== bindingsPerRow) {
+        throw new Error("Multi-row seed binding width does not match its SQL.");
+      }
+      bindings.push(...row);
+    }
+    statements.push(
+      statement(
+        database,
+        `${sqlPrefix}VALUES ${rows.map(() => singleValueGroup).join(", ")}${sqlSuffix}`,
+        bindings,
+      ),
+    );
+  }
+
+  return statements;
+}
+
 async function ensureRichRuleColumns(database: D1Database) {
   for (const table of [
     "rule_categories",
@@ -5484,8 +5627,11 @@ export async function initializeDatabase(database: D1Database): Promise<void> {
         ),
       );
       await database.batch(
-        CATALOG_2026_RULE_SET_SEED_BINDINGS.map((bindings) =>
-          statement(database, CATALOG_2026_RULE_SET_INSERT_SQL, bindings),
+        multiRowStatements(
+          database,
+          CATALOG_2026_RULE_SET_INSERT_SQL,
+          CATALOG_2026_RULE_SET_SEED_BINDINGS,
+          16,
         ),
       );
       await database.batch(
@@ -5499,8 +5645,11 @@ export async function initializeDatabase(database: D1Database): Promise<void> {
         ),
       );
       await database.batch(
-        CATALOG_2026_CATEGORY_SEED_BINDINGS.map((bindings) =>
-          statement(database, CATALOG_2026_CATEGORY_INSERT_SQL, bindings),
+        multiRowStatements(
+          database,
+          CATALOG_2026_CATEGORY_INSERT_SQL,
+          CATALOG_2026_CATEGORY_SEED_BINDINGS,
+          11,
         ),
       );
       await database.batch([
@@ -5625,6 +5774,12 @@ export async function initializeDatabase(database: D1Database): Promise<void> {
       await database.batch(
         REHABILITATION_DEFAULT_TASK_REFRESH_BINDINGS.map((bindings) =>
           statement(database, SYNC_MANAGED_DEFAULT_TASK_SQL, bindings),
+        ),
+      );
+      await database.batch(
+        EXPANDED_CERTIFICATION_DEFAULT_TASK_REFRESH_BINDINGS.map(
+          (bindings) =>
+            statement(database, SYNC_MANAGED_DEFAULT_TASK_SQL, bindings),
         ),
       );
       await database.batch(

@@ -12,6 +12,8 @@ const PORTAL_CARRYOVER_LOOKBACK_MONTHS = new Map<string, number>([
   ["nj-dentist-2026-confirmed-carryover", 24],
   ["tx-dentist-2026-confirmed-carryover", 12],
   ["tx-dental-hygienist-2026-confirmed-carryover", 12],
+  ["nbcot-otr-2026-confirmed-2023-cohort-carryover", 36],
+  ["nbcot-cota-2026-confirmed-2023-cohort-carryover", 36],
 ]);
 
 export function portalCarryoverLookbackMonths(

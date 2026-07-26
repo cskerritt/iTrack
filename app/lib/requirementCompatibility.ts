@@ -121,6 +121,14 @@ export const REQUIREMENT_INCOMPATIBILITIES: readonly RequirementIncompatibility[
       message:
         "Pennsylvania LPC suicide-prevention credit cannot also satisfy the ethics minimum for the same credited time.",
     },
+    ...incompatibleWithEach(
+      "icf-acc-2026-mentor-coaching",
+      [
+        "icf-acc-2026-coaching-ethics",
+        "icf-acc-2026-other-core-competency-education",
+      ],
+      "ACC Mentor Coaching is a distinct 10-hour component and cannot also satisfy Coaching Ethics or Other Core Competency Education for the same credited time.",
+    ),
     {
       categoryIds: [
         "tx-dentist-2026-pain-management-year-1",

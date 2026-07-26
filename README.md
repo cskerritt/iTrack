@@ -35,16 +35,19 @@ streaks.
 - server-derived ownership from authenticated workspace identity
 - zero-credit dental checkpoints with evidence references that never inflate CE totals
 - source-linked CRC plus ABVE Fellow and Diplomate certification plans, including exact CRC credit splits and ABVE annual checkpoints
+- source-linked healthcare, finance, accounting, securities, safety, quality,
+  supply-chain, privacy, coaching, and allied-profession certification plans
 
-The catalog contains 119 current, source-linked templates across 26 profession
-labels and 64 issuing bodies. Seventy-nine templates are state-specific across
+The catalog contains 170 current, source-linked templates across 53 profession
+labels and 98 issuing bodies. Seventy-nine templates are state-specific across
 California, Florida, New Jersey, New York, Pennsylvania, and Texas; the
-remainder are United States-wide or global. A template can represent a
-phase, tenure tier, or other variant of the same credential, so this count
-does not mean every template is a distinct credential type. Templates model applicable minimums, nested
-subrequirements, overlapping facets, and reporting caps where the source can
-be represented safely. Conditional rules require an explicit answer for each
-cycle. Users can search the catalog or create a custom credential, and the
+remainder are United States-wide, global, or scoped to an adopting
+jurisdiction. A template can represent a phase, tenure tier, renewal path, or
+other variant of the same credential, so this count does not mean every
+template is a distinct credential type. Templates model applicable minimums,
+nested subrequirements, overlapping facets, and reporting caps where the source
+can be represented safely. Conditional rules require an explicit answer for
+each cycle. Users can search the catalog or create a custom credential, and the
 product reminds them to confirm requirements with the issuing authority.
 
 ## Product boundary

@@ -15,6 +15,15 @@ import {
   REHABILITATION_RENEWAL_TASK_COPY_BINDINGS,
 } from "@/db/catalog/rehabilitation";
 import {
+  FINANCE_CERTIFICATION_RENEWAL_TASK_COPY_BINDINGS,
+} from "@/db/catalog/finance-certifications";
+import {
+  PROFESSIONAL_CERTIFICATIONS_RENEWAL_TASK_COPY_BINDINGS,
+} from "@/db/catalog/professional-certifications";
+import {
+  HEALTHCARE_CERTIFICATION_RENEWAL_TASK_COPY_BINDINGS,
+} from "@/db/catalog/healthcare-certifications";
+import {
   type RequestIdentity,
   resolveRequestIdentity,
 } from "@/db/identity";
@@ -43,6 +52,7 @@ import {
   nextFloridaMentalHealthCycle,
   oppositeFloridaMentalHealthRuleSetId,
 } from "../../lib/floridaMentalHealth";
+import { isExpandedCertificationRuleSetId } from "../../lib/expandedCertifications";
 
 export const dynamic = "force-dynamic";
 
@@ -316,6 +326,19 @@ const REHABILITATION_RENEWAL_TASK_COPY = new Map<
   readonly [review: string, progress: string, submission: string]
 >(
   REHABILITATION_RENEWAL_TASK_COPY_BINDINGS.map(
+    ([ruleSetId, review, progress, submission]) =>
+      [ruleSetId, [review, progress, submission] as const] as const,
+  ),
+);
+const EXPANDED_CERTIFICATION_RENEWAL_TASK_COPY = new Map<
+  string,
+  readonly [review: string, progress: string, submission: string]
+>(
+  [
+    ...FINANCE_CERTIFICATION_RENEWAL_TASK_COPY_BINDINGS,
+    ...PROFESSIONAL_CERTIFICATIONS_RENEWAL_TASK_COPY_BINDINGS,
+    ...HEALTHCARE_CERTIFICATION_RENEWAL_TASK_COPY_BINDINGS,
+  ].map(
     ([ruleSetId, review, progress, submission]) =>
       [ruleSetId, [review, progress, submission] as const] as const,
   ),
@@ -1769,6 +1792,9 @@ function renewalTaskSpecs(
           )?.[1]
         : null))
     : null;
+  const expandedCertificationTaskCopy = ruleSetId
+    ? EXPANDED_CERTIFICATION_RENEWAL_TASK_COPY.get(ruleSetId)
+    : null;
   if (
     rehabilitationTaskCopy &&
     ruleSetId?.startsWith(ABVE_RULE_SET_PREFIX)
@@ -1803,7 +1829,8 @@ function renewalTaskSpecs(
     pharmacistTaskCopy ??
     nursingTaskCopy ??
     dentalTaskCopy ??
-    rehabilitationTaskCopy;
+    rehabilitationTaskCopy ??
+    expandedCertificationTaskCopy;
   if (managedTaskCopy) {
     const isTexasNursing =
       ruleSetId === "tx-rn-2026-v1" ||
@@ -5321,6 +5348,26 @@ async function createCredential(
         cycleStart,
         deadline,
         payload,
+      );
+    }
+    if (
+      isExpandedCertificationRuleSetId(ruleSetId) &&
+      payload.officialDatesAttested !== true
+    ) {
+      throw new RequestError(
+        "Confirm that the credential or license path, status, cycle start, and deadline match the official issuer or regulator record.",
+        409,
+        "expanded_certification_dates_attestation_required",
+      );
+    }
+    if (
+      isExpandedCertificationRuleSetId(ruleSetId) &&
+      payload.templateEligibilityAttested !== true
+    ) {
+      throw new RequestError(
+        "Confirm that this is the standard full-cycle credential or license maintenance path and that no initial, shortened, waiver, inactive, retired, reinstatement, synchronized or multi-credential, exam-alternative, or other adjusted variant applies.",
+        409,
+        "expanded_certification_template_eligibility_required",
       );
     }
     if (
@@ -9038,6 +9085,8 @@ async function markRenewalAccepted(
     credential.profession,
     credential.ruleSetId,
   );
+  const isExpandedCertificationRenewal =
+    isExpandedCertificationRuleSetId(credential.ruleSetId);
   const isManagedRehabilitationRenewal =
     isManagedRehabilitationCredential(
       credential.profession,
@@ -9055,7 +9104,8 @@ async function markRenewalAccepted(
     isManagedPharmacistRenewal ||
     isManagedNursingRenewal ||
     isManagedDentalRenewal ||
-    isManagedRehabilitationRenewal;
+    isManagedRehabilitationRenewal ||
+    isExpandedCertificationRenewal;
   const requiresNonOverlappingNextPeriod =
     isIsc2AutomaticRenewal ||
     isCompliancePeriod ||
@@ -9063,7 +9113,8 @@ async function markRenewalAccepted(
     isManagedPharmacistRenewal ||
     isManagedNursingRenewal ||
     isManagedDentalRenewal ||
-    isManagedRehabilitationRenewal;
+    isManagedRehabilitationRenewal ||
+    isExpandedCertificationRenewal;
   if (
     requiresOfficialNextPeriodAttestation &&
     payload.officialDatesAttested !== true
@@ -9142,6 +9193,16 @@ async function markRenewalAccepted(
       "Confirm that the official next-period record matches a standard full dental renewal or registration period and that no initial, shortened, inactive, retired, prorated, exempt, or other adjusted-status path applies.",
       409,
       "dental_next_template_eligibility_required",
+    );
+  }
+  if (
+    isExpandedCertificationRenewal &&
+    payload.templateEligibilityAttested !== true
+  ) {
+    throw new RequestError(
+      "Confirm that the official next-period record uses the same standard full-cycle credential or license path and that no initial, shortened, waiver, inactive, retired, reinstatement, synchronized or multi-credential, exam-alternative, or other adjusted variant applies.",
+      409,
+      "expanded_certification_next_template_eligibility_required",
     );
   }
   if (isIsc2AutomaticRenewal && acceptedAt < credential.deadline) {
@@ -9434,6 +9495,42 @@ async function markRenewalAccepted(
         "dental_next_cycle_dates_required",
       );
     }
+  } else if (isExpandedCertificationRenewal) {
+    if (requestedNextRuleSetId) {
+      throw new RequestError(
+        "Credential and license maintenance renewals automatically use the latest current version of the same official template.",
+        400,
+        "expanded_certification_next_template_not_selectable",
+      );
+    }
+    selectedNextRule = await query(
+      database,
+      `SELECT
+        current_rule.id,
+        current_rule.credential_name AS credentialName,
+        current_rule.profession,
+        current_rule.jurisdiction,
+        current_rule.issuer,
+        current_rule.total_units AS totalUnits,
+        current_rule.unit_label AS unitLabel,
+        current_rule.cycle_months AS cycleMonths
+       FROM rule_sets prior_rule
+       JOIN rule_sets current_rule
+         ON current_rule.stable_key = prior_rule.stable_key
+       WHERE prior_rule.id = ?
+         AND prior_rule.stable_key IS ?
+         AND current_rule.is_current = 1
+       ORDER BY current_rule.version DESC
+       LIMIT 1`,
+      [credential.ruleSetId, credential.ruleStableKey],
+    ).first<NextRuleTemplate>();
+    if (!selectedNextRule) {
+      throw new RequestError(
+        "The current credential or license template is unavailable. Review the official issuer or regulator requirements and create the next plan manually.",
+        409,
+        "expanded_certification_current_template_unavailable",
+      );
+    }
   } else if (isCrccRenewal) {
     if (requestedNextRuleSetId) {
       throw new RequestError(
@@ -9538,6 +9635,7 @@ async function markRenewalAccepted(
               isManagedPharmacistRenewal ||
               isManagedNursingRenewal ||
               isManagedDentalRenewal ||
+              isExpandedCertificationRenewal ||
               isCrccRenewal
                 ? `AND NOT EXISTS (
                     SELECT 1
@@ -9553,6 +9651,7 @@ async function markRenewalAccepted(
               isManagedPharmacistRenewal ||
               isManagedNursingRenewal ||
               isManagedDentalRenewal ||
+              isExpandedCertificationRenewal ||
               isCrccRenewal
                 ? "AND selected_rule.stable_key IS ?"
                 : ""
@@ -9561,6 +9660,7 @@ async function markRenewalAccepted(
               isManagedPharmacistRenewal ||
               isManagedNursingRenewal ||
               isManagedDentalRenewal ||
+              isExpandedCertificationRenewal ||
               isCrccRenewal
                 ? `AND EXISTS (
                     SELECT 1
@@ -9637,6 +9737,7 @@ async function markRenewalAccepted(
             isManagedPharmacistRenewal ||
             isManagedNursingRenewal ||
             isManagedDentalRenewal ||
+            isExpandedCertificationRenewal ||
             isCrccRenewal
               ? [credential.ruleStableKey]
               : []
@@ -9645,6 +9746,7 @@ async function markRenewalAccepted(
             isManagedPharmacistRenewal ||
             isManagedNursingRenewal ||
             isManagedDentalRenewal ||
+            isExpandedCertificationRenewal ||
             isCrccRenewal
               ? [credential.ruleSetId, credential.ruleStableKey]
               : []
@@ -9680,8 +9782,10 @@ async function markRenewalAccepted(
           ? "The current nursing template changed while the next renewal period was being created. Review the current template and try again."
           : isManagedDentalRenewal
             ? "The current dental template changed while the next renewal period was being created. Review the current template and try again."
-          : isCrccRenewal
-            ? "The current CRC template changed while the next certification period was being created. Review CRCCCONNECT and the current template, then try again."
+            : isExpandedCertificationRenewal
+              ? "The current credential or license template changed while the next maintenance period was being created. Review the official requirements and current template, then try again."
+              : isCrccRenewal
+                ? "The current CRC template changed while the next certification period was being created. Review CRCCCONNECT and the current template, then try again."
         : isNremtRenewal
         ? "The selected National Registry template changed while the next cycle was being created. Review the current dashboard model and catalog template, then try again."
         : replacementTemplateFamily === "florida_mental_health"
@@ -9694,8 +9798,10 @@ async function markRenewalAccepted(
           ? "nursing_current_template_changed"
           : isManagedDentalRenewal
             ? "dental_current_template_changed"
-          : isCrccRenewal
-            ? "crcc_current_template_changed"
+            : isExpandedCertificationRenewal
+              ? "expanded_certification_current_template_changed"
+              : isCrccRenewal
+                ? "crcc_current_template_changed"
         : isNremtRenewal
         ? "nremt_next_template_changed"
         : replacementTemplateFamily === "florida_mental_health"

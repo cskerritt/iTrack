@@ -492,6 +492,45 @@ const runtimeCatalogModules = [
       "REHABILITATION_RULE_SET_SEED_BINDINGS",
     ],
   },
+  {
+    moduleName: "finance-certifications",
+    sourceUrl: new URL(
+      "../db/catalog/finance-certifications.ts",
+      import.meta.url,
+    ),
+    exports: [
+      "FINANCE_CERTIFICATION_CATEGORY_SEED_BINDINGS",
+      "FINANCE_CERTIFICATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+      "FINANCE_CERTIFICATION_RENEWAL_TASK_COPY_BINDINGS",
+      "FINANCE_CERTIFICATION_RULE_SET_SEED_BINDINGS",
+    ],
+  },
+  {
+    moduleName: "professional-certifications",
+    sourceUrl: new URL(
+      "../db/catalog/professional-certifications.ts",
+      import.meta.url,
+    ),
+    exports: [
+      "PROFESSIONAL_CERTIFICATIONS_CATEGORY_SEED_BINDINGS",
+      "PROFESSIONAL_CERTIFICATIONS_MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+      "PROFESSIONAL_CERTIFICATIONS_RENEWAL_TASK_COPY_BINDINGS",
+      "PROFESSIONAL_CERTIFICATIONS_RULE_SET_SEED_BINDINGS",
+    ],
+  },
+  {
+    moduleName: "healthcare-certifications",
+    sourceUrl: new URL(
+      "../db/catalog/healthcare-certifications.ts",
+      import.meta.url,
+    ),
+    exports: [
+      "HEALTHCARE_CERTIFICATION_CATEGORY_SEED_BINDINGS",
+      "HEALTHCARE_CERTIFICATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+      "HEALTHCARE_CERTIFICATION_RENEWAL_TASK_COPY_BINDINGS",
+      "HEALTHCARE_CERTIFICATION_RULE_SET_SEED_BINDINGS",
+    ],
+  },
 ];
 
 async function importTypeScriptModule(source) {
@@ -817,7 +856,7 @@ test("License Lantern product contract", async (t) => {
       assert.equal(
         raw.prepare("SELECT COUNT(*) AS count FROM rule_categories").get()
           .count,
-        628,
+        831,
       );
 
       assert.deepEqual(
@@ -2845,7 +2884,869 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
-    "seeds twelve source-linked nursing renewals with explicit zero-hour and conditional rules",
+    "seeds the expanded finance, professional, and healthcare certification catalogs as managed source-linked graphs",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      class CatalogBatchCaptureDatabase extends SQLiteD1Database {
+        constructor() {
+          super(DatabaseSync);
+          this.catalogRuleInsertStatements = [];
+          this.catalogCategoryInsertStatements = [];
+        }
+
+        async batch(statements) {
+          for (const preparedStatement of statements) {
+            const sql = normalizedSql(preparedStatement.sql);
+            if (
+              /^INSERT INTO rule_sets \(/i.test(sql) &&
+              /stable_key = excluded\.stable_key/i.test(sql)
+            ) {
+              this.catalogRuleInsertStatements.push(preparedStatement);
+            }
+            if (
+              /^INSERT INTO rule_categories \(/i.test(sql) &&
+              /rule_set_id = excluded\.rule_set_id/i.test(sql)
+            ) {
+              this.catalogCategoryInsertStatements.push(
+                preparedStatement,
+              );
+            }
+          }
+          return super.batch(statements);
+        }
+      }
+      const database = new CatalogBatchCaptureDatabase();
+      const [
+        runtimeSource,
+        workspaceRouteSource,
+        expandedCertificationSource,
+        financeSource,
+        professionalSource,
+        healthcareSource,
+      ] = await Promise.all([
+        readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
+        readFile(
+          new URL("../app/api/workspace/route.ts", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL("../app/lib/expandedCertifications.ts", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL("../db/catalog/finance-certifications.ts", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL(
+            "../db/catalog/professional-certifications.ts",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+        readFile(
+          new URL(
+            "../db/catalog/healthcare-certifications.ts",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+      ]);
+      const [
+        runtimeModule,
+        expandedCertificationModule,
+        financeModule,
+        professionalModule,
+        healthcareModule,
+      ] = await Promise.all([
+        importTypeScriptModule(
+          `${runtimeSource}
+export const __expandedCertificationCatalogNonce = "catalog";
+export {
+  CATALOG_2026_RULE_SET_SEED_BINDINGS as __catalogRuleBindings,
+  CATALOG_2026_CATEGORY_SEED_BINDINGS as __catalogCategoryBindings,
+};`,
+        ),
+        importTypeScriptModule(expandedCertificationSource),
+        importTypeScriptModule(financeSource),
+        importTypeScriptModule(professionalSource),
+        importTypeScriptModule(healthcareSource),
+      ]);
+
+      const catalogs = [
+        {
+          label: "finance",
+          rules:
+            financeModule.FINANCE_CERTIFICATION_RULE_SET_SEED_BINDINGS,
+          categories:
+            financeModule.FINANCE_CERTIFICATION_CATEGORY_SEED_BINDINGS,
+          tasks:
+            financeModule.FINANCE_CERTIFICATION_RENEWAL_TASK_COPY_BINDINGS,
+          maximumRuleSetIds:
+            financeModule.FINANCE_CERTIFICATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+          exportNames: {
+            rules: "FINANCE_CERTIFICATION_RULE_SET_SEED_BINDINGS",
+            categories: "FINANCE_CERTIFICATION_CATEGORY_SEED_BINDINGS",
+            tasks: "FINANCE_CERTIFICATION_RENEWAL_TASK_COPY_BINDINGS",
+            maximum:
+              "FINANCE_CERTIFICATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+          },
+        },
+        {
+          label: "professional",
+          rules:
+            professionalModule.PROFESSIONAL_CERTIFICATIONS_RULE_SET_SEED_BINDINGS,
+          categories:
+            professionalModule.PROFESSIONAL_CERTIFICATIONS_CATEGORY_SEED_BINDINGS,
+          tasks:
+            professionalModule.PROFESSIONAL_CERTIFICATIONS_RENEWAL_TASK_COPY_BINDINGS,
+          maximumRuleSetIds:
+            professionalModule.PROFESSIONAL_CERTIFICATIONS_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+          exportNames: {
+            rules: "PROFESSIONAL_CERTIFICATIONS_RULE_SET_SEED_BINDINGS",
+            categories:
+              "PROFESSIONAL_CERTIFICATIONS_CATEGORY_SEED_BINDINGS",
+            tasks:
+              "PROFESSIONAL_CERTIFICATIONS_RENEWAL_TASK_COPY_BINDINGS",
+            maximum:
+              "PROFESSIONAL_CERTIFICATIONS_MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+          },
+        },
+        {
+          label: "healthcare",
+          rules:
+            healthcareModule.HEALTHCARE_CERTIFICATION_RULE_SET_SEED_BINDINGS,
+          categories:
+            healthcareModule.HEALTHCARE_CERTIFICATION_CATEGORY_SEED_BINDINGS,
+          tasks:
+            healthcareModule.HEALTHCARE_CERTIFICATION_RENEWAL_TASK_COPY_BINDINGS,
+          maximumRuleSetIds:
+            healthcareModule.HEALTHCARE_CERTIFICATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+          exportNames: {
+            rules: "HEALTHCARE_CERTIFICATION_RULE_SET_SEED_BINDINGS",
+            categories: "HEALTHCARE_CERTIFICATION_CATEGORY_SEED_BINDINGS",
+            tasks:
+              "HEALTHCARE_CERTIFICATION_RENEWAL_TASK_COPY_BINDINGS",
+            maximum:
+              "HEALTHCARE_CERTIFICATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+          },
+        },
+      ];
+      const allRules = catalogs.flatMap((catalog) => catalog.rules);
+      const allCategories = catalogs.flatMap(
+        (catalog) => catalog.categories,
+      );
+      const allTasks = catalogs.flatMap((catalog) => catalog.tasks);
+      const allRuleIds = allRules.map((rule) => rule[0]);
+      const allRuleIdSet = new Set(allRuleIds);
+      const allCategoryIds = allCategories.map((category) => category[0]);
+      const allCategoryById = new Map(
+        allCategories.map((category) => [category[0], category]),
+      );
+
+      assert.deepEqual(
+        catalogs.map((catalog) => ({
+          label: catalog.label,
+          ruleCount: catalog.rules.length,
+          categoryCount: catalog.categories.length,
+          taskCount: catalog.tasks.length,
+          maximumClassificationCount: catalog.maximumRuleSetIds.length,
+        })),
+        [
+          {
+            label: "finance",
+            ruleCount: 16,
+            categoryCount: 26,
+            taskCount: 16,
+            maximumClassificationCount: 0,
+          },
+          {
+            label: "professional",
+            ruleCount: 20,
+            categoryCount: 99,
+            taskCount: 20,
+            maximumClassificationCount: 14,
+          },
+          {
+            label: "healthcare",
+            ruleCount: 15,
+            categoryCount: 78,
+            taskCount: 15,
+            maximumClassificationCount: 7,
+          },
+        ],
+      );
+      assert.equal(allRules.length, 51);
+      assert.equal(allCategories.length, 203);
+      assert.equal(allTasks.length, 51);
+      assert.equal(new Set(allRuleIds).size, allRuleIds.length);
+      assert.equal(
+        new Set(allRules.map((rule) => rule[1])).size,
+        allRules.length,
+      );
+      assert.equal(new Set(allCategoryIds).size, allCategoryIds.length);
+
+      for (const rule of allRules) {
+        assert.equal(rule.length, 16, `unexpected rule tuple: ${rule[0]}`);
+        const [
+          id,
+          stableKey,
+          version,
+          profession,
+          credentialName,
+          jurisdiction,
+          issuer,
+          totalUnits,
+          unitLabel,
+          cycleMonths,
+          sourceUrl,
+          sourceNote,
+          effectiveDate,
+          lastVerifiedAt,
+          reviewStatus,
+          isCurrent,
+        ] = rule;
+        assert.match(id, /^[a-z0-9]+(?:-[a-z0-9]+)*-v\d+$/);
+        assert.match(stableKey, /^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+        assert.equal(version, 1, id);
+        assert.ok(profession.trim().length > 0, id);
+        assert.ok(credentialName.trim().length > 0, id);
+        assert.ok(jurisdiction.trim().length > 0, id);
+        assert.ok(issuer.trim().length > 0, id);
+        assert.ok(Number.isFinite(totalUnits) && totalUnits >= 0, id);
+        assert.ok(unitLabel.trim().length > 0, id);
+        assert.ok(Number.isInteger(cycleMonths) && cycleMonths > 0, id);
+        assert.equal(new URL(sourceUrl).protocol, "https:", id);
+        assert.ok(sourceNote.trim().length >= 120, id);
+        assert.ok(
+          effectiveDate === null ||
+            /^\d{4}-\d{2}-\d{2}$/.test(effectiveDate),
+          id,
+        );
+        assert.equal(lastVerifiedAt, "2026-07-26", id);
+        assert.equal(
+          reviewStatus,
+          "source_linked_check_conditions",
+          id,
+        );
+        assert.equal(isCurrent, 1, id);
+      }
+
+      for (const category of allCategories) {
+        assert.equal(
+          category.length,
+          11,
+          `unexpected category tuple: ${category[0]}`,
+        );
+        const [
+          id,
+          ruleSetId,
+          name,
+          requiredUnits,
+          kind,
+          relation,
+          parentCategoryId,
+          applicability,
+          conditionNote,
+          exclusiveGroup,
+          sortOrder,
+        ] = category;
+        assert.ok(allRuleIdSet.has(ruleSetId), `${id} has unknown rule`);
+        assert.ok(name.trim().length > 0, id);
+        assert.ok(
+          Number.isFinite(requiredUnits) && requiredUnits >= 0,
+          id,
+        );
+        assert.ok(
+          ["minimum", "maximum", "informational"].includes(kind),
+          id,
+        );
+        assert.ok(
+          ["independent", "nested", "overlapping"].includes(relation),
+          id,
+        );
+        assert.ok(
+          ["always", "conditional", "optional"].includes(applicability),
+          id,
+        );
+        assert.ok(
+          conditionNote === null || typeof conditionNote === "string",
+          id,
+        );
+        assert.ok(
+          exclusiveGroup === null || exclusiveGroup.trim().length > 0,
+          id,
+        );
+        assert.ok(Number.isInteger(sortOrder) && sortOrder >= 0, id);
+        if (parentCategoryId !== null) {
+          const parent = allCategoryById.get(parentCategoryId);
+          assert.ok(parent, `${id} has unknown parent ${parentCategoryId}`);
+          assert.equal(
+            parent[1],
+            ruleSetId,
+            `${id} has a parent from another rule`,
+          );
+          assert.notEqual(parentCategoryId, id, `${id} is its own parent`);
+        }
+      }
+
+      for (const catalog of catalogs) {
+        const catalogRuleIds = catalog.rules.map((rule) => rule[0]).sort();
+        const taskRuleIds = catalog.tasks
+          .map(([ruleSetId]) => ruleSetId)
+          .sort();
+        assert.equal(
+          new Set(taskRuleIds).size,
+          taskRuleIds.length,
+          `${catalog.label} has duplicate task copy`,
+        );
+        assert.deepEqual(
+          taskRuleIds,
+          catalogRuleIds,
+          `${catalog.label} task copy must cover every rule exactly once`,
+        );
+        for (const [ruleSetId, ...taskCopy] of catalog.tasks) {
+          assert.ok(allRuleIdSet.has(ruleSetId));
+          assert.equal(taskCopy.length, 3);
+          for (const title of taskCopy) {
+            assert.ok(
+              typeof title === "string" && title.trim().length >= 20,
+              `${ruleSetId} has incomplete renewal task copy`,
+            );
+          }
+        }
+
+        const maximumCategoryRuleSetIds = [
+          ...new Set(
+            catalog.categories
+              .filter((category) => category[4] === "maximum")
+              .map((category) => category[1]),
+          ),
+        ].sort();
+        assert.deepEqual(
+          [...catalog.maximumRuleSetIds].sort(),
+          maximumCategoryRuleSetIds,
+          `${catalog.label} maximum categories need classification guards`,
+        );
+        assert.equal(
+          new Set(catalog.maximumRuleSetIds).size,
+          catalog.maximumRuleSetIds.length,
+          `${catalog.label} has duplicate maximum-classification IDs`,
+        );
+        for (const ruleSetId of catalog.maximumRuleSetIds) {
+          assert.ok(allRuleIdSet.has(ruleSetId));
+        }
+      }
+
+      const healthcareRulesById = new Map(
+        healthcareModule.HEALTHCARE_CERTIFICATION_RULE_SET_SEED_BINDINGS.map(
+          (rule) => [rule[0], rule],
+        ),
+      );
+      const healthcareCategoriesById = new Map(
+        healthcareModule.HEALTHCARE_CERTIFICATION_CATEGORY_SEED_BINDINGS.map(
+          (category) => [category[0], category],
+        ),
+      );
+      const healthcareTasksById = new Map(
+        healthcareModule.HEALTHCARE_CERTIFICATION_RENEWAL_TASK_COPY_BINDINGS.map(
+          (task) => [task[0], task],
+        ),
+      );
+      const anccRule = healthcareRulesById.get(
+        "ancc-fnp-150-ce-2026-v1",
+      );
+      assert.ok(anccRule);
+      assert.equal(anccRule[12], "2025-09-10");
+      assert.match(
+        anccRule[11],
+        /each 75-hour block requires at least 60[\s\S]*?at least 120 of the 150 hours/i,
+      );
+      assert.deepEqual(
+        healthcareCategoriesById
+          .get("ancc-fnp-150-ce-2026-formally-approved")
+          .slice(1, 8),
+        [
+          "ancc-fnp-150-ce-2026-v1",
+          "Formally Approved Continuing Education",
+          120,
+          "minimum",
+          "overlapping",
+          null,
+          "always",
+        ],
+      );
+      const nbcotRenewalHandbookUrl =
+        "https://www.nbcot.org/-/media/PDFs/Renewal_Handbook.pdf";
+      const nbcotActivityChartUrl =
+        "https://www.nbcot.org/-/media/PDFs/Renewal_Activities_Chart.pdf";
+      for (const credential of ["otr", "cota"]) {
+        const credentialLabel = credential.toUpperCase();
+        const ruleSetId = `nbcot-${credential}-2026-v1`;
+        const prefix = `nbcot-${credential}-2026`;
+        const rootId = `${prefix}-eligible-units`;
+        const fieldworkId = `${prefix}-fieldwork-supervision`;
+        const activityGroup = `NBCOT ${credentialLabel} renewal activity type`;
+        const rule = healthcareRulesById.get(ruleSetId);
+        assert.ok(rule);
+        assert.equal(rule[8], "NBCOT renewal units");
+        assert.equal(rule[10], nbcotRenewalHandbookUrl);
+        assert.ok(rule[11].includes(nbcotRenewalHandbookUrl));
+        assert.ok(rule[11].includes(nbcotActivityChartUrl));
+        assert.match(
+          rule[11],
+          /renewed in 2023[\s\S]*?up to 10 documented units[\s\S]*?2020[–-]2023[\s\S]*?one full year after renewal/i,
+        );
+
+        const categories =
+          healthcareModule.HEALTHCARE_CERTIFICATION_CATEGORY_SEED_BINDINGS.filter(
+            (category) => category[1] === ruleSetId,
+          );
+        assert.equal(categories.length, 19);
+        assert.equal(
+          categories.filter((category) => category[0] !== rootId).length,
+          18,
+        );
+        assert.equal(
+          categories.filter((category) => category[4] === "maximum")
+            .length,
+          16,
+        );
+        assert.equal(
+          categories.filter(
+            (category) => category[4] === "informational",
+          ).length,
+          2,
+        );
+        assert.deepEqual(
+          healthcareCategoriesById.get(rootId).slice(2, 10),
+          [
+            "NBCOT-Eligible Renewal Units",
+            36,
+            "minimum",
+            "independent",
+            null,
+            "always",
+            healthcareCategoriesById.get(rootId)[8],
+            null,
+          ],
+        );
+        assert.deepEqual(
+          healthcareCategoriesById
+            .get(`${prefix}-other-eligible-activity`)
+            .slice(3, 10),
+          [
+            0,
+            "informational",
+            "nested",
+            rootId,
+            "optional",
+            healthcareCategoriesById.get(
+              `${prefix}-other-eligible-activity`,
+            )[8],
+            activityGroup,
+          ],
+        );
+        assert.deepEqual(
+          healthcareCategoriesById.get(fieldworkId).slice(3, 10),
+          [
+            12,
+            "maximum",
+            "nested",
+            rootId,
+            "optional",
+            healthcareCategoriesById.get(fieldworkId)[8],
+            null,
+          ],
+        );
+        assert.deepEqual(
+          healthcareCategoriesById
+            .get(`${prefix}-fieldwork-level-i`)
+            .slice(3, 10),
+          [
+            6,
+            "maximum",
+            "nested",
+            fieldworkId,
+            "optional",
+            healthcareCategoriesById.get(
+              `${prefix}-fieldwork-level-i`,
+            )[8],
+            activityGroup,
+          ],
+        );
+        assert.deepEqual(
+          healthcareCategoriesById
+            .get(`${prefix}-fieldwork-level-ii-advanced`)
+            .slice(3, 10),
+          [
+            0,
+            "informational",
+            "nested",
+            fieldworkId,
+            "optional",
+            healthcareCategoriesById.get(
+              `${prefix}-fieldwork-level-ii-advanced`,
+            )[8],
+            activityGroup,
+          ],
+        );
+        assert.deepEqual(
+          healthcareCategoriesById
+            .get(`${prefix}-confirmed-2023-cohort-carryover`)
+            .slice(3, 10),
+          [
+            10,
+            "maximum",
+            "nested",
+            rootId,
+            "optional",
+            healthcareCategoriesById.get(
+              `${prefix}-confirmed-2023-cohort-carryover`,
+            )[8],
+            activityGroup,
+          ],
+        );
+        assert.ok(
+          healthcareModule.HEALTHCARE_CERTIFICATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS.includes(
+            ruleSetId,
+          ),
+        );
+        assert.match(
+          healthcareTasksById.get(ruleSetId)[3],
+          /retain all renewal documentation for one full year/i,
+        );
+      }
+      const bacbRule = healthcareRulesById.get("bacb-bcba-2026-v1");
+      assert.ok(bacbRule);
+      assert.match(
+        bacbRule[11],
+        /supervised the ongoing practice of RBTs or BCaBAs on record[\s\S]*?trainees pursuing BCBA or BCaBA certification/i,
+      );
+      assert.match(
+        bacbRule[11],
+        /every CEU[\s\S]*?supporting documentation uploaded before the recertification date/i,
+      );
+      assert.match(
+        healthcareCategoriesById.get("bacb-bcba-2026-supervision")[8],
+        /only when[\s\S]*?ongoing practice of RBTs or BCaBAs on record[\s\S]*?trainees pursuing BCBA or BCaBA certification/i,
+      );
+      assert.match(
+        healthcareTasksById.get("bacb-bcba-2026-v1")[3],
+        /every CEU[\s\S]*?upload its supporting documentation before the recertification date/i,
+      );
+      assert.equal(
+        healthcareRulesById.get("ccmc-ccm-2026-v1")[10],
+        "https://yourcommission.org/certification/board-certified-case-manager/stay-certified",
+      );
+      const nbrcRule = healthcareRulesById.get(
+        "nbrc-rrt-full-ce-2026-v1",
+      );
+      assert.ok(nbrcRule);
+      assert.equal(nbrcRule[10], "https://www.nbrc.org/resources/");
+      assert.equal(nbrcRule[12], null);
+      assert.match(
+        nbrcRule[11],
+        /30-CE route[\s\S]*?12-credit combined cap[\s\S]*?NBRC-CMP-Brochure-01\.26\.26\.pdf[\s\S]*?15 or zero/i,
+      );
+      assert.match(
+        nbrcRule[11],
+        /six CEU hours[\s\S]*?each BLS, ACLS, NRP, or PALS course/i,
+      );
+      const nbrcCategory =
+        healthcareCategoriesById.get(
+          "nbrc-rrt-full-ce-2026-category-i",
+        );
+      const nbrcResuscitationCategory = healthcareCategoriesById.get(
+        "nbrc-rrt-full-ce-2026-resuscitation",
+      );
+      assert.equal(
+        nbrcCategory[9],
+        "NBRC RRT full-route CE activity type",
+      );
+      assert.deepEqual(nbrcResuscitationCategory.slice(3, 8), [
+        12,
+        "maximum",
+        "nested",
+        "nbrc-rrt-full-ce-2026-category-i",
+        "optional",
+      ]);
+      assert.match(
+        nbrcResuscitationCategory[8],
+        /six CEU hours for each[\s\S]*?no more than 12 combined credits/i,
+      );
+      assert.equal(nbrcResuscitationCategory[9], nbrcCategory[9]);
+      const nbccActivityCategories =
+        healthcareModule.HEALTHCARE_CERTIFICATION_CATEGORY_SEED_BINDINGS.filter(
+          (category) =>
+            category[1] === "nbcc-ncc-2026-v1" &&
+            category[0] !== "nbcc-ncc-2026-qualifying-ce",
+        );
+      assert.equal(nbccActivityCategories.length, 7);
+      assert.equal(
+        nbccActivityCategories.filter(
+          (category) => category[4] === "maximum",
+        ).length,
+        6,
+      );
+      assert.equal(
+        nbccActivityCategories.filter(
+          (category) => category[4] === "informational",
+        ).length,
+        1,
+      );
+      for (const category of nbccActivityCategories) {
+        assert.equal(
+          category[6],
+          "nbcc-ncc-2026-qualifying-ce",
+          `${category[0]} must remain nested under qualifying CE`,
+        );
+        assert.equal(category[9], "NBCC NCC activity type");
+      }
+      assert.ok(
+        healthcareModule.HEALTHCARE_CERTIFICATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS.includes(
+          "nbcc-ncc-2026-v1",
+        ),
+      );
+
+      await runtimeModule.initializeDatabase(database);
+      const raw = database.raw;
+      const placeholders = allRuleIds.map(() => "?").join(", ");
+      const rowsFromChunkedStatements = (statements, bindingsPerRow) =>
+        statements.flatMap((preparedStatement) => {
+          assert.ok(
+            preparedStatement.bindings.length <= 100,
+            "a chunked catalog statement exceeds D1's 100-bind limit",
+          );
+          assert.equal(
+            preparedStatement.bindings.length % bindingsPerRow,
+            0,
+          );
+          const rows = [];
+          for (
+            let index = 0;
+            index < preparedStatement.bindings.length;
+            index += bindingsPerRow
+          ) {
+            rows.push(
+              preparedStatement.bindings.slice(
+                index,
+                index + bindingsPerRow,
+              ),
+            );
+          }
+          return rows;
+        });
+      const expectedCatalogRuleBindings =
+        runtimeModule.__catalogRuleBindings.map((bindings) => [
+          ...bindings,
+        ]);
+      const expectedCatalogCategoryBindings =
+        runtimeModule.__catalogCategoryBindings.map((bindings) => [
+          ...bindings,
+        ]);
+      assert.equal(
+        database.catalogRuleInsertStatements.length,
+        Math.ceil(expectedCatalogRuleBindings.length / 6),
+      );
+      assert.equal(
+        database.catalogCategoryInsertStatements.length,
+        Math.ceil(expectedCatalogCategoryBindings.length / 9),
+      );
+      assert.deepEqual(
+        rowsFromChunkedStatements(
+          database.catalogRuleInsertStatements,
+          16,
+        ),
+        expectedCatalogRuleBindings,
+        "chunked rule upserts must preserve every row and binding",
+      );
+      assert.deepEqual(
+        rowsFromChunkedStatements(
+          database.catalogCategoryInsertStatements,
+          11,
+        ),
+        expectedCatalogCategoryBindings,
+        "chunked category upserts must preserve every row and binding",
+      );
+      assert.match(
+        runtimeSource,
+        /function multiRowStatements[\s\S]*?maximumBindingsPerStatement = 100[\s\S]*?Math\.floor\(\s*maximumBindingsPerStatement \/ bindingsPerRow[\s\S]*?rows\.map\(\(\) => singleValueGroup\)\.join\(", "\)/,
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(*) AS totalRules,
+                 SUM(CASE WHEN is_current = 1 THEN 1 ELSE 0 END) AS currentRules,
+                 COUNT(DISTINCT CASE WHEN is_current = 1 THEN profession END)
+                   AS currentProfessions,
+                 COUNT(DISTINCT CASE WHEN is_current = 1 THEN issuer END)
+                   AS currentIssuers,
+                 SUM(
+                   CASE
+                     WHEN is_current = 1
+                       AND jurisdiction IN (
+                         'California', 'Florida', 'New Jersey',
+                         'New York', 'Pennsylvania', 'Texas'
+                       )
+                     THEN 1 ELSE 0
+                   END
+                 ) AS stateSpecificRules
+               FROM rule_sets`,
+            )
+            .get(),
+        },
+        {
+          totalRules: 171,
+          currentRules: 170,
+          currentProfessions: 53,
+          currentIssuers: 98,
+          stateSpecificRules: 79,
+        },
+      );
+      assert.equal(
+        raw.prepare("SELECT COUNT(*) AS count FROM rule_categories").get()
+          .count,
+        831,
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(*) AS ruleCount,
+                 SUM(
+                   CASE
+                     WHEN is_current = 1
+                       AND last_verified_at = '2026-07-26'
+                       AND review_status = 'source_linked_check_conditions'
+                       AND source_url LIKE 'https://%'
+                     THEN 1 ELSE 0
+                   END
+                 ) AS sourceLinkedRuleCount
+               FROM rule_sets
+               WHERE id IN (${placeholders})`,
+            )
+            .get(...allRuleIds),
+        },
+        {
+          ruleCount: allRules.length,
+          sourceLinkedRuleCount: allRules.length,
+        },
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_categories
+             WHERE rule_set_id IN (${placeholders})`,
+          )
+          .get(...allRuleIds).count,
+        allCategories.length,
+      );
+
+      const managedRuleIdsSource = runtimeSource.slice(
+        runtimeSource.indexOf("const MANAGED_EXTERNAL_RULE_SET_IDS"),
+        runtimeSource.indexOf("const MANAGED_EXTERNAL_CATEGORY_IDS"),
+      );
+      const managedCategoryIdsSource = runtimeSource.slice(
+        runtimeSource.indexOf("const MANAGED_EXTERNAL_CATEGORY_IDS"),
+        runtimeSource.indexOf("function trustedSqlStringList"),
+      );
+      const maximumClassificationSource = runtimeSource.slice(
+        runtimeSource.indexOf(
+          "const MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+        ),
+        runtimeSource.indexOf(
+          "const ACTIVE_CATALOG_SNAPSHOT_RULE_SET_IDS",
+        ),
+      );
+      const expandedTaskRefreshSource = runtimeSource.slice(
+        runtimeSource.indexOf(
+          "const EXPANDED_CERTIFICATION_DEFAULT_TASK_REFRESH_BINDINGS",
+        ),
+        runtimeSource.indexOf("const MERGE_CFP_BOUNDARY_GENERAL_MATCHES_SQL"),
+      );
+      for (const catalog of catalogs) {
+        assert.ok(
+          managedRuleIdsSource.includes(`...${catalog.exportNames.rules}`),
+          `${catalog.label} rules are not managed`,
+        );
+        assert.ok(
+          managedCategoryIdsSource.includes(
+            `...${catalog.exportNames.categories}`,
+          ),
+          `${catalog.label} categories are not managed`,
+        );
+        assert.ok(
+          maximumClassificationSource.includes(
+            `...${catalog.exportNames.maximum}`,
+          ),
+          `${catalog.label} maximum categories are not classified`,
+        );
+        assert.ok(
+          expandedTaskRefreshSource.includes(
+            `...${catalog.exportNames.tasks}`,
+          ),
+          `${catalog.label} task copy is not refreshed`,
+        );
+        assert.ok(
+          workspaceRouteSource.includes(
+            `...${catalog.exportNames.tasks}`,
+          ),
+          `${catalog.label} task copy is not used for new credentials`,
+        );
+      }
+      assert.match(
+        runtimeSource,
+        /EXPANDED_CERTIFICATION_DEFAULT_TASK_REFRESH_BINDINGS\.map\([\s\S]*?SYNC_MANAGED_DEFAULT_TASK_SQL/,
+      );
+
+      const prefixes =
+        expandedCertificationModule.EXPANDED_CERTIFICATION_RULE_SET_PREFIXES;
+      assert.equal(new Set(prefixes).size, prefixes.length);
+      const managedScopeSource = runtimeSource.slice(
+        runtimeSource.indexOf("const MANAGED_EXTERNAL_SCOPE_SQL"),
+        runtimeSource.indexOf(
+          "const RETIRE_MISSING_MANAGED_RULE_SETS_SQL",
+        ),
+      );
+      for (const prefix of prefixes) {
+        assert.ok(
+          allRuleIds.some((ruleSetId) => ruleSetId.startsWith(prefix)),
+          `${prefix} does not own an expanded catalog rule`,
+        );
+        assert.ok(
+          managedScopeSource.includes(
+            `managed_rule.id LIKE '${prefix}%'`,
+          ),
+          `${prefix} is missing from managed retirement`,
+        );
+      }
+      for (const ruleSetId of allRuleIds) {
+        assert.equal(
+          expandedCertificationModule.isExpandedCertificationRuleSetId(
+            ruleSetId,
+          ),
+          true,
+          `${ruleSetId} is missing from expanded-certificate lifecycle`,
+        );
+      }
+      assert.equal(
+        expandedCertificationModule.isExpandedCertificationRuleSetId(
+          "custom-user-rule-v1",
+        ),
+        false,
+      );
+
+      database.close();
+    },
+  );
+
+  await t.test(
+    "seeds twelve source-linked state-board nursing renewals with explicit zero-hour and conditional rules",
     async () => {
       const { DatabaseSync } = await import("node:sqlite");
       const database = new SQLiteD1Database(DatabaseSync);
@@ -2878,11 +3779,18 @@ test("License Lantern product contract", async (t) => {
         ]);
       await runtimeModule.initializeDatabase(database);
       const raw = database.raw;
-      const rows = (sql) =>
+      const rows = (sql, ...bindings) =>
         raw
           .prepare(sql)
-          .all()
+          .all(...bindings)
           .map((row) => ({ ...row }));
+      const nursingRuleSetIds =
+        nursingModule.NURSING_RULE_SET_SEED_BINDINGS.map(
+          (binding) => binding[0],
+        );
+      const nursingPlaceholders = nursingRuleSetIds
+        .map(() => "?")
+        .join(", ");
 
       assert.deepEqual(
         {
@@ -2895,12 +3803,12 @@ test("License Lantern product contract", async (t) => {
             )
             .get(),
         },
-        { totalRules: 120, currentRules: 119 },
+        { totalRules: 171, currentRules: 170 },
       );
       assert.equal(
         raw.prepare("SELECT COUNT(*) AS count FROM rule_categories").get()
           .count,
-        628,
+        831,
       );
       assert.deepEqual(
         {
@@ -2921,9 +3829,9 @@ test("License Lantern product contract", async (t) => {
                FROM rule_sets rule
                LEFT JOIN rule_categories category
                  ON category.rule_set_id = rule.id
-               WHERE rule.profession = 'Nursing'`,
+               WHERE rule.id IN (${nursingPlaceholders})`,
             )
-            .get(),
+            .get(...nursingRuleSetIds),
         },
         {
           ruleCount: 12,
@@ -2935,8 +3843,9 @@ test("License Lantern product contract", async (t) => {
         rows(
           `SELECT id, total_units AS totalUnits
            FROM rule_sets
-           WHERE profession = 'Nursing'
+           WHERE id IN (${nursingPlaceholders})
            ORDER BY id`,
+          ...nursingRuleSetIds,
         ),
         [
           { id: "ca-lvn-2026-v1", totalUnits: 30 },
@@ -5493,6 +6402,22 @@ test("License Lantern product contract", async (t) => {
         ruleCategoryId:
           "pa-lpc-standard-renewal-2026-suicide-prevention",
       };
+      const icfAccMentorCoaching = {
+        id: "requirement-icf-acc-mentor-coaching",
+        name: "Mentor Coaching",
+        ruleCategoryId: "icf-acc-2026-mentor-coaching",
+      };
+      const icfAccCoachingEthics = {
+        id: "requirement-icf-acc-coaching-ethics",
+        name: "Coaching Ethics",
+        ruleCategoryId: "icf-acc-2026-coaching-ethics",
+      };
+      const icfAccOtherCore = {
+        id: "requirement-icf-acc-other-core",
+        name: "Other Core Competency Education",
+        ruleCategoryId:
+          "icf-acc-2026-other-core-competency-education",
+      };
       for (const [classifier, disallowedTag, messagePattern] of [
         [
           bls,
@@ -5558,6 +6483,56 @@ test("License Lantern product contract", async (t) => {
           ),
           [classifier.id],
           `${classifier.name} replaces the disallowed minimum tag`,
+        );
+      }
+      for (const nonMentorCoreTag of [
+        icfAccCoachingEthics,
+        icfAccOtherCore,
+      ]) {
+        const icfRequirements = [
+          icfAccMentorCoaching,
+          nonMentorCoreTag,
+        ];
+        assert.equal(
+          compatibilityModule.requirementsAreIncompatible(
+            icfAccMentorCoaching,
+            nonMentorCoreTag,
+          ),
+          true,
+        );
+        assert.equal(
+          compatibilityModule.requirementsAreIncompatible(
+            nonMentorCoreTag,
+            icfAccMentorCoaching,
+          ),
+          true,
+        );
+        assert.match(
+          compatibilityModule.requirementIncompatibilityMessage(
+            icfAccMentorCoaching,
+            icfRequirements,
+          ),
+          /Mentor Coaching[\s\S]*?cannot also satisfy Coaching Ethics or Other Core Competency Education/i,
+        );
+        assert.deepEqual(
+          compatibilityModule.nextRequirementSelection(
+            [nonMentorCoreTag.id],
+            icfAccMentorCoaching,
+            icfRequirements,
+            true,
+          ),
+          [icfAccMentorCoaching.id],
+          `Mentor Coaching replaces ${nonMentorCoreTag.name}`,
+        );
+        assert.deepEqual(
+          compatibilityModule.nextRequirementSelection(
+            [icfAccMentorCoaching.id],
+            nonMentorCoreTag,
+            icfRequirements,
+            true,
+          ),
+          [nonMentorCoreTag.id],
+          `${nonMentorCoreTag.name} replaces Mentor Coaching`,
         );
       }
       assert.match(
@@ -5656,6 +6631,15 @@ test("License Lantern product contract", async (t) => {
         ),
         6,
       );
+      for (const categoryId of [
+        "nbcot-otr-2026-confirmed-2023-cohort-carryover",
+        "nbcot-cota-2026-confirmed-2023-cohort-carryover",
+      ]) {
+        assert.equal(
+          carryoverModule.portalCarryoverLookbackMonths(categoryId),
+          36,
+        );
+      }
       assert.equal(
         carryoverModule.calendarMonthsBefore("2028-08-31", 6),
         "2028-02-29",
@@ -9624,7 +10608,7 @@ test("License Lantern product contract", async (t) => {
             )
             .get(),
         },
-        { totalRules: 120, currentRules: 119 },
+        { totalRules: 171, currentRules: 170 },
       );
       assert.equal(
         raw
@@ -16840,6 +17824,277 @@ test("License Lantern product contract", async (t) => {
       assert.equal(
         (await raced.json()).code,
         "pharmacist_current_template_changed",
+      );
+    },
+  );
+
+  await t.test(
+    "rolls expanded certifications onto the latest attested same-key template and rejects catalog races",
+    async () => {
+      const professionalSource = await readFile(
+        new URL(
+          "../db/catalog/professional-certifications.ts",
+          import.meta.url,
+        ),
+        "utf8",
+      );
+      const professionalModule =
+        await importTypeScriptModule(professionalSource);
+      const currentRule =
+        professionalModule.PROFESSIONAL_CERTIFICATIONS_RULE_SET_SEED_BINDINGS.find(
+          (rule) => rule[0] === "icf-acc-2026-v1",
+        );
+      assert.ok(currentRule);
+      const currentCategories =
+        professionalModule.PROFESSIONAL_CERTIFICATIONS_CATEGORY_SEED_BINDINGS.filter(
+          (category) => category[1] === currentRule[0],
+        );
+      const currentTaskCopy =
+        professionalModule.PROFESSIONAL_CERTIFICATIONS_RENEWAL_TASK_COPY_BINDINGS.find(
+          ([ruleSetId]) => ruleSetId === currentRule[0],
+        );
+      assert.ok(currentTaskCopy);
+      assert.ok(currentCategories.length > 0);
+
+      const retiredRuleSetId = "icf-acc-2025-v0";
+      const credentialId = "credential-icf-acc-submitted";
+      const resolver = {
+        resolveFirst(call) {
+          if (
+            /SELECT next_credential_id AS nextCredentialId FROM renewal_acceptances/i.test(
+              call.sql,
+            )
+          ) {
+            return null;
+          }
+          if (
+            /FROM credentials credential\s+LEFT JOIN credential_cycle_links cycle/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: credentialId,
+              ruleSetId: retiredRuleSetId,
+              ruleStableKey: currentRule[1],
+              credentialName: currentRule[4],
+              profession: currentRule[3],
+              jurisdiction: currentRule[5],
+              issuer: currentRule[6],
+              status: "submitted",
+              cycleStart: "2027-01-01",
+              deadline: "2029-12-31",
+              totalRequired: currentRule[7],
+              unitLabel: currentRule[8],
+              seriesId: "series-icf-acc",
+              cycleMonths: currentRule[9],
+            };
+          }
+          if (
+            /FROM renewal_submissions WHERE credential_id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "submission-icf-acc",
+              submittedAt: "2029-12-15T12:00:00.000Z",
+            };
+          }
+          if (
+            /FROM rule_sets prior_rule\s+JOIN rule_sets current_rule/i.test(
+              call.sql,
+            )
+          ) {
+            assert.deepEqual(call.bindings, [
+              retiredRuleSetId,
+              currentRule[1],
+            ]);
+            assert.match(
+              call.sql,
+              /current_rule\.stable_key = prior_rule\.stable_key[\s\S]*?current_rule\.is_current = 1[\s\S]*?ORDER BY current_rule\.version DESC[\s\S]*?LIMIT 1/i,
+            );
+            return {
+              id: currentRule[0],
+              credentialName: currentRule[4],
+              profession: currentRule[3],
+              jurisdiction: currentRule[5],
+              issuer: currentRule[6],
+              totalUnits: currentRule[7],
+              unitLabel: currentRule[8],
+              cycleMonths: currentRule[9],
+            };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (/FROM rule_categories WHERE rule_set_id = \?/i.test(call.sql)) {
+            assert.equal(call.bindings[0], currentRule[0]);
+            return currentCategories.map((category) => ({
+              id: category[0],
+              name: category[2],
+              requiredUnits: category[3],
+              kind: category[4],
+              relation: category[5],
+              parentCategoryId: category[6],
+              applicability: category[7],
+              conditionNote: category[8],
+              exclusiveGroup: category[9],
+              sortOrder: category[10],
+            }));
+          }
+          return [];
+        },
+      };
+      const database = new FakeDatabase(resolver);
+      testCloudflareEnv.DB = database;
+      const payload = {
+        credentialId,
+        acceptedAt: "2029-12-31",
+        reference: "ICF-ACC-RENEWED-0042",
+        nextCycleStart: "2030-01-01",
+        nextDeadline: "2032-12-31",
+      };
+
+      const datesUnattested = await postWorkspace(
+        "markRenewalAccepted",
+        payload,
+      );
+      assert.equal(datesUnattested.status, 409);
+      assert.equal(
+        (await datesUnattested.json()).code,
+        "official_next_period_attestation_required",
+      );
+
+      const eligibilityUnattested = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...payload,
+          officialDatesAttested: true,
+        },
+      );
+      assert.equal(eligibilityUnattested.status, 409);
+      assert.equal(
+        (await eligibilityUnattested.json()).code,
+        "expanded_certification_next_template_eligibility_required",
+      );
+
+      const overlapping = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...payload,
+          nextCycleStart: "2029-12-31",
+          officialDatesAttested: true,
+          templateEligibilityAttested: true,
+        },
+      );
+      assert.equal(overlapping.status, 409);
+      assert.equal(
+        (await overlapping.json()).code,
+        "next_cycle_overlaps_current_period",
+      );
+
+      const manuallySelected = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...payload,
+          nextRuleSetId: currentRule[0],
+          officialDatesAttested: true,
+          templateEligibilityAttested: true,
+        },
+      );
+      assert.equal(manuallySelected.status, 400);
+      assert.equal(
+        (await manuallySelected.json()).code,
+        "expanded_certification_next_template_not_selectable",
+      );
+
+      const accepted = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...payload,
+          officialDatesAttested: true,
+          templateEligibilityAttested: true,
+        },
+      );
+      assert.equal(
+        accepted.status,
+        200,
+        JSON.stringify(await accepted.clone().json()),
+      );
+      const statements = flattenedStatements(database);
+      const nextCredential = statements.find((statement) =>
+        /^INSERT INTO credentials \(/i.test(statement.sql),
+      );
+      assert.ok(nextCredential);
+      assert.equal(nextCredential.bindings[2], currentRule[0]);
+      assert.equal(nextCredential.bindings[7], payload.nextCycleStart);
+      assert.equal(nextCredential.bindings[8], payload.nextDeadline);
+
+      const insertedRequirements = statements.filter((statement) =>
+        /^INSERT INTO credential_requirements \(/i.test(statement.sql),
+      );
+      assert.deepEqual(
+        insertedRequirements
+          .map((statement) => statement.bindings[1])
+          .sort(),
+        currentCategories.map((category) => category[0]).sort(),
+        "the next credential snapshots every selected current category",
+      );
+      for (const category of currentCategories) {
+        const insert = insertedRequirements.find(
+          (statement) => statement.bindings[1] === category[0],
+        );
+        assert.ok(insert);
+        assert.equal(insert.bindings[2], category[2]);
+        assert.equal(insert.bindings[3], category[3]);
+        assert.equal(insert.bindings[4], category[4]);
+        assert.equal(insert.bindings[5], category[5]);
+        assert.equal(insert.bindings[7], category[7]);
+        assert.equal(insert.bindings[9], category[8]);
+        assert.equal(insert.bindings[10], category[9]);
+        assert.equal(insert.bindings[12], category[10]);
+        assert.equal(
+          insert.bindings[6] === null,
+          category[6] === null,
+          `${category[0]} must preserve its parent relationship`,
+        );
+      }
+
+      const insertedTaskTitles = statements
+        .filter((statement) =>
+          /^INSERT INTO checklist_tasks \(/i.test(statement.sql),
+        )
+        .map((statement) => statement.bindings[1]);
+      assert.deepEqual(insertedTaskTitles, currentTaskCopy.slice(1));
+
+      class RacingExpandedCertificationDatabase extends FakeDatabase {
+        async batch(statementsToRun) {
+          if (
+            statementsToRun.some((statement) =>
+              /UPDATE credentials SET status = 'renewed'/i.test(
+                normalizedSql(statement.sql),
+              ),
+            )
+          ) {
+            throw new Error(
+              "simulated expanded certification catalog race",
+            );
+          }
+          return super.batch(statementsToRun);
+        }
+      }
+      const racingDatabase = new RacingExpandedCertificationDatabase(
+        resolver,
+      );
+      testCloudflareEnv.DB = racingDatabase;
+      const raced = await postWorkspace("markRenewalAccepted", {
+        ...payload,
+        officialDatesAttested: true,
+        templateEligibilityAttested: true,
+      });
+      assert.equal(raced.status, 409);
+      assert.equal(
+        (await raced.json()).code,
+        "expanded_certification_current_template_changed",
       );
     },
   );
