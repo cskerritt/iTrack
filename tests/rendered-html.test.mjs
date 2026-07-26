@@ -1964,6 +1964,24 @@ test("License Lantern product contract", async (t) => {
         ).size,
         43,
       );
+      assert.deepEqual(
+        nursingModule.NURSING_RENEWAL_TASK_COPY_BINDINGS.map(
+          (binding) => binding[0],
+        ),
+        nursingModule.NURSING_RULE_SET_SEED_BINDINGS.map(
+          (binding) => binding[0],
+        ),
+        "every managed nursing template must have regulator-specific renewal task copy",
+      );
+      for (const taskBinding of nursingModule.NURSING_RENEWAL_TASK_COPY_BINDINGS) {
+        assert.equal(taskBinding.length, 4);
+        for (const taskTitle of taskBinding.slice(1)) {
+          assert.ok(
+            taskTitle.trim().length > 20,
+            `${taskBinding[0]} needs complete regulator-specific task copy`,
+          );
+        }
+      }
       assert.equal(
         nursingModule.NURSING_CATEGORY_SEED_BINDINGS.length - 12,
         31,
@@ -2106,38 +2124,57 @@ test("License Lantern product contract", async (t) => {
           24,
         );
       }
-      assert.deepEqual(
+      const texasNursingCategories = new Map(
         rows(
           `SELECT
+             id,
              rule_set_id AS ruleSetId,
              required_units AS requiredUnits,
              kind,
              relation,
              applicability
            FROM rule_categories
-           WHERE id IN (
-             'tx-rn-2026-human-trafficking',
-             'tx-lvn-2026-human-trafficking'
-           )
-           ORDER BY rule_set_id`,
-        ),
-        [
-          {
-            ruleSetId: "tx-lvn-2026-v1",
-            requiredUnits: 0,
-            kind: "informational",
-            relation: "overlapping",
-            applicability: "conditional",
-          },
-          {
-            ruleSetId: "tx-rn-2026-v1",
-            requiredUnits: 0,
-            kind: "informational",
-            relation: "overlapping",
-            applicability: "conditional",
-          },
-        ],
+           WHERE rule_set_id IN ('tx-rn-2026-v1', 'tx-lvn-2026-v1')`,
+        ).map((category) => [category.id, category]),
       );
+      for (const [prefix, ruleSetId] of [
+        ["tx-rn-2026", "tx-rn-2026-v1"],
+        ["tx-lvn-2026", "tx-lvn-2026-v1"],
+      ]) {
+        for (const suffix of [
+          "human-trafficking",
+          "forensic-exam-training",
+          "sb25-nutrition-rule-refresh",
+        ]) {
+          assert.deepEqual(
+            texasNursingCategories.get(`${prefix}-${suffix}`),
+            {
+              id: `${prefix}-${suffix}`,
+              ruleSetId,
+              requiredUnits: 0,
+              kind: "informational",
+              relation:
+                suffix === "sb25-nutrition-rule-refresh"
+                  ? "independent"
+                  : "overlapping",
+              applicability: "conditional",
+            },
+            `${prefix}-${suffix} must remain a zero-hour checkpoint`,
+          );
+        }
+        assert.deepEqual(
+          texasNursingCategories.get(`${prefix}-forensic-evidence`),
+          {
+            id: `${prefix}-forensic-evidence`,
+            ruleSetId,
+            requiredUnits: 2,
+            kind: "minimum",
+            relation: "overlapping",
+            applicability: "conditional",
+          },
+          `${prefix} emergency-room forensic training must remain a distinct two-hour minimum`,
+        );
+      }
       assert.deepEqual(
         rows(
           `SELECT
