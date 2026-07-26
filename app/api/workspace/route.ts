@@ -51,14 +51,10 @@ const CFP_2027_ACTIVITY_TYPE_CATEGORY_IDS = new Set([
 ]);
 const NJ_LCSW_RULE_SET_ID = "nj-lcsw-sample-v1";
 const NJ_LCSW_CREDIT_CATEGORY_GROUP = "New Jersey LCSW credit category";
-const ISC2_AUTOMATIC_RENEWAL_RULE_SET_IDS = new Set([
-  "isc2-cc-2026-v1",
-  "isc2-cissp-2026-v1",
-  "isc2-ccsp-2026-v1",
-  "isc2-sscp-2026-v1",
-  "isc2-csslp-2026-v1",
-  "isc2-cgrc-2026-v1",
-]);
+const ISC2_AUTOMATIC_RENEWAL_RULE_SET_PREFIX = "isc2-";
+const COMPLIANCE_PERIOD_RULE_SET_PREFIXES = [
+  "fl-insurance-producer-",
+] as const;
 const CARRYOVER_REVIEW_TASK_TITLES = new Map([
   [
     CFP_2027_RULE_SET_ID,
@@ -300,12 +296,25 @@ function daysAfter(isoDate: string, days: number) {
   return daysBefore(isoDate, -days);
 }
 
+function isCompliancePeriodRuleSet(ruleSetId: string | null) {
+  return Boolean(
+    ruleSetId &&
+      COMPLIANCE_PERIOD_RULE_SET_PREFIXES.some((prefix) =>
+        ruleSetId.startsWith(prefix),
+      ),
+  );
+}
+
+function isIsc2AutomaticRenewalRuleSet(ruleSetId: string | null) {
+  return ruleSetId?.startsWith(ISC2_AUTOMATIC_RENEWAL_RULE_SET_PREFIX) ?? false;
+}
+
 function renewalTaskSpecs(
   ruleSetId: string | null,
   deadline: string,
   reviewTitle?: string | null,
 ) {
-  if (ruleSetId && ISC2_AUTOMATIC_RENEWAL_RULE_SET_IDS.has(ruleSetId)) {
+  if (isIsc2AutomaticRenewalRuleSet(ruleSetId)) {
     return [
       {
         title:
@@ -315,12 +324,33 @@ function renewalTaskSpecs(
         dueDate: daysBefore(deadline, 120),
       },
       {
-        title: "Complete and submit required ISC2 CPEs and pay the final AMF",
+        title: "Submit required ISC2 CPEs and keep annual maintenance fees current",
         kind: "progress",
         dueDate: daysBefore(deadline, 30),
       },
       {
-        title: "Verify automatic ISC2 renewal and save dashboard proof",
+        title: "Save an attested ISC2 requirements checkpoint",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (isCompliancePeriodRuleSet(ruleSetId)) {
+    return [
+      {
+        title:
+          reviewTitle ??
+          "Confirm the official compliance-period requirements and dates",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title: "Complete and document required education",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title: "Verify official compliance status and save portal proof",
         kind: "submission",
         dueDate: deadline,
       },
@@ -402,7 +432,9 @@ const PROGRESSION_ACTION_TYPES = [
   "requirement_confirmed",
   "task_completed",
   "renewal_submitted",
+  "renewal_checkpoint_recorded",
   "renewal_accepted",
+  "compliance_period_completed",
 ] as const;
 
 type ProgressionActionType = (typeof PROGRESSION_ACTION_TYPES)[number];
@@ -555,10 +587,14 @@ function weeklyQuests(
     },
     {
       key: "acceptance-recorded",
-      title: "Close the renewal loop",
-      description: "Record an issuer’s acceptance for one submitted renewal.",
+      title: "Confirm the next official cycle",
+      description:
+        "Confirm an issuer or authority’s official next-period record for one ready cycle.",
       target: 1,
-      progress: progressFor("renewal_accepted"),
+      progress: progressFor(
+        "renewal_accepted",
+        "compliance_period_completed",
+      ),
       rewardXp: 60,
       available: context.submittedCredentials > 0,
     },
@@ -891,6 +927,7 @@ async function getReminderData(
   };
   type CycleCandidate = {
     credentialId: string;
+    ruleSetId: string | null;
     credentialName: string;
     status: string;
     deadline: string;
@@ -935,6 +972,7 @@ async function getReminderData(
       database,
       `SELECT
         credential.id AS credentialId,
+        credential.rule_set_id AS ruleSetId,
         credential.credential_name AS credentialName,
         credential.status,
         credential.deadline,
@@ -1018,6 +1056,9 @@ async function getReminderData(
 
   for (const cycle of cycles.results) {
     if (cycle.status === "active") {
+      const isCompliancePeriod = isCompliancePeriodRuleSet(
+        cycle.ruleSetId,
+      );
       const scheduledFor = reminderActivationDate(
         cycle.deadline,
         leadDays,
@@ -1029,8 +1070,12 @@ async function getReminderData(
         credentialId: cycle.credentialId,
         credentialName: cycle.credentialName,
         kind: "deadline",
-        title: `${cycle.credentialName} renewal deadline`,
-        body: `Renewal is due ${reminderDateLabel(cycle.deadline)}.`,
+        title: `${cycle.credentialName} ${
+          isCompliancePeriod ? "compliance" : "renewal"
+        } deadline`,
+        body: `${
+          isCompliancePeriod ? "Compliance" : "Renewal"
+        } is due ${reminderDateLabel(cycle.deadline)}.`,
         scheduledFor,
         eventDate: cycle.deadline,
         urgency: reminderUrgency(cycle.deadline, today),
@@ -1039,7 +1084,21 @@ async function getReminderData(
     }
 
     if (cycle.status === "submitted" && cycle.submittedAt) {
-      const scheduledFor = daysAfter(cycle.submittedAt.slice(0, 10), 7);
+      const isIsc2Checkpoint = isIsc2AutomaticRenewalRuleSet(
+        cycle.ruleSetId,
+      );
+      const isComplianceCheckpoint = isCompliancePeriodRuleSet(
+        cycle.ruleSetId,
+      );
+      const ordinaryFollowUp = daysAfter(
+        cycle.submittedAt.slice(0, 10),
+        7,
+      );
+      const scheduledFor =
+        (isIsc2Checkpoint || isComplianceCheckpoint) &&
+        ordinaryFollowUp < cycle.deadline
+          ? cycle.deadline
+          : ordinaryFollowUp;
       if (scheduledFor > today) continue;
       reminders.push({
         key: `acceptance:${cycle.credentialId}:${cycle.submittedAt.slice(
@@ -1049,10 +1108,22 @@ async function getReminderData(
         credentialId: cycle.credentialId,
         credentialName: cycle.credentialName,
         kind: "acceptance",
-        title: "Check renewal acceptance",
-        body: `${cycle.credentialName} was submitted ${reminderDateLabel(
-          cycle.submittedAt.slice(0, 10),
-        )}. Record acceptance when the issuer confirms it.`,
+        title: isIsc2Checkpoint
+          ? "Check the ISC2 dashboard for renewal"
+          : isComplianceCheckpoint
+            ? "Check the official record for the next compliance period"
+          : "Check renewal acceptance",
+        body: isIsc2Checkpoint
+          ? `${cycle.credentialName} had a requirements checkpoint saved ${reminderDateLabel(
+              cycle.submittedAt.slice(0, 10),
+            )}. Confirm renewal only after ISC2 displays the renewed certification dates.`
+          : isComplianceCheckpoint
+            ? `${cycle.credentialName} had compliance recorded ${reminderDateLabel(
+                cycle.submittedAt.slice(0, 10),
+              )}. Start the next period only after confirming its official dates.`
+          : `${cycle.credentialName} was submitted ${reminderDateLabel(
+              cycle.submittedAt.slice(0, 10),
+            )}. Record acceptance when the issuer confirms it.`,
         scheduledFor,
         eventDate: scheduledFor,
         urgency: reminderUrgency(scheduledFor, today),
@@ -3231,9 +3302,14 @@ async function markSubmitted(
 
   const credential = await query(
     database,
-    `SELECT id, status FROM credentials WHERE id = ? AND user_id = ?`,
+    `SELECT
+      id,
+      status,
+      rule_set_id AS ruleSetId
+     FROM credentials
+     WHERE id = ? AND user_id = ?`,
     [credentialId, identity.userId],
-  ).first<{ id: string; status: string }>();
+  ).first<{ id: string; status: string; ruleSetId: string | null }>();
   if (!credential) {
     throw new RequestError(
       "Credential not found.",
@@ -3241,13 +3317,45 @@ async function markSubmitted(
       "credential_not_found",
     );
   }
+  const isIsc2Checkpoint = isIsc2AutomaticRenewalRuleSet(
+    credential.ruleSetId,
+  );
+  const isComplianceCheckpoint = isCompliancePeriodRuleSet(
+    credential.ruleSetId,
+  );
+  const isLifecycleCheckpoint =
+    isIsc2Checkpoint || isComplianceCheckpoint;
+  const closedCycleMessage = isIsc2Checkpoint
+    ? "This renewal cycle is closed and cannot receive another ISC2 dashboard checkpoint."
+    : isComplianceCheckpoint
+      ? "This compliance period is closed and cannot receive another completion checkpoint."
+      : "This renewal cycle is closed and cannot be submitted again.";
   if (credential.status === "renewed") {
     throw new RequestError(
-      "This renewal cycle is closed and cannot be submitted again.",
+      closedCycleMessage,
       409,
       "cycle_closed",
     );
   }
+  if (isIsc2Checkpoint && payload.complianceAttested !== true) {
+    throw new RequestError(
+      "Confirm that the ISC2 Dashboard shows this cycle’s required CPEs and annual maintenance fees as satisfied before saving the checkpoint.",
+      409,
+      "isc2_checkpoint_attestation_required",
+    );
+  }
+  if (isComplianceCheckpoint && payload.complianceAttested !== true) {
+    throw new RequestError(
+      "Confirm that the official record shows this compliance period complete before saving the checkpoint.",
+      409,
+      "compliance_checkpoint_attestation_required",
+    );
+  }
+  const attestationKind = isIsc2Checkpoint
+    ? "isc2_requirements_satisfied"
+    : isComplianceCheckpoint
+      ? "compliance_period_complete"
+      : null;
   const existing = await query(
     database,
     `SELECT id
@@ -3257,25 +3365,23 @@ async function markSubmitted(
   ).first<{ id: string }>();
   const submissionId = existing?.id ?? crypto.randomUUID();
 
-  let results: D1Result[];
-  try {
-    results = await database.batch([
-      query(
-        database,
-        `UPDATE credentials
-         SET status = 'submitted', updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?
-           AND user_id = ?
-           AND status IN ('active', 'submitted')`,
-        [credentialId, identity.userId],
-      ),
+  const statements: D1PreparedStatement[] = [
+    query(
+      database,
+      `UPDATE credentials
+       SET status = 'submitted', updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?
+         AND user_id = ?
+         AND status IN ('active', 'submitted')`,
+      [credentialId, identity.userId],
+    ),
     query(
       database,
       `INSERT INTO renewal_submissions (
         id, user_id, credential_id, submitted_at, confirmation_number,
-        proof_reference
+        proof_reference, attestation_kind
       )
-      SELECT ?, credential.user_id, credential.id, ?, ?, ?
+      SELECT ?, credential.user_id, credential.id, ?, ?, ?, ?
       FROM credentials credential
       WHERE credential.id = ?
         AND credential.user_id = ?
@@ -3284,12 +3390,14 @@ async function markSubmitted(
         submitted_at = excluded.submitted_at,
         confirmation_number = excluded.confirmation_number,
         proof_reference = excluded.proof_reference,
+        attestation_kind = excluded.attestation_kind,
         updated_at = CURRENT_TIMESTAMP`,
       [
         submissionId,
         submissionDate,
         confirmationNumber,
         (proofReference ?? confirmationNumber) || null,
+        attestationKind,
         credentialId,
         identity.userId,
       ],
@@ -3314,9 +3422,10 @@ async function markSubmitted(
     query(
       database,
       `INSERT OR IGNORE INTO xp_events (
-        id, user_id, idempotency_key, event_type, points, related_type, related_id
+        id, user_id, idempotency_key, event_type, points, related_type,
+        related_id
       )
-      SELECT ?, ?, ?, 'renewal_submitted', 150, 'submission', ?
+      SELECT ?, ?, ?, ?, 150, ?, ?
       FROM credentials credential
       WHERE credential.id = ?
         AND credential.user_id = ?
@@ -3324,38 +3433,58 @@ async function markSubmitted(
       [
         crypto.randomUUID(),
         identity.userId,
-        `${identity.userId}:credential:${credentialId}:submitted`,
+        isIsc2Checkpoint
+          ? `${identity.userId}:credential:${credentialId}:isc2-checkpoint`
+          : isComplianceCheckpoint
+            ? `${identity.userId}:credential:${credentialId}:compliance-checkpoint`
+            : `${identity.userId}:credential:${credentialId}:submitted`,
+        isLifecycleCheckpoint
+          ? "renewal_checkpoint_recorded"
+          : "renewal_submitted",
+        isIsc2Checkpoint
+          ? "renewal_checkpoint"
+          : isComplianceCheckpoint
+            ? "compliance_checkpoint"
+            : "submission",
         submissionId,
         credentialId,
         identity.userId,
       ],
     ),
-    query(
-      database,
-      `INSERT OR IGNORE INTO badge_events (
-        id, user_id, badge_id, idempotency_key, related_type, related_id
-      )
-      SELECT ?, ?, 'renewal-filed', ?, 'submission', ?
-      FROM credentials credential
-      WHERE credential.id = ?
-        AND credential.user_id = ?
-        AND credential.status = 'submitted'`,
-      [
-        crypto.randomUUID(),
-        identity.userId,
-        `${identity.userId}:badge:renewal-filed`,
-        submissionId,
-        credentialId,
-        identity.userId,
-      ],
-    ),
-    ]);
+  ];
+  if (!isLifecycleCheckpoint) {
+    statements.push(
+      query(
+        database,
+        `INSERT OR IGNORE INTO badge_events (
+          id, user_id, badge_id, idempotency_key, related_type, related_id
+        )
+        SELECT ?, ?, 'renewal-filed', ?, 'submission', ?
+        FROM credentials credential
+        WHERE credential.id = ?
+          AND credential.user_id = ?
+          AND credential.status = 'submitted'`,
+        [
+          crypto.randomUUID(),
+          identity.userId,
+          `${identity.userId}:badge:renewal-filed`,
+          submissionId,
+          credentialId,
+          identity.userId,
+        ],
+      ),
+    );
+  }
+
+  let results: D1Result[];
+  try {
+    results = await database.batch(statements);
   } catch (error) {
     return rethrowClosedCycleWrite(
       database,
       identity,
       credentialId,
-      "This renewal cycle is closed and cannot be submitted again.",
+      closedCycleMessage,
       error,
     );
   }
@@ -3364,7 +3493,7 @@ async function markSubmitted(
       database,
       identity,
       credentialId,
-      "This renewal cycle is closed and cannot be submitted again.",
+      closedCycleMessage,
     );
   }
   return submissionId;
@@ -3694,6 +3823,9 @@ async function markRenewalAccepted(
   const reference = textField(payload, "reference", { max: 300 });
   const nextCycleStart = isoDateField(payload, "nextCycleStart")!;
   const nextDeadline = isoDateField(payload, "nextDeadline")!;
+  const requestedNextRuleSetId = textField(payload, "nextRuleSetId", {
+    max: 160,
+  });
   if (nextCycleStart >= nextDeadline) {
     throw new RequestError("nextDeadline must be after nextCycleStart");
   }
@@ -3715,6 +3847,7 @@ async function markRenewalAccepted(
     jurisdiction: string;
     issuer: string;
     status: string;
+    deadline: string;
     totalRequired: number;
     unitLabel: string;
     seriesId: string;
@@ -3733,6 +3866,28 @@ async function markRenewalAccepted(
     exclusiveGroup: string | null;
     sortOrder: number;
   };
+  type NextRuleTemplate = {
+    id: string;
+    credentialName: string;
+    profession: string;
+    jurisdiction: string;
+    issuer: string;
+    totalUnits: number;
+    unitLabel: string;
+    cycleMonths: number;
+  };
+  type NextRuleCategory = {
+    id: string;
+    name: string;
+    requiredUnits: number;
+    kind: RequirementKind;
+    relation: RequirementRelation;
+    parentCategoryId: string | null;
+    applicability: RequirementApplicability;
+    conditionNote: string | null;
+    exclusiveGroup: string | null;
+    sortOrder: number;
+  };
   const [credential, submission, requirements] = await Promise.all([
     query(
       database,
@@ -3744,6 +3899,7 @@ async function markRenewalAccepted(
         credential.jurisdiction,
         credential.issuer,
         credential.status,
+        credential.deadline,
         credential.total_required AS totalRequired,
         credential.unit_label AS unitLabel,
         COALESCE(cycle.series_id, credential.id) AS seriesId,
@@ -3807,6 +3963,96 @@ async function markRenewalAccepted(
       "acceptance_before_submission",
     );
   }
+  const isIsc2AutomaticRenewal = isIsc2AutomaticRenewalRuleSet(
+    credential.ruleSetId,
+  );
+  const isCompliancePeriod = isCompliancePeriodRuleSet(
+    credential.ruleSetId,
+  );
+  if (
+    (isIsc2AutomaticRenewal || isCompliancePeriod) &&
+    payload.officialDatesAttested !== true
+  ) {
+    throw new RequestError(
+      "Confirm that the completion record and next cycle dates match the official source before closing this period.",
+      409,
+      "official_next_period_attestation_required",
+    );
+  }
+  if (isIsc2AutomaticRenewal && acceptedAt < credential.deadline) {
+    throw new RequestError(
+      "ISC2 renewal cannot be confirmed before the current certification cycle ends.",
+      409,
+      "isc2_renewal_before_cycle_end",
+    );
+  }
+  const requiresFloridaTemplateSelection =
+    credential.ruleSetId?.startsWith("fl-insurance-producer-") ?? false;
+  let selectedNextRule: NextRuleTemplate | null = null;
+  let selectedNextCategories: NextRuleCategory[] = [];
+  if (requiresFloridaTemplateSelection) {
+    if (
+      !requestedNextRuleSetId ||
+      !requestedNextRuleSetId.startsWith("fl-insurance-producer-")
+    ) {
+      throw new RequestError(
+        "Choose the current Florida producer template shown for the next MyProfile compliance period.",
+        409,
+        "florida_next_template_required",
+      );
+    }
+    selectedNextRule = await query(
+      database,
+      `SELECT
+        id,
+        credential_name AS credentialName,
+        profession,
+        jurisdiction,
+        issuer,
+        total_units AS totalUnits,
+        unit_label AS unitLabel,
+        cycle_months AS cycleMonths
+       FROM rule_sets
+       WHERE id = ?
+         AND is_current = 1
+         AND profession = 'Insurance'
+         AND jurisdiction = 'Florida'
+         AND id LIKE 'fl-insurance-producer-%'`,
+      [requestedNextRuleSetId],
+    ).first<NextRuleTemplate>();
+    if (!selectedNextRule) {
+      throw new RequestError(
+        "The selected Florida producer template is unavailable or no longer current.",
+        409,
+        "florida_next_template_unavailable",
+      );
+    }
+    const categoryResult = await query(
+      database,
+      `SELECT
+        id,
+        name,
+        required_units AS requiredUnits,
+        kind,
+        relation,
+        parent_category_id AS parentCategoryId,
+        applicability,
+        condition_note AS conditionNote,
+        exclusive_group AS exclusiveGroup,
+        sort_order AS sortOrder
+       FROM rule_categories
+       WHERE rule_set_id = ?
+       ORDER BY sort_order, name`,
+      [selectedNextRule.id],
+    ).all<NextRuleCategory>();
+    selectedNextCategories = categoryResult.results;
+  } else if (requestedNextRuleSetId) {
+    throw new RequestError(
+      "A replacement rule template may be selected only for a Florida producer compliance rollover.",
+      400,
+      "next_template_not_allowed",
+    );
+  }
   const unresolvedClassification =
     await findUnresolvedCredentialClassification(
       database,
@@ -3859,15 +4105,32 @@ async function markRenewalAccepted(
   const transitionsToFortyHourCfp =
     credential.ruleSetId === CFP_PRE_2027_RULE_SET_ID &&
     nextCycleStart >= CFP_2027_CYCLE_START;
-  const nextCredentialName = transitionsToFortyHourCfp
-    ? "CFP® Professional — cycle beginning April 1, 2027 or later"
-    : credential.credentialName;
-  const nextRuleSetId = transitionsToFortyHourCfp
-    ? CFP_2027_RULE_SET_ID
-    : credential.ruleSetId;
-  const nextTotalRequired = transitionsToFortyHourCfp
-    ? 40
-    : Number(credential.totalRequired);
+  const nextCredentialName =
+    selectedNextRule?.credentialName ??
+    (transitionsToFortyHourCfp
+      ? "CFP® Professional — cycle beginning April 1, 2027 or later"
+      : credential.credentialName);
+  const nextRuleSetId =
+    selectedNextRule?.id ??
+    (transitionsToFortyHourCfp
+      ? CFP_2027_RULE_SET_ID
+      : credential.ruleSetId);
+  const nextProfession = selectedNextRule?.profession ?? credential.profession;
+  const nextJurisdiction =
+    selectedNextRule?.jurisdiction ?? credential.jurisdiction;
+  const nextIssuer = selectedNextRule?.issuer ?? credential.issuer;
+  const nextTotalRequired =
+    selectedNextRule?.totalUnits ??
+    (transitionsToFortyHourCfp
+      ? 40
+      : Number(credential.totalRequired));
+  const nextUnitLabel = selectedNextRule?.unitLabel ?? credential.unitLabel;
+  const nextCycleMonths =
+    selectedNextRule?.cycleMonths ?? Number(credential.cycleMonths);
+  const officialRecordAttestedAt =
+    isIsc2AutomaticRenewal || isCompliancePeriod
+      ? new Date().toISOString()
+      : null;
   const carryoverReviewTaskTitle =
     nextRuleSetId === null
       ? null
@@ -4040,13 +4303,13 @@ async function markRenewalAccepted(
         identity.userId,
         nextRuleSetId,
         nextCredentialName,
-        credential.profession,
-        credential.jurisdiction,
-        credential.issuer,
+        nextProfession,
+        nextJurisdiction,
+        nextIssuer,
         nextCycleStart,
         nextDeadline,
         nextTotalRequired,
-        credential.unitLabel,
+        nextUnitLabel,
         credentialId,
         identity.userId,
       ],
@@ -4063,7 +4326,7 @@ async function markRenewalAccepted(
         nextCredentialId,
         credential.seriesId,
         credentialId,
-        Number(credential.cycleMonths),
+        nextCycleMonths,
       ],
     ),
   ];
@@ -4135,7 +4398,28 @@ async function markRenewalAccepted(
           sortOrder: 3,
         },
       ]
-    : requirements.results.map((requirement) => {
+    : selectedNextRule
+      ? selectedNextCategories.map((category) => {
+          const applicabilityStatus = defaultApplicabilityStatus(
+            category.applicability,
+          );
+          return {
+            key: category.id,
+            ruleCategoryId: category.id,
+            name: category.name,
+            requiredUnits: Number(category.requiredUnits),
+            kind: category.kind,
+            relation: category.relation,
+            parentKey: category.parentCategoryId,
+            applicability: category.applicability,
+            applicabilityStatus,
+            conditionNote: category.conditionNote,
+            exclusiveGroup: category.exclusiveGroup,
+            isActive: applicabilityStatus === "applies",
+            sortOrder: Number(category.sortOrder),
+          };
+        })
+      : requirements.results.map((requirement) => {
         const applicabilityStatus = defaultApplicabilityStatus(
           requirement.applicability,
         );
@@ -4154,7 +4438,7 @@ async function markRenewalAccepted(
           isActive: applicabilityStatus === "applies",
           sortOrder: Number(requirement.sortOrder),
         };
-      });
+        });
   const nextRequirementIdByPriorId = new Map(
     rolloverDrafts.map((requirement) => [
       requirement.key,
@@ -4222,8 +4506,9 @@ async function markRenewalAccepted(
       database,
       `INSERT INTO renewal_acceptances (
         id, user_id, credential_id, submission_id, accepted_at,
-        acceptance_reference, next_credential_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        acceptance_reference, official_record_attested_at,
+        next_credential_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         acceptanceId,
         identity.userId,
@@ -4231,6 +4516,7 @@ async function markRenewalAccepted(
         submission.id,
         acceptedAt,
         reference,
+        officialRecordAttestedAt,
         nextCredentialId,
       ],
     ),
@@ -4238,11 +4524,17 @@ async function markRenewalAccepted(
       database,
       `INSERT OR IGNORE INTO xp_events (
         id, user_id, idempotency_key, event_type, points, related_type, related_id
-      ) VALUES (?, ?, ?, 'renewal_accepted', 200, 'acceptance', ?)`,
+      ) VALUES (?, ?, ?, ?, 200, ?, ?)`,
       [
         crypto.randomUUID(),
         identity.userId,
-        `${identity.userId}:credential:${credentialId}:accepted`,
+        isCompliancePeriod
+          ? `${identity.userId}:credential:${credentialId}:compliance-completed`
+          : `${identity.userId}:credential:${credentialId}:accepted`,
+        isCompliancePeriod
+          ? "compliance_period_completed"
+          : "renewal_accepted",
+        isCompliancePeriod ? "compliance_completion" : "acceptance",
         acceptanceId,
       ],
     ),

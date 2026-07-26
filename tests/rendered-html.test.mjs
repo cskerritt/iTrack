@@ -1326,9 +1326,13 @@ test("License Lantern product contract", async (t) => {
         assert.match(source, /Offline — your cloud record is protected/);
         assert.match(source, /Reconnect to save/);
         assert.match(source, /Install on this device/);
-        assert.match(source, /Add renewal date to calendar/);
+        assert.match(source, /date to calendar/);
         assert.match(source, /Add renewal dates to calendar/);
       }
+      assert.match(
+        clientSource,
+        /＋ Add[\s\S]*?isCompliancePeriodCredential\(selected\)[\s\S]*?\? "compliance"[\s\S]*?: "renewal"[\s\S]*?date to calendar/,
+      );
       assert.match(
         clientSource,
         /activityDraftStorageKey\(workspace\.user\.draftStorageNamespace\)/,
@@ -4007,11 +4011,437 @@ test("License Lantern product contract", async (t) => {
       );
       assert.match(
         workspaceRouteSource,
-        /ISC2_AUTOMATIC_RENEWAL_RULE_SET_IDS[\s\S]*?isc2-cc-2026-v1[\s\S]*?isc2-cgrc-2026-v1[\s\S]*?renewalTaskSpecs[\s\S]*?Verify automatic ISC2 renewal and save dashboard proof/,
+        /ISC2_AUTOMATIC_RENEWAL_RULE_SET_PREFIX[\s\S]*?isIsc2AutomaticRenewalRuleSet[\s\S]*?startsWith\(ISC2_AUTOMATIC_RENEWAL_RULE_SET_PREFIX\)[\s\S]*?renewalTaskSpecs[\s\S]*?Submit required ISC2 CPEs and keep annual maintenance fees current[\s\S]*?Save an attested ISC2 requirements checkpoint/,
       );
       assert.match(
         clientSource,
-        /isIsc2AutomaticRenewalCredential[\s\S]*?Record ISC2 compliance[\s\S]*?Mark requirements complete[\s\S]*?Confirm renewal & continue/,
+        /isIsc2AutomaticRenewalCredential[\s\S]*?Save dashboard checkpoint[\s\S]*?Save an ISC2 dashboard checkpoint[\s\S]*?I checked the ISC2 Dashboard[\s\S]*?It shows this cycle’s required CPEs and annual maintenance[\s\S]*?fees as satisfied[\s\S]*?Close this cycle only after the dashboard displays renewed certification dates[\s\S]*?Awaiting ISC2 renewal/,
+      );
+      assert.match(
+        workspaceRouteSource,
+        /COMPLIANCE_PERIOD_RULE_SET_PREFIXES[\s\S]*?fl-insurance-producer-[\s\S]*?Verify official compliance status and save portal proof[\s\S]*?renewal_checkpoint_recorded[\s\S]*?compliance_checkpoint/,
+      );
+      assert.match(
+        clientSource,
+        /isCompliancePeriodCredential[\s\S]*?Active compliance period[\s\S]*?Record compliance[\s\S]*?Start next period/,
+      );
+      database.close();
+    },
+  );
+
+  await t.test(
+    "refreshes managed catalog corrections, freezes submitted snapshots, and retires removed entries idempotently",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const bootstrapRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __managedCatalogTestNonce = "bootstrap";`,
+      );
+      await bootstrapRuntime.initializeDatabase(database);
+
+      const raw = database.raw;
+      const dataSysRuleSetId = "comptia-datasys-plus-2026-v1";
+      const dataSysWorkCategoryId =
+        "comptia-datasys-plus-2026-work-experience";
+      const staleRuleSetId = "comptia-retired-regression-2026-v1";
+      const staleCategoryId =
+        "comptia-retired-regression-2026-work-experience";
+
+      raw
+        .prepare(
+          `INSERT INTO users (id, email, display_name, is_demo)
+           VALUES (?, ?, ?, 0)`,
+        )
+        .run(
+          "user-managed-catalog",
+          "managed-catalog@example.com",
+          "Managed Catalog Test",
+        );
+      raw
+        .prepare(
+          `UPDATE rule_sets
+           SET
+             total_units = 999,
+             unit_label = 'raw hours',
+             source_title = 'Stale CompTIA rule copy',
+             is_current = 0
+           WHERE id = ?`,
+        )
+        .run(dataSysRuleSetId);
+      raw
+        .prepare(
+          `UPDATE rule_categories
+           SET
+             applicability = 'optional',
+             condition_note = 'Legacy optional work-experience copy.'
+           WHERE id = ?`,
+        )
+        .run(dataSysWorkCategoryId);
+
+      const insertCredential = raw.prepare(
+        `INSERT INTO credentials (
+           id, user_id, rule_set_id, credential_name, profession,
+           jurisdiction, issuer, cycle_start, deadline, total_required,
+           unit_label, status
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insertCredential.run(
+        "credential-datasys-active",
+        "user-managed-catalog",
+        dataSysRuleSetId,
+        "CompTIA DataSys+ ce — standard renewal",
+        "Information Technology",
+        "Global",
+        "CompTIA",
+        "2026-01-01",
+        "2028-12-31",
+        30,
+        "CompTIA-accepted CEUs",
+        "active",
+      );
+      insertCredential.run(
+        "credential-datasys-submitted",
+        "user-managed-catalog",
+        dataSysRuleSetId,
+        "CompTIA DataSys+ ce — standard renewal",
+        "Information Technology",
+        "Global",
+        "CompTIA",
+        "2026-01-01",
+        "2028-12-31",
+        30,
+        "CompTIA-accepted CEUs",
+        "submitted",
+      );
+
+      const insertRequirement = raw.prepare(
+        `INSERT INTO credential_requirements (
+           id, credential_id, rule_category_id, name, required_units, kind,
+           relation, parent_requirement_id, applicability,
+           applicability_status, condition_note, exclusive_group, is_active,
+           sort_order
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insertRequirement.run(
+        "requirement-datasys-active-work",
+        "credential-datasys-active",
+        dataSysWorkCategoryId,
+        "Related Work Experience",
+        9,
+        "maximum",
+        "independent",
+        null,
+        "optional",
+        "applies",
+        "Legacy optional work-experience copy.",
+        "CompTIA activity type",
+        1,
+        3,
+      );
+      insertRequirement.run(
+        "requirement-datasys-submitted-work",
+        "credential-datasys-submitted",
+        dataSysWorkCategoryId,
+        "Related Work Experience",
+        9,
+        "maximum",
+        "independent",
+        null,
+        "optional",
+        "applies",
+        "Legacy optional work-experience copy.",
+        "CompTIA activity type",
+        1,
+        3,
+      );
+
+      raw
+        .prepare(
+          `INSERT INTO rule_sets (
+             id, stable_key, version, profession, credential_name,
+             jurisdiction, issuer, total_units, unit_label, cycle_months,
+             source_url, source_title, effective_date, last_verified_at,
+             review_status, is_current
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          staleRuleSetId,
+          "comptia-retired-regression-ce",
+          1,
+          "Information Technology",
+          "Retired CompTIA regression credential",
+          "Global",
+          "CompTIA",
+          9,
+          "CEUs",
+          36,
+          "https://example.invalid/retired-comptia",
+          "Stale managed rule that no longer exists in the catalog.",
+          null,
+          "2025-01-01",
+          "source_linked_check_conditions",
+          1,
+        );
+      raw
+        .prepare(
+          `INSERT INTO rule_categories (
+             id, rule_set_id, name, required_units, kind, relation,
+             parent_category_id, applicability, condition_note,
+             exclusive_group, sort_order
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          staleCategoryId,
+          staleRuleSetId,
+          "Retired Related Work Experience",
+          9,
+          "maximum",
+          "independent",
+          null,
+          "optional",
+          "Stale category that must be retired.",
+          "CompTIA activity type",
+          0,
+        );
+      insertCredential.run(
+        "credential-retired-comptia-active",
+        "user-managed-catalog",
+        staleRuleSetId,
+        "Retired CompTIA regression credential",
+        "Information Technology",
+        "Global",
+        "CompTIA",
+        "2026-01-01",
+        "2028-12-31",
+        9,
+        "CEUs",
+        "active",
+      );
+      insertRequirement.run(
+        "requirement-retired-comptia-active",
+        "credential-retired-comptia-active",
+        staleCategoryId,
+        "Retired Related Work Experience",
+        9,
+        "maximum",
+        "independent",
+        null,
+        "optional",
+        "applies",
+        "Stale category that must be retired.",
+        "CompTIA activity type",
+        1,
+        0,
+      );
+
+      const migrationRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __managedCatalogTestNonce = "migration";`,
+      );
+      await migrationRuntime.initializeDatabase(database);
+
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 total_units AS totalUnits,
+                 unit_label AS unitLabel,
+                 is_current AS isCurrent
+               FROM rule_sets
+               WHERE id = ?`,
+            )
+            .get(dataSysRuleSetId),
+        },
+        {
+          totalUnits: 30,
+          unitLabel: "CompTIA-accepted CEUs",
+          isCurrent: 1,
+        },
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT applicability, condition_note AS conditionNote
+               FROM rule_categories
+               WHERE id = ?`,
+            )
+            .get(dataSysWorkCategoryId),
+        },
+        {
+          applicability: "conditional",
+          conditionNote:
+            "CompTIA's general Help guidance describes three work-experience CEUs per cycle year, up to nine, but its detailed work-experience table omits this certification. Leave Work Experience uncounted unless CompTIA or the holder's portal confirms that it applies.",
+        },
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 applicability,
+                 applicability_status AS applicabilityStatus,
+                 is_active AS isActive
+               FROM credential_requirements
+               WHERE id = 'requirement-datasys-active-work'`,
+            )
+            .get(),
+        },
+        {
+          applicability: "conditional",
+          applicabilityStatus: "needs_confirmation",
+          isActive: 0,
+        },
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 applicability,
+                 applicability_status AS applicabilityStatus,
+                 is_active AS isActive,
+                 condition_note AS conditionNote
+               FROM credential_requirements
+               WHERE id = 'requirement-datasys-submitted-work'`,
+            )
+            .get(),
+        },
+        {
+          applicability: "optional",
+          applicabilityStatus: "applies",
+          isActive: 1,
+          conditionNote: "Legacy optional work-experience copy.",
+        },
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT is_current AS isCurrent
+             FROM rule_sets
+             WHERE id = ?`,
+          )
+          .get(staleRuleSetId).isCurrent,
+        0,
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_categories
+             WHERE id = ?`,
+          )
+          .get(staleCategoryId).count,
+        0,
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 rule_category_id AS ruleCategoryId,
+                 is_active AS isActive
+               FROM credential_requirements
+               WHERE id = 'requirement-retired-comptia-active'`,
+            )
+            .get(),
+        },
+        {
+          ruleCategoryId: null,
+          isActive: 0,
+        },
+      );
+
+      const catalogState = () => ({
+        rules: raw
+          .prepare(
+            `SELECT
+               id, total_units, unit_label, source_title, is_current
+             FROM rule_sets
+             WHERE id IN (?, ?)
+             ORDER BY id`,
+          )
+          .all(dataSysRuleSetId, staleRuleSetId),
+        categories: raw
+          .prepare(
+            `SELECT *
+             FROM rule_categories
+             WHERE id IN (?, ?)
+             ORDER BY id`,
+          )
+          .all(dataSysWorkCategoryId, staleCategoryId),
+        requirements: raw
+          .prepare(
+            `SELECT *
+             FROM credential_requirements
+             WHERE credential_id IN (
+               'credential-datasys-active',
+               'credential-datasys-submitted',
+               'credential-retired-comptia-active'
+             )
+             ORDER BY credential_id, sort_order, id`,
+          )
+          .all(),
+      });
+      const stableState = JSON.stringify(catalogState());
+      const repeatRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __managedCatalogTestNonce = "repeat";`,
+      );
+      await repeatRuntime.initializeDatabase(database);
+      assert.equal(JSON.stringify(catalogState()), stableState);
+      database.close();
+    },
+  );
+
+  await t.test(
+    "adds lifecycle attestation columns to an existing database",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const bootstrapRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __attestationMigrationNonce = "bootstrap";`,
+      );
+      await bootstrapRuntime.initializeDatabase(database);
+      database.raw.exec(
+        `ALTER TABLE renewal_submissions DROP COLUMN attestation_kind;
+         ALTER TABLE renewal_acceptances DROP COLUMN official_record_attested_at;`,
+      );
+
+      const columnNames = (table) =>
+        database.raw
+          .prepare(`PRAGMA table_info(${table})`)
+          .all()
+          .map((column) => column.name);
+      assert.equal(
+        columnNames("renewal_submissions").includes("attestation_kind"),
+        false,
+      );
+      assert.equal(
+        columnNames("renewal_acceptances").includes(
+          "official_record_attested_at",
+        ),
+        false,
+      );
+
+      const upgradeRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __attestationMigrationNonce = "upgrade";`,
+      );
+      await upgradeRuntime.initializeDatabase(database);
+      assert.ok(
+        columnNames("renewal_submissions").includes("attestation_kind"),
+      );
+      assert.ok(
+        columnNames("renewal_acceptances").includes(
+          "official_record_attested_at",
+        ),
       );
       database.close();
     },
@@ -7469,8 +7899,16 @@ test("License Lantern product contract", async (t) => {
     async () => {
       const database = new FakeDatabase({
         resolveFirst(call) {
-          if (/SELECT id(?:, status)? FROM credentials WHERE id = \? AND user_id = \?/i.test(call.sql)) {
-            return { id: call.bindings[0], status: "active" };
+          if (
+            /SELECT id, status, rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: call.bindings[0],
+              status: "active",
+              ruleSetId: null,
+            };
           }
           if (/FROM renewal_submissions WHERE credential_id = \? AND user_id = \?/i.test(call.sql)) {
             return null;
@@ -7504,6 +7942,7 @@ test("License Lantern product contract", async (t) => {
         "2028-02-20",
         "CONF-2028-0042",
         "CONF-2028-0042",
+        null,
         "credential-owner",
         await expectedStableUserId("owner@example.com"),
       ]);
@@ -7520,6 +7959,295 @@ test("License Lantern product contract", async (t) => {
           /^INSERT INTO activities \(/i.test(statement.sql),
         ),
         false,
+      );
+    },
+  );
+
+  await t.test(
+    "keeps a retired ISC2 rule on the attested checkpoint path without claiming a filed renewal",
+    async () => {
+      const database = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /SELECT id, status, rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: call.bindings[0],
+              status: "active",
+              ruleSetId: "isc2-retired-regression-2024-v1",
+            };
+          }
+          if (
+            /FROM renewal_submissions WHERE credential_id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return null;
+          }
+          return null;
+        },
+      });
+      testCloudflareEnv.DB = database;
+
+      const unattestedResponse = await postWorkspace("markSubmitted", {
+        credentialId: "credential-isc2-owner",
+        submissionDate: "2028-02-20",
+        confirmationNumber: "ISC2-DASHBOARD-0042",
+      });
+      assert.equal(unattestedResponse.status, 409);
+      assert.equal(
+        (await unattestedResponse.json()).code,
+        "isc2_checkpoint_attestation_required",
+      );
+      assert.equal(
+        flattenedStatements(database).some((statement) =>
+          /^(?:UPDATE credentials SET status = 'submitted'|INSERT INTO renewal_submissions|INSERT OR IGNORE INTO xp_events|INSERT OR IGNORE INTO badge_events)/i.test(
+            statement.sql.trim(),
+          ),
+        ),
+        false,
+      );
+
+      const attestedResponse = await postWorkspace("markSubmitted", {
+        credentialId: "credential-isc2-owner",
+        submissionDate: "2028-02-20",
+        confirmationNumber: "ISC2-DASHBOARD-0042",
+        complianceAttested: true,
+      });
+      assert.equal(attestedResponse.status, 200);
+      assert.equal((await attestedResponse.json()).action, "markSubmitted");
+
+      const statements = flattenedStatements(database);
+      const checkpointXp = statements.find((statement) =>
+        /^INSERT OR IGNORE INTO xp_events \(/i.test(statement.sql),
+      );
+      assert.ok(checkpointXp);
+      assert.ok(checkpointXp.bindings.includes("renewal_checkpoint_recorded"));
+      assert.ok(checkpointXp.bindings.includes("renewal_checkpoint"));
+      assert.equal(
+        statements.some((statement) =>
+          statement.bindings.includes("renewal_submitted"),
+        ),
+        false,
+      );
+      assert.equal(
+        statements.some((statement) =>
+          /^INSERT OR IGNORE INTO badge_events \(/i.test(statement.sql),
+        ),
+        false,
+      );
+    },
+  );
+
+  await t.test(
+    "records a compliance-period checkpoint without awarding a filed-renewal badge",
+    async () => {
+      const database = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /SELECT id, status, rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: call.bindings[0],
+              status: "active",
+              ruleSetId:
+                "fl-insurance-producer-life-under-6-years-2026-v1",
+            };
+          }
+          if (
+            /FROM renewal_submissions WHERE credential_id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return null;
+          }
+          return null;
+        },
+      });
+      testCloudflareEnv.DB = database;
+
+      const response = await postWorkspace("markSubmitted", {
+        credentialId: "credential-compliance-owner",
+        submissionDate: "2028-02-20",
+        confirmationNumber: "MYPROFILE-0042",
+        complianceAttested: true,
+      });
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).action, "markSubmitted");
+
+      const statements = flattenedStatements(database);
+      const checkpointXp = statements.find((statement) =>
+        /^INSERT OR IGNORE INTO xp_events \(/i.test(statement.sql),
+      );
+      assert.ok(checkpointXp);
+      assert.ok(checkpointXp.bindings.includes("renewal_checkpoint_recorded"));
+      assert.ok(checkpointXp.bindings.includes("compliance_checkpoint"));
+      assert.equal(
+        statements.some((statement) =>
+          statement.bindings.includes("renewal_submitted"),
+        ),
+        false,
+      );
+      assert.equal(
+        statements.some((statement) =>
+          /^INSERT OR IGNORE INTO badge_events \(/i.test(statement.sql),
+        ),
+        false,
+      );
+    },
+  );
+
+  await t.test(
+    "blocks a retired ISC2 cycle from closing without official dates or before cycle end",
+    async () => {
+      const database = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /SELECT next_credential_id AS nextCredentialId FROM renewal_acceptances/i.test(
+              call.sql,
+            )
+          ) {
+            return null;
+          }
+          if (
+            /FROM credentials credential\s+LEFT JOIN credential_cycle_links cycle/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "credential-isc2-submitted",
+              ruleSetId: "isc2-retired-regression-2024-v1",
+              credentialName: "Retired ISC2 regression credential",
+              profession: "Cybersecurity",
+              jurisdiction: "Global",
+              issuer: "ISC2",
+              status: "submitted",
+              deadline: "2028-03-01",
+              totalRequired: 120,
+              unitLabel: "CPE credits",
+              seriesId: "series-isc2",
+              cycleMonths: 36,
+            };
+          }
+          if (
+            /FROM renewal_submissions WHERE credential_id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "submission-isc2",
+              submittedAt: "2028-02-20T12:00:00.000Z",
+            };
+          }
+          return null;
+        },
+      });
+      testCloudflareEnv.DB = database;
+      const payload = {
+        credentialId: "credential-isc2-submitted",
+        acceptedAt: "2028-02-25",
+        reference: "ISC2-DASHBOARD-RENEWED",
+        nextCycleStart: "2028-03-02",
+        nextDeadline: "2031-03-01",
+      };
+
+      const unattested = await postWorkspace(
+        "markRenewalAccepted",
+        payload,
+      );
+      assert.equal(unattested.status, 409);
+      assert.equal(
+        (await unattested.json()).code,
+        "official_next_period_attestation_required",
+      );
+
+      const beforeCycleEnd = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...payload,
+          officialDatesAttested: true,
+        },
+      );
+      assert.equal(beforeCycleEnd.status, 409);
+      assert.equal(
+        (await beforeCycleEnd.json()).code,
+        "isc2_renewal_before_cycle_end",
+      );
+      assert.equal(
+        flattenedStatements(database).some((statement) =>
+          /UPDATE credentials[\s\S]*?SET status = 'renewed'|INSERT INTO renewal_acceptances/i.test(
+            statement.sql,
+          ),
+        ),
+        false,
+      );
+    },
+  );
+
+  await t.test(
+    "requires a current Florida template before opening the next compliance period",
+    async () => {
+      const database = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /SELECT next_credential_id AS nextCredentialId FROM renewal_acceptances/i.test(
+              call.sql,
+            )
+          ) {
+            return null;
+          }
+          if (
+            /FROM credentials credential\s+LEFT JOIN credential_cycle_links cycle/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "credential-florida-submitted",
+              ruleSetId:
+                "fl-insurance-producer-life-under-6-years-2026-v1",
+              credentialName: "Florida life producer",
+              profession: "Insurance",
+              jurisdiction: "Florida",
+              issuer: "Florida Department of Financial Services",
+              status: "submitted",
+              deadline: "2028-03-01",
+              totalRequired: 24,
+              unitLabel: "CE hours",
+              seriesId: "series-florida",
+              cycleMonths: 24,
+            };
+          }
+          if (
+            /FROM renewal_submissions WHERE credential_id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "submission-florida",
+              submittedAt: "2028-02-20T12:00:00.000Z",
+            };
+          }
+          return null;
+        },
+      });
+      testCloudflareEnv.DB = database;
+
+      const response = await postWorkspace("markRenewalAccepted", {
+        credentialId: "credential-florida-submitted",
+        acceptedAt: "2028-03-02",
+        reference: "MYPROFILE-COMPLETE",
+        nextCycleStart: "2028-03-02",
+        nextDeadline: "2030-03-01",
+        officialDatesAttested: true,
+      });
+      assert.equal(response.status, 409);
+      assert.equal(
+        (await response.json()).code,
+        "florida_next_template_required",
       );
     },
   );
@@ -9535,6 +10263,7 @@ test("License Lantern product contract", async (t) => {
         "submission-prior",
         "2028-02-25",
         "ACCEPT-204",
+        null,
         nextCredentialId,
       ]);
       assert.deepEqual(oldCycleUpdate.bindings.slice(-4), [

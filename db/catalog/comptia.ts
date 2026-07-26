@@ -272,7 +272,7 @@ const CERTIFICATIONS = [
 ] as const satisfies readonly CertificationSpec[];
 
 const SHARED_RULE_NOTE =
-  "Use the exact certification and renewal dates displayed in CompTIA Central. Every counted activity must be completed within that 36-month cycle, and at least 50% of its content must relate to one or more exam objectives for the certification being renewed; CompTIA retains final eligibility authority. The expiration date is the renewal deadline. CompTIA's 30-day post-expiration window is only for activating the grace process, paying an outstanding fee, or uploading CEUs earned before expiration: it does not extend the period for earning CEUs, completing CertMaster CE, or earning another certification. No official carryover permission is published, so do not carry, reuse, or automatically copy an activity into another cycle. Confirm all automatic or higher-level-certification renewals and replacement expiration dates in CompTIA Central. Passing a newer exam, eligible CertMaster CE, and qualifying CompTIA or non-CompTIA certifications are alternative renewal routes; officially mapped certifications may instead award fixed CEUs, and fees vary by route. CompTIA may audit at any time, including after cycle completion, and states that submitted CE documentation is retained for six years. Fee amounts are mutable and excluded from the compliance total; verify the current official fee page.";
+  "Use the exact certification and renewal dates displayed in CompTIA Central. Enter only the CEU value CompTIA accepts for the activity in the certification account, not raw course, publication, work, or creation hours. Every counted activity must be completed within that 36-month cycle, and at least 50% of its content must relate to one or more exam objectives for the certification being renewed; CompTIA retains final eligibility authority. The expiration date is the renewal deadline. CompTIA's 30-day post-expiration window is only for activating the grace process, paying an outstanding fee, or uploading CEUs earned before expiration: it does not extend the period for earning CEUs, completing CertMaster CE, or earning another certification. No official carryover permission is published, so do not carry, reuse, or automatically copy an activity into another cycle. Confirm all automatic or higher-level-certification renewals and replacement expiration dates in CompTIA Central. Passing a newer exam, eligible CertMaster CE, and qualifying CompTIA or non-CompTIA certifications are alternative renewal routes; officially mapped certifications may instead award fixed CEUs, and fees vary by route. CompTIA may audit at any time, including after cycle completion, and states that submitted CE documentation is retained for six years. Fee amounts are mutable and excluded from the compliance total; verify the current official fee page.";
 
 const WORK_EXPERIENCE_CONFLICT_NOTE =
   "CompTIA's general Help guidance describes three work-experience CEUs per cycle year, up to nine, but its detailed work-experience table omits this certification. Leave Work Experience uncounted unless CompTIA or the holder's portal confirms that it applies.";
@@ -300,7 +300,7 @@ function makeRuleSetBinding(spec: CertificationSpec): RuleSetSeedBinding {
     "Global",
     "CompTIA",
     spec.totalUnits,
-    "CEUs",
+    "CompTIA-accepted CEUs",
     36,
     SOURCE_URL,
     makeRuleNote(spec),

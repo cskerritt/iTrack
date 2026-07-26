@@ -212,6 +212,7 @@ const TABLE_STATEMENTS = [
     submitted_at TEXT NOT NULL,
     confirmation_number TEXT NOT NULL,
     proof_reference TEXT,
+    attestation_kind TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -246,6 +247,7 @@ const TABLE_STATEMENTS = [
     submission_id TEXT NOT NULL,
     accepted_at TEXT NOT NULL,
     acceptance_reference TEXT,
+    official_record_attested_at TEXT,
     next_credential_id TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -413,6 +415,16 @@ const RICH_RULE_COLUMNS = [
     table: "credential_requirements",
     name: "is_active",
     definition: "is_active INTEGER NOT NULL DEFAULT 1",
+  },
+  {
+    table: "renewal_submissions",
+    name: "attestation_kind",
+    definition: "attestation_kind TEXT",
+  },
+  {
+    table: "renewal_acceptances",
+    name: "official_record_attested_at",
+    definition: "official_record_attested_at TEXT",
   },
 ] as const;
 
@@ -3035,11 +3047,27 @@ const GLOBAL_SEED_STATEMENTS = [
   },
 ] as const;
 
-const CATALOG_2026_RULE_SET_INSERT_SQL = `INSERT OR IGNORE INTO rule_sets (
+const CATALOG_2026_RULE_SET_INSERT_SQL = `INSERT INTO rule_sets (
   id, stable_key, version, profession, credential_name, jurisdiction, issuer,
   total_units, unit_label, cycle_months, source_url, source_title,
   effective_date, last_verified_at, review_status, is_current
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+  stable_key = excluded.stable_key,
+  version = excluded.version,
+  profession = excluded.profession,
+  credential_name = excluded.credential_name,
+  jurisdiction = excluded.jurisdiction,
+  issuer = excluded.issuer,
+  total_units = excluded.total_units,
+  unit_label = excluded.unit_label,
+  cycle_months = excluded.cycle_months,
+  source_url = excluded.source_url,
+  source_title = excluded.source_title,
+  effective_date = excluded.effective_date,
+  last_verified_at = excluded.last_verified_at,
+  review_status = excluded.review_status,
+  is_current = excluded.is_current`;
 
 const CATALOG_2026_RULE_SET_SEED_BINDINGS = [
   [
@@ -3299,10 +3327,21 @@ const CATALOG_2026_RULE_SET_SEED_BINDINGS = [
   ...INSURANCE_RULE_SET_SEED_BINDINGS,
 ] as const;
 
-const CATALOG_2026_CATEGORY_INSERT_SQL = `INSERT OR IGNORE INTO rule_categories (
+const CATALOG_2026_CATEGORY_INSERT_SQL = `INSERT INTO rule_categories (
   id, rule_set_id, name, required_units, kind, relation, parent_category_id,
   applicability, condition_note, exclusive_group, sort_order
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+  rule_set_id = excluded.rule_set_id,
+  name = excluded.name,
+  required_units = excluded.required_units,
+  kind = excluded.kind,
+  relation = excluded.relation,
+  parent_category_id = excluded.parent_category_id,
+  applicability = excluded.applicability,
+  condition_note = excluded.condition_note,
+  exclusive_group = excluded.exclusive_group,
+  sort_order = excluded.sort_order`;
 
 const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
   [
@@ -4090,6 +4129,74 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
   ...INSURANCE_CATEGORY_SEED_BINDINGS,
 ] as const;
 
+const MANAGED_EXTERNAL_RULE_SET_IDS = [
+  ...ISC2_RULE_SET_SEED_BINDINGS,
+  ...COMPTIA_RULE_SET_SEED_BINDINGS,
+  ...INSURANCE_RULE_SET_SEED_BINDINGS,
+].map((bindings) => bindings[0]);
+
+const MANAGED_EXTERNAL_CATEGORY_IDS = [
+  ...ISC2_CATEGORY_SEED_BINDINGS,
+  ...COMPTIA_CATEGORY_SEED_BINDINGS,
+  ...INSURANCE_CATEGORY_SEED_BINDINGS,
+].map((bindings) => bindings[0]);
+
+function trustedSqlStringList(values: readonly string[]) {
+  return values
+    .map((value) => `'${value.replaceAll("'", "''")}'`)
+    .join(", ");
+}
+
+const MANAGED_EXTERNAL_RULE_SET_ID_LITERALS = trustedSqlStringList(
+  MANAGED_EXTERNAL_RULE_SET_IDS,
+);
+const MANAGED_EXTERNAL_CATEGORY_ID_LITERALS = trustedSqlStringList(
+  MANAGED_EXTERNAL_CATEGORY_IDS,
+);
+const MANAGED_EXTERNAL_SCOPE_SQL = `(managed_rule.id LIKE 'isc2-%'
+  OR managed_rule.id LIKE 'comptia-%'
+  OR managed_rule.profession = 'Insurance')`;
+
+const RETIRE_MISSING_MANAGED_RULE_SETS_SQL = `UPDATE rule_sets AS managed_rule
+SET is_current = 0
+WHERE ${MANAGED_EXTERNAL_SCOPE_SQL}
+  AND managed_rule.id NOT IN (${MANAGED_EXTERNAL_RULE_SET_ID_LITERALS})
+  AND managed_rule.is_current IS NOT 0`;
+
+const DEACTIVATE_MISSING_MANAGED_REQUIREMENTS_SQL = `UPDATE credential_requirements
+SET
+  is_active = 0,
+  condition_note = CASE
+    WHEN condition_note IS NULL OR TRIM(condition_note) = ''
+      THEN 'This category was retired from the managed catalog. Its historical snapshot is preserved, but it no longer counts in this active cycle.'
+    WHEN INSTR(condition_note, 'This category was retired from the managed catalog.') > 0
+      THEN condition_note
+    ELSE condition_note || ' This category was retired from the managed catalog. Its historical snapshot is preserved, but it no longer counts in this active cycle.'
+  END
+WHERE rule_category_id IN (
+  SELECT managed_category.id
+  FROM rule_categories managed_category
+  JOIN rule_sets managed_rule
+    ON managed_rule.id = managed_category.rule_set_id
+  WHERE ${MANAGED_EXTERNAL_SCOPE_SQL}
+    AND managed_category.id NOT IN (${MANAGED_EXTERNAL_CATEGORY_ID_LITERALS})
+)
+  AND credential_id IN (
+    SELECT credential.id
+    FROM credentials credential
+    WHERE credential.status = 'active'
+  )`;
+
+const DELETE_MISSING_MANAGED_CATEGORIES_SQL = `DELETE FROM rule_categories
+WHERE id IN (
+  SELECT managed_category.id
+  FROM rule_categories managed_category
+  JOIN rule_sets managed_rule
+    ON managed_rule.id = managed_category.rule_set_id
+  WHERE ${MANAGED_EXTERNAL_SCOPE_SQL}
+    AND managed_category.id NOT IN (${MANAGED_EXTERNAL_CATEGORY_ID_LITERALS})
+)`;
+
 const MAXIMUM_CLASSIFICATION_CATEGORY_REFRESH_SQL = `UPDATE rule_categories SET
   required_units = ?,
   kind = ?,
@@ -4180,8 +4287,16 @@ const MAXIMUM_CLASSIFICATION_RULE_SET_IDS = [
   ...COMPTIA_RULE_SET_IDS,
 ] as const;
 
-const MAXIMUM_CLASSIFICATION_RULE_SET_PLACEHOLDERS =
-  MAXIMUM_CLASSIFICATION_RULE_SET_IDS.map(() => "?").join(", ");
+const ACTIVE_CATALOG_SNAPSHOT_RULE_SET_IDS = [
+  ...new Set([
+    ...MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+    ...MANAGED_EXTERNAL_RULE_SET_IDS,
+  ]),
+];
+
+const ACTIVE_CATALOG_SNAPSHOT_RULE_SET_ID_LITERALS = trustedSqlStringList(
+  ACTIVE_CATALOG_SNAPSHOT_RULE_SET_IDS,
+);
 
 const BACKFILL_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL = `INSERT INTO credential_requirements (
   id, credential_id, rule_category_id, name, required_units, kind, relation,
@@ -4209,7 +4324,7 @@ SELECT
 FROM credentials credential
 JOIN rule_categories category
   ON category.rule_set_id = credential.rule_set_id
-WHERE credential.rule_set_id IN (${MAXIMUM_CLASSIFICATION_RULE_SET_PLACEHOLDERS})
+WHERE credential.rule_set_id IN (${ACTIVE_CATALOG_SNAPSHOT_RULE_SET_ID_LITERALS})
   AND credential.status = 'active'
   AND NOT EXISTS (
     SELECT 1
@@ -4256,6 +4371,40 @@ SET
     FROM rule_categories category
     WHERE category.id = credential_requirements.rule_category_id
   ),
+  applicability_status = CASE
+    WHEN credential_requirements.applicability IS NOT (
+      SELECT category.applicability
+      FROM rule_categories category
+      WHERE category.id = credential_requirements.rule_category_id
+    )
+      THEN CASE
+        WHEN (
+          SELECT category.applicability
+          FROM rule_categories category
+          WHERE category.id = credential_requirements.rule_category_id
+        ) = 'conditional'
+          THEN 'needs_confirmation'
+        ELSE 'applies'
+      END
+    ELSE credential_requirements.applicability_status
+  END,
+  is_active = CASE
+    WHEN credential_requirements.applicability IS NOT (
+      SELECT category.applicability
+      FROM rule_categories category
+      WHERE category.id = credential_requirements.rule_category_id
+    )
+      THEN CASE
+        WHEN (
+          SELECT category.applicability
+          FROM rule_categories category
+          WHERE category.id = credential_requirements.rule_category_id
+        ) = 'conditional'
+          THEN 0
+        ELSE 1
+      END
+    ELSE credential_requirements.is_active
+  END,
   condition_note = (
     SELECT category.condition_note
     FROM rule_categories category
@@ -4274,13 +4423,13 @@ SET
 WHERE credential_id IN (
   SELECT credential.id
   FROM credentials credential
-  WHERE credential.rule_set_id IN (${MAXIMUM_CLASSIFICATION_RULE_SET_PLACEHOLDERS})
+  WHERE credential.rule_set_id IN (${ACTIVE_CATALOG_SNAPSHOT_RULE_SET_ID_LITERALS})
     AND credential.status = 'active'
 )
   AND rule_category_id IN (
     SELECT category.id
     FROM rule_categories category
-    WHERE category.rule_set_id IN (${MAXIMUM_CLASSIFICATION_RULE_SET_PLACEHOLDERS})
+    WHERE category.rule_set_id IN (${ACTIVE_CATALOG_SNAPSHOT_RULE_SET_ID_LITERALS})
   )
   AND EXISTS (
     SELECT 1
@@ -4299,6 +4448,29 @@ WHERE credential_id IN (
         OR credential_requirements.parent_requirement_id IS NOT
           parent_requirement.id
         OR credential_requirements.applicability IS NOT category.applicability
+        OR credential_requirements.applicability_status IS NOT (
+          CASE
+            WHEN credential_requirements.applicability IS NOT
+              category.applicability
+              THEN CASE
+                WHEN category.applicability = 'conditional'
+                  THEN 'needs_confirmation'
+                ELSE 'applies'
+              END
+            ELSE credential_requirements.applicability_status
+          END
+        )
+        OR credential_requirements.is_active IS NOT (
+          CASE
+            WHEN credential_requirements.applicability IS NOT
+              category.applicability
+              THEN CASE
+                WHEN category.applicability = 'conditional' THEN 0
+                ELSE 1
+              END
+            ELSE credential_requirements.is_active
+          END
+        )
         OR credential_requirements.condition_note IS NOT category.condition_note
         OR credential_requirements.exclusive_group IS NOT category.exclusive_group
         OR credential_requirements.sort_order IS NOT category.sort_order
@@ -4564,7 +4736,12 @@ function statement(
 }
 
 async function ensureRichRuleColumns(database: D1Database) {
-  for (const table of ["rule_categories", "credential_requirements"] as const) {
+  for (const table of [
+    "rule_categories",
+    "credential_requirements",
+    "renewal_submissions",
+    "renewal_acceptances",
+  ] as const) {
     const result = await database
       .prepare(`PRAGMA table_info(${table})`)
       .all<{ name: string }>();
@@ -4633,6 +4810,11 @@ export async function initializeDatabase(database: D1Database): Promise<void> {
           statement(database, CATALOG_2026_CATEGORY_INSERT_SQL, bindings),
         ),
       );
+      await database.batch([
+        statement(database, RETIRE_MISSING_MANAGED_RULE_SETS_SQL),
+        statement(database, DEACTIVATE_MISSING_MANAGED_REQUIREMENTS_SQL),
+        statement(database, DELETE_MISSING_MANAGED_CATEGORIES_SQL),
+      ]);
       await database.batch(
         CATALOG_2026_RULE_SET_SEED_BINDINGS.filter(
           (bindings) =>
@@ -4708,15 +4890,8 @@ export async function initializeDatabase(database: D1Database): Promise<void> {
           ...ATTORNEY_CREDENTIAL_REQUIREMENT_SYNC_RULE_SET_IDS,
           ...ATTORNEY_CREDENTIAL_REQUIREMENT_SYNC_RULE_SET_IDS,
         ]),
-        statement(
-          database,
-          BACKFILL_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL,
-          MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
-        ),
-        statement(database, SYNC_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL, [
-          ...MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
-          ...MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
-        ]),
+        statement(database, BACKFILL_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL),
+        statement(database, SYNC_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL),
         statement(database, MERGE_CFP_BOUNDARY_GENERAL_MATCHES_SQL),
         statement(database, REPOINT_CFP_BOUNDARY_ALLOCATIONS_SQL),
         statement(database, DELETE_CFP_BOUNDARY_SOURCE_MATCHES_SQL),

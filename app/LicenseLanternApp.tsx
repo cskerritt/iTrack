@@ -480,6 +480,22 @@ function isIsc2AutomaticRenewalCredential(
   return credential?.ruleSetId?.startsWith("isc2-") ?? false;
 }
 
+function isCompliancePeriodCredential(
+  credential: Credential | null | undefined,
+) {
+  return (
+    credential?.ruleSetId?.startsWith("fl-insurance-producer-") ?? false
+  );
+}
+
+function isFloridaInsuranceComplianceCredential(
+  credential: Credential | null | undefined,
+) {
+  return (
+    credential?.ruleSetId?.startsWith("fl-insurance-producer-") ?? false
+  );
+}
+
 type GuidedAction = {
   kind:
     | "acceptance"
@@ -513,6 +529,14 @@ function bestNextAction(
         title: "Confirm the renewed cycle shown in your ISC2 dashboard",
         body: "Keep this cycle open until ISC2 displays the new certification dates.",
         buttonLabel: "Confirm renewed cycle",
+      };
+    }
+    if (isCompliancePeriodCredential(credential)) {
+      return {
+        kind: "acceptance",
+        title: "Confirm the next compliance period from the official record",
+        body: "Keep this period open until you have verified the new compliance dates.",
+        buttonLabel: "Start next period",
       };
     }
     return {
@@ -630,15 +654,25 @@ function bestNextAction(
       title: openTask.title,
       body: isIsc2AutomaticRenewalCredential(credential)
         ? "Credits are covered. Finish this dashboard step before confirming renewal."
-        : "Credits are covered. Finish this packet step before submitting.",
+        : isCompliancePeriodCredential(credential)
+          ? "Credits are covered. Finish this official-record step before closing the period."
+          : "Credits are covered. Finish this packet step before submitting.",
       buttonLabel: "Open checklist",
     };
   }
   if (isIsc2AutomaticRenewalCredential(credential)) {
     return {
       kind: "submission",
-      title: "Verify your ISC2 CPE and fee requirements are complete",
-      body: "Save the dashboard milestone before ISC2 opens the renewed cycle.",
+      title: "Check your ISC2 CPE and fee status in the dashboard",
+      body: "Save an attested checkpoint, then wait for renewed dates after cycle end.",
+      buttonLabel: "Save dashboard checkpoint",
+    };
+  }
+  if (isCompliancePeriodCredential(credential)) {
+    return {
+      kind: "submission",
+      title: "Verify this compliance period in the official record",
+      body: "Save the official milestone before opening the next period.",
       buttonLabel: "Record compliance",
     };
   }
@@ -1211,12 +1245,19 @@ export function LicenseLanternApp() {
   function credentialCalendarEvent(
     credential: Credential,
   ): CalendarInviteEvent {
+    const compliancePeriod = isCompliancePeriodCredential(credential);
     return {
       uid: `credential-${credential.id}-${credential.deadline}`,
-      title: `${credential.credentialName} renewal deadline`,
+      title: `${credential.credentialName} ${
+        compliancePeriod ? "compliance" : "renewal"
+      } deadline`,
       description: [
-        `${credential.credentialName} renewal deadline in ${credential.jurisdiction}.`,
-        "Confirm current requirements with the licensing authority before submitting.",
+        `${credential.credentialName} ${
+          compliancePeriod ? "compliance" : "renewal"
+        } deadline in ${credential.jurisdiction}.`,
+        compliancePeriod
+          ? "Confirm current requirements and completion status with the official authority or employer record."
+          : "Confirm current requirements with the licensing authority before submitting.",
       ].join(" "),
       date: credential.deadline,
       reminderDaysBefore: preferredCalendarLeadDays(),
@@ -1245,7 +1286,9 @@ export function LicenseLanternApp() {
     await deliverCalendarInvite(
       [credentialCalendarEvent(credential)],
       `${credential.credentialName}-${credential.deadline}`,
-      "Renewal date handed off to your calendar.",
+      isCompliancePeriodCredential(credential)
+        ? "Compliance date handed off to your calendar."
+        : "Renewal date handed off to your calendar.",
     );
   }
 
@@ -1679,10 +1722,17 @@ export function LicenseLanternApp() {
         credentialId: selectedCredential.id,
         submissionDate: String(form.get("submissionDate") ?? ""),
         confirmationNumber: String(form.get("confirmationNumber") ?? ""),
+        complianceAttested:
+          isIsc2AutomaticRenewalCredential(selectedCredential) ||
+          isCompliancePeriodCredential(selectedCredential)
+            ? form.get("complianceAttested") === "on"
+            : undefined,
       },
       isIsc2AutomaticRenewalCredential(selectedCredential)
-        ? "ISC2 compliance milestone saved. Confirm the new cycle after it appears in your dashboard."
-        : "Submission logged. Keep the confirmation until your renewal is accepted.",
+        ? "ISC2 dashboard checkpoint saved. Confirm renewal only after the new dates appear."
+        : isCompliancePeriodCredential(selectedCredential)
+          ? "Compliance-period milestone saved. Confirm the next period from the official record."
+          : "Submission logged. Keep the confirmation until your renewal is accepted.",
     );
     if (success) setSubmissionOpen(false);
   }
@@ -1699,8 +1749,20 @@ export function LicenseLanternApp() {
         reference: String(form.get("reference") ?? ""),
         nextCycleStart: String(form.get("nextCycleStart") ?? ""),
         nextDeadline: String(form.get("nextDeadline") ?? ""),
+        nextRuleSetId: isFloridaInsuranceComplianceCredential(
+          selectedCredential,
+        )
+          ? String(form.get("nextRuleSetId") ?? "")
+          : undefined,
+        officialDatesAttested:
+          isIsc2AutomaticRenewalCredential(selectedCredential) ||
+          isCompliancePeriodCredential(selectedCredential)
+            ? form.get("officialDatesAttested") === "on"
+            : undefined,
       },
-      "Renewal accepted. Your next cycle is ready.",
+      isCompliancePeriodCredential(selectedCredential)
+        ? "Compliance period completed. Your next period is ready."
+        : "Renewal accepted. Your next cycle is ready.",
     );
     if (result) {
       setAcceptanceOpen(false);
@@ -2683,12 +2745,16 @@ export function LicenseLanternApp() {
         <Modal
           title={
             isIsc2AutomaticRenewalCredential(selectedCredential)
-              ? "Record ISC2 compliance"
+              ? "Save an ISC2 dashboard checkpoint"
+              : isCompliancePeriodCredential(selectedCredential)
+                ? "Record compliance"
               : "Log your submission"
           }
           eyebrow={
             isIsc2AutomaticRenewalCredential(selectedCredential)
               ? "Automatic-renewal milestone"
+              : isCompliancePeriodCredential(selectedCredential)
+                ? "Compliance-period milestone"
               : "Renewal milestone"
           }
           onClose={() => setSubmissionOpen(false)}
@@ -2701,12 +2767,16 @@ export function LicenseLanternApp() {
               <div>
                 <strong>
                   {isIsc2AutomaticRenewalCredential(selectedCredential)
-                    ? "Save the dashboard milestone"
+                    ? "Record what the ISC2 dashboard shows"
+                    : isCompliancePeriodCredential(selectedCredential)
+                      ? "Save the official compliance milestone"
                     : "One last record for your future self"}
                 </strong>
                 <p>
                   {isIsc2AutomaticRenewalCredential(selectedCredential)
-                    ? "Record when required CPEs are reflected and the final annual maintenance fee is paid."
+                    ? "This checkpoint records your attestation that required CPEs and annual maintenance fees are satisfied. It does not mean ISC2 has renewed the certification."
+                    : isCompliancePeriodCredential(selectedCredential)
+                      ? "Record when the official record shows this period’s education requirement is complete."
                     : "Logging the date and confirmation keeps “credits earned” separate from “renewal submitted.”"}
                 </p>
               </div>
@@ -2714,7 +2784,9 @@ export function LicenseLanternApp() {
             <label className="field">
               <span>
                 {isIsc2AutomaticRenewalCredential(selectedCredential)
-                  ? "Compliance completed"
+                  ? "Dashboard checked"
+                  : isCompliancePeriodCredential(selectedCredential)
+                    ? "Compliance confirmed"
                   : "Submission date"}
               </span>
               <input
@@ -2729,6 +2801,8 @@ export function LicenseLanternApp() {
               <span>
                 {isIsc2AutomaticRenewalCredential(selectedCredential)
                   ? "Dashboard or payment reference"
+                  : isCompliancePeriodCredential(selectedCredential)
+                    ? "Official record reference"
                   : "Confirmation or receipt number"}{" "}
                 <em>Optional</em>
               </span>
@@ -2737,15 +2811,41 @@ export function LicenseLanternApp() {
                 placeholder={
                   isIsc2AutomaticRenewalCredential(selectedCredential)
                     ? "e.g., dashboard receipt ID"
+                    : isCompliancePeriodCredential(selectedCredential)
+                      ? "e.g., portal or employer record ID"
                     : "e.g., RNL-2048-194"
                 }
               />
             </label>
+            {isIsc2AutomaticRenewalCredential(selectedCredential) ||
+            isCompliancePeriodCredential(selectedCredential) ? (
+              <label className="switch-row">
+                <span>
+                  <strong>
+                    {isIsc2AutomaticRenewalCredential(selectedCredential)
+                      ? "I checked the ISC2 Dashboard"
+                      : "I checked the official compliance record"}
+                  </strong>
+                  <small>
+                    {isIsc2AutomaticRenewalCredential(selectedCredential)
+                      ? "It shows this cycle’s required CPEs and annual maintenance fees as satisfied."
+                      : "It shows this period’s education requirement as complete."}
+                  </small>
+                </span>
+                <input
+                  name="complianceAttested"
+                  type="checkbox"
+                  required
+                />
+              </label>
+            ) : null}
             <div className="advisory-note">
               <span aria-hidden="true">i</span>
               <p>
                 {isIsc2AutomaticRenewalCredential(selectedCredential)
-                  ? "ISC2 renewal is automatic after its CPE and fee requirements are satisfied. Close this cycle only after the dashboard displays the renewed certification dates."
+                  ? "ISC2 performs automatic recertification at the end of the three-year cycle when its requirements are met. Close this cycle only after the dashboard displays renewed certification dates."
+                  : isCompliancePeriodCredential(selectedCredential)
+                    ? "This records an education-compliance milestone, not a license-renewal filing. Close the period only after confirming the next official compliance dates."
                   : "This records what you submitted. Mark the cycle renewed only after the issuing organization confirms acceptance."}
               </p>
             </div>
@@ -2765,7 +2865,9 @@ export function LicenseLanternApp() {
                 {pending
                   ? "Saving…"
                   : isIsc2AutomaticRenewalCredential(selectedCredential)
-                    ? "Mark requirements complete"
+                    ? "Save dashboard checkpoint"
+                    : isCompliancePeriodCredential(selectedCredential)
+                      ? "Mark compliant"
                     : "Mark submitted"}
               </button>
             </div>
@@ -2779,11 +2881,15 @@ export function LicenseLanternApp() {
           title={
             isIsc2AutomaticRenewalCredential(selectedCredential)
               ? "Confirm the renewed ISC2 cycle"
+              : isCompliancePeriodCredential(selectedCredential)
+                ? "Start the next compliance period"
               : "Close this renewal cycle"
           }
           eyebrow={
             isIsc2AutomaticRenewalCredential(selectedCredential)
               ? "Dashboard renewed"
+              : isCompliancePeriodCredential(selectedCredential)
+                ? "Official record updated"
               : "Acceptance received"
           }
           onClose={() => setAcceptanceOpen(false)}
@@ -2797,6 +2903,8 @@ export function LicenseLanternApp() {
                 <strong>
                   {isIsc2AutomaticRenewalCredential(selectedCredential)
                     ? "Your renewed certification starts a clean cycle"
+                    : isCompliancePeriodCredential(selectedCredential)
+                      ? "Your next compliance period starts clean"
                     : "Your renewed license starts a clean cycle"}
                 </strong>
                 <p>
@@ -2807,7 +2915,11 @@ export function LicenseLanternApp() {
             </div>
             <div className="form-grid">
               <label className="field">
-                <span>Accepted or renewed date</span>
+                <span>
+                  {isCompliancePeriodCredential(selectedCredential)
+                    ? "Compliance confirmation date"
+                    : "Accepted or renewed date"}
+                </span>
                 <input
                   autoFocus
                   name="acceptedAt"
@@ -2818,12 +2930,46 @@ export function LicenseLanternApp() {
                 />
               </label>
               <label className="field">
-                <span>Decision or license reference <em>Optional</em></span>
+                <span>
+                  {isCompliancePeriodCredential(selectedCredential)
+                    ? "Official record reference"
+                    : "Decision or license reference"}{" "}
+                  <em>Optional</em>
+                </span>
                 <input name="reference" placeholder="e.g., license receipt ID" />
               </label>
             </div>
+            {isFloridaInsuranceComplianceCredential(
+              selectedCredential,
+            ) ? (
+              <label className="field">
+                <span>Next period’s official Florida template</span>
+                <select name="nextRuleSetId" defaultValue="" required>
+                  <option value="" disabled>
+                    Choose the variant shown by MyProfile
+                  </option>
+                  {(workspace?.catalog ?? [])
+                    .filter((rule) =>
+                      rule.id.startsWith("fl-insurance-producer-"),
+                    )
+                    .map((rule) => (
+                      <option key={rule.id} value={rule.id}>
+                        {rule.credentialName}
+                      </option>
+                    ))}
+                </select>
+                <small>
+                  Reconfirm both license line and tenure tier. License Lantern
+                  will seed the new period from this current official template.
+                </small>
+              </label>
+            ) : null}
             <div className="cycle-rollover">
-              <span className="section-kicker">Next renewal cycle</span>
+              <span className="section-kicker">
+                {isCompliancePeriodCredential(selectedCredential)
+                  ? "Next compliance period"
+                  : "Next renewal cycle"}
+              </span>
               <p>Confirm the dates shown by your issuing organization.</p>
               <div className="form-grid">
                 <label className="field">
@@ -2836,7 +2982,11 @@ export function LicenseLanternApp() {
                   />
                 </label>
                 <label className="field">
-                  <span>Next renewal deadline</span>
+                  <span>
+                    {isCompliancePeriodCredential(selectedCredential)
+                      ? "Next compliance deadline"
+                      : "Next renewal deadline"}
+                  </span>
                   <input
                     name="nextDeadline"
                     type="date"
@@ -2849,11 +2999,29 @@ export function LicenseLanternApp() {
                 </label>
               </div>
             </div>
+            {isIsc2AutomaticRenewalCredential(selectedCredential) ||
+            isCompliancePeriodCredential(selectedCredential) ? (
+              <label className="switch-row">
+                <span>
+                  <strong>I verified the official next-period record</strong>
+                  <small>
+                    The confirmation and next cycle dates above match the
+                    issuer, authority, or employer record.
+                  </small>
+                </span>
+                <input
+                  name="officialDatesAttested"
+                  type="checkbox"
+                  required
+                />
+              </label>
+            ) : null}
             <div className="advisory-note">
               <span aria-hidden="true">i</span>
               <p>
-                Requirements are copied as a starting snapshot. Review the
-                current official rules before relying on the new plan.
+                {isFloridaInsuranceComplianceCredential(selectedCredential)
+                  ? "The next period will use the selected current template and will reset every conditional rule for confirmation."
+                  : "Requirements are copied as a starting snapshot. Review the current official rules before relying on the new plan."}
               </p>
             </div>
             <div className="form-actions">
@@ -2873,6 +3041,8 @@ export function LicenseLanternApp() {
                   ? "Creating next cycle…"
                   : isIsc2AutomaticRenewalCredential(selectedCredential)
                     ? "Confirm renewal & continue"
+                    : isCompliancePeriodCredential(selectedCredential)
+                      ? "Start next period"
                     : "Mark accepted & continue"}
               </button>
             </div>
@@ -3511,10 +3681,10 @@ function TodayView({
         eyebrow={
           workspace.user.isDemo
             ? "Private preview workspace"
-            : "Your renewal companion"
+            : "Your credential companion"
         }
         title={`Good ${dayPart()}, ${firstName(workspace.user.displayName)}.`}
-        body="Here’s the clearest next step toward a calm renewal."
+        body="Here’s the clearest next step toward a calm deadline."
         action={
           <button
             className="button button-primary desktop-only"
@@ -3534,10 +3704,18 @@ function TodayView({
               <span className="status-pill">
                 <span aria-hidden="true" />
                 {credential.status === "active"
-                  ? "Active renewal cycle"
+                  ? isCompliancePeriodCredential(credential)
+                    ? "Active compliance period"
+                    : "Active renewal cycle"
                   : credential.status === "submitted"
-                    ? "Submitted"
-                    : "Renewed"}
+                    ? isIsc2AutomaticRenewalCredential(credential)
+                      ? "Awaiting ISC2 renewal"
+                      : isCompliancePeriodCredential(credential)
+                        ? "Compliance recorded"
+                        : "Submitted"
+                    : isCompliancePeriodCredential(credential)
+                      ? "Completed"
+                      : "Renewed"}
               </span>
               <h2 id="renewal-heading">{credential.credentialName}</h2>
               <p>
@@ -3558,7 +3736,11 @@ function TodayView({
             <div className="deadline-number">
               <strong>{Math.abs(deadlineDays)}</strong>
               <span>
-                {deadlineDays < 0 ? "days overdue" : "days to renewal"}
+                {deadlineDays < 0
+                  ? "days overdue"
+                  : isCompliancePeriodCredential(credential)
+                    ? "days to compliance"
+                    : "days to renewal"}
               </span>
             </div>
             <div className="deadline-detail">
@@ -3579,12 +3761,18 @@ function TodayView({
 
         <div className="readiness-panel">
           <span className="section-kicker section-kicker-light">
-            Renewal readiness
+            {isCompliancePeriodCredential(credential)
+              ? "Compliance readiness"
+              : "Renewal readiness"}
           </span>
           <div
             className="readiness-ring"
             style={{ "--score": readiness } as React.CSSProperties}
-            aria-label={`${readiness}% renewal readiness`}
+            aria-label={`${readiness}% ${
+              isCompliancePeriodCredential(credential)
+                ? "compliance"
+                : "renewal"
+            } readiness`}
           >
             <span>
               <strong>{readiness}%</strong>
@@ -3933,7 +4121,9 @@ function TodayView({
           {credential.status === "active" ? (
             <button className="card-link" type="button" onClick={onSubmit}>
               {isIsc2AutomaticRenewalCredential(credential)
-                ? "Record ISC2 compliance"
+                ? "Save ISC2 dashboard checkpoint"
+                : isCompliancePeriodCredential(credential)
+                  ? "Record compliance"
                 : "Log renewal submission"}{" "}
               <span aria-hidden="true">→</span>
             </button>
@@ -3941,7 +4131,9 @@ function TodayView({
             <div className="submitted-note submitted-note-action">
               <span>
                 {isIsc2AutomaticRenewalCredential(credential)
-                  ? "Requirements completed"
+                  ? "Dashboard checkpoint saved"
+                  : isCompliancePeriodCredential(credential)
+                    ? "Compliance recorded"
                   : "Submitted"}{" "}
                 {formatDate(credential.submittedAt)}
                 {credential.confirmationNumber
@@ -3951,12 +4143,17 @@ function TodayView({
               <button type="button" onClick={onAccept}>
                 {isIsc2AutomaticRenewalCredential(credential)
                   ? "Confirm renewed cycle →"
+                  : isCompliancePeriodCredential(credential)
+                    ? "Start next period →"
                   : "Record acceptance →"}
               </button>
             </div>
           ) : (
             <div className="submitted-note">
-              Renewed {formatDate(credential.acceptedAt)}
+              {isCompliancePeriodCredential(credential)
+                ? "Completed"
+                : "Renewed"}{" "}
+              {formatDate(credential.acceptedAt)}
               {credential.acceptanceReference
                 ? ` · ${credential.acceptanceReference}`
                 : ""}
@@ -4079,7 +4276,15 @@ function CredentialsView({
                   <strong>{credential.credentialName}</strong>
                   <small>
                     {credential.jurisdiction} ·{" "}
-                    {credential.status === "renewed" ? "history" : credential.status}
+                    {credential.status === "renewed"
+                      ? "history"
+                      : credential.status === "submitted" &&
+                          isIsc2AutomaticRenewalCredential(credential)
+                        ? "awaiting ISC2 renewal"
+                        : credential.status === "submitted" &&
+                            isCompliancePeriodCredential(credential)
+                          ? "compliance recorded"
+                          : credential.status}
                   </small>
                 </span>
                 <span className="picker-progress">
@@ -4095,7 +4300,19 @@ function CredentialsView({
             <div className="credential-detail-header">
               <div>
                 <span className="status-pill status-pill-dark">
-                  {selected.status}
+                  {isIsc2AutomaticRenewalCredential(selected)
+                    ? selected.status === "active"
+                      ? "active renewal cycle"
+                      : selected.status === "submitted"
+                        ? "awaiting ISC2 renewal"
+                        : "renewed"
+                    : isCompliancePeriodCredential(selected)
+                      ? selected.status === "active"
+                        ? "compliance period"
+                        : selected.status === "submitted"
+                          ? "compliance recorded"
+                          : "completed"
+                      : selected.status}
                 </span>
                 <h2>{selected.credentialName}</h2>
                 <p>
@@ -4104,7 +4321,11 @@ function CredentialsView({
                 </p>
               </div>
               <div className="deadline-chip">
-                <span>Renew by</span>
+                <span>
+                  {isCompliancePeriodCredential(selected)
+                    ? "Complete by"
+                    : "Renew by"}
+                </span>
                 <strong>{formatDate(selected.deadline)}</strong>
               </div>
             </div>
@@ -4115,14 +4336,22 @@ function CredentialsView({
                   type="button"
                   onClick={onReminders}
                 >
-                  ◷ Configure renewal check-ins
+                  ◷ Configure{" "}
+                  {isCompliancePeriodCredential(selected)
+                    ? "compliance"
+                    : "renewal"}{" "}
+                  check-ins
                 </button>
                 <button
                   className="reminder-setting-link"
                   type="button"
                   onClick={() => onAddToCalendar(selected)}
                 >
-                  ＋ Add renewal date to calendar
+                  ＋ Add{" "}
+                  {isCompliancePeriodCredential(selected)
+                    ? "compliance"
+                    : "renewal"}{" "}
+                  date to calendar
                 </button>
               </div>
             ) : null}
@@ -4243,12 +4472,16 @@ function CredentialsView({
                 <div>
                   <strong>
                     {isIsc2AutomaticRenewalCredential(selected)
-                      ? "Are the CPE and final fee requirements complete?"
+                      ? "Does the ISC2 Dashboard show CPEs and annual maintenance fees satisfied?"
+                      : isCompliancePeriodCredential(selected)
+                        ? "Does the official record show this period complete?"
                       : "Finished your board submission?"}
                   </strong>
                   <p>
                     {isIsc2AutomaticRenewalCredential(selected)
                       ? "Save this milestone separately from completed learning."
+                      : isCompliancePeriodCredential(selected)
+                        ? "Save this official milestone separately from completed learning."
                       : "Log it separately from completed learning."}
                   </p>
                 </div>
@@ -4258,7 +4491,9 @@ function CredentialsView({
                   onClick={onSubmit}
                 >
                   {isIsc2AutomaticRenewalCredential(selected)
-                    ? "Record compliance"
+                    ? "Save dashboard checkpoint"
+                    : isCompliancePeriodCredential(selected)
+                      ? "Record compliance"
                     : "Log submission"}
                 </button>
               </div>
@@ -4267,7 +4502,9 @@ function CredentialsView({
                 <div>
                   <strong>
                     {isIsc2AutomaticRenewalCredential(selected)
-                      ? "Requirements completed"
+                      ? "Awaiting ISC2 renewal"
+                      : isCompliancePeriodCredential(selected)
+                        ? "Compliance recorded"
                       : "Renewal submitted"}{" "}
                     {formatDate(selected.submittedAt)}
                   </strong>
@@ -4284,13 +4521,20 @@ function CredentialsView({
                 >
                   {isIsc2AutomaticRenewalCredential(selected)
                     ? "Confirm renewed cycle"
+                    : isCompliancePeriodCredential(selected)
+                      ? "Start next period"
                     : "Record acceptance"}
                 </button>
               </div>
             ) : (
               <div className="detail-footer submitted-footer">
                 <div>
-                  <strong>Renewed {formatDate(selected.acceptedAt)}</strong>
+                  <strong>
+                    {isCompliancePeriodCredential(selected)
+                      ? "Completed"
+                      : "Renewed"}{" "}
+                    {formatDate(selected.acceptedAt)}
+                  </strong>
                   <p>
                     {selected.acceptanceReference
                       ? `Reference: ${selected.acceptanceReference}`

@@ -312,6 +312,7 @@ export const renewalSubmissions = sqliteTable(
     submittedAt: text("submitted_at").notNull(),
     confirmationNumber: text("confirmation_number").notNull(),
     proofReference: text("proof_reference"),
+    attestationKind: text("attestation_kind"),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
@@ -370,6 +371,7 @@ export const renewalAcceptances = sqliteTable(
       .references(() => renewalSubmissions.id, { onDelete: "restrict" }),
     acceptedAt: text("accepted_at").notNull(),
     acceptanceReference: text("acceptance_reference"),
+    officialRecordAttestedAt: text("official_record_attested_at"),
     nextCredentialId: text("next_credential_id")
       .notNull()
       .references(() => credentials.id, { onDelete: "restrict" }),
