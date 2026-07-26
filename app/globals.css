@@ -1154,6 +1154,10 @@ a {
 
 .task-add-button,
 .task-edit-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   min-height: 44px;
   border: 1px solid #cad8d1;
   border-radius: 10px;
@@ -1163,6 +1167,7 @@ a {
   font-size: 10px;
   font-weight: 850;
   padding: 7px 11px;
+  text-decoration: none;
 }
 
 .task-add-button:disabled,
@@ -1856,6 +1861,62 @@ a {
 
 .credential-utility-actions .reminder-setting-link {
   margin: 0;
+}
+
+.credential-packet-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  margin: 0 32px 16px;
+  border: 1px solid #cbdcd3;
+  border-radius: 14px;
+  background: #f3f9f5;
+  padding: 17px 18px;
+}
+
+.credential-packet-card.has-gaps {
+  border-color: #dfcfaa;
+  background: #fffaf0;
+}
+
+.credential-packet-copy h3 {
+  margin: 3px 0 4px;
+  font-family: var(--font-newsreader), Georgia, serif;
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.credential-packet-copy > p {
+  margin: 0;
+  color: #52665d;
+  font-size: 11px;
+}
+
+.credential-packet-gaps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 10px;
+}
+
+.credential-packet-gaps span {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #4d6258;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 4px 7px;
+}
+
+.credential-packet-action {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.credential-packet-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .detail-footer strong {
@@ -4824,6 +4885,17 @@ a {
 
   .credential-utility-actions {
     margin-inline: 20px;
+  }
+
+  .credential-packet-card {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    margin-inline: 20px;
+  }
+
+  .credential-packet-action {
+    width: 100%;
+    white-space: normal;
   }
 
   .detail-footer {

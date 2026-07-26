@@ -2969,7 +2969,7 @@ async function rethrowClosedCycleWrite(
   throw error;
 }
 
-async function getWorkspace(
+export async function getWorkspace(
   database: D1Database,
   identity: RequestIdentity,
 ) {
@@ -3019,12 +3019,17 @@ async function getWorkspace(
     submittedAt: string | null;
     confirmationNumber: string | null;
     submissionProof: string | null;
+    submissionAttestationKind: string | null;
     acceptedAt: string | null;
     acceptanceReference: string | null;
+    officialRecordAttestedAt: string | null;
     nextCredentialId: string | null;
     sourceUrl: string | null;
     sourceTitle: string | null;
+    ruleEffectiveDate: string | null;
+    ruleLastVerifiedAt: string | null;
     ruleReviewStatus: string;
+    ruleVersion: number | null;
     totalEarned: number;
   };
   type RequirementRow = {
@@ -3062,6 +3067,7 @@ async function getWorkspace(
     kind: string;
     status: string;
     dueDate: string | null;
+    completedAt: string | null;
     revision: number;
     isPersonal: number;
     archivedAt: string | null;
@@ -3172,12 +3178,17 @@ async function getWorkspace(
         c.status,
         rs.source_url AS sourceUrl,
         rs.source_title AS sourceTitle,
+        rs.effective_date AS ruleEffectiveDate,
+        rs.last_verified_at AS ruleLastVerifiedAt,
         COALESCE(rs.review_status, 'custom') AS ruleReviewStatus,
+        rs.version AS ruleVersion,
         sub.submitted_at AS submittedAt,
         sub.confirmation_number AS confirmationNumber,
         sub.proof_reference AS submissionProof,
+        sub.attestation_kind AS submissionAttestationKind,
         acceptance.accepted_at AS acceptedAt,
         acceptance.acceptance_reference AS acceptanceReference,
+        acceptance.official_record_attested_at AS officialRecordAttestedAt,
         acceptance.next_credential_id AS nextCredentialId,
         COALESCE(
           SUM(
@@ -3267,6 +3278,7 @@ async function getWorkspace(
         kind,
         status,
         due_date AS dueDate,
+        completed_at AS completedAt,
         revision,
         is_personal AS isPersonal,
         archived_at AS archivedAt
@@ -3999,6 +4011,13 @@ async function getWorkspace(
       const totalEarned = Math.max(0, totalRawEarned - totalExcessUnits);
       return {
         ...credential,
+        lifecycleKind: isIsc2AutomaticRenewalRuleSet(
+          credential.ruleSetId,
+        )
+          ? ("automatic_renewal" as const)
+          : isCompliancePeriodRuleSet(credential.ruleSetId)
+            ? ("compliance_period" as const)
+            : ("renewal" as const),
         totalRequired,
         totalLoggedUnits,
         unclassifiedUnits,

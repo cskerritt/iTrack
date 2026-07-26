@@ -22,10 +22,14 @@ rewards meaningful record-keeping without punitive daily streaks.
 - configurable in-app due-date and acceptance check-ins with snooze/dismiss
 - one-tap calendar handoff for renewal dates and timely check-ins
 - activity CSV export
+- owner-scoped, print-ready credential-cycle packets with exact requirement balances,
+  counted activity tags, checklist and lifecycle history, and a private
+  evidence inventory
 - durable levels, weekly quests, gentle one-week-grace momentum, XP, and badges
 - a user-selected weekly rhythm whose goal and time zone stay fixed for the active week
 - installable phone companion with a privacy-safe offline fallback
 - account-scoped, text-only activity drafts that recover in the same browser
+- opt-in private web-push reminders with per-device controls
 - responsive dashboard with home-screen and standalone-app support
 - server-derived ownership from authenticated workspace identity
 
@@ -87,8 +91,8 @@ Node.js `>=22.13.0` is required.
 
 ## Next product phases
 
-- correct/archive learning records and personalize renewal checklist tasks
-- opt-in email and push reminder delivery
+- a two-step mobile Quick Log with “save and add another” conference entry
 - broader effective-dated profession/state rule research
-- packet-style PDF export and richer archive browsing
+- a repeatable catalog research/review pipeline with richer provenance
+- evidence-bundle download and richer archive browsing
 - richer offline capture, native mobile packaging, and regulator/provider integrations

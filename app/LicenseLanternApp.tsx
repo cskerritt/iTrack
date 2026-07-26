@@ -82,6 +82,7 @@ type RenewalTask = {
   kind: string;
   status: "pending" | "completed";
   dueDate?: string | null;
+  completedAt?: string | null;
   revision: number;
   isPersonal: boolean;
   archivedAt?: string | null;
@@ -100,6 +101,7 @@ type Credential = {
   unitLabel: string;
   cycleMonths: number;
   status: "active" | "submitted" | "renewed";
+  lifecycleKind?: "renewal" | "compliance_period" | "automatic_renewal";
   seriesId?: string | null;
   previousCredentialId?: string | null;
   submittedAt?: string | null;
@@ -111,6 +113,7 @@ type Credential = {
   sourceTitle?: string | null;
   ruleReviewStatus?: string | null;
   totalEarned: number;
+  totalRemaining?: number;
   totalRawEarned?: number;
   totalExcessUnits?: number;
   totalLoggedUnits?: number;
@@ -3052,6 +3055,7 @@ export function LicenseLanternApp() {
             <TodayView
               workspace={workspace}
               credential={selectedCredential}
+              isOnline={isOnline}
               highlightedReminderKey={highlightedReminderKey}
               onAddActivity={openActivityEntry}
               onAddCredential={() => setCredentialOpen(true)}
@@ -3094,6 +3098,8 @@ export function LicenseLanternApp() {
           ) : view === "credentials" ? (
             <CredentialsView
               credentials={workspace.credentials}
+              activities={workspace.activities}
+              isOnline={isOnline}
               selectedId={selectedCredential?.id ?? ""}
               onSelect={(id) => setSelectedCredentialId(id)}
               onAdd={() => setCredentialOpen(true)}
@@ -5147,6 +5153,7 @@ function NavButton({
 function TodayView({
   workspace,
   credential,
+  isOnline,
   highlightedReminderKey,
   onAddActivity,
   onAddCredential,
@@ -5168,6 +5175,7 @@ function TodayView({
 }: {
   workspace: Workspace;
   credential: Credential | null;
+  isOnline: boolean;
   highlightedReminderKey: string;
   onAddActivity: () => void;
   onAddCredential: () => void;
@@ -5770,6 +5778,28 @@ function TodayView({
                 }
                 /{credential.tasks.length} done
               </span>
+              {isOnline ? (
+                <a
+                  className="task-add-button packet-link"
+                  href={`/api/export/packet?credentialId=${encodeURIComponent(
+                    credential.id,
+                  )}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Prepare packet <span aria-hidden="true">↗</span>
+                  <span className="sr-only"> (opens in a new tab)</span>
+                </a>
+              ) : (
+                <button
+                  className="task-add-button packet-link"
+                  type="button"
+                  disabled
+                  title="Reconnect to prepare a credential packet"
+                >
+                  Reconnect for packet
+                </button>
+              )}
               {credential.status !== "renewed" ? (
                 <button
                   className="task-add-button"
@@ -6002,6 +6032,8 @@ function TodayView({
 
 function CredentialsView({
   credentials,
+  activities,
+  isOnline,
   selectedId,
   onSelect,
   onAdd,
@@ -6012,6 +6044,8 @@ function CredentialsView({
   onRequirementApplicability,
 }: {
   credentials: Credential[];
+  activities: Activity[];
+  isOnline: boolean;
   selectedId: string;
   onSelect: (id: string) => void;
   onAdd: () => void;
@@ -6028,6 +6062,45 @@ function CredentialsView({
   const selected =
     credentials.find((credential) => credential.id === selectedId) ??
     credentials[0];
+  const selectedActivities = selected
+    ? activities.filter((activity) =>
+        allocationsFor(activity).some(
+          (allocation) => allocation.credentialId === selected.id,
+        ),
+      )
+    : [];
+  const requirementGapCount = selected
+    ? Math.max(
+        Number(selected.totalRemaining ?? 0) > 0 ? 1 : 0,
+        selected.requirements.filter(
+          (requirement) =>
+            requirement.applicabilityStatus === "needs_confirmation" ||
+            (requirement.isActive !== false &&
+              requirement.kind === "minimum" &&
+                requirement.applicabilityStatus !== "not_applicable" &&
+                Math.max(
+                  0,
+                  requirement.requiredUnits -
+                    requirementEarned(requirement),
+                ) > 0),
+        ).length,
+      )
+    : 0;
+  const proofGapCount = selectedActivities.filter(
+    (activity) =>
+      activity.evidenceStatus === "missing" ||
+      Number(activity.evidenceDeletionPendingCount ?? 0) > 0,
+  ).length;
+  const classificationGapCount =
+    selected?.classificationIssues?.length ?? 0;
+  const openTaskCount =
+    selected?.tasks.filter((task) => task.status !== "completed").length ??
+    0;
+  const trackedGapCount =
+    requirementGapCount +
+    proofGapCount +
+    classificationGapCount +
+    openTaskCount;
   return (
     <div className="view-stack">
       <PageGreeting
@@ -6110,6 +6183,64 @@ function CredentialsView({
                 <strong>{formatDate(selected.deadline)}</strong>
               </div>
             </div>
+            <section
+              className={`credential-packet-card ${
+                trackedGapCount ? "has-gaps" : "tracked-complete"
+              }`}
+              aria-labelledby="credential-packet-title"
+            >
+              <div className="credential-packet-copy">
+                <span className="section-kicker">Credential packet</span>
+                <h3 id="credential-packet-title">
+                  {selected.status === "renewed"
+                    ? "Preserve this completed-cycle record."
+                    : selected.status === "submitted"
+                      ? isCompliancePeriodCredential(selected)
+                        ? "Keep this compliance checkpoint together."
+                        : isIsc2AutomaticRenewalCredential(selected)
+                          ? "Keep this dashboard checkpoint together."
+                          : "Keep the submission record together."
+                      : trackedGapCount
+                        ? "Review tracked gaps before the next official step."
+                        : "No tracked gaps found—ready for official review."}
+                </h3>
+                <p>
+                  Opens a private, print-ready summary. Evidence files stay
+                  separate and require your signed-in account.
+                </p>
+                <div
+                  className="credential-packet-gaps"
+                  aria-label={`${trackedGapCount} tracked packet gaps`}
+                >
+                  <span>{requirementGapCount} requirement gaps</span>
+                  <span>{proofGapCount} proof flags</span>
+                  <span>{classificationGapCount} classification gaps</span>
+                  <span>{openTaskCount} checklist tasks</span>
+                </div>
+              </div>
+              {isOnline ? (
+                <a
+                  className="button button-outline credential-packet-action"
+                  href={`/api/export/packet?credentialId=${encodeURIComponent(
+                    selected.id,
+                  )}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Prepare credential packet{" "}
+                  <span aria-hidden="true">↗</span>
+                  <span className="sr-only"> (opens in a new tab)</span>
+                </a>
+              ) : (
+                <button
+                  className="button button-outline credential-packet-action"
+                  type="button"
+                  disabled
+                >
+                  Reconnect to prepare packet
+                </button>
+              )}
+            </section>
             {selected.status !== "renewed" ? (
               <div className="credential-utility-actions">
                 <button

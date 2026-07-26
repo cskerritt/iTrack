@@ -21240,4 +21240,689 @@ test("License Lantern product contract", async (t) => {
       assert.match(tombstoneDelete.sql, /status = 'deleting'/i);
     },
   );
+
+  await t.test(
+    "renders an escaped owner-scoped credential packet with countable progress",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const appSource = await readFile(
+        new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+        "utf8",
+      );
+      assert.match(
+        appSource,
+        /credential-packet-card[\s\S]*?Prepare credential packet/,
+      );
+      assert.match(
+        appSource,
+        /\/api\/export\/packet\?credentialId=\$\{encodeURIComponent\([\s\S]*?target="_blank"[\s\S]*?rel="noopener noreferrer"/,
+      );
+      assert.match(appSource, /Reconnect to prepare packet/);
+      const packetGapLogic = appSource.slice(
+        appSource.indexOf("const requirementGapCount"),
+        appSource.indexOf("const proofGapCount"),
+      );
+      assert.ok(
+        packetGapLogic.indexOf('applicabilityStatus === "needs_confirmation"') <
+          packetGapLogic.indexOf("requirement.isActive !== false"),
+        "an unresolved conditional must count even while progress marks it inactive",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __renewalPacketNonce = "renewal-packet";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      const bucket = new FakeEvidenceBucket();
+      testCloudflareEnv.DB = database;
+      testCloudflareEnv.EVIDENCE = bucket;
+
+      const ownerId = await expectedStableUserId("owner@example.com");
+      const otherId = await expectedStableUserId("other@example.com");
+      const credentialId = "credential-packet-owner";
+      const capActivityId = "activity-packet-cap";
+      const generalActivityId = "activity-packet-general";
+      const archivedActivityId = "activity-packet-archived";
+      const readyEvidenceId = "11111111-1111-4111-8111-111111111111";
+      const deletingEvidenceId = "22222222-2222-4222-8222-222222222222";
+      const archivedEvidenceId = "33333333-3333-4333-8333-333333333333";
+      const foreignEvidenceId = "44444444-4444-4444-8444-444444444444";
+      const raw = database.raw;
+      const run = (sql, ...bindings) =>
+        raw.prepare(sql).run(...bindings);
+
+      try {
+        run(
+          `INSERT INTO users (id, email, display_name, is_demo)
+           VALUES (?, ?, ?, 0), (?, ?, ?, 0)`,
+          ownerId,
+          "owner@example.com",
+          "Casey <Owner>",
+          otherId,
+          "other@example.com",
+          "Other Owner",
+        );
+        run(
+          `INSERT INTO rule_sets (
+             id, stable_key, version, profession, credential_name,
+             jurisdiction, issuer, total_units, unit_label, cycle_months,
+             source_url, source_title, effective_date, last_verified_at,
+             review_status, is_current
+           ) VALUES (?, ?, 7, ?, ?, ?, ?, 10, 'hours', 12, ?, ?,
+             '2026-01-01', '2026-07-26',
+             'source_linked_check_conditions', 0)`,
+          "rule-packet-owner",
+          "rule-packet-owner",
+          "Nursing & Care",
+          "RN <script>alert('credential')</script>",
+          "Test <State>",
+          'Board "Issuer"',
+          "https://example.com/rules?part=one&note=two",
+          "Official <Rules> & Guidance",
+        );
+        run(
+          `INSERT INTO credentials (
+             id, user_id, rule_set_id, credential_name, profession,
+             jurisdiction, issuer, cycle_start, deadline, total_required,
+             unit_label, status
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, '2026-01-01', '2026-12-31',
+             10, 'hours', 'submitted')`,
+          credentialId,
+          ownerId,
+          "rule-packet-owner",
+          "RN <script>alert('credential')</script>",
+          "Nursing & Care",
+          "Test <State>",
+          'Board "Issuer"',
+        );
+        run(
+          `INSERT INTO credentials (
+             id, user_id, rule_set_id, credential_name, profession,
+             jurisdiction, issuer, cycle_start, deadline, total_required,
+             unit_label, status
+           ) VALUES (
+             'credential-packet-other', ?, NULL, 'Other credential',
+             'Other', 'Other', 'Other', '2026-01-01', '2026-12-31',
+             1, 'hour', 'active')`,
+          otherId,
+        );
+        run(
+          `INSERT INTO credential_requirements (
+             id, credential_id, name, required_units, kind, relation,
+             applicability, applicability_status, exclusive_group,
+             is_active, sort_order
+           ) VALUES
+             ('requirement-packet-general', ?, ?, 10, 'minimum',
+              'independent', 'always', 'applies', NULL, 1, 0),
+             ('requirement-packet-cap', ?, ?, 4, 'maximum',
+              'independent', 'always', 'applies', 'packet-cap', 1, 1),
+             ('requirement-packet-conditional', ?, ?, 0, 'informational',
+              'independent', 'conditional', 'needs_confirmation',
+              NULL, 1, 2)`,
+          credentialId,
+          "General <minimum> & total",
+          credentialId,
+          'Specialty <cap> "four"',
+          credentialId,
+          "Conditional <training> & status",
+        );
+
+        const insertActivity = (
+          id,
+          title,
+          provider,
+          date,
+          units,
+          evidenceStatus,
+          evidenceReference = null,
+        ) =>
+          run(
+            `INSERT INTO activities (
+               id, user_id, title, provider, completion_date, total_units,
+               evidence_status, evidence_reference
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            id,
+            ownerId,
+            title,
+            provider,
+            date,
+            units,
+            evidenceStatus,
+            evidenceReference,
+          );
+        insertActivity(
+          capActivityId,
+          "<img src=x onerror=alert('activity')> Specialty & ethics",
+          'Board "Provider"',
+          "2026-03-10",
+          6,
+          "attached",
+          "Portal <proof> & record",
+        );
+        insertActivity(
+          generalActivityId,
+          "General learning",
+          "General provider",
+          "2026-04-12",
+          2,
+          "missing",
+        );
+        insertActivity(
+          archivedActivityId,
+          "Archived secret activity",
+          "Archived provider",
+          "2026-02-01",
+          5,
+          "attached",
+        );
+
+        const insertAllocation = (
+          id,
+          activityId,
+          requirementId,
+          units,
+        ) =>
+          run(
+            `INSERT INTO activity_allocations (
+               id, activity_id, credential_id, requirement_id,
+               allocated_units
+             ) VALUES (?, ?, ?, ?, ?)`,
+            id,
+            activityId,
+            credentialId,
+            requirementId,
+            units,
+          );
+        insertAllocation(
+          "allocation-packet-cap",
+          capActivityId,
+          "requirement-packet-general",
+          6,
+        );
+        insertAllocation(
+          "allocation-packet-general",
+          generalActivityId,
+          "requirement-packet-general",
+          2,
+        );
+        insertAllocation(
+          "allocation-packet-archived",
+          archivedActivityId,
+          "requirement-packet-general",
+          5,
+        );
+
+        const insertMatch = (
+          id,
+          allocationId,
+          requirementId,
+          units,
+        ) =>
+          run(
+            `INSERT INTO activity_requirement_matches (
+               id, user_id, allocation_id, requirement_id, matched_units
+             ) VALUES (?, ?, ?, ?, ?)`,
+            id,
+            ownerId,
+            allocationId,
+            requirementId,
+            units,
+          );
+        insertMatch(
+          "match-packet-cap-general",
+          "allocation-packet-cap",
+          "requirement-packet-general",
+          6,
+        );
+        insertMatch(
+          "match-packet-cap-maximum",
+          "allocation-packet-cap",
+          "requirement-packet-cap",
+          6,
+        );
+        insertMatch(
+          "match-packet-general",
+          "allocation-packet-general",
+          "requirement-packet-general",
+          2,
+        );
+        insertMatch(
+          "match-packet-archived",
+          "allocation-packet-archived",
+          "requirement-packet-general",
+          5,
+        );
+
+        const insertEvidence = (
+          id,
+          userId,
+          activityId,
+          suffix,
+          fileName,
+          hashCharacter,
+          status,
+          size = 1024,
+        ) =>
+          run(
+            `INSERT INTO evidence_files (
+               id, user_id, activity_id, object_key, original_filename,
+               content_type, size_bytes, sha256, storage_etag, status
+             ) VALUES (?, ?, ?, ?, ?, 'application/pdf', ?, ?, ?, ?)`,
+            id,
+            userId,
+            activityId,
+            `private-object-key-${suffix}`,
+            fileName,
+            size,
+            hashCharacter.repeat(64),
+            `private-storage-etag-${suffix}`,
+            status,
+          );
+        insertEvidence(
+          readyEvidenceId,
+          ownerId,
+          capActivityId,
+          "ready",
+          "proof<script>&\"'.pdf",
+          "a",
+          "ready",
+          2048,
+        );
+        insertEvidence(
+          deletingEvidenceId,
+          ownerId,
+          capActivityId,
+          "deleting",
+          "deleting-proof.pdf",
+          "b",
+          "deleting",
+        );
+        insertEvidence(
+          archivedEvidenceId,
+          ownerId,
+          archivedActivityId,
+          "archived",
+          "archived-proof.pdf",
+          "c",
+          "ready",
+        );
+        insertEvidence(
+          foreignEvidenceId,
+          otherId,
+          capActivityId,
+          "foreign",
+          "foreign-owner-proof.pdf",
+          "d",
+          "ready",
+        );
+
+        const insertTask = (
+          id,
+          userId,
+          title,
+          kind,
+          status,
+          dueDate,
+          completedAt,
+          isPersonal,
+          archivedAt,
+          sortOrder,
+        ) =>
+          run(
+            `INSERT INTO checklist_tasks (
+               id, user_id, credential_id, title, kind, status, due_date,
+               completed_at, is_personal, archived_at, sort_order
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            id,
+            userId,
+            credentialId,
+            title,
+            kind,
+            status,
+            dueDate,
+            completedAt,
+            isPersonal,
+            archivedAt,
+            sortOrder,
+          );
+        insertTask(
+          "task-packet-complete",
+          ownerId,
+          "Review <portal> & rules",
+          "review",
+          "completed",
+          "2026-09-01",
+          "2026-08-20T12:00:00.000Z",
+          0,
+          null,
+          0,
+        );
+        insertTask(
+          "task-packet-open",
+          ownerId,
+          "<svg onload=alert('task')> Submit renewal",
+          "submission",
+          "pending",
+          "2026-12-31",
+          null,
+          0,
+          null,
+          1,
+        );
+        insertTask(
+          "task-packet-archived",
+          ownerId,
+          "Archived private task",
+          "personal",
+          "pending",
+          null,
+          null,
+          1,
+          "2026-07-01T12:00:00.000Z",
+          2,
+        );
+        insertTask(
+          "task-packet-foreign",
+          otherId,
+          "Foreign owner task",
+          "personal",
+          "pending",
+          null,
+          null,
+          1,
+          null,
+          3,
+        );
+        run(
+          `INSERT INTO renewal_submissions (
+             id, user_id, credential_id, submitted_at,
+             confirmation_number, proof_reference, attestation_kind
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          "submission-packet-owner",
+          ownerId,
+          credentialId,
+          "2026-07-25T15:30:00.000Z",
+          "CONF<&>\"'",
+          "Receipt <portal> & screenshot",
+          "owner_attested",
+        );
+        run(
+          `UPDATE activities
+           SET archived_at = '2026-07-01T12:00:00.000Z'
+           WHERE id = ?`,
+          archivedActivityId,
+        );
+
+        const response = await fetchWorker(
+          `https://license-lantern.example/api/export/packet?credentialId=${credentialId}`,
+          { headers: authHeaders() },
+        );
+        assert.equal(response.status, 200);
+        assert.equal(
+          response.headers.get("content-type"),
+          "text/html; charset=utf-8",
+        );
+        for (const [name, value] of [
+          ["cache-control", "no-store"],
+          ["cross-origin-resource-policy", "same-origin"],
+          ["x-content-type-options", "nosniff"],
+          ["x-frame-options", "DENY"],
+          ["x-robots-tag", "noindex, noarchive"],
+          ["referrer-policy", "no-referrer"],
+        ]) {
+          assert.equal(response.headers.get(name), value);
+        }
+        assert.match(
+          response.headers.get("content-disposition") ?? "",
+          /^inline; filename="credential-packet-rn-script-alert-credential-script-2026-12-31\.html"$/,
+        );
+        assert.doesNotMatch(
+          response.headers.get("content-disposition") ?? "",
+          /[\r\n]/,
+        );
+        assert.match(
+          response.headers.get("content-security-policy") ?? "",
+          /default-src 'none';[\s\S]*?script-src 'sha256-[A-Za-z0-9+/=]+';[\s\S]*?frame-ancestors 'none'/,
+        );
+
+        const html = await response.text();
+        assert.match(
+          html,
+          /<meta name="license-lantern-packet-version" content="1">/,
+        );
+        assert.match(html, /@media print/);
+        assert.match(html, /@page \{ size: Letter; margin: 14mm; \}/);
+        for (const sectionId of [
+          "credential-summary",
+          "tracked-readiness",
+          "needs-attention",
+          "requirement-ledger",
+          "activity-ledger",
+          "evidence-inventory",
+          "renewal-checklist",
+          "renewal-lifecycle",
+          "sources-and-disclaimer",
+        ]) {
+          assert.match(html, new RegExp(`id="${sectionId}"`));
+        }
+        for (const [name, value] of [
+          ["data-total-logged", "8"],
+          ["data-total-counted", "6"],
+          ["data-total-excluded", "2"],
+          ["data-total-unclassified", "0"],
+          ["data-total-remaining", "4"],
+          ["data-progress-percent", "60"],
+        ]) {
+          assert.match(html, new RegExp(`${name}="${value}"`));
+        }
+        assert.match(
+          html,
+          /data-requirement-id="requirement-packet-general"/,
+        );
+        assert.match(
+          html,
+          /data-requirement-id="requirement-packet-cap"/,
+        );
+        assert.match(
+          html,
+          /data-requirement-id="requirement-packet-conditional"/,
+        );
+        assert.match(html, /Confirm applicability/);
+        assert.match(
+          html,
+          /1 conditional requirement needs an applicability decision/,
+        );
+        assert.match(html, /data-activity-id="activity-packet-cap"/);
+        assert.match(html, /data-activity-id="activity-packet-general"/);
+        assert.doesNotMatch(
+          html,
+          /activity-packet-archived|Archived secret activity/,
+        );
+        assert.match(html, /data-task-id="task-packet-complete"/);
+        assert.match(html, /data-task-id="task-packet-open"/);
+        assert.doesNotMatch(
+          html,
+          /task-packet-archived|Archived private task|task-packet-foreign|Foreign owner task/,
+        );
+        assert.match(
+          html,
+          new RegExp(`data-evidence-id="${readyEvidenceId}"`),
+        );
+        assert.match(
+          html,
+          new RegExp(`/api/evidence/${readyEvidenceId}/download`),
+        );
+        assert.doesNotMatch(
+          html,
+          new RegExp(
+            `${deletingEvidenceId}|${archivedEvidenceId}|${foreignEvidenceId}`,
+          ),
+        );
+        assert.doesNotMatch(
+          html,
+          /deleting-proof|archived-proof|foreign-owner-proof/,
+        );
+        assert.match(html, /Proof removal pending/);
+        assert.match(html, /marked as missing proof/);
+        assert.doesNotMatch(
+          html,
+          /documented hours are excluded by category caps/,
+        );
+        assert.match(html, /allocated to this cycle/);
+        assert.match(html, new RegExp(`SHA-256: ${"a".repeat(64)}`));
+        assert.match(html, /application\/pdf/);
+        assert.match(html, /2 KB/);
+        assert.doesNotMatch(
+          html,
+          /private-object-key|private-storage-etag/,
+        );
+        assert.deepEqual(
+          {
+            gets: bucket.gets.length,
+            puts: bucket.puts.length,
+            deletes: bucket.deletes.length,
+          },
+          { gets: 0, puts: 0, deletes: 0 },
+        );
+
+        assert.match(html, /Jul 25, 2026/);
+        assert.match(html, /CONF&lt;&amp;&gt;&quot;&#39;/);
+        assert.match(html, /Receipt &lt;portal&gt; &amp; screenshot/);
+        assert.match(html, /Owner Attested/);
+        assert.match(html, /Template version 7/);
+        assert.match(html, /Acceptance \/ completion/);
+        assert.match(html, /Date:<\/b> Not recorded/);
+        assert.match(html, /Final verification required/);
+        assert.match(html, /does not replace the issuing authority/);
+        assert.match(html, /Print \/ Save as PDF/);
+        assert.doesNotMatch(
+          html,
+          /<[^>]+\son(?:click|error|load)=/i,
+        );
+
+        for (const escapedValue of [
+          "RN &lt;script&gt;alert(&#39;credential&#39;)&lt;/script&gt;",
+          "Nursing &amp; Care",
+          "Test &lt;State&gt;",
+          "Board &quot;Issuer&quot;",
+          "Official &lt;Rules&gt; &amp; Guidance",
+          "&lt;img src=x onerror=alert(&#39;activity&#39;)&gt; Specialty &amp; ethics",
+          "&lt;svg onload=alert(&#39;task&#39;)&gt; Submit renewal",
+          "proof&lt;script&gt;&amp;&quot;&#39;.pdf",
+        ]) {
+          assert.ok(html.includes(escapedValue), escapedValue);
+        }
+        assert.doesNotMatch(
+          html,
+          /<script>alert\('credential'\)<\/script>|<img src=x|<svg onload=/i,
+        );
+        assert.match(
+          html,
+          /https:\/\/example\.com\/rules\?part=one&amp;note=two/,
+        );
+      } finally {
+        database.close();
+      }
+    },
+  );
+
+  await t.test(
+    "authenticates and isolates credential packet targets before rendering",
+    async () => {
+      const sentinelDatabase = new FakeDatabase();
+      testCloudflareEnv.DB = sentinelDatabase;
+      testCloudflareEnv.EVIDENCE = new FakeEvidenceBucket();
+
+      const anonymous = await fetchWorker(
+        "https://license-lantern.example/api/export/packet?credentialId=credential-packet-owner",
+        { headers: { accept: "application/json" } },
+      );
+      assert.equal(anonymous.status, 401);
+      assert.deepEqual(await anonymous.json(), {
+        error: "Sign in with ChatGPT to prepare a credential packet.",
+        code: "authentication_required",
+      });
+      assert.equal(anonymous.headers.get("cache-control"), "no-store");
+      assert.equal(sentinelDatabase.calls.length, 0);
+
+      for (const suffix of [
+        "",
+        "?credentialId=%3Cunsafe%3E",
+        "?credentialId=one&credentialId=two",
+        "?credentialId=one&extra=two",
+        `?credentialId=${"a".repeat(161)}`,
+      ]) {
+        const response = await fetchWorker(
+          `https://license-lantern.example/api/export/packet${suffix}`,
+          { headers: authHeaders() },
+        );
+        assert.equal(response.status, 400);
+        assert.deepEqual(await response.json(), {
+          error: "Choose one valid credential to prepare a credential packet.",
+          code: "invalid_credential_id",
+        });
+      }
+      assert.equal(
+        sentinelDatabase.calls.length,
+        0,
+        "target validation must finish before database initialization",
+      );
+
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __renewalPacketIsolationNonce = "packet-isolation";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      testCloudflareEnv.DB = database;
+      const ownerId = await expectedStableUserId("owner@example.com");
+
+      try {
+        database.raw
+          .prepare(
+            `INSERT INTO users (id, email, display_name, is_demo)
+             VALUES (?, 'owner@example.com', 'Packet Owner', 0)`,
+          )
+          .run(ownerId);
+        database.raw
+          .prepare(
+            `INSERT INTO credentials (
+               id, user_id, rule_set_id, credential_name, profession,
+               jurisdiction, issuer, cycle_start, deadline, total_required,
+               unit_label, status
+             ) VALUES (
+               'credential-private-packet', ?, NULL, 'Private packet name',
+               'Testing', 'Test', 'Test Board', '2026-01-01', '2026-12-31',
+               1, 'hour', 'active')`,
+          )
+          .run(ownerId);
+
+        const missing = await fetchWorker(
+          "https://license-lantern.example/api/export/packet?credentialId=credential-does-not-exist",
+          { headers: authHeaders() },
+        );
+        const foreign = await fetchWorker(
+          "https://license-lantern.example/api/export/packet?credentialId=credential-private-packet",
+          { headers: authHeaders("other@example.com") },
+        );
+        assert.equal(missing.status, 404);
+        assert.equal(foreign.status, 404);
+        const expected = {
+          error: "Credential not found.",
+          code: "credential_not_found",
+        };
+        assert.deepEqual(await missing.json(), expected);
+        assert.deepEqual(await foreign.json(), expected);
+      } finally {
+        database.close();
+      }
+    },
+  );
 });
