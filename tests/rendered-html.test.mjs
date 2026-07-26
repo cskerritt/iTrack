@@ -1466,6 +1466,9 @@ test("License Lantern product contract", async (t) => {
       exclusiveGroupMigration,
       builtExclusiveGroupMigration,
       exclusiveGroupSnapshotSource,
+      attestationMigration,
+      builtAttestationMigration,
+      attestationSnapshotSource,
     ] = await Promise.all([
         readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
         readFile(
@@ -1555,6 +1558,21 @@ test("License Lantern product contract", async (t) => {
           new URL("../drizzle/meta/0005_snapshot.json", import.meta.url),
           "utf8",
         ),
+        readFile(
+          new URL("../drizzle/0006_graceful_jackal.sql", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL(
+            "../dist/.openai/drizzle/0006_graceful_jackal.sql",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+        readFile(
+          new URL("../drizzle/meta/0006_snapshot.json", import.meta.url),
+          "utf8",
+        ),
       ]);
 
     const hosting = JSON.parse(hostingSource);
@@ -1569,8 +1587,9 @@ test("License Lantern product contract", async (t) => {
     assert.equal(builtRichRuleMigration, richRuleMigration);
     assert.equal(builtProgressionMigration, progressionMigration);
     assert.equal(builtExclusiveGroupMigration, exclusiveGroupMigration);
+    assert.equal(builtAttestationMigration, attestationMigration);
 
-    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}`;
+    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}\n${attestationMigration}`;
     const migratedTables = new Set(
       [...migration.matchAll(/CREATE TABLE `([^`]+)`/g)].map(
         (match) => match[1],
@@ -1679,7 +1698,7 @@ test("License Lantern product contract", async (t) => {
     const migrationJournal = JSON.parse(migrationJournalSource);
     assert.equal(
       migrationJournal.entries.at(-1)?.tag,
-      "0005_smooth_mach_iv",
+      "0006_graceful_jackal",
     );
     assert.match(
       exclusiveGroupMigration,
@@ -1705,6 +1724,25 @@ test("License Lantern product contract", async (t) => {
     assert.deepEqual(
       exclusiveGroupSnapshot.tables.rule_categories.columns.exclusive_group,
       expectedExclusiveGroupColumn,
+    );
+    assert.match(
+      attestationMigration,
+      /ALTER TABLE `renewal_acceptances` ADD `official_record_attested_at` text/i,
+    );
+    assert.match(
+      attestationMigration,
+      /ALTER TABLE `renewal_submissions` ADD `attestation_kind` text/i,
+    );
+    const attestationSnapshot = JSON.parse(attestationSnapshotSource);
+    assert.equal(
+      attestationSnapshot.tables.renewal_acceptances.columns
+        .official_record_attested_at.name,
+      "official_record_attested_at",
+    );
+    assert.equal(
+      attestationSnapshot.tables.renewal_submissions.columns.attestation_kind
+        .name,
+      "attestation_kind",
     );
     assert.match(runtimeSource, /exclusive_group TEXT/i);
     assert.match(schemaSource, /exclusiveGroup:\s*text\("exclusive_group"\)/i);
@@ -7897,6 +7935,7 @@ test("License Lantern product contract", async (t) => {
   await t.test(
     "records a submission without fabricating a learning activity",
     async () => {
+      let submissionLookupCount = 0;
       const database = new FakeDatabase({
         resolveFirst(call) {
           if (
@@ -7911,7 +7950,10 @@ test("License Lantern product contract", async (t) => {
             };
           }
           if (/FROM renewal_submissions WHERE credential_id = \? AND user_id = \?/i.test(call.sql)) {
-            return null;
+            submissionLookupCount += 1;
+            return submissionLookupCount === 1
+              ? null
+              : { id: "submission-concurrent-winner" };
           }
           return null;
         },
@@ -7928,6 +7970,7 @@ test("License Lantern product contract", async (t) => {
       const result = await response.json();
       assert.equal(result.ok, true);
       assert.equal(result.action, "markSubmitted");
+      assert.equal(result.id, "submission-concurrent-winner");
 
       const statements = flattenedStatements(database);
       const submissionInsert = statements.find((statement) =>
@@ -7960,12 +8003,27 @@ test("License Lantern product contract", async (t) => {
         ),
         false,
       );
+      const progressionEvent = statements.find((statement) =>
+        /^INSERT OR IGNORE INTO xp_events \(/i.test(statement.sql),
+      );
+      const filingBadge = statements.find((statement) =>
+        /^INSERT OR IGNORE INTO badge_events \(/i.test(statement.sql),
+      );
+      assert.match(
+        progressionEvent?.sql ?? "",
+        /persisted_submission\.id[\s\S]*?JOIN renewal_submissions persisted_submission/i,
+      );
+      assert.match(
+        filingBadge?.sql ?? "",
+        /persisted_submission\.id[\s\S]*?JOIN renewal_submissions persisted_submission/i,
+      );
     },
   );
 
   await t.test(
     "keeps a retired ISC2 rule on the attested checkpoint path without claiming a filed renewal",
     async () => {
+      let submissionLookupCount = 0;
       const database = new FakeDatabase({
         resolveFirst(call) {
           if (
@@ -7984,7 +8042,10 @@ test("License Lantern product contract", async (t) => {
               call.sql,
             )
           ) {
-            return null;
+            submissionLookupCount += 1;
+            return submissionLookupCount === 1
+              ? null
+              : { id: "submission-isc2-winner" };
           }
           return null;
         },
@@ -8044,6 +8105,7 @@ test("License Lantern product contract", async (t) => {
   await t.test(
     "records a compliance-period checkpoint without awarding a filed-renewal badge",
     async () => {
+      let submissionLookupCount = 0;
       const database = new FakeDatabase({
         resolveFirst(call) {
           if (
@@ -8063,7 +8125,10 @@ test("License Lantern product contract", async (t) => {
               call.sql,
             )
           ) {
-            return null;
+            submissionLookupCount += 1;
+            return submissionLookupCount === 1
+              ? null
+              : { id: "submission-compliance-winner" };
           }
           return null;
         },
@@ -8249,6 +8314,220 @@ test("License Lantern product contract", async (t) => {
         (await response.json()).code,
         "florida_next_template_required",
       );
+    },
+  );
+
+  await t.test(
+    "rolls back a Florida rollover when the selected catalog snapshot changes before the acceptance batch",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const selectedRuleSetId =
+        "fl-insurance-producer-life-under-6-years-2026-v1";
+      class RacingFloridaDatabase extends SQLiteD1Database {
+        raced = false;
+        racedCategory = null;
+
+        async batch(statements) {
+          if (
+            !this.raced &&
+            statements.some((statement) =>
+              /UPDATE credentials SET status = 'renewed'/i.test(
+                normalizedSql(statement.sql),
+              ),
+            )
+          ) {
+            this.racedCategory = this.raw
+              .prepare(
+                `SELECT id, required_units AS requiredUnits
+                 FROM rule_categories
+                 WHERE rule_set_id = ?
+                 ORDER BY id
+                 LIMIT 1`,
+              )
+              .get(selectedRuleSetId);
+            this.raw
+              .prepare(
+                `UPDATE rule_categories
+                 SET required_units = required_units + 1
+                 WHERE id = ?`,
+              )
+              .run(this.racedCategory.id);
+            this.raced = true;
+          }
+          return super.batch(statements);
+        }
+      }
+
+      const database = new RacingFloridaDatabase(DatabaseSync);
+      testCloudflareEnv.DB = database;
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const bootstrapRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __floridaRaceBootstrapNonce = "florida-race";`,
+      );
+      await bootstrapRuntime.initializeDatabase(database);
+
+      const userId = await expectedStableUserId("owner@example.com");
+      database.raw
+        .prepare(
+          `INSERT INTO users (id, email, display_name)
+           VALUES (?, ?, ?)`,
+        )
+        .run(userId, "owner@example.com", "Casey Owner");
+      database.raw
+        .prepare(
+          `INSERT INTO credentials (
+            id, user_id, rule_set_id, credential_name, profession,
+            jurisdiction, issuer, cycle_start, deadline, total_required,
+            unit_label, status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted')`,
+        )
+        .run(
+          "credential-florida-race",
+          userId,
+          selectedRuleSetId,
+          "Florida life producer",
+          "Insurance",
+          "Florida",
+          "Florida Department of Financial Services",
+          "2026-03-02",
+          "2028-03-01",
+          24,
+          "CE hours",
+        );
+      database.raw
+        .prepare(
+          `INSERT INTO renewal_submissions (
+            id, user_id, credential_id, submitted_at,
+            confirmation_number, proof_reference, attestation_kind
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "submission-florida-race",
+          userId,
+          "credential-florida-race",
+          "2028-02-20T12:00:00.000Z",
+          "MYPROFILE-RACE",
+          "MYPROFILE-RACE",
+          "compliance_period_complete",
+        );
+      assert.equal(
+        database.raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM credential_cycle_links
+             WHERE user_id = ?`,
+          )
+          .get(userId).count,
+        0,
+      );
+
+      const response = await postWorkspace("markRenewalAccepted", {
+        credentialId: "credential-florida-race",
+        acceptedAt: "2028-03-02",
+        reference: "MYPROFILE-COMPLETE",
+        nextCycleStart: "2028-03-02",
+        nextDeadline: "2030-03-01",
+        nextRuleSetId: selectedRuleSetId,
+        officialDatesAttested: true,
+      });
+      assert.equal(response.status, 409);
+      assert.equal(
+        (await response.json()).code,
+        "florida_next_template_changed",
+      );
+      assert.equal(database.raced, true);
+      assert.ok(database.racedCategory);
+      assert.equal(
+        database.raw
+          .prepare(
+            `SELECT status
+             FROM credentials
+             WHERE id = 'credential-florida-race'`,
+          )
+          .get().status,
+        "submitted",
+      );
+      assert.equal(
+        database.raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM credentials
+             WHERE user_id = ?`,
+          )
+          .get(userId).count,
+        1,
+      );
+      assert.equal(
+        database.raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM renewal_acceptances
+             WHERE credential_id = 'credential-florida-race'`,
+          )
+          .get().count,
+        0,
+      );
+      assert.deepEqual(
+        database.raw
+          .prepare(
+            `SELECT
+               credential_id AS credentialId,
+               previous_credential_id AS previousCredentialId
+             FROM credential_cycle_links
+             WHERE user_id = ?
+             ORDER BY credential_id`,
+          )
+          .all(userId)
+          .map((row) => ({ ...row })),
+        [
+          {
+            credentialId: "credential-florida-race",
+            previousCredentialId: null,
+          },
+        ],
+      );
+      database.raw
+        .prepare(
+          `UPDATE rule_categories
+           SET required_units = ?
+           WHERE id = ?`,
+        )
+        .run(
+          database.racedCategory.requiredUnits,
+          database.racedCategory.id,
+        );
+      const retryResponse = await postWorkspace("markRenewalAccepted", {
+        credentialId: "credential-florida-race",
+        acceptedAt: "2028-03-02",
+        reference: "MYPROFILE-COMPLETE",
+        nextCycleStart: "2028-03-02",
+        nextDeadline: "2030-03-01",
+        nextRuleSetId: selectedRuleSetId,
+        officialDatesAttested: true,
+      });
+      assert.equal(retryResponse.status, 200);
+      const retryResult = await retryResponse.json();
+      assert.equal(retryResult.action, "markRenewalAccepted");
+      assert.equal(
+        database.raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM credential_requirements
+             WHERE credential_id = ?`,
+          )
+          .get(retryResult.id).count,
+        database.raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_categories
+             WHERE rule_set_id = ?`,
+          )
+          .get(selectedRuleSetId).count,
+      );
+      database.close();
     },
   );
 
@@ -10174,16 +10453,16 @@ test("License Lantern product contract", async (t) => {
         userId,
       ]);
       assert.deepEqual(nextCycleLink.bindings.slice(1), [
-        userId,
-        nextCredentialId,
         "series-one",
         "credential-prior",
         24,
+        nextCredentialId,
+        userId,
       ]);
       assert.equal(requirementSnapshots.length, 3);
       const snapshotByName = new Map(
         requirementSnapshots.map((statement) => [
-          statement.bindings[3],
+          statement.bindings[2],
           statement,
         ]),
       );
@@ -10194,7 +10473,6 @@ test("License Lantern product contract", async (t) => {
       assert.ok(ethicsSnapshot);
       assert.ok(maximumSnapshot);
       assert.deepEqual(generalSnapshot.bindings.slice(1), [
-        nextCredentialId,
         null,
         "General",
         10,
@@ -10207,6 +10485,8 @@ test("License Lantern product contract", async (t) => {
         "Test activity type",
         1,
         0,
+        nextCredentialId,
+        userId,
       ]);
       assert.notEqual(
         generalSnapshot.bindings[0],
@@ -10214,7 +10494,6 @@ test("License Lantern product contract", async (t) => {
         "the new cycle must receive fresh requirement IDs",
       );
       assert.deepEqual(ethicsSnapshot.bindings.slice(1), [
-        nextCredentialId,
         null,
         "Ethics",
         2,
@@ -10227,14 +10506,15 @@ test("License Lantern product contract", async (t) => {
         null,
         0,
         1,
+        nextCredentialId,
+        userId,
       ]);
       assert.notEqual(
-        ethicsSnapshot.bindings[7],
+        ethicsSnapshot.bindings[6],
         "requirement-general",
         "nested parents must be remapped away from the prior cycle",
       );
       assert.deepEqual(maximumSnapshot.bindings.slice(1), [
-        nextCredentialId,
         null,
         "Self-study",
         4,
@@ -10247,24 +10527,26 @@ test("License Lantern product contract", async (t) => {
         null,
         1,
         2,
+        nextCredentialId,
+        userId,
       ]);
       assert.equal(nextTasks.length, 3);
       assert.ok(
         nextTasks.every(
           (statement) =>
-            statement.bindings[1] === userId &&
-            statement.bindings[2] === nextCredentialId,
+            statement.bindings.at(-2) === nextCredentialId &&
+            statement.bindings.at(-1) === userId,
         ),
       );
       assert.deepEqual(acceptanceInsert.bindings, [
         acceptanceInsert.bindings[0],
-        userId,
-        "credential-prior",
         "submission-prior",
         "2028-02-25",
         "ACCEPT-204",
         null,
         nextCredentialId,
+        "credential-prior",
+        userId,
       ]);
       assert.deepEqual(oldCycleUpdate.bindings.slice(-4), [
         "credential-prior",
@@ -10461,15 +10743,15 @@ test("License Lantern product contract", async (t) => {
       );
       const snapshotByName = new Map(
         requirementSnapshots.map((statement) => [
-          statement.bindings[3],
+          statement.bindings[2],
           statement,
         ]),
       );
       assert.deepEqual(
         [
-          snapshotByName.get("General CE")?.bindings[2],
-          snapshotByName.get("General CE")?.bindings[4],
-          snapshotByName.get("General CE")?.bindings[11],
+          snapshotByName.get("General CE")?.bindings[1],
+          snapshotByName.get("General CE")?.bindings[3],
+          snapshotByName.get("General CE")?.bindings[10],
         ],
         ["cfp-professional-2027-general", 38, null],
       );
@@ -10477,7 +10759,10 @@ test("License Lantern product contract", async (t) => {
         [
           snapshotByName.get(
             "General CE — Principal Topics Other Than Practice Management",
-          )?.bindings[2],
+          )?.bindings[1],
+          snapshotByName.get(
+            "General CE — Principal Topics Other Than Practice Management",
+          )?.bindings[3],
           snapshotByName.get(
             "General CE — Principal Topics Other Than Practice Management",
           )?.bindings[4],
@@ -10486,10 +10771,7 @@ test("License Lantern product contract", async (t) => {
           )?.bindings[5],
           snapshotByName.get(
             "General CE — Principal Topics Other Than Practice Management",
-          )?.bindings[6],
-          snapshotByName.get(
-            "General CE — Principal Topics Other Than Practice Management",
-          )?.bindings[11],
+          )?.bindings[10],
         ],
         [
           "cfp-professional-2027-principal-topics",
@@ -10501,12 +10783,12 @@ test("License Lantern product contract", async (t) => {
       );
       assert.deepEqual(
         [
-          snapshotByName.get("Practice Management General CE")?.bindings[2],
+          snapshotByName.get("Practice Management General CE")?.bindings[1],
+          snapshotByName.get("Practice Management General CE")?.bindings[3],
           snapshotByName.get("Practice Management General CE")?.bindings[4],
           snapshotByName.get("Practice Management General CE")?.bindings[5],
-          snapshotByName.get("Practice Management General CE")?.bindings[6],
-          snapshotByName.get("Practice Management General CE")?.bindings[8],
-          snapshotByName.get("Practice Management General CE")?.bindings[11],
+          snapshotByName.get("Practice Management General CE")?.bindings[7],
+          snapshotByName.get("Practice Management General CE")?.bindings[10],
         ],
         [
           "cfp-professional-2027-practice-management",
@@ -10519,9 +10801,9 @@ test("License Lantern product contract", async (t) => {
       );
       assert.deepEqual(
         [
-          snapshotByName.get("CFP Board-Approved Ethics CE")?.bindings[2],
-          snapshotByName.get("CFP Board-Approved Ethics CE")?.bindings[4],
-          snapshotByName.get("CFP Board-Approved Ethics CE")?.bindings[11],
+          snapshotByName.get("CFP Board-Approved Ethics CE")?.bindings[1],
+          snapshotByName.get("CFP Board-Approved Ethics CE")?.bindings[3],
+          snapshotByName.get("CFP Board-Approved Ethics CE")?.bindings[10],
         ],
         ["cfp-professional-2027-ethics", 2, "CFP CE activity type"],
       );
@@ -10529,17 +10811,17 @@ test("License Lantern product contract", async (t) => {
       assert.equal(
         snapshotByName.get(
           "General CE — Principal Topics Other Than Practice Management",
-        )?.bindings[7],
+        )?.bindings[6],
         snapshotByName.get("General CE")?.bindings[0],
       );
       assert.equal(
-        snapshotByName.get("Practice Management General CE")?.bindings[7],
+        snapshotByName.get("Practice Management General CE")?.bindings[6],
         snapshotByName.get("General CE")?.bindings[0],
       );
       const reviewTask = statements.find(
         (statement) =>
           /^INSERT INTO checklist_tasks \(/i.test(statement.sql) &&
-          statement.bindings[3] ===
+          statement.bindings[1] ===
             "Confirm CFP Board carryover, then manually record only approved general CE",
       );
       assert.ok(reviewTask);
