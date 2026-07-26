@@ -3943,8 +3943,11 @@ async function markSubmitted(
         id, user_id, idempotency_key, event_type, points, related_type,
         related_id
       )
-      SELECT ?, ?, ?, ?, 150, ?, ?
+      SELECT ?, ?, ?, ?, 150, ?, persisted_submission.id
       FROM credentials credential
+      JOIN renewal_submissions persisted_submission
+        ON persisted_submission.credential_id = credential.id
+        AND persisted_submission.user_id = credential.user_id
       WHERE credential.id = ?
         AND credential.user_id = ?
         AND credential.status = 'submitted'`,
@@ -3964,7 +3967,6 @@ async function markSubmitted(
           : isComplianceCheckpoint
             ? "compliance_checkpoint"
             : "submission",
-        submissionId,
         credentialId,
         identity.userId,
       ],
@@ -3977,8 +3979,12 @@ async function markSubmitted(
         `INSERT OR IGNORE INTO badge_events (
           id, user_id, badge_id, idempotency_key, related_type, related_id
         )
-        SELECT ?, ?, 'renewal-filed', ?, 'submission', ?
+        SELECT
+          ?, ?, 'renewal-filed', ?, 'submission', persisted_submission.id
         FROM credentials credential
+        JOIN renewal_submissions persisted_submission
+          ON persisted_submission.credential_id = credential.id
+          AND persisted_submission.user_id = credential.user_id
         WHERE credential.id = ?
           AND credential.user_id = ?
           AND credential.status = 'submitted'`,
@@ -3986,7 +3992,6 @@ async function markSubmitted(
           crypto.randomUUID(),
           identity.userId,
           `${identity.userId}:badge:renewal-filed`,
-          submissionId,
           credentialId,
           identity.userId,
         ],
@@ -4014,7 +4019,21 @@ async function markSubmitted(
       closedCycleMessage,
     );
   }
-  return submissionId;
+  const persistedSubmission = await query(
+    database,
+    `SELECT id
+     FROM renewal_submissions
+     WHERE credential_id = ? AND user_id = ?`,
+    [credentialId, identity.userId],
+  ).first<{ id: string }>();
+  if (!persistedSubmission) {
+    throw new RequestError(
+      "The renewal submission changed while it was being recorded. Refresh and try again.",
+      409,
+      "submission_state_changed",
+    );
+  }
+  return persistedSubmission.id;
 }
 
 async function addActivityAllocation(
@@ -4681,6 +4700,102 @@ async function markRenewalAccepted(
     ).all<NextRuleCategory>();
     selectedNextCategories = categoryResult.results;
   }
+  const selectedCatalogSnapshotGuard = selectedNextRule
+    ? {
+        sql: `EXISTS (
+          SELECT 1
+          FROM rule_sets selected_rule
+          WHERE selected_rule.id = ?
+            AND selected_rule.is_current = 1
+            AND selected_rule.credential_name IS ?
+            AND selected_rule.profession IS ?
+            AND selected_rule.jurisdiction IS ?
+            AND selected_rule.issuer IS ?
+            AND selected_rule.total_units IS ?
+            AND selected_rule.unit_label IS ?
+            AND selected_rule.cycle_months IS ?
+            AND (
+              SELECT COUNT(*)
+              FROM rule_categories counted_category
+              WHERE counted_category.rule_set_id = selected_rule.id
+            ) = ?
+            ${selectedNextCategories
+              .map(
+                () => `AND EXISTS (
+                  SELECT 1
+                  FROM rule_categories selected_category
+                  WHERE selected_category.rule_set_id = selected_rule.id
+                    AND selected_category.id = ?
+                    AND selected_category.name IS ?
+                    AND selected_category.required_units IS ?
+                    AND selected_category.kind IS ?
+                    AND selected_category.relation IS ?
+                    AND selected_category.parent_category_id IS ?
+                    AND selected_category.applicability IS ?
+                    AND selected_category.condition_note IS ?
+                    AND selected_category.exclusive_group IS ?
+                    AND selected_category.sort_order IS ?
+                )`,
+              )
+              .join("\n")}
+        )`,
+        bindings: [
+          selectedNextRule.id,
+          selectedNextRule.credentialName,
+          selectedNextRule.profession,
+          selectedNextRule.jurisdiction,
+          selectedNextRule.issuer,
+          Number(selectedNextRule.totalUnits),
+          selectedNextRule.unitLabel,
+          Number(selectedNextRule.cycleMonths),
+          selectedNextCategories.length,
+          ...selectedNextCategories.flatMap((category) => [
+            category.id,
+            category.name,
+            Number(category.requiredUnits),
+            category.kind,
+            category.relation,
+            category.parentCategoryId,
+            category.applicability,
+            category.conditionNote,
+            category.exclusiveGroup,
+            Number(category.sortOrder),
+          ]),
+        ] as readonly unknown[],
+      }
+    : null;
+  const selectedCatalogSnapshotStillMatches = async () => {
+    if (!selectedCatalogSnapshotGuard) return true;
+    const result = await query(
+      database,
+      `SELECT 1 AS matches
+       WHERE ${selectedCatalogSnapshotGuard.sql}`,
+      selectedCatalogSnapshotGuard.bindings,
+    ).first<{ matches: number }>();
+    return Boolean(result?.matches);
+  };
+  const throwIfSelectedCatalogSnapshotChanged = async () => {
+    if (await selectedCatalogSnapshotStillMatches()) return;
+    if (isManagedPharmacistRenewal) {
+      throw new RequestError(
+        "The current pharmacist template changed while the next renewal period was being created. Review the current template and try again.",
+        409,
+        "pharmacist_current_template_changed",
+      );
+    }
+    if (replacementTemplateFamily === "florida_mental_health") {
+      throw new RequestError(
+        "The selected Florida mental-health phase changed while the next renewal period was being created. Review the current phase and try again.",
+        409,
+        "florida_mental_health_next_template_changed",
+      );
+    }
+    throw new RequestError(
+      "The selected Florida producer template changed while the next compliance period was being created. Review the current template and try again.",
+      409,
+      "florida_next_template_changed",
+    );
+  };
   const unresolvedClassification =
     await findUnresolvedCredentialClassification(
       database,
@@ -4831,6 +4946,11 @@ async function markRenewalAccepted(
             AND guarded_submission.user_id = credentials.user_id
             AND substr(guarded_submission.submitted_at, 1, 10) <= ?
         )
+        ${
+          selectedCatalogSnapshotGuard
+            ? `AND ${selectedCatalogSnapshotGuard.sql}`
+            : ""
+        }
         AND NOT EXISTS (
           SELECT 1
           FROM activity_allocations allocation
@@ -4901,6 +5021,7 @@ async function markRenewalAccepted(
         identity.userId,
         submission.id,
         acceptedAt,
+        ...(selectedCatalogSnapshotGuard?.bindings ?? []),
       ],
     ),
     query(
@@ -4908,13 +5029,18 @@ async function markRenewalAccepted(
       `INSERT OR IGNORE INTO credential_cycle_links (
         id, user_id, credential_id, series_id, previous_credential_id,
         cycle_months
-      ) VALUES (?, ?, ?, ?, NULL, ?)`,
+      )
+      SELECT ?, source.user_id, source.id, ?, NULL, ?
+      FROM credentials source
+      WHERE source.id = ?
+        AND source.user_id = ?
+        AND source.status = 'renewed'`,
       [
         crypto.randomUUID(),
-        identity.userId,
-        credentialId,
         credential.seriesId,
         Number(credential.cycleMonths),
+        credentialId,
+        identity.userId,
       ],
     ),
     query(
@@ -4955,14 +5081,19 @@ async function markRenewalAccepted(
       `INSERT INTO credential_cycle_links (
         id, user_id, credential_id, series_id, previous_credential_id,
         cycle_months
-      ) VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      SELECT ?, next_credential.user_id, next_credential.id, ?, ?, ?
+      FROM credentials next_credential
+      WHERE next_credential.id = ?
+        AND next_credential.user_id = ?
+        AND next_credential.status = 'active'`,
       [
         crypto.randomUUID(),
-        identity.userId,
-        nextCredentialId,
         credential.seriesId,
         credentialId,
         nextCycleMonths,
+        nextCredentialId,
+        identity.userId,
       ],
     ),
   ];
@@ -5091,10 +5222,15 @@ async function markRenewalAccepted(
           relation, parent_requirement_id, applicability,
           applicability_status, condition_note, exclusive_group, is_active,
           sort_order
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        SELECT
+          ?, next_credential.id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        FROM credentials next_credential
+        WHERE next_credential.id = ?
+          AND next_credential.user_id = ?
+          AND next_credential.status = 'active'`,
         [
           nextRequirementIdByPriorId.get(requirement.key),
-          nextCredentialId,
           requirement.ruleCategoryId,
           requirement.name,
           Number(requirement.requiredUnits),
@@ -5109,6 +5245,8 @@ async function markRenewalAccepted(
           requirement.exclusiveGroup,
           requirement.isActive ? 1 : 0,
           Number(requirement.sortOrder),
+          nextCredentialId,
+          identity.userId,
         ],
       ),
     );
@@ -5124,15 +5262,22 @@ async function markRenewalAccepted(
         database,
         `INSERT INTO checklist_tasks (
           id, user_id, credential_id, title, kind, status, due_date, sort_order
-        ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+        )
+        SELECT
+          ?, next_credential.user_id, next_credential.id, ?, ?,
+          'pending', ?, ?
+        FROM credentials next_credential
+        WHERE next_credential.id = ?
+          AND next_credential.user_id = ?
+          AND next_credential.status = 'active'`,
         [
           crypto.randomUUID(),
-          identity.userId,
-          nextCredentialId,
           task.title,
           task.kind,
           task.dueDate,
           index,
+          nextCredentialId,
+          identity.userId,
         ],
       ),
     );
@@ -5144,26 +5289,40 @@ async function markRenewalAccepted(
         id, user_id, credential_id, submission_id, accepted_at,
         acceptance_reference, official_record_attested_at,
         next_credential_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      SELECT
+        ?, source.user_id, source.id, ?, ?, ?, ?, next_credential.id
+      FROM credentials source
+      JOIN credentials next_credential
+        ON next_credential.id = ?
+        AND next_credential.user_id = source.user_id
+        AND next_credential.status = 'active'
+      WHERE source.id = ?
+        AND source.user_id = ?
+        AND source.status = 'renewed'`,
       [
         acceptanceId,
-        identity.userId,
-        credentialId,
         submission.id,
         acceptedAt,
         reference,
         officialRecordAttestedAt,
         nextCredentialId,
+        credentialId,
+        identity.userId,
       ],
     ),
     query(
       database,
       `INSERT OR IGNORE INTO xp_events (
         id, user_id, idempotency_key, event_type, points, related_type, related_id
-      ) VALUES (?, ?, ?, ?, 200, ?, ?)`,
+      )
+      SELECT
+        ?, acceptance.user_id, ?, ?, 200, ?, acceptance.id
+      FROM renewal_acceptances acceptance
+      WHERE acceptance.id = ?
+        AND acceptance.user_id = ?`,
       [
         crypto.randomUUID(),
-        identity.userId,
         isCompliancePeriod
           ? `${identity.userId}:credential:${credentialId}:compliance-completed`
           : `${identity.userId}:credential:${credentialId}:accepted`,
@@ -5172,6 +5331,7 @@ async function markRenewalAccepted(
           : "renewal_accepted",
         isCompliancePeriod ? "compliance_completion" : "acceptance",
         acceptanceId,
+        identity.userId,
       ],
     ),
   );
@@ -5188,6 +5348,7 @@ async function markRenewalAccepted(
       [credentialId, identity.userId],
     ).first<{ nextCredentialId: string }>();
     if (racedAcceptance) return racedAcceptance.nextCredentialId;
+    await throwIfSelectedCatalogSnapshotChanged();
     const racedClassification =
       await findUnresolvedCredentialClassification(
         database,
@@ -5216,6 +5377,7 @@ async function markRenewalAccepted(
       [credentialId, identity.userId],
     ).first<{ nextCredentialId: string }>();
     if (racedAcceptance) return racedAcceptance.nextCredentialId;
+    await throwIfSelectedCatalogSnapshotChanged();
     const racedClassification =
       await findUnresolvedCredentialClassification(
         database,
