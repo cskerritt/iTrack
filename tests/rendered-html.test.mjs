@@ -1673,8 +1673,14 @@ test("License Lantern product contract", async (t) => {
           statement.sql,
         ),
       );
+      const evidenceXpInsert = statements.find((statement) =>
+        /INSERT OR IGNORE INTO xp_events[\s\S]*?'evidence_attached'/i.test(
+          statement.sql,
+        ),
+      );
       assert.ok(evidenceInsert);
       assert.ok(activityUpdate);
+      assert.ok(evidenceXpInsert);
       assert.deepEqual(evidenceInsert.bindings.slice(0, 4), [
         result.evidence.id,
         userId,
@@ -1685,6 +1691,11 @@ test("License Lantern product contract", async (t) => {
         "ethics-certificate.pdf",
         "activity-owner",
         userId,
+      ]);
+      assert.deepEqual(evidenceXpInsert.bindings.slice(1), [
+        userId,
+        `${userId}:activity:activity-owner:evidence-attached`,
+        "activity-owner",
       ]);
     },
   );
@@ -2169,6 +2180,18 @@ test("License Lantern product contract", async (t) => {
         "credential-rich",
         userId,
       ]);
+      const confirmationXpInsert = flattenedStatements(updateDatabase).find(
+        (statement) =>
+          /INSERT OR IGNORE INTO xp_events[\s\S]*?'requirement_confirmed'/i.test(
+            statement.sql,
+          ),
+      );
+      assert.ok(confirmationXpInsert);
+      assert.deepEqual(confirmationXpInsert.bindings.slice(1), [
+        userId,
+        `${userId}:requirement:requirement-special-role:confirmed`,
+        "requirement-special-role",
+      ]);
 
       const optionalCapDatabase = new FakeDatabase({
         resolveFirst(call) {
@@ -2218,10 +2241,11 @@ test("License Lantern product contract", async (t) => {
       });
       assert.equal(
         flattenedStatements(optionalCapDatabase).some((statement) =>
-          /^UPDATE credential_requirements /i.test(statement.sql),
+          /^UPDATE credential_requirements /i.test(statement.sql) ||
+          /'requirement_confirmed'/i.test(statement.sql),
         ),
         false,
-        "an optional earning path must not allow its cap to be disabled",
+        "an optional earning path must not allow its cap to be disabled or earn XP",
       );
 
       const crossOwnerDatabase = new FakeDatabase({
@@ -2251,7 +2275,8 @@ test("License Lantern product contract", async (t) => {
       });
       assert.equal(
         flattenedStatements(crossOwnerDatabase).some((statement) =>
-          /^UPDATE credential_requirements /i.test(statement.sql),
+          /^UPDATE credential_requirements /i.test(statement.sql) ||
+          /'requirement_confirmed'/i.test(statement.sql),
         ),
         false,
       );
