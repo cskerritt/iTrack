@@ -2213,8 +2213,8 @@ test("License Lantern product contract", async (t) => {
            ORDER BY id`,
         ),
         [
-          { id: "ny-lpn-2026-v1", effectiveDate: "2025-12-22" },
-          { id: "ny-rn-2026-v1", effectiveDate: "2025-12-22" },
+          { id: "ny-lpn-2026-v1", effectiveDate: null },
+          { id: "ny-rn-2026-v1", effectiveDate: null },
           { id: "tx-lvn-2026-v1", effectiveDate: "2026-09-01" },
           { id: "tx-rn-2026-v1", effectiveDate: "2026-09-01" },
         ],
@@ -2237,7 +2237,7 @@ test("License Lantern product contract", async (t) => {
              WHERE id = 'tx-rn-2026-sb25-nutrition-rule-refresh'`,
           )
           .get().conditionNote,
-        /on or after January 1, 2027[\s\S]*had not yet prescribed the hours[\s\S]*does not invent a number/i,
+        /every renewal application filed on or after January 1, 2027[\s\S]*adopted hours and content must replace this zero-value placeholder[\s\S]*does not invent a number/i,
       );
       assert.match(
         raw
