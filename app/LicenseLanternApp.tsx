@@ -480,11 +480,19 @@ function isIsc2AutomaticRenewalCredential(
   return credential?.ruleSetId?.startsWith("isc2-") ?? false;
 }
 
+function isNremtCredential(credential: Credential | null | undefined) {
+  return credential?.ruleSetId?.startsWith("nremt-") ?? false;
+}
+
 function isCompliancePeriodCredential(
   credential: Credential | null | undefined,
 ) {
-  return (
-    credential?.ruleSetId?.startsWith("fl-insurance-producer-") ?? false
+  const ruleSetId = credential?.ruleSetId;
+  return Boolean(
+    ruleSetId &&
+      (ruleSetId.startsWith("fl-insurance-producer-") ||
+        ruleSetId.startsWith("nj-employed-teacher-annual-pd-") ||
+        ruleSetId.startsWith("pa-professional-educator-act-48-")),
   );
 }
 
@@ -493,6 +501,44 @@ function isFloridaInsuranceComplianceCredential(
 ) {
   return (
     credential?.ruleSetId?.startsWith("fl-insurance-producer-") ?? false
+  );
+}
+
+function isFloridaMentalHealthPhaseCredential(
+  credential: Credential | null | undefined,
+) {
+  return (
+    credential?.ruleSetId?.startsWith("fl-lcsw-lmft-lmhc-") ?? false
+  );
+}
+
+function requiresCurrentNextTemplate(
+  credential: Credential | null | undefined,
+) {
+  return (
+    isFloridaInsuranceComplianceCredential(credential) ||
+    isFloridaMentalHealthPhaseCredential(credential)
+  );
+}
+
+function requiresOfficialNextPeriodAttestation(
+  credential: Credential | null | undefined,
+) {
+  return (
+    isIsc2AutomaticRenewalCredential(credential) ||
+    isCompliancePeriodCredential(credential) ||
+    isFloridaMentalHealthPhaseCredential(credential) ||
+    isNremtCredential(credential)
+  );
+}
+
+function requiresNonOverlappingNextPeriod(
+  credential: Credential | null | undefined,
+) {
+  return (
+    isIsc2AutomaticRenewalCredential(credential) ||
+    isCompliancePeriodCredential(credential) ||
+    isFloridaMentalHealthPhaseCredential(credential)
   );
 }
 
@@ -1724,7 +1770,8 @@ export function LicenseLanternApp() {
         confirmationNumber: String(form.get("confirmationNumber") ?? ""),
         complianceAttested:
           isIsc2AutomaticRenewalCredential(selectedCredential) ||
-          isCompliancePeriodCredential(selectedCredential)
+          isCompliancePeriodCredential(selectedCredential) ||
+          isNremtCredential(selectedCredential)
             ? form.get("complianceAttested") === "on"
             : undefined,
       },
@@ -1732,7 +1779,9 @@ export function LicenseLanternApp() {
         ? "ISC2 dashboard checkpoint saved. Confirm renewal only after the new dates appear."
         : isCompliancePeriodCredential(selectedCredential)
           ? "Compliance-period milestone saved. Confirm the next period from the official record."
-          : "Submission logged. Keep the confirmation until your renewal is accepted.",
+          : isNremtCredential(selectedCredential)
+            ? "National Registry application logged. Keep the dashboard approval with your record."
+            : "Submission logged. Keep the confirmation until your renewal is accepted.",
     );
     if (success) setSubmissionOpen(false);
   }
@@ -1749,14 +1798,11 @@ export function LicenseLanternApp() {
         reference: String(form.get("reference") ?? ""),
         nextCycleStart: String(form.get("nextCycleStart") ?? ""),
         nextDeadline: String(form.get("nextDeadline") ?? ""),
-        nextRuleSetId: isFloridaInsuranceComplianceCredential(
-          selectedCredential,
-        )
+        nextRuleSetId: requiresCurrentNextTemplate(selectedCredential)
           ? String(form.get("nextRuleSetId") ?? "")
           : undefined,
         officialDatesAttested:
-          isIsc2AutomaticRenewalCredential(selectedCredential) ||
-          isCompliancePeriodCredential(selectedCredential)
+          requiresOfficialNextPeriodAttestation(selectedCredential)
             ? form.get("officialDatesAttested") === "on"
             : undefined,
       },
@@ -2770,6 +2816,8 @@ export function LicenseLanternApp() {
                     ? "Record what the ISC2 dashboard shows"
                     : isCompliancePeriodCredential(selectedCredential)
                       ? "Save the official compliance milestone"
+                      : isNremtCredential(selectedCredential)
+                        ? "Save the National Registry application record"
                     : "One last record for your future self"}
                 </strong>
                 <p>
@@ -2777,6 +2825,8 @@ export function LicenseLanternApp() {
                     ? "This checkpoint records your attestation that required CPEs and annual maintenance fees are satisfied. It does not mean ISC2 has renewed the certification."
                     : isCompliancePeriodCredential(selectedCredential)
                       ? "Record when the official record shows this period’s education requirement is complete."
+                      : isNremtCredential(selectedCredential)
+                        ? "Confirm the assigned NCCP model and every component in the National Registry dashboard before recording the application."
                     : "Logging the date and confirmation keeps “credits earned” separate from “renewal submitted.”"}
                 </p>
               </div>
@@ -2787,6 +2837,8 @@ export function LicenseLanternApp() {
                   ? "Dashboard checked"
                   : isCompliancePeriodCredential(selectedCredential)
                     ? "Compliance confirmed"
+                    : isNremtCredential(selectedCredential)
+                      ? "Application submitted"
                   : "Submission date"}
               </span>
               <input
@@ -2803,6 +2855,8 @@ export function LicenseLanternApp() {
                   ? "Dashboard or payment reference"
                   : isCompliancePeriodCredential(selectedCredential)
                     ? "Official record reference"
+                    : isNremtCredential(selectedCredential)
+                      ? "Dashboard or application reference"
                   : "Confirmation or receipt number"}{" "}
                 <em>Optional</em>
               </span>
@@ -2813,23 +2867,30 @@ export function LicenseLanternApp() {
                     ? "e.g., dashboard receipt ID"
                     : isCompliancePeriodCredential(selectedCredential)
                       ? "e.g., portal or employer record ID"
+                      : isNremtCredential(selectedCredential)
+                        ? "e.g., National Registry application ID"
                     : "e.g., RNL-2048-194"
                 }
               />
             </label>
             {isIsc2AutomaticRenewalCredential(selectedCredential) ||
-            isCompliancePeriodCredential(selectedCredential) ? (
+            isCompliancePeriodCredential(selectedCredential) ||
+            isNremtCredential(selectedCredential) ? (
               <label className="switch-row">
                 <span>
                   <strong>
                     {isIsc2AutomaticRenewalCredential(selectedCredential)
                       ? "I checked the ISC2 Dashboard"
-                      : "I checked the official compliance record"}
+                      : isCompliancePeriodCredential(selectedCredential)
+                        ? "I checked the official compliance record"
+                        : "I checked the National Registry dashboard"}
                   </strong>
                   <small>
                     {isIsc2AutomaticRenewalCredential(selectedCredential)
                       ? "It shows this cycle’s required CPEs and annual maintenance fees as satisfied."
-                      : "It shows this period’s education requirement as complete."}
+                      : isCompliancePeriodCredential(selectedCredential)
+                        ? "It shows this period’s education requirement as complete."
+                        : "It shows the assigned model, component totals, National topics, and pediatric content as satisfied."}
                   </small>
                 </span>
                 <input
@@ -2939,18 +3000,28 @@ export function LicenseLanternApp() {
                 <input name="reference" placeholder="e.g., license receipt ID" />
               </label>
             </div>
-            {isFloridaInsuranceComplianceCredential(
-              selectedCredential,
-            ) ? (
+            {requiresCurrentNextTemplate(selectedCredential) ? (
               <label className="field">
-                <span>Next period’s official Florida template</span>
+                <span>
+                  {isFloridaMentalHealthPhaseCredential(selectedCredential)
+                    ? "Next renewal’s Florida phase"
+                    : "Next period’s official Florida template"}
+                </span>
                 <select name="nextRuleSetId" defaultValue="" required>
                   <option value="" disabled>
-                    Choose the variant shown by MyProfile
+                    {isFloridaMentalHealthPhaseCredential(selectedCredential)
+                      ? "Choose the phase shown by CE Broker"
+                      : "Choose the variant shown by MyProfile"}
                   </option>
                   {(workspace?.catalog ?? [])
                     .filter((rule) =>
-                      rule.id.startsWith("fl-insurance-producer-"),
+                      rule.id.startsWith(
+                        isFloridaMentalHealthPhaseCredential(
+                          selectedCredential,
+                        )
+                          ? "fl-lcsw-lmft-lmhc-"
+                          : "fl-insurance-producer-",
+                      ),
                     )
                     .map((rule) => (
                       <option key={rule.id} value={rule.id}>
@@ -2959,8 +3030,9 @@ export function LicenseLanternApp() {
                     ))}
                 </select>
                 <small>
-                  Reconfirm both license line and tenure tier. License Lantern
-                  will seed the new period from this current official template.
+                  {isFloridaMentalHealthPhaseCredential(selectedCredential)
+                    ? "Confirm whether CE Broker assigns Ethics and Boundaries or Telehealth. The new cycle will reset every conditional phase for review."
+                    : "Reconfirm both license line and tenure tier. License Lantern will seed the new period from this current official template."}
                 </small>
               </label>
             ) : null}
@@ -2978,6 +3050,13 @@ export function LicenseLanternApp() {
                     name="nextCycleStart"
                     type="date"
                     defaultValue={addDaysIso(selectedCredential.deadline, 1)}
+                    min={
+                      requiresNonOverlappingNextPeriod(
+                        selectedCredential,
+                      )
+                        ? addDaysIso(selectedCredential.deadline, 1)
+                        : undefined
+                    }
                     required
                   />
                 </label>
@@ -2999,8 +3078,7 @@ export function LicenseLanternApp() {
                 </label>
               </div>
             </div>
-            {isIsc2AutomaticRenewalCredential(selectedCredential) ||
-            isCompliancePeriodCredential(selectedCredential) ? (
+            {requiresOfficialNextPeriodAttestation(selectedCredential) ? (
               <label className="switch-row">
                 <span>
                   <strong>I verified the official next-period record</strong>
@@ -3021,6 +3099,8 @@ export function LicenseLanternApp() {
               <p>
                 {isFloridaInsuranceComplianceCredential(selectedCredential)
                   ? "The next period will use the selected current template and will reset every conditional rule for confirmation."
+                  : isFloridaMentalHealthPhaseCredential(selectedCredential)
+                    ? "The next renewal will use the CE Broker-confirmed phase and reset every third-biennium and supervisor condition for review."
                   : "Requirements are copied as a starting snapshot. Review the current official rules before relying on the new plan."}
               </p>
             </div>

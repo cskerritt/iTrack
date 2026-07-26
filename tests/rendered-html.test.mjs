@@ -55,8 +55,12 @@ function isRequirementTagLookup(sql) {
 }
 
 function isRequiredMaximumGroupLookup(sql) {
-  return /SELECT DISTINCT requirement\.exclusive_group AS exclusiveGroup FROM credential_requirements requirement JOIN credentials credential[\s\S]*?requirement\.kind = 'maximum'[\s\S]*?requirement\.exclusive_group IS NOT NULL/i.test(
-    sql,
+  return (
+    /SELECT DISTINCT requirement\.exclusive_group AS exclusiveGroup FROM credential_requirements requirement JOIN credentials credential/i.test(
+      sql,
+    ) &&
+    /requirement\.kind = 'maximum'/i.test(sql) &&
+    /requirement\.exclusive_group IS NOT NULL/i.test(sql)
   );
 }
 
@@ -403,6 +407,32 @@ const runtimeCatalogModules = [
       "INSURANCE_RULE_SET_SEED_BINDINGS",
     ],
   },
+  {
+    moduleName: "nremt",
+    sourceUrl: new URL("../db/catalog/nremt.ts", import.meta.url),
+    exports: [
+      "NREMT_CATEGORY_SEED_BINDINGS",
+      "NREMT_RULE_SET_SEED_BINDINGS",
+    ],
+  },
+  {
+    moduleName: "education",
+    sourceUrl: new URL("../db/catalog/education.ts", import.meta.url),
+    exports: [
+      "EDUCATION_CATEGORY_SEED_BINDINGS",
+      "EDUCATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+      "EDUCATION_RULE_SET_SEED_BINDINGS",
+    ],
+  },
+  {
+    moduleName: "mentalHealth",
+    sourceUrl: new URL("../db/catalog/mentalHealth.ts", import.meta.url),
+    exports: [
+      "MENTAL_HEALTH_CATEGORY_SEED_BINDINGS",
+      "MENTAL_HEALTH_MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+      "MENTAL_HEALTH_RULE_SET_SEED_BINDINGS",
+    ],
+  },
 ];
 
 async function importTypeScriptModule(source) {
@@ -656,6 +686,410 @@ test("License Lantern product contract", async (t) => {
           credits: 2,
         },
       );
+    },
+  );
+
+  await t.test(
+    "seeds source-linked EMS, educator, and mental-health templates with enforceable boundaries",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const [runtimeSource, workspaceRouteSource, clientSource] =
+        await Promise.all([
+          readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
+          readFile(
+            new URL("../app/api/workspace/route.ts", import.meta.url),
+            "utf8",
+          ),
+          readFile(
+            new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+            "utf8",
+          ),
+        ]);
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __licensedProfessionCatalogNonce = "expanded";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      const raw = database.raw;
+      const rows = (sql) =>
+        raw
+          .prepare(sql)
+          .all()
+          .map((row) => ({ ...row }));
+      const newRuleScope = `(
+        rule.id LIKE 'nremt-%'
+        OR rule.id LIKE 'ca-child-development-permit-%'
+        OR rule.id LIKE 'tx-standard-classroom-teacher-%'
+        OR rule.id LIKE 'ny-professional-classroom-teacher-%'
+        OR rule.id LIKE 'ny-professional-esol-bilingual-%'
+        OR rule.id LIKE 'nj-employed-teacher-%'
+        OR rule.id LIKE 'pa-professional-educator-%'
+        OR rule.id LIKE 'ca-bbs-%'
+        OR rule.id LIKE 'tx-lpc-%'
+        OR rule.id LIKE 'ny-lmsw-lcsw-%'
+        OR rule.id LIKE 'nj-lpc-%'
+        OR rule.id LIKE 'pa-lpc-%'
+        OR rule.id LIKE 'fl-lcsw-lmft-lmhc-%'
+      )`;
+
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(*) AS totalRules,
+                 SUM(CASE WHEN rule.is_current = 1 THEN 1 ELSE 0 END) AS currentRules,
+                 SUM(
+                   CASE
+                     WHEN rule.last_verified_at = '2026-07-26'
+                       AND rule.review_status = 'source_linked_check_conditions'
+                       AND rule.source_url LIKE 'https://%'
+                     THEN 1 ELSE 0
+                   END
+                 ) AS verifiedRules
+               FROM rule_sets rule
+               WHERE ${newRuleScope}`,
+            )
+            .get(),
+        },
+        { totalRules: 17, currentRules: 17, verifiedRules: 17 },
+      );
+      assert.equal(
+        raw.prepare("SELECT COUNT(*) AS count FROM rule_categories").get()
+          .count,
+        399,
+      );
+
+      assert.deepEqual(
+        rows(
+          `SELECT
+             rule.id,
+             rule.total_units AS totalUnits,
+             COUNT(category.id) AS categoryCount,
+             SUM(category.required_units) AS requiredTotal,
+             COUNT(DISTINCT category.exclusive_group) AS groupCount
+           FROM rule_sets rule
+           JOIN rule_categories category ON category.rule_set_id = rule.id
+           WHERE rule.id LIKE 'nremt-%'
+           GROUP BY rule.id, rule.total_units
+           ORDER BY rule.total_units`,
+        ),
+        [
+          {
+            id: "nremt-emr-nccp-ce-2025-v1",
+            totalUnits: 16,
+            categoryCount: 3,
+            requiredTotal: 16,
+            groupCount: 1,
+          },
+          {
+            id: "nremt-emt-nccp-ce-2025-v1",
+            totalUnits: 40,
+            categoryCount: 3,
+            requiredTotal: 40,
+            groupCount: 1,
+          },
+          {
+            id: "nremt-aemt-nccp-ce-2025-v1",
+            totalUnits: 50,
+            categoryCount: 3,
+            requiredTotal: 50,
+            groupCount: 1,
+          },
+          {
+            id: "nremt-paramedic-nccp-ce-2025-v1",
+            totalUnits: 60,
+            categoryCount: 3,
+            requiredTotal: 60,
+            groupCount: 1,
+          },
+        ],
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_sets
+             WHERE id LIKE 'nremt-%'
+               AND source_title LIKE '%Recertification by Examination is a separate%'
+               AND source_title LIKE '%state EMS license%'`,
+          )
+          .get().count,
+        4,
+      );
+
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(DISTINCT rule.id) AS ruleCount,
+                 COUNT(category.id) AS categoryCount
+               FROM rule_sets rule
+               JOIN rule_categories category ON category.rule_set_id = rule.id
+               WHERE rule.profession = 'Education'`,
+            )
+            .get(),
+        },
+        { ruleCount: 6, categoryCount: 20 },
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT
+             rule_set_id AS ruleSetId,
+             required_units AS requiredUnits
+           FROM rule_categories
+           WHERE name = 'Language Acquisition Addressing English Language Learners'
+           ORDER BY required_units`,
+        ),
+        [
+          {
+            ruleSetId:
+              "ny-professional-classroom-teacher-standard-ctle-2026-v1",
+            requiredUnits: 15,
+          },
+          {
+            ruleSetId: "ny-professional-esol-bilingual-ctle-2026-v1",
+            requiredUnits: 50,
+          },
+        ],
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT name, required_units AS requiredUnits, kind
+           FROM rule_categories
+           WHERE rule_set_id = 'tx-standard-classroom-teacher-2026-v1'
+           ORDER BY sort_order`,
+        ),
+        [
+          {
+            name: "Other Approved CPE Activity",
+            requiredUnits: 0,
+            kind: "informational",
+          },
+          {
+            name: "Independent Study",
+            requiredUnits: 30,
+            kind: "maximum",
+          },
+          {
+            name: "Developing, Teaching, or Presenting CPE",
+            requiredUnits: 15,
+            kind: "maximum",
+          },
+          {
+            name: "Mentoring Another Educator",
+            requiredUnits: 45,
+            kind: "maximum",
+          },
+          {
+            name: "Required Classroom-Teacher Topic Pool",
+            requiredUnits: 37.5,
+            kind: "minimum",
+          },
+        ],
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT required_units AS requiredUnits, applicability
+               FROM rule_categories
+               WHERE id = 'nj-employed-teacher-annual-pd-2026-dyslexia'`,
+            )
+            .get(),
+        },
+        { requiredUnits: 2, applicability: "conditional" },
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_sets
+             WHERE profession = 'Education'
+               AND (
+                 jurisdiction = 'Florida'
+                 OR credential_name LIKE '%Clear%'
+                 OR credential_name LIKE '%Preliminary%'
+               )`,
+          )
+          .get().count,
+        0,
+      );
+
+      const mentalRuleScope = `(
+        rule.id LIKE 'ca-bbs-%'
+        OR rule.id LIKE 'tx-lpc-%'
+        OR rule.id LIKE 'ny-lmsw-lcsw-%'
+        OR rule.id LIKE 'nj-lpc-%'
+        OR rule.id LIKE 'pa-lpc-%'
+        OR rule.id LIKE 'fl-lcsw-lmft-lmhc-%'
+      )`;
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(DISTINCT rule.id) AS ruleCount,
+                 COUNT(category.id) AS categoryCount,
+                 SUM(CASE WHEN category.applicability = 'conditional' THEN 1 ELSE 0 END) AS conditionalCount
+               FROM rule_sets rule
+               JOIN rule_categories category ON category.rule_set_id = rule.id
+               WHERE ${mentalRuleScope}`,
+            )
+            .get(),
+        },
+        { ruleCount: 7, categoryCount: 40, conditionalCount: 13 },
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT
+             rule_set_id AS ruleSetId,
+             SUM(required_units) AS requiredTotal,
+             COUNT(*) AS bucketCount,
+             COUNT(DISTINCT exclusive_group) AS groupCount
+           FROM rule_categories
+           WHERE rule_set_id LIKE 'fl-lcsw-lmft-lmhc-%'
+             AND kind = 'minimum'
+             AND relation = 'independent'
+           GROUP BY rule_set_id
+           ORDER BY rule_set_id`,
+        ),
+        [
+          {
+            ruleSetId:
+              "fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-v1",
+            requiredTotal: 30,
+            bucketCount: 3,
+            groupCount: 1,
+          },
+          {
+            ruleSetId:
+              "fl-lcsw-lmft-lmhc-telehealth-phase-2026-v1",
+            requiredTotal: 30,
+            bucketCount: 3,
+            groupCount: 1,
+          },
+        ],
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT id, required_units AS requiredUnits, kind, applicability
+           FROM rule_categories
+           WHERE id IN (
+             'ca-bbs-lmft-lcsw-lpcc-standard-2026-law-ethics',
+             'ca-bbs-lmft-lcsw-lpcc-standard-2026-teaching',
+             'tx-lpc-standard-renewal-2026-confirmed-carryover',
+             'ny-lmsw-lcsw-standard-registration-2026-self-study',
+             'nj-lpc-standard-renewal-2026-confirmed-carryover'
+           )
+           ORDER BY id`,
+        ),
+        [
+          {
+            id: "ca-bbs-lmft-lcsw-lpcc-standard-2026-law-ethics",
+            requiredUnits: 6,
+            kind: "minimum",
+            applicability: "always",
+          },
+          {
+            id: "ca-bbs-lmft-lcsw-lpcc-standard-2026-teaching",
+            requiredUnits: 18,
+            kind: "maximum",
+            applicability: "optional",
+          },
+          {
+            id: "nj-lpc-standard-renewal-2026-confirmed-carryover",
+            requiredUnits: 10,
+            kind: "maximum",
+            applicability: "conditional",
+          },
+          {
+            id: "ny-lmsw-lcsw-standard-registration-2026-self-study",
+            requiredUnits: 12,
+            kind: "maximum",
+            applicability: "optional",
+          },
+          {
+            id: "tx-lpc-standard-renewal-2026-confirmed-carryover",
+            requiredUnits: 10,
+            kind: "maximum",
+            applicability: "conditional",
+          },
+        ],
+      );
+
+      assert.equal(
+        raw
+          .prepare(
+            `WITH ranked AS (
+               SELECT
+                 category.sort_order AS sortOrder,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY category.rule_set_id
+                   ORDER BY category.sort_order, category.id
+                 ) - 1 AS expectedSortOrder
+               FROM rule_categories category
+               JOIN rule_sets rule ON rule.id = category.rule_set_id
+               WHERE ${newRuleScope}
+             )
+             SELECT COUNT(*) AS count
+             FROM ranked
+             WHERE sortOrder <> expectedSortOrder`,
+          )
+          .get().count,
+        0,
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_categories category
+             JOIN rule_sets rule ON rule.id = category.rule_set_id
+             LEFT JOIN rule_categories parent
+               ON parent.id = category.parent_category_id
+               AND parent.rule_set_id = category.rule_set_id
+             WHERE ${newRuleScope}
+               AND category.relation = 'nested'
+               AND parent.id IS NULL`,
+          )
+          .get().count,
+        0,
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_categories category
+             JOIN rule_sets rule ON rule.id = category.rule_set_id
+             WHERE ${newRuleScope}
+               AND category.applicability = 'conditional'
+               AND (
+                 category.condition_note IS NULL
+                 OR LENGTH(TRIM(category.condition_note)) < 30
+               )`,
+          )
+          .get().count,
+        0,
+      );
+
+      assert.match(
+        runtimeSource,
+        /MAXIMUM_CLASSIFICATION_RULE_SET_IDS[\s\S]*?\.\.\.EDUCATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS[\s\S]*?\.\.\.MENTAL_HEALTH_MAXIMUM_CLASSIFICATION_RULE_SET_IDS/,
+      );
+      assert.match(
+        workspaceRouteSource,
+        /NREMT_RULE_SET_PREFIX[\s\S]*?Classify accepted credits as National, Local\/State, or Individual[\s\S]*?nremt_submission_attestation_required/,
+      );
+      assert.match(
+        workspaceRouteSource,
+        /COMPLIANCE_PERIOD_RULE_SET_PREFIXES[\s\S]*?nj-employed-teacher-annual-pd-[\s\S]*?pa-professional-educator-act-48-/,
+      );
+      assert.match(
+        clientSource,
+        /isFloridaMentalHealthPhaseCredential[\s\S]*?requiresCurrentNextTemplate[\s\S]*?Choose the phase shown by CE Broker/,
+      );
+      database.close();
     },
   );
 
@@ -1466,6 +1900,9 @@ test("License Lantern product contract", async (t) => {
       exclusiveGroupMigration,
       builtExclusiveGroupMigration,
       exclusiveGroupSnapshotSource,
+      attestationMigration,
+      builtAttestationMigration,
+      attestationSnapshotSource,
     ] = await Promise.all([
         readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
         readFile(
@@ -1555,6 +1992,21 @@ test("License Lantern product contract", async (t) => {
           new URL("../drizzle/meta/0005_snapshot.json", import.meta.url),
           "utf8",
         ),
+        readFile(
+          new URL("../drizzle/0006_noisy_toro.sql", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL(
+            "../dist/.openai/drizzle/0006_noisy_toro.sql",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+        readFile(
+          new URL("../drizzle/meta/0006_snapshot.json", import.meta.url),
+          "utf8",
+        ),
       ]);
 
     const hosting = JSON.parse(hostingSource);
@@ -1569,8 +2021,9 @@ test("License Lantern product contract", async (t) => {
     assert.equal(builtRichRuleMigration, richRuleMigration);
     assert.equal(builtProgressionMigration, progressionMigration);
     assert.equal(builtExclusiveGroupMigration, exclusiveGroupMigration);
+    assert.equal(builtAttestationMigration, attestationMigration);
 
-    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}`;
+    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}\n${attestationMigration}`;
     const migratedTables = new Set(
       [...migration.matchAll(/CREATE TABLE `([^`]+)`/g)].map(
         (match) => match[1],
@@ -1679,7 +2132,7 @@ test("License Lantern product contract", async (t) => {
     const migrationJournal = JSON.parse(migrationJournalSource);
     assert.equal(
       migrationJournal.entries.at(-1)?.tag,
-      "0005_smooth_mach_iv",
+      "0006_noisy_toro",
     );
     assert.match(
       exclusiveGroupMigration,
@@ -1705,6 +2158,25 @@ test("License Lantern product contract", async (t) => {
     assert.deepEqual(
       exclusiveGroupSnapshot.tables.rule_categories.columns.exclusive_group,
       expectedExclusiveGroupColumn,
+    );
+    assert.match(
+      attestationMigration,
+      /ALTER TABLE `renewal_acceptances` ADD `official_record_attested_at` text/i,
+    );
+    assert.match(
+      attestationMigration,
+      /ALTER TABLE `renewal_submissions` ADD `attestation_kind` text/i,
+    );
+    const attestationSnapshot = JSON.parse(attestationSnapshotSource);
+    assert.equal(
+      attestationSnapshot.tables.renewal_acceptances.columns
+        .official_record_attested_at.name,
+      "official_record_attested_at",
+    );
+    assert.equal(
+      attestationSnapshot.tables.renewal_submissions.columns.attestation_kind
+        .name,
+      "attestation_kind",
     );
     assert.match(runtimeSource, /exclusive_group TEXT/i);
     assert.match(schemaSource, /exclusiveGroup:\s*text\("exclusive_group"\)/i);
@@ -3696,7 +4168,7 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
-    "seeds current ISC2, CompTIA, and state insurance templates with bounded rule graphs",
+    "seeds current cyber and insurance templates with bounded rule graphs",
     async () => {
       const { DatabaseSync } = await import("node:sqlite");
       const database = new SQLiteD1Database(DatabaseSync);
@@ -3734,7 +4206,7 @@ test("License Lantern product contract", async (t) => {
             )
             .get(),
         },
-        { totalRules: 76, currentRules: 75 },
+        { totalRules: 93, currentRules: 92 },
       );
       assert.equal(
         raw
@@ -7895,6 +8367,257 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
+    "requires one NREMT component per credit and an official-dashboard submission attestation",
+    async () => {
+      const componentGroup = "nremt-emt-nccp-ce-2025-component";
+      const requirementRows = [
+        {
+          id: "requirement-nremt-national",
+          name: "National Component",
+          ruleCategoryId: "nremt-emt-nccp-ce-2025-national",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: componentGroup,
+        },
+        {
+          id: "requirement-nremt-local",
+          name: "Local/State Component",
+          ruleCategoryId: "nremt-emt-nccp-ce-2025-local",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: componentGroup,
+        },
+      ];
+      const activityDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (isOwnedCredentialCycleLookup(call.sql)) {
+            return {
+              id: call.bindings[0],
+              status: "active",
+              cycleStart: "2026-04-01",
+              deadline: "2028-03-31",
+            };
+          }
+          if (
+            /SELECT rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return { ruleSetId: "nremt-emt-nccp-ce-2025-v1" };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (isRequiredMaximumGroupLookup(call.sql)) {
+            return [{ exclusiveGroup: componentGroup }];
+          }
+          if (isRequirementTagLookup(call.sql)) {
+            return requirementRows.filter((requirement) =>
+              call.bindings.includes(requirement.id),
+            );
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = activityDatabase;
+
+      const unclassified = await postWorkspace("addActivity", {
+        title: "EMS continuing education",
+        completionDate: "2027-05-20",
+        totalUnits: 2,
+        credentialId: "credential-nremt",
+        requirementIds: [],
+        evidenceStatus: "missing",
+      });
+      assert.equal(unclassified.status, 409);
+      assert.deepEqual(await unclassified.json(), {
+        error:
+          "Classify every National Registry credit as National, Local/State, or Individual.",
+        code: "nremt_component_required",
+      });
+
+      const classified = await postWorkspace("addActivity", {
+        title: "National airway course",
+        completionDate: "2027-05-20",
+        totalUnits: 2,
+        credentialId: "credential-nremt",
+        requirementIds: ["requirement-nremt-national"],
+        evidenceStatus: "missing",
+      });
+      assert.equal(classified.status, 200);
+
+      const conflictingDatabase = new FakeDatabase({
+        resolveFirst: activityDatabase.resolveFirst,
+        resolveAll: activityDatabase.resolveAll,
+      });
+      testCloudflareEnv.DB = conflictingDatabase;
+      const conflicting = await postWorkspace("addActivity", {
+        title: "Ambiguous EMS course",
+        completionDate: "2027-05-20",
+        totalUnits: 2,
+        credentialId: "credential-nremt",
+        requirementIds: [
+          "requirement-nremt-national",
+          "requirement-nremt-local",
+        ],
+        evidenceStatus: "missing",
+      });
+      assert.equal(conflicting.status, 409);
+      assert.equal(
+        (await conflicting.json()).code,
+        "exclusive_requirement_conflict",
+      );
+
+      const submissionDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /SELECT id, status, rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: call.bindings[0],
+              status: "active",
+              ruleSetId: "nremt-emt-nccp-ce-2025-v1",
+            };
+          }
+          if (
+            /FROM renewal_submissions WHERE credential_id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return null;
+          }
+          return null;
+        },
+      });
+      testCloudflareEnv.DB = submissionDatabase;
+      const unattested = await postWorkspace("markSubmitted", {
+        credentialId: "credential-nremt",
+        submissionDate: "2028-03-20",
+        confirmationNumber: "NREMT-0042",
+      });
+      assert.equal(unattested.status, 409);
+      assert.equal(
+        (await unattested.json()).code,
+        "nremt_submission_attestation_required",
+      );
+
+      const attested = await postWorkspace("markSubmitted", {
+        credentialId: "credential-nremt",
+        submissionDate: "2028-03-20",
+        confirmationNumber: "NREMT-0042",
+        complianceAttested: true,
+      });
+      assert.equal(attested.status, 200);
+      const statements = flattenedStatements(submissionDatabase);
+      const submissionInsert = statements.find((statement) =>
+        /^INSERT INTO renewal_submissions \(/i.test(statement.sql),
+      );
+      assert.ok(submissionInsert);
+      assert.ok(
+        submissionInsert.bindings.includes("nremt_requirements_satisfied"),
+      );
+      assert.ok(
+        statements.some((statement) =>
+          statement.bindings.includes("renewal_submitted"),
+        ),
+      );
+      assert.ok(
+        statements.some((statement) =>
+          /^INSERT OR IGNORE INTO badge_events \(/i.test(statement.sql),
+        ),
+      );
+
+      const acceptanceDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /SELECT next_credential_id AS nextCredentialId FROM renewal_acceptances/i.test(
+              call.sql,
+            )
+          ) {
+            return null;
+          }
+          if (
+            /FROM credentials credential\s+LEFT JOIN credential_cycle_links cycle/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "credential-nremt-submitted",
+              ruleSetId: "nremt-emt-nccp-ce-2025-v1",
+              credentialName:
+                "Emergency Medical Technician — NCCP continuing education",
+              profession: "Emergency Medical Services",
+              jurisdiction: "United States",
+              issuer:
+                "National Registry of Emergency Medical Technicians",
+              status: "submitted",
+              deadline: "2028-03-31",
+              totalRequired: 40,
+              unitLabel: "CE credits",
+              seriesId: "series-nremt",
+              cycleMonths: 24,
+            };
+          }
+          if (
+            /FROM renewal_submissions WHERE credential_id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "submission-nremt",
+              submittedAt: "2027-05-31T12:00:00.000Z",
+            };
+          }
+          return null;
+        },
+      });
+      testCloudflareEnv.DB = acceptanceDatabase;
+      const acceptancePayload = {
+        credentialId: "credential-nremt-submitted",
+        acceptedAt: "2027-06-01",
+        reference: "NREMT-DASHBOARD-APPROVED",
+        nextCycleStart: "2027-06-02",
+        nextDeadline: "2029-03-31",
+      };
+
+      const unattestedAcceptance = await postWorkspace(
+        "markRenewalAccepted",
+        acceptancePayload,
+      );
+      assert.equal(unattestedAcceptance.status, 409);
+      assert.equal(
+        (await unattestedAcceptance.json()).code,
+        "official_next_period_attestation_required",
+      );
+
+      const attestedAcceptance = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...acceptancePayload,
+          officialDatesAttested: true,
+        },
+      );
+      assert.equal(attestedAcceptance.status, 200);
+      const acceptanceStatements = flattenedStatements(acceptanceDatabase);
+      const acceptanceInsert = acceptanceStatements.find((statement) =>
+        /^INSERT INTO renewal_acceptances \(/i.test(statement.sql),
+      );
+      const nextCredentialInsert = acceptanceStatements.find((statement) =>
+        /^INSERT INTO credentials \(/i.test(statement.sql),
+      );
+      assert.ok(acceptanceInsert);
+      assert.match(
+        acceptanceInsert.bindings[6],
+        /^\d{4}-\d{2}-\d{2}T/,
+      );
+      assert.ok(nextCredentialInsert);
+      assert.equal(nextCredentialInsert.bindings[7], "2027-06-02");
+    },
+  );
+
+  await t.test(
     "records a submission without fabricating a learning activity",
     async () => {
       const database = new FakeDatabase({
@@ -8086,6 +8809,13 @@ test("License Lantern product contract", async (t) => {
       assert.ok(checkpointXp);
       assert.ok(checkpointXp.bindings.includes("renewal_checkpoint_recorded"));
       assert.ok(checkpointXp.bindings.includes("compliance_checkpoint"));
+      const checkpointInsert = statements.find((statement) =>
+        /^INSERT INTO renewal_submissions \(/i.test(statement.sql),
+      );
+      assert.ok(checkpointInsert);
+      assert.ok(
+        checkpointInsert.bindings.includes("compliance_period_complete"),
+      );
       assert.equal(
         statements.some((statement) =>
           statement.bindings.includes("renewal_submitted"),
@@ -8098,6 +8828,89 @@ test("License Lantern product contract", async (t) => {
         ),
         false,
       );
+    },
+  );
+
+  await t.test(
+    "treats NJ annual PDP and Pennsylvania Act 48 as attested compliance periods",
+    async () => {
+      for (const [ruleSetId, credentialId] of [
+        [
+          "nj-employed-teacher-annual-pd-2026-v1",
+          "credential-nj-teacher-pdp",
+        ],
+        [
+          "pa-professional-educator-act-48-2026-v1",
+          "credential-pa-act-48",
+        ],
+      ]) {
+        const database = new FakeDatabase({
+          resolveFirst(call) {
+            if (
+              /SELECT id, status, rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+                call.sql,
+              )
+            ) {
+              return {
+                id: call.bindings[0],
+                status: "active",
+                ruleSetId,
+              };
+            }
+            if (
+              /FROM renewal_submissions WHERE credential_id = \? AND user_id = \?/i.test(
+                call.sql,
+              )
+            ) {
+              return null;
+            }
+            return null;
+          },
+        });
+        testCloudflareEnv.DB = database;
+
+        const unattested = await postWorkspace("markSubmitted", {
+          credentialId,
+          submissionDate: "2028-02-20",
+          confirmationNumber: "OFFICIAL-COMPLIANCE-0042",
+        });
+        assert.equal(unattested.status, 409);
+        assert.equal(
+          (await unattested.json()).code,
+          "compliance_checkpoint_attestation_required",
+        );
+
+        const attested = await postWorkspace("markSubmitted", {
+          credentialId,
+          submissionDate: "2028-02-20",
+          confirmationNumber: "OFFICIAL-COMPLIANCE-0042",
+          complianceAttested: true,
+        });
+        assert.equal(attested.status, 200);
+        const statements = flattenedStatements(database);
+        assert.ok(
+          statements.some((statement) =>
+            statement.bindings.includes("compliance_period_complete"),
+          ),
+        );
+        assert.ok(
+          statements.some((statement) =>
+            statement.bindings.includes("renewal_checkpoint_recorded"),
+          ),
+        );
+        assert.equal(
+          statements.some((statement) =>
+            statement.bindings.includes("renewal_submitted"),
+          ),
+          false,
+        );
+        assert.equal(
+          statements.some((statement) =>
+            /^INSERT OR IGNORE INTO badge_events \(/i.test(statement.sql),
+          ),
+          false,
+        );
+      }
     },
   );
 
@@ -8177,6 +8990,20 @@ test("License Lantern product contract", async (t) => {
         (await beforeCycleEnd.json()).code,
         "isc2_renewal_before_cycle_end",
       );
+      const overlappingNextCycle = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...payload,
+          acceptedAt: "2028-03-02",
+          nextCycleStart: "2028-03-01",
+          officialDatesAttested: true,
+        },
+      );
+      assert.equal(overlappingNextCycle.status, 409);
+      assert.equal(
+        (await overlappingNextCycle.json()).code,
+        "next_cycle_overlaps_current_period",
+      );
       assert.equal(
         flattenedStatements(database).some((statement) =>
           /UPDATE credentials[\s\S]*?SET status = 'renewed'|INSERT INTO renewal_acceptances/i.test(
@@ -8249,6 +9076,238 @@ test("License Lantern product contract", async (t) => {
         (await response.json()).code,
         "florida_next_template_required",
       );
+    },
+  );
+
+  await t.test(
+    "rolls a Florida mental-health renewal onto the CE Broker-confirmed phase with fresh conditions",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __floridaMentalHealthRolloverNonce = "phase";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      const raw = database.raw;
+      const userId = await expectedStableUserId("owner@example.com");
+      const credentialId = "credential-fl-mental-health-ethics";
+      const currentRuleSetId =
+        "fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-v1";
+      const nextRuleSetId =
+        "fl-lcsw-lmft-lmhc-telehealth-phase-2026-v1";
+
+      raw
+        .prepare(
+          `INSERT INTO users (id, email, display_name, is_demo)
+           VALUES (?, ?, ?, 0)`,
+        )
+        .run(userId, "owner@example.com", "Owner");
+      raw
+        .prepare(
+          `INSERT INTO credentials (
+             id, user_id, rule_set_id, credential_name, profession,
+             jurisdiction, issuer, cycle_start, deadline, total_required,
+             unit_label, status
+           )
+           SELECT
+             ?, ?, id, credential_name, profession, jurisdiction, issuer,
+             '2026-04-01', '2028-03-31', total_units, unit_label,
+             'submitted'
+           FROM rule_sets
+           WHERE id = ?`,
+        )
+        .run(credentialId, userId, currentRuleSetId);
+      raw
+        .prepare(
+          `INSERT INTO credential_cycle_links (
+             id, user_id, credential_id, series_id,
+             previous_credential_id, cycle_months
+           ) VALUES (?, ?, ?, ?, NULL, 24)`,
+        )
+        .run(
+          "link-fl-mental-health-ethics",
+          userId,
+          credentialId,
+          "series-fl-mental-health",
+        );
+      raw
+        .prepare(
+          `INSERT INTO credential_requirements (
+             id, credential_id, rule_category_id, name, required_units,
+             kind, relation, parent_requirement_id, applicability,
+             applicability_status, condition_note, exclusive_group,
+             is_active, sort_order
+           )
+           SELECT
+             'current:' || category.id,
+             ?,
+             category.id,
+             category.name,
+             category.required_units,
+             category.kind,
+             category.relation,
+             CASE
+               WHEN category.parent_category_id IS NULL THEN NULL
+               ELSE 'current:' || category.parent_category_id
+             END,
+             category.applicability,
+             CASE
+               WHEN category.applicability = 'conditional'
+                 THEN 'needs_confirmation'
+               ELSE 'applies'
+             END,
+             category.condition_note,
+             category.exclusive_group,
+             CASE
+               WHEN category.applicability = 'conditional' THEN 0
+               ELSE 1
+             END,
+             category.sort_order
+           FROM rule_categories category
+           WHERE category.rule_set_id = ?`,
+        )
+        .run(credentialId, currentRuleSetId);
+      raw
+        .prepare(
+          `INSERT INTO renewal_submissions (
+             id, user_id, credential_id, submitted_at,
+             confirmation_number, proof_reference
+           ) VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "submission-fl-mental-health",
+          userId,
+          credentialId,
+          "2028-03-30",
+          "FL-RENEWAL-0042",
+          "FL-RENEWAL-0042",
+        );
+      testCloudflareEnv.DB = database;
+
+      const response = await postWorkspace("markRenewalAccepted", {
+        credentialId,
+        acceptedAt: "2028-04-01",
+        reference: "CE-BROKER-TELEHEALTH",
+        nextCycleStart: "2028-04-01",
+        nextDeadline: "2030-03-31",
+        nextRuleSetId,
+        officialDatesAttested: true,
+      });
+      assert.equal(response.status, 200);
+      const result = await response.json();
+      const nextCredentialId = result.id;
+      assert.ok(nextCredentialId);
+
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT status FROM credentials WHERE id = ?`,
+            )
+            .get(credentialId),
+        },
+        { status: "renewed" },
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 rule_set_id AS ruleSetId,
+                 total_required AS totalRequired,
+                 cycle_start AS cycleStart,
+                 deadline
+               FROM credentials
+               WHERE id = ?`,
+            )
+            .get(nextCredentialId),
+        },
+        {
+          ruleSetId: nextRuleSetId,
+          totalRequired: 30,
+          cycleStart: "2028-04-01",
+          deadline: "2030-03-31",
+        },
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(*) AS categoryCount,
+                 SUM(
+                   CASE
+                     WHEN applicability_status = 'needs_confirmation'
+                       AND is_active = 0
+                     THEN 1 ELSE 0
+                   END
+                 ) AS resetConditionCount,
+                 SUM(CASE WHEN name = 'Telehealth' THEN 1 ELSE 0 END) AS telehealthCount,
+                 SUM(CASE WHEN name = 'Ethics and Boundaries' THEN 1 ELSE 0 END) AS ethicsPhaseCount
+               FROM credential_requirements
+               WHERE credential_id = ?`,
+            )
+            .get(nextCredentialId),
+        },
+        {
+          categoryCount: 6,
+          resetConditionCount: 3,
+          telehealthCount: 1,
+          ethicsPhaseCount: 0,
+        },
+      );
+      assert.deepEqual(
+        raw
+          .prepare(
+            `SELECT title
+             FROM checklist_tasks
+             WHERE credential_id = ?
+             ORDER BY sort_order`,
+          )
+          .all(nextCredentialId)
+          .map((row) => row.title),
+        [
+          "Confirm the CE Broker phase, every-third-biennium topics, and supervisor status",
+          "Complete and report the three separate Florida credit buckets",
+          "Submit the Florida renewal and save CE Broker confirmation",
+        ],
+      );
+      assert.ok(
+        raw
+          .prepare(
+            `SELECT official_record_attested_at AS attestedAt
+             FROM renewal_acceptances
+             WHERE credential_id = ?`,
+          )
+          .get(credentialId).attestedAt,
+      );
+
+      const retry = await postWorkspace("markRenewalAccepted", {
+        credentialId,
+        acceptedAt: "2028-04-01",
+        nextCycleStart: "2028-04-01",
+        nextDeadline: "2030-03-31",
+        nextRuleSetId: currentRuleSetId,
+        officialDatesAttested: true,
+      });
+      assert.equal(retry.status, 200);
+      assert.equal((await retry.json()).id, nextCredentialId);
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM credentials
+             WHERE rule_set_id LIKE 'fl-lcsw-lmft-lmhc-%'
+               AND user_id = ?`,
+          )
+          .get(userId).count,
+        2,
+      );
+      database.close();
     },
   );
 

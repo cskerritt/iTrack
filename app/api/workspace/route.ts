@@ -54,7 +54,13 @@ const NJ_LCSW_CREDIT_CATEGORY_GROUP = "New Jersey LCSW credit category";
 const ISC2_AUTOMATIC_RENEWAL_RULE_SET_PREFIX = "isc2-";
 const COMPLIANCE_PERIOD_RULE_SET_PREFIXES = [
   "fl-insurance-producer-",
+  "nj-employed-teacher-annual-pd-",
+  "pa-professional-educator-act-48-",
 ] as const;
+const NREMT_RULE_SET_PREFIX = "nremt-";
+const TEXAS_LPC_RULE_SET_ID = "tx-lpc-standard-renewal-2026-v1";
+const FLORIDA_INSURANCE_RULE_SET_PREFIX = "fl-insurance-producer-";
+const FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX = "fl-lcsw-lmft-lmhc-";
 const CARRYOVER_REVIEW_TASK_TITLES = new Map([
   [
     CFP_2027_RULE_SET_ID,
@@ -309,6 +315,16 @@ function isIsc2AutomaticRenewalRuleSet(ruleSetId: string | null) {
   return ruleSetId?.startsWith(ISC2_AUTOMATIC_RENEWAL_RULE_SET_PREFIX) ?? false;
 }
 
+function nextTemplateFamily(ruleSetId: string | null) {
+  if (ruleSetId?.startsWith(FLORIDA_INSURANCE_RULE_SET_PREFIX)) {
+    return "florida_insurance" as const;
+  }
+  if (ruleSetId?.startsWith(FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX)) {
+    return "florida_mental_health" as const;
+  }
+  return null;
+}
+
 function renewalTaskSpecs(
   ruleSetId: string | null,
   deadline: string,
@@ -330,6 +346,178 @@ function renewalTaskSpecs(
       },
       {
         title: "Save an attested ISC2 requirements checkpoint",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (ruleSetId?.startsWith(NREMT_RULE_SET_PREFIX)) {
+    return [
+      {
+        title:
+          reviewTitle ??
+          "Confirm the assigned NCCP model, cycle dates, Local/State topics, and state-license obligations",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title:
+          "Classify accepted credits as National, Local/State, or Individual",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title:
+          "Submit the National Registry recertification application and save dashboard approval",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (ruleSetId === TEXAS_LPC_RULE_SET_ID) {
+    return [
+      {
+        title:
+          reviewTitle ??
+          "Confirm the official license period, supervisor status, and any CE Broker-supported carryover",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title:
+          "Complete the required CE and pass the Texas jurisprudence examination",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title: "Submit the LPC renewal and save CE Broker confirmation",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (ruleSetId === "ca-child-development-permit-2026-v1") {
+    return [
+      {
+        title:
+          "Confirm CTC validity dates, permit level, and the professional-growth plan with your advisor",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title:
+          "Complete and document advisor-approved professional growth",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title:
+          "Submit the permit renewal and self-verification, then save the receipt",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (ruleSetId === "tx-standard-classroom-teacher-2026-v1") {
+    return [
+      {
+        title:
+          "Confirm ECOS dates, approved providers, and required disabilities and dyslexia training",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title:
+          "Complete approved CPE and classify every capped activity type",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title: "Renew and attest in TEAL/ECOS, then save confirmation",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (ruleSetId === "ny-lmsw-lcsw-standard-registration-2026-v1") {
+    return [
+      {
+        title:
+          "Confirm NYSED registration dates, initial-period status, and child-abuse training",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title:
+          "Complete approved CE, including boundaries, and classify self-study",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title: "Re-register with NYSED and save the official confirmation",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (ruleSetId?.startsWith(FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX)) {
+    return [
+      {
+        title:
+          "Confirm the CE Broker phase, every-third-biennium topics, and supervisor status",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title:
+          "Complete and report the three separate Florida credit buckets",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title: "Submit the Florida renewal and save CE Broker confirmation",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (ruleSetId === "nj-employed-teacher-annual-pd-2026-v1") {
+    return [
+      {
+        title:
+          "Confirm the annual PDP, supervisor-approved scope, and role-specific rolling duties",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title: "Complete and document supervisor-approved PDP learning",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title:
+          "Verify annual PDP completion with the employer and save the record",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (ruleSetId === "pa-professional-educator-act-48-2026-v1") {
+    return [
+      {
+        title:
+          "Confirm the PERMS period, posted carryover, and any Act 126 duty",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title: "Complete PDE-approved Act 48 learning and verify PERMS posts it",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title:
+          "Verify active Act 48 status in PERMS and save the official record",
         kind: "submission",
         dueDate: deadline,
       },
@@ -1183,23 +1371,32 @@ async function validateRequirementTags(
         ON credential.id = requirement.credential_id
       WHERE requirement.credential_id = ?
         AND credential.user_id = ?
-        AND requirement.kind = 'maximum'
         AND requirement.is_active = 1
         AND requirement.applicability_status = 'applies'
         AND requirement.exclusive_group IS NOT NULL
         AND (
-          credential.status = 'active'
-          OR credential.rule_set_id = ?
-          OR EXISTS (
-            SELECT 1
-            FROM credential_requirements complete_group
-            WHERE complete_group.credential_id =
-              requirement.credential_id
-              AND complete_group.kind = 'informational'
-              AND complete_group.is_active = 1
-              AND complete_group.applicability_status = 'applies'
-              AND complete_group.exclusive_group =
-                requirement.exclusive_group
+          (
+            requirement.kind = 'maximum'
+            AND (
+              credential.status = 'active'
+              OR credential.rule_set_id = ?
+              OR EXISTS (
+                SELECT 1
+                FROM credential_requirements complete_group
+                WHERE complete_group.credential_id =
+                  requirement.credential_id
+                  AND complete_group.kind = 'informational'
+                  AND complete_group.is_active = 1
+                  AND complete_group.applicability_status = 'applies'
+                  AND complete_group.exclusive_group =
+                    requirement.exclusive_group
+              )
+            )
+          )
+          OR (
+            credential.rule_set_id LIKE 'nremt-%'
+            AND credential.status IN ('active', 'submitted')
+            AND requirement.kind = 'minimum'
           )
         )
       ORDER BY requirement.exclusive_group`,
@@ -1230,6 +1427,13 @@ async function validateRequirementTags(
     const requiredMaximumGroups = await getRequiredMaximumGroups();
     const missingGroup = requiredMaximumGroups.results[0]?.exclusiveGroup;
     if (missingGroup) {
+      if (credential?.ruleSetId?.startsWith(NREMT_RULE_SET_PREFIX)) {
+        throw new RequestError(
+          "Classify every National Registry credit as National, Local/State, or Individual.",
+          409,
+          "nremt_component_required",
+        );
+      }
       throw new RequestError(
         `Choose one ${missingGroup} option for this activity so capped credit can be counted safely.`,
         409,
@@ -1344,6 +1548,13 @@ async function validateRequirementTags(
     (group) => !selectedExclusiveGroups.has(group.exclusiveGroup),
   )?.exclusiveGroup;
   if (missingGroup) {
+    if (credential?.ruleSetId?.startsWith(NREMT_RULE_SET_PREFIX)) {
+      throw new RequestError(
+        "Classify every National Registry credit as National, Local/State, or Individual.",
+        409,
+        "nremt_component_required",
+      );
+    }
     throw new RequestError(
       `Choose one ${missingGroup} option for this activity so capped credit can be counted safely.`,
       409,
@@ -1454,6 +1665,16 @@ async function findUnresolvedCredentialClassification(
   );
   if (ruleSetId === NJ_LCSW_RULE_SET_ID) {
     requiredGroups.add(NJ_LCSW_CREDIT_CATEGORY_GROUP);
+  }
+  if (ruleSetId?.startsWith(NREMT_RULE_SET_PREFIX)) {
+    for (const requirement of activeRequirements) {
+      if (
+        requirement.kind === "minimum" &&
+        requirement.exclusiveGroup?.startsWith(NREMT_RULE_SET_PREFIX)
+      ) {
+        requiredGroups.add(requirement.exclusiveGroup);
+      }
+    }
   }
   const matchesByAllocation = new Map<
     string,
@@ -1983,10 +2204,14 @@ async function getWorkspace(
   }
   for (const requirement of requirementResult.results) {
     const credential = credentialById.get(requirement.credentialId);
+    const isNremtComponent =
+      credential?.ruleSetId?.startsWith(NREMT_RULE_SET_PREFIX) &&
+      requirement.kind === "minimum" &&
+      requirement.exclusiveGroup?.startsWith(NREMT_RULE_SET_PREFIX);
     if (
       !credential ||
       !["active", "submitted"].includes(credential.status) ||
-      requirement.kind !== "maximum" ||
+      (requirement.kind !== "maximum" && !isNremtComponent) ||
       !requirement.exclusiveGroup ||
       !Boolean(requirement.isActive) ||
       requirement.applicabilityStatus !== "applies"
@@ -1994,6 +2219,7 @@ async function getWorkspace(
       continue;
     }
     const snapshotSupportsCompleteClassification =
+      isNremtComponent ||
       credential.status === "active" ||
       credential.ruleSetId === CFP_2027_RULE_SET_ID ||
       completeClassificationGroupsByCredential
@@ -3323,6 +3549,8 @@ async function markSubmitted(
   const isComplianceCheckpoint = isCompliancePeriodRuleSet(
     credential.ruleSetId,
   );
+  const isNremtSubmission =
+    credential.ruleSetId?.startsWith(NREMT_RULE_SET_PREFIX) ?? false;
   const isLifecycleCheckpoint =
     isIsc2Checkpoint || isComplianceCheckpoint;
   const closedCycleMessage = isIsc2Checkpoint
@@ -3351,11 +3579,20 @@ async function markSubmitted(
       "compliance_checkpoint_attestation_required",
     );
   }
+  if (isNremtSubmission && payload.complianceAttested !== true) {
+    throw new RequestError(
+      "Confirm that the National Registry dashboard shows the assigned model, all component and National-topic requirements, and the application as ready before submitting.",
+      409,
+      "nremt_submission_attestation_required",
+    );
+  }
   const attestationKind = isIsc2Checkpoint
     ? "isc2_requirements_satisfied"
     : isComplianceCheckpoint
       ? "compliance_period_complete"
-      : null;
+      : isNremtSubmission
+        ? "nremt_requirements_satisfied"
+        : null;
   const existing = await query(
     database,
     `SELECT id
@@ -3969,8 +4206,22 @@ async function markRenewalAccepted(
   const isCompliancePeriod = isCompliancePeriodRuleSet(
     credential.ruleSetId,
   );
+  const replacementTemplateFamily = nextTemplateFamily(
+    credential.ruleSetId,
+  );
+  const isNremtRenewal =
+    credential.ruleSetId?.startsWith(NREMT_RULE_SET_PREFIX) ?? false;
+  const requiresOfficialNextPeriodAttestation =
+    isIsc2AutomaticRenewal ||
+    isCompliancePeriod ||
+    replacementTemplateFamily === "florida_mental_health" ||
+    isNremtRenewal;
+  const requiresNonOverlappingNextPeriod =
+    isIsc2AutomaticRenewal ||
+    isCompliancePeriod ||
+    replacementTemplateFamily === "florida_mental_health";
   if (
-    (isIsc2AutomaticRenewal || isCompliancePeriod) &&
+    requiresOfficialNextPeriodAttestation &&
     payload.officialDatesAttested !== true
   ) {
     throw new RequestError(
@@ -3986,19 +4237,36 @@ async function markRenewalAccepted(
       "isc2_renewal_before_cycle_end",
     );
   }
-  const requiresFloridaTemplateSelection =
-    credential.ruleSetId?.startsWith("fl-insurance-producer-") ?? false;
+  if (
+    requiresNonOverlappingNextPeriod &&
+    nextCycleStart <= credential.deadline
+  ) {
+    throw new RequestError(
+      "The next period must start after the current period ends.",
+      409,
+      "next_cycle_overlaps_current_period",
+    );
+  }
   let selectedNextRule: NextRuleTemplate | null = null;
   let selectedNextCategories: NextRuleCategory[] = [];
-  if (requiresFloridaTemplateSelection) {
-    if (
-      !requestedNextRuleSetId ||
-      !requestedNextRuleSetId.startsWith("fl-insurance-producer-")
-    ) {
+  if (replacementTemplateFamily) {
+    const expectedPrefix =
+      replacementTemplateFamily === "florida_insurance"
+        ? FLORIDA_INSURANCE_RULE_SET_PREFIX
+        : FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX;
+    const expectedProfession =
+      replacementTemplateFamily === "florida_insurance"
+        ? "Insurance"
+        : "Mental Health";
+    if (!requestedNextRuleSetId?.startsWith(expectedPrefix)) {
       throw new RequestError(
-        "Choose the current Florida producer template shown for the next MyProfile compliance period.",
+        replacementTemplateFamily === "florida_insurance"
+          ? "Choose the current Florida producer template shown for the next MyProfile compliance period."
+          : "Choose the Florida mental-health phase shown by CE Broker for the next renewal period.",
         409,
-        "florida_next_template_required",
+        replacementTemplateFamily === "florida_insurance"
+          ? "florida_next_template_required"
+          : "florida_mental_health_next_template_required",
       );
     }
     selectedNextRule = await query(
@@ -4015,16 +4283,20 @@ async function markRenewalAccepted(
        FROM rule_sets
        WHERE id = ?
          AND is_current = 1
-         AND profession = 'Insurance'
+         AND profession = ?
          AND jurisdiction = 'Florida'
-         AND id LIKE 'fl-insurance-producer-%'`,
-      [requestedNextRuleSetId],
+         AND id LIKE ?`,
+      [requestedNextRuleSetId, expectedProfession, `${expectedPrefix}%`],
     ).first<NextRuleTemplate>();
     if (!selectedNextRule) {
       throw new RequestError(
-        "The selected Florida producer template is unavailable or no longer current.",
+        replacementTemplateFamily === "florida_insurance"
+          ? "The selected Florida producer template is unavailable or no longer current."
+          : "The selected Florida mental-health phase is unavailable or no longer current.",
         409,
-        "florida_next_template_unavailable",
+        replacementTemplateFamily === "florida_insurance"
+          ? "florida_next_template_unavailable"
+          : "florida_mental_health_next_template_unavailable",
       );
     }
     const categoryResult = await query(
@@ -4048,7 +4320,7 @@ async function markRenewalAccepted(
     selectedNextCategories = categoryResult.results;
   } else if (requestedNextRuleSetId) {
     throw new RequestError(
-      "A replacement rule template may be selected only for a Florida producer compliance rollover.",
+      "A replacement rule template may be selected only for a supported Florida rollover.",
       400,
       "next_template_not_allowed",
     );
@@ -4128,7 +4400,7 @@ async function markRenewalAccepted(
   const nextCycleMonths =
     selectedNextRule?.cycleMonths ?? Number(credential.cycleMonths);
   const officialRecordAttestedAt =
-    isIsc2AutomaticRenewal || isCompliancePeriod
+    requiresOfficialNextPeriodAttestation
       ? new Date().toISOString()
       : null;
   const carryoverReviewTaskTitle =
@@ -4156,19 +4428,27 @@ async function markRenewalAccepted(
           FROM credential_requirements requirement
           JOIN credentials owner
             ON owner.id = requirement.credential_id
-          WHERE requirement.kind = 'maximum'
-            AND requirement.is_active = 1
+          WHERE requirement.is_active = 1
             AND requirement.applicability_status = 'applies'
             AND requirement.exclusive_group IS NOT NULL
             AND (
-              owner.rule_set_id = ?
-              OR EXISTS (
-                SELECT 1
-                FROM complete_classification_groups complete_group
-                WHERE complete_group.credential_id =
-                  requirement.credential_id
-                  AND complete_group.exclusive_group =
-                    requirement.exclusive_group
+              (
+                requirement.kind = 'maximum'
+                AND (
+                  owner.rule_set_id = ?
+                  OR EXISTS (
+                    SELECT 1
+                    FROM complete_classification_groups complete_group
+                    WHERE complete_group.credential_id =
+                      requirement.credential_id
+                      AND complete_group.exclusive_group =
+                        requirement.exclusive_group
+                  )
+                )
+              )
+              OR (
+                owner.rule_set_id LIKE 'nremt-%'
+                AND requirement.kind = 'minimum'
               )
             )
           UNION
