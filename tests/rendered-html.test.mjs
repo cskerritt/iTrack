@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { register } from "node:module";
 import test from "node:test";
 
@@ -245,6 +245,48 @@ function shiftIsoDate(isoDate, days) {
   return date.toISOString().slice(0, 10);
 }
 
+function mondayOfWeek(isoDate) {
+  const date = new Date(`${isoDate}T12:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() - ((date.getUTCDay() + 6) % 7));
+  return date.toISOString().slice(0, 10);
+}
+
+function sourceLiteralArrayAround(source, marker) {
+  const markerIndex = source.indexOf(`"${marker}"`);
+  assert.notEqual(markerIndex, -1, `missing source marker ${marker}`);
+  const start = source.lastIndexOf("[", markerIndex);
+  assert.notEqual(start, -1, `missing array for ${marker}`);
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+    } else if (character === "[") {
+      depth += 1;
+    } else if (character === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        return JSON.parse(
+          source.slice(start, index + 1).replace(/,\s*]/g, "]"),
+        );
+      }
+    }
+  }
+  assert.fail(`unterminated source array for ${marker}`);
+}
+
 function flattenedStatements(database) {
   return database.batches.flat();
 }
@@ -313,6 +355,129 @@ test("License Lantern product contract", async (t) => {
     );
   });
 
+  await t.test(
+    "keeps certificate OCR on-device and suggestions reviewable",
+    async () => {
+      const [
+        clientSource,
+        ocrSource,
+        packageSource,
+        builtClientSource,
+        typescript,
+      ] = await Promise.all([
+        readFile(
+          new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL("../app/lib/certificateOcr.ts", import.meta.url),
+          "utf8",
+        ),
+        readFile(new URL("../package.json", import.meta.url), "utf8"),
+        readFile(
+          new URL(
+            "../dist/server/ssr/assets/LicenseLanternApp-BvrpzBXC.js",
+            import.meta.url,
+          ),
+          "utf8",
+        ).catch(async () => {
+          const assets = await readdir(
+            new URL("../dist/server/ssr/assets/", import.meta.url),
+          );
+          const appAsset = assets.find((name) =>
+            name.startsWith("LicenseLanternApp-"),
+          );
+          assert.ok(appAsset);
+          return readFile(
+            new URL(
+              `../dist/server/ssr/assets/${appAsset}`,
+              import.meta.url,
+            ),
+            "utf8",
+          );
+        }),
+        import("typescript"),
+      ]);
+
+      const packageJson = JSON.parse(packageSource);
+      assert.equal(packageJson.dependencies["tesseract.js"], "7.0.0");
+      assert.equal(packageJson.dependencies["@tesseract.js-data/eng"], "1.0.0");
+      assert.match(clientSource, /capture="environment"/);
+      assert.match(clientSource, /Start with the certificate/);
+      assert.match(clientSource, /Review every highlighted suggestion/);
+      assert.match(
+        clientSource,
+        /const evidenceFile = activityEvidenceFile[\s\S]*?result\?\.id && hasEvidenceFile[\s\S]*?uploadEvidence\(result\.id, evidenceFile\)/,
+      );
+      assert.match(
+        ocrSource,
+        /workerPath: new URL\("worker\.min\.js", assetRoot\)\.href/,
+      );
+      assert.match(ocrSource, /corePath: new URL\("core", assetRoot\)\.href/);
+      assert.match(ocrSource, /langPath: new URL\("lang", assetRoot\)/);
+      assert.doesNotMatch(ocrSource, /https?:\/\/|fetch\(/i);
+      assert.match(builtClientSource, /Start with the certificate/);
+
+      const requiredAssets = [
+        "worker.min.js",
+        "core/tesseract-core-relaxedsimd-lstm.wasm.js",
+        "core/tesseract-core-simd-lstm.wasm.js",
+        "core/tesseract-core-lstm.wasm.js",
+        "lang/eng.traineddata.gz",
+      ];
+      for (const asset of requiredAssets) {
+        const [sourceAsset, builtAsset] = await Promise.all([
+          stat(new URL(`../public/ocr/${asset}`, import.meta.url)),
+          stat(new URL(`../dist/client/ocr/${asset}`, import.meta.url)),
+        ]);
+        assert.ok(sourceAsset.size > 100_000, `${asset} source asset is empty`);
+        assert.equal(builtAsset.size, sourceAsset.size);
+      }
+
+      const compiled = typescript.default.transpileModule(ocrSource, {
+        compilerOptions: {
+          module: typescript.default.ModuleKind.ES2022,
+          target: typescript.default.ScriptTarget.ES2022,
+        },
+      }).outputText;
+      const parser = await import(
+        `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`
+      );
+      assert.deepEqual(
+        parser.extractCertificateSuggestions(
+          [
+            "Course Title: Trauma-Informed Practice",
+            "Provider: State Medical Society",
+            "Completion Date: July 24, 2026",
+            "3.5 CME credits",
+          ].join("\n"),
+        ),
+        {
+          title: "Trauma-Informed Practice",
+          provider: "State Medical Society",
+          completionDate: "2026-07-24",
+          credits: 3.5,
+        },
+      );
+      assert.deepEqual(
+        parser.extractCertificateSuggestions(
+          [
+            "Program: Patient Safety Essentials",
+            "Issued by: Clinical Learning Institute",
+            "Completed on: 7/22/2026",
+            "CEUs: 2",
+          ].join("\n"),
+        ),
+        {
+          title: "Patient Safety Essentials",
+          provider: "Clinical Learning Institute",
+          completionDate: "2026-07-22",
+          credits: 2,
+        },
+      );
+    },
+  );
+
   await t.test("ships durable D1, R2, and migration bindings", async () => {
     const [
       hostingSource,
@@ -321,10 +486,14 @@ test("License Lantern product contract", async (t) => {
       evidenceMigration,
       lifecycleMigration,
       richRuleMigration,
+      progressionMigration,
       builtBaseMigration,
       builtEvidenceMigration,
       builtLifecycleMigration,
       builtRichRuleMigration,
+      builtProgressionMigration,
+      progressionSnapshotSource,
+      migrationJournalSource,
       schemaSource,
       runtimeSource,
     ] = await Promise.all([
@@ -350,6 +519,10 @@ test("License Lantern product contract", async (t) => {
         ),
         readFile(
           new URL("../drizzle/0003_lazy_ironclad.sql", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL("../drizzle/0004_nervous_mentallo.sql", import.meta.url),
           "utf8",
         ),
         readFile(
@@ -380,6 +553,21 @@ test("License Lantern product contract", async (t) => {
           ),
           "utf8",
         ),
+        readFile(
+          new URL(
+            "../dist/.openai/drizzle/0004_nervous_mentallo.sql",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+        readFile(
+          new URL("../drizzle/meta/0004_snapshot.json", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL("../drizzle/meta/_journal.json", import.meta.url),
+          "utf8",
+        ),
         readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
         readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
       ]);
@@ -394,8 +582,9 @@ test("License Lantern product contract", async (t) => {
     assert.equal(builtEvidenceMigration, evidenceMigration);
     assert.equal(builtLifecycleMigration, lifecycleMigration);
     assert.equal(builtRichRuleMigration, richRuleMigration);
+    assert.equal(builtProgressionMigration, progressionMigration);
 
-    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}`;
+    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}`;
     const migratedTables = new Set(
       [...migration.matchAll(/CREATE TABLE `([^`]+)`/g)].map(
         (match) => match[1],
@@ -420,6 +609,7 @@ test("License Lantern product contract", async (t) => {
       "reminder_states",
       "badge_definitions",
       "xp_events",
+      "weekly_quest_claims",
       "badge_events",
     ];
     assert.deepEqual(
@@ -461,6 +651,49 @@ test("License Lantern product contract", async (t) => {
     assert.match(
       richRuleMigration,
       /INSERT OR IGNORE INTO `activity_requirement_matches`[\s\S]*?'legacy-match-' \|\| allocation\.`id`[\s\S]*?allocation\.`allocated_units`[\s\S]*?allocation\.`requirement_id` IS NOT NULL/i,
+    );
+    assert.match(
+      progressionMigration,
+      /CREATE TABLE `weekly_quest_claims`[\s\S]*?`user_id` text NOT NULL[\s\S]*?`week_start` text NOT NULL[\s\S]*?`quest_key` text NOT NULL[\s\S]*?`progress_at_claim` integer NOT NULL[\s\S]*?`target` integer NOT NULL[\s\S]*?`xp_reward` integer NOT NULL[\s\S]*?FOREIGN KEY \(`user_id`\) REFERENCES `users`\(`id`\)[\s\S]*?ON DELETE cascade/i,
+    );
+    assert.match(
+      progressionMigration,
+      /CREATE UNIQUE INDEX `weekly_quest_claims_user_week_quest_unique`[\s\S]*?`user_id`,`week_start`,`quest_key`/i,
+    );
+    assert.match(
+      progressionMigration,
+      /CREATE INDEX `weekly_quest_claims_user_week_idx`[\s\S]*?`user_id`,`week_start`/i,
+    );
+    const progressionSnapshot = JSON.parse(progressionSnapshotSource);
+    const questClaimSnapshot =
+      progressionSnapshot.tables.weekly_quest_claims;
+    assert.ok(questClaimSnapshot);
+    assert.deepEqual(
+      Object.keys(questClaimSnapshot.columns),
+      [
+        "id",
+        "user_id",
+        "week_start",
+        "quest_key",
+        "progress_at_claim",
+        "target",
+        "xp_reward",
+        "claimed_at",
+      ],
+    );
+    assert.deepEqual(
+      questClaimSnapshot.indexes
+        .weekly_quest_claims_user_week_quest_unique,
+      {
+        name: "weekly_quest_claims_user_week_quest_unique",
+        columns: ["user_id", "week_start", "quest_key"],
+        isUnique: true,
+      },
+    );
+    const migrationJournal = JSON.parse(migrationJournalSource);
+    assert.equal(
+      migrationJournal.entries.at(-1)?.tag,
+      "0004_nervous_mentallo",
     );
     for (const column of [
       "kind",
@@ -515,10 +748,821 @@ test("License Lantern product contract", async (t) => {
       /export const activityRequirementMatches = sqliteTable\([\s\S]*?"activity_requirement_matches"/i,
     );
     assert.match(
+      runtimeSource,
+      /CREATE TABLE IF NOT EXISTS weekly_quest_claims[\s\S]*?CREATE UNIQUE INDEX IF NOT EXISTS weekly_quest_claims_user_week_quest_unique[\s\S]*?user_id, week_start, quest_key/i,
+    );
+    assert.match(
+      schemaSource,
+      /export const weeklyQuestClaims = sqliteTable\([\s\S]*?"weekly_quest_claims"[\s\S]*?weekly_quest_claims_user_week_quest_unique/i,
+    );
+    assert.match(
       migration,
       /FOREIGN KEY \(`user_id`\) REFERENCES `users`\(`id`\)[\s\S]*?ON DELETE cascade/i,
     );
   });
+
+  await t.test(
+    "returns concise level, weekly quest, and grace-week progression",
+    async () => {
+      const userId = await expectedStableUserId("owner@example.com");
+      const currentWeekStart = mondayOfWeek(
+        new Date().toISOString().slice(0, 10),
+      );
+      const currentActionDate = shiftIsoDate(currentWeekStart, 2);
+      const actions = [
+        {
+          id: "xp-credential",
+          eventType: "credential_created",
+          relatedType: "credential",
+          relatedId: "credential-one",
+          createdAt: `${currentActionDate}T12:00:00.000Z`,
+        },
+        {
+          id: "xp-learning",
+          eventType: "activity_logged",
+          relatedType: "activity",
+          relatedId: "activity-one",
+          createdAt: `${currentActionDate}T13:00:00.000Z`,
+        },
+        {
+          id: "xp-task",
+          eventType: "task_completed",
+          relatedType: "task",
+          relatedId: "task-one",
+          createdAt: `${currentActionDate}T14:00:00.000Z`,
+        },
+        {
+          id: "xp-task-duplicate",
+          eventType: "task_completed",
+          relatedType: "task",
+          relatedId: "task-one",
+          createdAt: `${currentActionDate}T15:00:00.000Z`,
+        },
+        {
+          id: "xp-prior-week",
+          eventType: "renewal_submitted",
+          relatedType: "submission",
+          relatedId: "submission-one",
+          createdAt: `${shiftIsoDate(currentWeekStart, -3)}T12:00:00.000Z`,
+        },
+        {
+          id: "xp-two-weeks-prior",
+          eventType: "renewal_accepted",
+          relatedType: "acceptance",
+          relatedId: "acceptance-one",
+          createdAt: `${shiftIsoDate(currentWeekStart, -10)}T12:00:00.000Z`,
+        },
+      ];
+      const database = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /AS lifetimeXp FROM profiles p WHERE p\.user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return { weeklyGoal: 3, lifetimeXp: 480 };
+          }
+          if (
+            /^SELECT time_zone AS timeZone FROM reminder_preferences WHERE user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return { timeZone: "UTC" };
+          }
+          if (
+            /SELECT in_app_enabled AS inAppEnabled, lead_days AS leadDays, time_zone AS timeZone FROM reminder_preferences/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              inAppEnabled: 0,
+              leadDays: "[90,30,7,1]",
+              timeZone: "UTC",
+            };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (
+            /FROM xp_events WHERE user_id = \? AND event_type IN/i.test(
+              call.sql,
+            )
+          ) {
+            return actions;
+          }
+          if (
+            /FROM weekly_quest_claims WHERE user_id = \? ORDER BY week_start/i.test(
+              call.sql,
+            )
+          ) {
+            return [
+              {
+                id: "claim-learning",
+                weekStart: currentWeekStart,
+                questKey: "learning-logged",
+                progressAtClaim: 1,
+                target: 1,
+                xpReward: 40,
+                claimedAt: `${currentActionDate}T16:00:00.000Z`,
+              },
+            ];
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = database;
+
+      const response = await fetchWorker(
+        "https://license-lantern.example/api/workspace",
+        { headers: authHeaders() },
+      );
+      assert.equal(response.status, 200);
+      const workspace = await response.json();
+      assert.deepEqual(workspace.profile, {
+        xp: 480,
+        weekActions: 3,
+        weeklyGoal: 3,
+        badges: [],
+      });
+      assert.deepEqual(workspace.progression.level, {
+        number: 3,
+        title: "Building rhythm",
+        floorXp: 400,
+        nextLevelXp: 900,
+        progressPercent: 16,
+      });
+      assert.deepEqual(workspace.progression.week, {
+        startsOn: currentWeekStart,
+        endsOn: shiftIsoDate(currentWeekStart, 6),
+        timeZone: "UTC",
+      });
+      assert.deepEqual(workspace.progression.momentum, {
+        activeWeeks: 3,
+        activeThisWeek: true,
+        status: "active_this_week",
+        graceUsed: false,
+        graceAvailable: true,
+        lastActiveWeekStart: currentWeekStart,
+      });
+      assert.deepEqual(
+        workspace.progression.quests.map((quest) => ({
+          key: quest.key,
+          target: quest.target,
+          progress: quest.progress,
+          rewardXp: quest.rewardXp,
+          completed: quest.completed,
+          claimed: quest.claimed,
+          claimable: quest.claimable,
+        })),
+        [
+          {
+            key: "compliance-momentum",
+            target: 3,
+            progress: 3,
+            rewardXp: 75,
+            completed: true,
+            claimed: false,
+            claimable: true,
+          },
+          {
+            key: "learning-logged",
+            target: 1,
+            progress: 1,
+            rewardXp: 40,
+            completed: true,
+            claimed: true,
+            claimable: false,
+          },
+          {
+            key: "checklist-progress",
+            target: 1,
+            progress: 1,
+            rewardXp: 30,
+            completed: true,
+            claimed: false,
+            claimable: true,
+          },
+        ],
+        "duplicate XP rows for one task must not farm quest progress",
+      );
+
+      const actionLookup = database.calls.find(
+        (call) =>
+          call.method === "all" &&
+          /FROM xp_events WHERE user_id = \? AND event_type IN/i.test(
+            call.sql,
+          ),
+      );
+      const claimLookup = database.calls.find(
+        (call) =>
+          call.method === "all" &&
+          /FROM weekly_quest_claims WHERE user_id = \?/i.test(call.sql),
+      );
+      assert.ok(actionLookup);
+      assert.ok(claimLookup);
+      assert.equal(actionLookup.bindings[0], userId);
+      assert.equal(claimLookup.bindings[0], userId);
+    },
+  );
+
+  await t.test(
+    "guards stale, unknown, and incomplete weekly quest claims",
+    async () => {
+      const currentWeekStart = mondayOfWeek(
+        new Date().toISOString().slice(0, 10),
+      );
+      const cases = [
+        {
+          payload: {
+            questKey: "learning-logged",
+            weekStart: shiftIsoDate(currentWeekStart, -7),
+          },
+          status: 409,
+          code: "quest_week_changed",
+        },
+        {
+          payload: {
+            questKey: "not-a-real-quest",
+            weekStart: currentWeekStart,
+          },
+          status: 404,
+          code: "quest_not_found",
+        },
+        {
+          payload: {
+            questKey: "learning-logged",
+            weekStart: currentWeekStart,
+          },
+          status: 409,
+          code: "quest_incomplete",
+        },
+      ];
+
+      for (const guardCase of cases) {
+        const database = new FakeDatabase({
+          resolveFirst(call) {
+            if (
+              /AS lifetimeXp FROM profiles p WHERE p\.user_id = \?/i.test(
+                call.sql,
+              )
+            ) {
+              return { weeklyGoal: 4, lifetimeXp: 0 };
+            }
+            if (
+              /^SELECT time_zone AS timeZone FROM reminder_preferences WHERE user_id = \?/i.test(
+                call.sql,
+              )
+            ) {
+              return { timeZone: "UTC" };
+            }
+            if (
+              /AS activeCredentials,[\s\S]*?FROM users user WHERE user\.id = \?/i.test(
+                call.sql,
+              )
+            ) {
+              return {
+                activeCredentials: 1,
+                submittedCredentials: 0,
+                pendingTasks: 0,
+                pendingConditions: 0,
+                missingEvidence: 0,
+              };
+            }
+            return null;
+          },
+        });
+        testCloudflareEnv.DB = database;
+        const response = await postWorkspace(
+          "claimWeeklyQuest",
+          guardCase.payload,
+        );
+        const responseBody = await response.json();
+        assert.equal(
+          response.status,
+          guardCase.status,
+          JSON.stringify({ payload: guardCase.payload, responseBody }),
+        );
+        assert.equal(responseBody.code, guardCase.code);
+        assert.equal(
+          flattenedStatements(database).some(
+            (statement) =>
+              /^INSERT OR IGNORE INTO weekly_quest_claims/i.test(
+                statement.sql,
+              ) ||
+              /'weekly_quest_claimed'/i.test(statement.sql),
+          ),
+          false,
+        );
+      }
+    },
+  );
+
+  await t.test(
+    "claims weekly quest XP once per owner and resists task-toggle farming",
+    async () => {
+      const currentWeekStart = mondayOfWeek(
+        new Date().toISOString().slice(0, 10),
+      );
+      const currentActionDate = shiftIsoDate(currentWeekStart, 2);
+      const database = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /AS lifetimeXp FROM profiles p WHERE p\.user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return { weeklyGoal: 4, lifetimeXp: 50 };
+          }
+          if (
+            /^SELECT time_zone AS timeZone FROM reminder_preferences WHERE user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return { timeZone: "UTC" };
+          }
+          if (
+            /^SELECT id FROM weekly_quest_claims WHERE user_id = \? AND week_start = \? AND quest_key = \?/i.test(
+              call.sql,
+            )
+          ) {
+            const [userId, weekStart, questKey] = call.bindings;
+            const insert = flattenedStatements(this).find(
+              (statement) =>
+                /^INSERT OR IGNORE INTO weekly_quest_claims/i.test(
+                  statement.sql,
+                ) &&
+                statement.bindings[1] === userId &&
+                statement.bindings[2] === weekStart &&
+                statement.bindings[3] === questKey,
+            );
+            return insert ? { id: insert.bindings[0] } : null;
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (
+            /FROM xp_events WHERE user_id = \? AND event_type IN/i.test(
+              call.sql,
+            )
+          ) {
+            const userId = call.bindings[0];
+            return [
+              {
+                id: `xp-learning-${userId}`,
+                eventType: "activity_logged",
+                relatedType: "activity",
+                relatedId: `activity-${userId}`,
+                createdAt: `${currentActionDate}T12:00:00.000Z`,
+              },
+            ];
+          }
+          if (
+            /FROM weekly_quest_claims WHERE user_id = \? ORDER BY week_start/i.test(
+              call.sql,
+            )
+          ) {
+            const userId = call.bindings[0];
+            return flattenedStatements(this)
+              .filter(
+                (statement) =>
+                  /^INSERT OR IGNORE INTO weekly_quest_claims/i.test(
+                    statement.sql,
+                  ) && statement.bindings[1] === userId,
+              )
+              .map((statement) => ({
+                id: statement.bindings[0],
+                weekStart: statement.bindings[2],
+                questKey: statement.bindings[3],
+                progressAtClaim: statement.bindings[4],
+                target: statement.bindings[5],
+                xpReward: statement.bindings[6],
+                claimedAt: `${currentActionDate}T13:00:00.000Z`,
+              }));
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = database;
+
+      const firstOwnerResponse = await postWorkspace("claimWeeklyQuest", {
+        questKey: "learning-logged",
+        weekStart: currentWeekStart,
+      });
+      const firstOwnerResult = await firstOwnerResponse.json();
+      assert.equal(firstOwnerResponse.status, 200);
+
+      const retryOwnerResponse = await postWorkspace("claimWeeklyQuest", {
+        questKey: "learning-logged",
+        weekStart: currentWeekStart,
+      });
+      const retryOwnerResult = await retryOwnerResponse.json();
+      assert.equal(retryOwnerResponse.status, 200);
+      assert.equal(retryOwnerResult.id, firstOwnerResult.id);
+
+      const otherOwnerResponse = await postWorkspace(
+        "claimWeeklyQuest",
+        {
+          questKey: "learning-logged",
+          weekStart: currentWeekStart,
+        },
+        "colleague@example.com",
+      );
+      const otherOwnerResult = await otherOwnerResponse.json();
+      assert.equal(otherOwnerResponse.status, 200);
+      assert.notEqual(otherOwnerResult.id, firstOwnerResult.id);
+
+      const claimInserts = flattenedStatements(database).filter((statement) =>
+        /^INSERT OR IGNORE INTO weekly_quest_claims/i.test(statement.sql),
+      );
+      const rewardInserts = flattenedStatements(database).filter(
+        (statement) =>
+          /^INSERT OR IGNORE INTO xp_events/i.test(statement.sql) &&
+          /'weekly_quest_claimed'/i.test(statement.sql),
+      );
+      assert.equal(claimInserts.length, 2);
+      assert.equal(rewardInserts.length, 2);
+      assert.deepEqual(
+        new Set(claimInserts.map((statement) => statement.bindings[1])),
+        new Set([
+          await expectedStableUserId("owner@example.com"),
+          await expectedStableUserId("colleague@example.com"),
+        ]),
+      );
+      assert.ok(
+        rewardInserts.every(
+          (statement) =>
+            statement.bindings[2].includes(statement.bindings[1]) &&
+            statement.bindings[3] === 40,
+        ),
+      );
+
+      const taskDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /SELECT task\.id, credential\.status AS credentialStatus FROM checklist_tasks task/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: call.bindings[0],
+              credentialStatus: "active",
+            };
+          }
+          return null;
+        },
+      });
+      testCloudflareEnv.DB = taskDatabase;
+      for (const completed of [true, false, true]) {
+        const response = await postWorkspace("toggleTask", {
+          taskId: "task-stable",
+          completed,
+        });
+        assert.equal(response.status, 200);
+      }
+      const taskRewards = flattenedStatements(taskDatabase).filter(
+        (statement) =>
+          /^INSERT OR IGNORE INTO xp_events/i.test(statement.sql) &&
+          /'task_completed'/i.test(statement.sql),
+      );
+      assert.equal(taskRewards.length, 2);
+      assert.equal(taskRewards[0].bindings[2], taskRewards[1].bindings[2]);
+      assert.equal(
+        taskRewards[0].bindings[2],
+        `${await expectedStableUserId("owner@example.com")}:task:task-stable:completed`,
+      );
+    },
+  );
+
+  await t.test(
+    "keeps five physician templates and their rich category graphs coherent",
+    async () => {
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const globalSeedSource = runtimeSource.slice(
+        runtimeSource.indexOf("const GLOBAL_SEED_STATEMENTS"),
+      );
+      const richCategorySource = runtimeSource.slice(
+        runtimeSource.indexOf("const RICH_RULE_CATEGORY_SEED_BINDINGS"),
+        runtimeSource.indexOf("const RICH_RULE_CATEGORY_UPDATE_BINDINGS"),
+      );
+      const expectedTemplates = [
+        {
+          id: "ca-physician-md-2026-v1",
+          stableKey: "ca-physician-md",
+          credentialName: "Physician and Surgeon (MD)",
+          jurisdiction: "California",
+          issuer: "Medical Board of California",
+          totalUnits: 50,
+          unitLabel: "approved CME hours",
+          cycleMonths: 24,
+          categorySignatures: [
+            [
+              "ca-physician-md-2026-geriatrics",
+              10,
+              "minimum",
+              "independent",
+              null,
+              "conditional",
+            ],
+          ],
+        },
+        {
+          id: "tx-physician-2026-v1",
+          stableKey: "tx-physician",
+          credentialName: "Physician — standard renewal",
+          jurisdiction: "Texas",
+          issuer: "Texas Medical Board",
+          totalUnits: 48,
+          unitLabel: "CME credits",
+          cycleMonths: 24,
+          categorySignatures: [
+            [
+              "tx-physician-2026-formal",
+              24,
+              "minimum",
+              "overlapping",
+              null,
+              "always",
+            ],
+            [
+              "tx-physician-2026-ethics",
+              2,
+              "minimum",
+              "nested",
+              "tx-physician-2026-formal",
+              "always",
+            ],
+            [
+              "tx-physician-2026-pain-opioids",
+              2,
+              "minimum",
+              "nested",
+              "tx-physician-2026-formal",
+              "conditional",
+            ],
+            [
+              "tx-physician-2026-human-trafficking",
+              1,
+              "minimum",
+              "nested",
+              "tx-physician-2026-formal",
+              "conditional",
+            ],
+            [
+              "tx-physician-2026-pain-clinic",
+              10,
+              "minimum",
+              "overlapping",
+              null,
+              "conditional",
+            ],
+            [
+              "tx-physician-2026-forensic-evidence",
+              2,
+              "minimum",
+              "overlapping",
+              null,
+              "conditional",
+            ],
+          ],
+        },
+        {
+          id: "fl-medical-doctor-md-2026-v1",
+          stableKey: "fl-medical-doctor-md",
+          credentialName: "Medical Doctor (MD) — standard renewal",
+          jurisdiction: "Florida",
+          issuer: "Florida Board of Medicine",
+          totalUnits: 40,
+          unitLabel: "CME hours",
+          cycleMonths: 24,
+          categorySignatures: [
+            [
+              "fl-medical-doctor-md-2026-general",
+              38,
+              "minimum",
+              "independent",
+              null,
+              "always",
+            ],
+            [
+              "fl-medical-doctor-md-2026-medical-errors",
+              2,
+              "minimum",
+              "independent",
+              null,
+              "always",
+            ],
+            [
+              "fl-medical-doctor-md-2026-controlled-substances",
+              2,
+              "minimum",
+              "nested",
+              "fl-medical-doctor-md-2026-general",
+              "conditional",
+            ],
+            [
+              "fl-medical-doctor-md-2026-domestic-violence",
+              2,
+              "minimum",
+              "nested",
+              "fl-medical-doctor-md-2026-general",
+              "conditional",
+            ],
+          ],
+        },
+        {
+          id: "nj-physician-2026-v1",
+          stableKey: "nj-physician",
+          credentialName: "Physician (MD/DO) — standard renewal",
+          jurisdiction: "New Jersey",
+          issuer: "New Jersey State Board of Medical Examiners",
+          totalUnits: 100,
+          unitLabel: "CME credits",
+          cycleMonths: 24,
+          categorySignatures: [
+            [
+              "nj-physician-2026-category-one",
+              40,
+              "minimum",
+              "overlapping",
+              null,
+              "always",
+            ],
+            [
+              "nj-physician-2026-end-of-life",
+              2,
+              "minimum",
+              "nested",
+              "nj-physician-2026-category-one",
+              "always",
+            ],
+            [
+              "nj-physician-2026-opioids",
+              1,
+              "minimum",
+              "nested",
+              "nj-physician-2026-category-one",
+              "always",
+            ],
+            [
+              "nj-physician-2026-sexual-misconduct",
+              2,
+              "minimum",
+              "nested",
+              "nj-physician-2026-category-one",
+              "always",
+            ],
+            [
+              "nj-physician-2026-perinatal-bias",
+              1,
+              "minimum",
+              "nested",
+              "nj-physician-2026-category-one",
+              "conditional",
+            ],
+            [
+              "nj-physician-2026-volunteer-care",
+              10,
+              "maximum",
+              "independent",
+              null,
+              "optional",
+            ],
+          ],
+        },
+        {
+          id: "pa-medical-physician-md-2026-v1",
+          stableKey: "pa-medical-physician-md",
+          credentialName:
+            "Medical Physician and Surgeon (MD) — standard renewal",
+          jurisdiction: "Pennsylvania",
+          issuer: "Pennsylvania State Board of Medicine",
+          totalUnits: 100,
+          unitLabel: "CME credit hours",
+          cycleMonths: 24,
+          categorySignatures: [
+            [
+              "pa-medical-physician-md-2026-category-one",
+              20,
+              "minimum",
+              "overlapping",
+              null,
+              "always",
+            ],
+            [
+              "pa-medical-physician-md-2026-patient-safety",
+              12,
+              "minimum",
+              "overlapping",
+              null,
+              "always",
+            ],
+            [
+              "pa-medical-physician-md-2026-child-abuse",
+              2,
+              "minimum",
+              "overlapping",
+              null,
+              "always",
+            ],
+            [
+              "pa-medical-physician-md-2026-opioid",
+              2,
+              "minimum",
+              "overlapping",
+              null,
+              "conditional",
+            ],
+          ],
+        },
+      ];
+
+      const allCategoryIds = new Set();
+      for (const template of expectedTemplates) {
+        const rule = sourceLiteralArrayAround(globalSeedSource, template.id);
+        assert.deepEqual(
+          {
+            id: rule[0],
+            stableKey: rule[1],
+            version: rule[2],
+            profession: rule[3],
+            credentialName: rule[4],
+            jurisdiction: rule[5],
+            issuer: rule[6],
+            totalUnits: rule[7],
+            unitLabel: rule[8],
+            cycleMonths: rule[9],
+            lastVerifiedAt: rule[13],
+            reviewStatus: rule[14],
+            isCurrent: rule[15],
+          },
+          {
+            id: template.id,
+            stableKey: template.stableKey,
+            version: 1,
+            profession: "Medicine",
+            credentialName: template.credentialName,
+            jurisdiction: template.jurisdiction,
+            issuer: template.issuer,
+            totalUnits: template.totalUnits,
+            unitLabel: template.unitLabel,
+            cycleMonths: template.cycleMonths,
+            lastVerifiedAt: "2026-07-25",
+            reviewStatus: "source_linked_check_conditions",
+            isCurrent: 1,
+          },
+        );
+        assert.match(rule[10], /^https:\/\//);
+        assert.ok(rule[11].length > 40, `${template.id} needs a source note`);
+
+        const categoryRows = template.categorySignatures.map((signature) =>
+          sourceLiteralArrayAround(richCategorySource, signature[0]),
+        );
+        assert.deepEqual(
+          categoryRows.map((category) => [
+            category[0],
+            category[3],
+            category[4],
+            category[5],
+            category[6],
+            category[7],
+          ]),
+          template.categorySignatures,
+        );
+        const categoryIds = new Set(
+          categoryRows.map((category) => category[0]),
+        );
+        assert.deepEqual(
+          categoryRows.map((category) => category[9]),
+          categoryRows.map((_, index) => index),
+          `${template.id} category sort order must be contiguous`,
+        );
+        for (const category of categoryRows) {
+          assert.equal(category[1], template.id);
+          assert.ok(category[2].length > 3);
+          assert.ok(category[3] > 0);
+          assert.ok(category[3] <= template.totalUnits);
+          assert.equal(allCategoryIds.has(category[0]), false);
+          allCategoryIds.add(category[0]);
+          if (category[5] === "nested") {
+            assert.ok(
+              category[6] && categoryIds.has(category[6]),
+              `${category[0]} must name a parent in ${template.id}`,
+            );
+          }
+          if (category[7] === "conditional") {
+            assert.ok(
+              category[8]?.length > 30,
+              `${category[0]} needs an actionable condition note`,
+            );
+          }
+        }
+      }
+      assert.equal(allCategoryIds.size, 21);
+    },
+  );
 
   await t.test(
     "stores evidence metadata under private, owner-scoped R2 keys",

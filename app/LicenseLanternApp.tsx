@@ -6,8 +6,13 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
+import {
+  CertificateFieldSuggestions,
+  scanCertificateImage,
+} from "./lib/certificateOcr";
 
 type Requirement = {
   id: string;
@@ -137,6 +142,46 @@ type Badge = {
   earned?: boolean;
 };
 
+type WeeklyQuest = {
+  key: string;
+  title: string;
+  description: string;
+  target: number;
+  progress: number;
+  rewardXp: number;
+  completed: boolean;
+  claimed: boolean;
+  claimable: boolean;
+  claimedAt: string | null;
+};
+
+type Progression = {
+  lifetimeXp: number;
+  weeklyGoal: number;
+  weekActions: number;
+  level: {
+    number: number;
+    title: string;
+    floorXp: number;
+    nextLevelXp: number;
+    progressPercent: number;
+  };
+  week: {
+    startsOn: string;
+    endsOn: string;
+    timeZone: string;
+  };
+  momentum: {
+    activeWeeks: number;
+    activeThisWeek: boolean;
+    status: "active_this_week" | "grace_week" | "ready_to_start";
+    graceUsed: boolean;
+    graceAvailable: boolean;
+    lastActiveWeekStart: string | null;
+  };
+  quests: WeeklyQuest[];
+};
+
 type Workspace = {
   user: {
     displayName: string;
@@ -149,6 +194,7 @@ type Workspace = {
     weeklyGoal: number;
     badges: Badge[];
   };
+  progression: Progression;
   catalog: CatalogRule[];
   credentials: Credential[];
   activities: Activity[];
@@ -177,6 +223,20 @@ type ToastState = {
   undo?: () => void;
 };
 
+type ActivityDraft = {
+  title: string;
+  completionDate: string;
+  totalUnits: string;
+  provider: string;
+};
+
+type ActivityScanState = {
+  phase: "idle" | "scanning" | "success" | "manual" | "pdf" | "error";
+  label: string;
+  progress: number;
+  suggestions: CertificateFieldSuggestions;
+};
+
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
 const nextYearIso = () => {
@@ -201,6 +261,11 @@ function formatDate(value?: string | null, options?: Intl.DateTimeFormatOptions)
     year: "numeric",
     ...options,
   }).format(parsed);
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1_048_576) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / 1_048_576).toFixed(1)} MB`;
 }
 
 function daysUntil(value: string) {
@@ -332,17 +397,77 @@ function readinessScore(credential: Credential) {
   );
 }
 
-function bestNextAction(credential: Credential) {
-  if (credential.status === "renewed")
-    return "Review the preserved record for this completed cycle";
-  if (credential.status === "submitted")
-    return "Record acceptance when your renewal is approved";
+type GuidedAction = {
+  kind:
+    | "acceptance"
+    | "conditions"
+    | "history"
+    | "learning"
+    | "records"
+    | "checklist"
+    | "submission";
+  title: string;
+  body: string;
+  buttonLabel: string;
+};
+
+function bestNextAction(
+  credential: Credential,
+  missingEvidence: number,
+): GuidedAction {
+  if (credential.status === "renewed") {
+    return {
+      kind: "history",
+      title: "Review the preserved record for this completed cycle",
+      body: "Your credits, proof, submission, and acceptance remain together.",
+      buttonLabel: "View cycle history",
+    };
+  }
+  if (credential.status === "submitted") {
+    return {
+      kind: "acceptance",
+      title: "Record acceptance when your renewal is approved",
+      body: "Keep the cycle open until the issuing organization confirms it.",
+      buttonLabel: "Record acceptance",
+    };
+  }
 
   const unresolvedRequirement = credential.requirements.find(
     (item) => requirementStatus(item) === "needs_confirmation",
   );
   if (unresolvedRequirement) {
-    return `Confirm whether ${unresolvedRequirement.name} applies this cycle`;
+    return {
+      kind: "conditions",
+      title: `Confirm whether ${unresolvedRequirement.name} applies this cycle`,
+      body: "Your readiness score stays cautious until this rule is resolved.",
+      buttonLabel: "Review conditions",
+    };
+  }
+
+  const overdueTask = credential.tasks.find(
+    (task) =>
+      task.status !== "completed" &&
+      Boolean(task.dueDate) &&
+      daysUntil(task.dueDate!) < 0,
+  );
+  if (overdueTask) {
+    return {
+      kind: "checklist",
+      title: overdueTask.title,
+      body: `This checklist step was due ${formatDate(overdueTask.dueDate)}.`,
+      buttonLabel: "Open checklist",
+    };
+  }
+
+  if (missingEvidence > 0) {
+    return {
+      kind: "records",
+      title: `Attach proof to ${missingEvidence} learning ${
+        missingEvidence === 1 ? "record" : "records"
+      }`,
+      body: "A complete audit trail is as important as the credit total.",
+      buttonLabel: "Review records",
+    };
   }
 
   const missingRequirement = activeMinimums(credential)
@@ -357,15 +482,57 @@ function bestNextAction(credential: Credential) {
   if (missingRequirement) {
     const left =
       missingRequirement.requiredUnits - requirementEarned(missingRequirement);
-    return `Complete ${compactNumber(left)} more ${missingRequirement.name} ${
-      left === 1 ? credential.unitLabel.replace(/s$/, "") : credential.unitLabel
-    }`;
+    const overallRemaining = Math.max(
+      0,
+      credential.totalRequired - credential.totalEarned,
+    );
+    return {
+      kind: "learning",
+      title: `Complete ${compactNumber(left)} more ${missingRequirement.name} ${
+        left === 1
+          ? credential.unitLabel.replace(/s$/, "")
+          : credential.unitLabel
+      }`,
+      body:
+        overallRemaining === 0
+          ? "Your overall total is met, but this active category minimum is still short."
+          : `${compactNumber(overallRemaining)} ${credential.unitLabel} remain overall; prioritize this category.`,
+      buttonLabel: "Log qualifying learning",
+    };
+  }
+
+  const overallRemaining = Math.max(
+    0,
+    credential.totalRequired - credential.totalEarned,
+  );
+  if (overallRemaining > 0) {
+    return {
+      kind: "learning",
+      title: `Complete ${compactNumber(overallRemaining)} more ${
+        overallRemaining === 1
+          ? credential.unitLabel.replace(/s$/, "")
+          : credential.unitLabel
+      }`,
+      body: "Log completed learning as you go so the record stays current.",
+      buttonLabel: "Add completed learning",
+    };
   }
 
   const openTask = credential.tasks.find((task) => task.status !== "completed");
-  if (openTask) return openTask.title;
-  if (credential.status === "active") return "Review and submit your renewal";
-  return "Keep your confirmation with this cycle";
+  if (openTask) {
+    return {
+      kind: "checklist",
+      title: openTask.title,
+      body: "Credits are covered. Finish this packet step before submitting.",
+      buttonLabel: "Open checklist",
+    };
+  }
+  return {
+    kind: "submission",
+    title: "Review and submit your renewal",
+    body: "Your active minimums, overall credits, and checklist are complete.",
+    buttonLabel: "Review submission",
+  };
 }
 
 export function LicenseLanternApp() {
@@ -391,6 +558,48 @@ export function LicenseLanternApp() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [activityDraft, setActivityDraft] = useState<ActivityDraft>(() => ({
+    title: "",
+    completionDate: todayIso(),
+    totalUnits: "",
+    provider: "",
+  }));
+  const [activityEvidenceFile, setActivityEvidenceFile] =
+    useState<File | null>(null);
+  const [activityScan, setActivityScan] = useState<ActivityScanState>({
+    phase: "idle",
+    label: "",
+    progress: 0,
+    suggestions: {},
+  });
+  const activityScanSequence = useRef(0);
+
+  const resetActivityEntry = useCallback(() => {
+    activityScanSequence.current += 1;
+    setActivityDraft({
+      title: "",
+      completionDate: todayIso(),
+      totalUnits: "",
+      provider: "",
+    });
+    setActivityEvidenceFile(null);
+    setActivityScan({
+      phase: "idle",
+      label: "",
+      progress: 0,
+      suggestions: {},
+    });
+  }, []);
+
+  const openActivityEntry = useCallback(() => {
+    resetActivityEntry();
+    setActivityOpen(true);
+  }, [resetActivityEntry]);
+
+  const closeActivityEntry = useCallback(() => {
+    setActivityOpen(false);
+    resetActivityEntry();
+  }, [resetActivityEntry]);
 
   const loadWorkspace = useCallback(async () => {
     try {
@@ -441,7 +650,7 @@ export function LicenseLanternApp() {
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      setActivityOpen(false);
+      closeActivityEntry();
       setCredentialOpen(false);
       setSubmissionOpen(false);
       setAcceptanceOpen(false);
@@ -451,7 +660,7 @@ export function LicenseLanternApp() {
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, []);
+  }, [closeActivityEntry]);
 
   const selectedCredential = useMemo(() => {
     if (!workspace) return null;
@@ -520,6 +729,7 @@ export function LicenseLanternApp() {
     ) ??
     activityCredentials[0] ??
     null;
+  const scanningActivityEvidence = activityScan.phase === "scanning";
 
   async function runAction(
     action: string,
@@ -557,15 +767,175 @@ export function LicenseLanternApp() {
     }
   }
 
+  async function handleActivityEvidenceSelection(file?: File) {
+    if (!file) return;
+    const maximumBytes = 10 * 1_048_576;
+    const lowerName = file.name.toLowerCase();
+    const isPdf =
+      file.type === "application/pdf" || lowerName.endsWith(".pdf");
+    const inferredImageType = lowerName.endsWith(".jpg")
+      ? "image/jpeg"
+      : lowerName.endsWith(".jpeg")
+        ? "image/jpeg"
+        : lowerName.endsWith(".png")
+          ? "image/png"
+          : lowerName.endsWith(".webp")
+            ? "image/webp"
+            : "";
+    const imageType = ["image/jpeg", "image/png", "image/webp"].includes(
+      file.type,
+    )
+      ? file.type
+      : inferredImageType;
+
+    activityScanSequence.current += 1;
+    const sequence = activityScanSequence.current;
+
+    if (file.size > maximumBytes) {
+      setActivityEvidenceFile(null);
+      setActivityScan({
+        phase: "error",
+        label: "That file is larger than 10 MB. Choose a smaller proof file.",
+        progress: 0,
+        suggestions: {},
+      });
+      return;
+    }
+
+    if (!isPdf && !imageType) {
+      setActivityEvidenceFile(null);
+      setActivityScan({
+        phase: "error",
+        label: "Choose a PDF, JPEG, PNG, or WebP certificate.",
+        progress: 0,
+        suggestions: {},
+      });
+      return;
+    }
+
+    const previousSuggestions = activityScan.suggestions;
+    setActivityDraft((current) => ({
+      title:
+        previousSuggestions.title === current.title ? "" : current.title,
+      provider:
+        previousSuggestions.provider === current.provider
+          ? ""
+          : current.provider,
+      completionDate:
+        previousSuggestions.completionDate === current.completionDate
+          ? todayIso()
+          : current.completionDate,
+      totalUnits:
+        previousSuggestions.credits !== undefined &&
+        String(previousSuggestions.credits) === current.totalUnits
+          ? ""
+          : current.totalUnits,
+    }));
+    setActivityEvidenceFile(file);
+    if (isPdf) {
+      setActivityScan({
+        phase: "pdf",
+        label:
+          "PDF attached. On-device text recognition currently reads images, so enter the details manually. The PDF uploads only after you save.",
+        progress: 0,
+        suggestions: {},
+      });
+      return;
+    }
+
+    setActivityScan({
+      phase: "scanning",
+      label: "Preparing the image on this device",
+      progress: 0.02,
+      suggestions: {},
+    });
+
+    try {
+      const ocrFile =
+        file.type === imageType
+          ? file
+          : new File([file], file.name, {
+              type: imageType,
+              lastModified: file.lastModified,
+            });
+      const result = await scanCertificateImage(ocrFile, (scanProgress) => {
+        if (activityScanSequence.current !== sequence) return;
+        setActivityScan((current) => ({
+          ...current,
+          phase: "scanning",
+          label: scanProgress.label,
+          progress: scanProgress.progress,
+        }));
+      });
+      if (activityScanSequence.current !== sequence) return;
+
+      const suggestions =
+        result.confidence >= 25 ? result.suggestions : {};
+      const suggestionCount = Object.values(suggestions).filter(
+        (value) => value !== undefined,
+      ).length;
+
+      if (suggestionCount) {
+        setActivityDraft((current) => ({
+          title: suggestions.title ?? current.title,
+          provider: suggestions.provider ?? current.provider,
+          completionDate:
+            suggestions.completionDate ?? current.completionDate,
+          totalUnits:
+            suggestions.credits !== undefined
+              ? String(suggestions.credits)
+              : current.totalUnits,
+        }));
+        setActivityScan({
+          phase: "success",
+          label: `Found ${suggestionCount} ${
+            suggestionCount === 1 ? "detail" : "details"
+          }. Review every highlighted suggestion before saving.`,
+          progress: 1,
+          suggestions,
+        });
+      } else {
+        setActivityScan({
+          phase: "manual",
+          label:
+            result.recognizedTextLength > 0
+              ? "Text was found, but no clearly labeled details were reliable enough to suggest. Enter them manually."
+              : "No readable text was found. Enter the details manually; the image is still attached.",
+          progress: 1,
+          suggestions: {},
+        });
+      }
+    } catch {
+      if (activityScanSequence.current !== sequence) return;
+      setActivityScan({
+        phase: "error",
+        label:
+          "This image could not be read on this device. Enter the details manually; the image is still attached.",
+        progress: 0,
+        suggestions: {},
+      });
+    }
+  }
+
+  function removeActivityEvidence() {
+    activityScanSequence.current += 1;
+    setActivityEvidenceFile(null);
+    setActivityScan({
+      phase: "idle",
+      label: "",
+      progress: 0,
+      suggestions: {},
+    });
+  }
+
   async function handleActivitySubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
     const credentialId = String(form.get("credentialId") ?? "");
     const totalUnits = Number(form.get("totalUnits"));
-    const evidenceFile = form.get("evidenceFile");
-    const hasEvidenceFile =
-      evidenceFile instanceof File && evidenceFile.size > 0;
+    const evidenceFile = activityEvidenceFile;
+    const hasEvidenceFile = Boolean(evidenceFile && evidenceFile.size > 0);
     const result = await runAction(
       "addActivity",
       {
@@ -585,10 +955,10 @@ export function LicenseLanternApp() {
         totalUnits === 1 ? "credit" : "credits"
       } added to your record.`,
     );
-    if (result?.id && hasEvidenceFile) {
+    if (result?.id && hasEvidenceFile && evidenceFile) {
       const uploaded = await uploadEvidence(result.id, evidenceFile);
       if (!uploaded) {
-        setActivityOpen(false);
+        closeActivityEntry();
         formElement.reset();
         setToast({
           message:
@@ -603,7 +973,7 @@ export function LicenseLanternApp() {
       });
     }
     if (result) {
-      setActivityOpen(false);
+      closeActivityEntry();
       formElement.reset();
     }
   }
@@ -927,6 +1297,18 @@ export function LicenseLanternApp() {
     }
   }
 
+  async function claimWeeklyQuest(quest: WeeklyQuest) {
+    if (!workspace) return;
+    await runAction(
+      "claimWeeklyQuest",
+      {
+        questKey: quest.key,
+        weekStart: workspace.progression.week.startsOn,
+      },
+      `${quest.rewardXp} XP claimed. Your real compliance work moved you forward.`,
+    );
+  }
+
   const userName = workspace?.user.displayName ?? "Professional";
 
   return (
@@ -937,7 +1319,7 @@ export function LicenseLanternApp() {
       <DesktopSidebar
         view={view}
         onView={setView}
-        onAdd={() => setActivityOpen(true)}
+        onAdd={openActivityEntry}
         hasCredential={Boolean(selectedCredential)}
       />
 
@@ -973,7 +1355,7 @@ export function LicenseLanternApp() {
             <TodayView
               workspace={workspace}
               credential={selectedCredential}
-              onAddActivity={() => setActivityOpen(true)}
+              onAddActivity={openActivityEntry}
               onAddCredential={() => setCredentialOpen(true)}
               onViewCredentials={() => setView("credentials")}
               onViewRecords={() => setView("records")}
@@ -984,6 +1366,8 @@ export function LicenseLanternApp() {
                 void setReminderState(reminder, status)
               }
               onToggleTask={toggleTask}
+              onClaimQuest={(quest) => void claimWeeklyQuest(quest)}
+              progressionPending={pending}
               onRequirementApplicability={(requirement, status) =>
                 selectedCredential
                   ? void setRequirementApplicability(
@@ -1019,7 +1403,7 @@ export function LicenseLanternApp() {
             <RecordsView
               activities={workspace.activities}
               credentials={workspace.credentials}
-              onAdd={() => setActivityOpen(true)}
+              onAdd={openActivityEntry}
               onEvidence={(activity) => void openEvidence(activity)}
               onAllocate={(activity) => {
                 const existingIds = new Set(
@@ -1048,7 +1432,7 @@ export function LicenseLanternApp() {
       <MobileNavigation
         view={view}
         onView={setView}
-        onAdd={() => setActivityOpen(true)}
+        onAdd={openActivityEntry}
         hasCredential={Boolean(selectedCredential)}
       />
 
@@ -1056,7 +1440,7 @@ export function LicenseLanternApp() {
         <Modal
           title="Log completed learning"
           eyebrow="Quick add"
-          onClose={() => setActivityOpen(false)}
+          onClose={closeActivityEntry}
         >
           {activityCredentials.length === 0 ? (
             <EmptyModalState
@@ -1064,37 +1448,181 @@ export function LicenseLanternApp() {
               body="Credits need an open renewal cycle so License Lantern knows where to count them."
               action="Set up credential"
               onAction={() => {
-                setActivityOpen(false);
+                closeActivityEntry();
                 setCredentialOpen(true);
               }}
             />
           ) : (
             <form className="form-stack" onSubmit={handleActivitySubmit}>
-              <label className="field">
+              <section
+                className="certificate-capture"
+                aria-labelledby="certificate-capture-title"
+              >
+                <div className="certificate-capture-heading">
+                  <span className="capture-mark" aria-hidden="true">
+                    ◎
+                  </span>
+                  <div>
+                    <strong id="certificate-capture-title">
+                      Start with the certificate
+                    </strong>
+                    <p>
+                      Take a photo and License Lantern will suggest the details
+                      it can read.
+                    </p>
+                  </div>
+                </div>
+                <div className="capture-actions">
+                  <label className="capture-button capture-button-primary">
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      capture="environment"
+                      onChange={(event) => {
+                        const file = event.currentTarget.files?.[0];
+                        event.currentTarget.value = "";
+                        void handleActivityEvidenceSelection(file);
+                      }}
+                    />
+                    <span aria-hidden="true">◉</span>
+                    Take photo
+                  </label>
+                  <label className="capture-button">
+                    <input
+                      type="file"
+                      accept=".pdf,image/jpeg,image/png,image/webp"
+                      onChange={(event) => {
+                        const file = event.currentTarget.files?.[0];
+                        event.currentTarget.value = "";
+                        void handleActivityEvidenceSelection(file);
+                      }}
+                    />
+                    Choose photo or PDF
+                  </label>
+                </div>
+                <p className="capture-privacy">
+                  Private scan: the reader and English model load from License
+                  Lantern, and the certificate stays on this device until you
+                  tap Save activity.
+                </p>
+                {activityEvidenceFile ? (
+                  <div className="capture-file">
+                    <div>
+                      <strong>{activityEvidenceFile.name}</strong>
+                      <small>
+                        {formatFileSize(activityEvidenceFile.size)} · kept as
+                        your proof
+                      </small>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={removeActivityEvidence}
+                      disabled={pending}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ) : null}
+                {activityScan.phase !== "idle" ? (
+                  <div
+                    className={`capture-status ${activityScan.phase}`}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {scanningActivityEvidence ? (
+                      <div
+                        className="capture-progress"
+                        role="progressbar"
+                        aria-label={activityScan.label}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={Math.round(
+                          activityScan.progress * 100,
+                        )}
+                      >
+                        <span
+                          style={{
+                            width: `${Math.round(
+                              activityScan.progress * 100,
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <span className="capture-status-mark" aria-hidden="true">
+                        {activityScan.phase === "success" ? "✓" : "i"}
+                      </span>
+                    )}
+                    <p>{activityScan.label}</p>
+                  </div>
+                ) : null}
+              </section>
+              <label
+                className={`field ${
+                  activityScan.suggestions.title ? "scan-suggested" : ""
+                }`}
+              >
                 <span>Course, conference, or activity</span>
                 <input
-                  autoFocus
                   name="title"
                   placeholder="e.g., Ethics in clinical practice"
+                  value={activityDraft.title}
+                  disabled={scanningActivityEvidence}
+                  onChange={(event) =>
+                    setActivityDraft((current) => ({
+                      ...current,
+                      title: event.currentTarget.value,
+                    }))
+                  }
                   required
                 />
+                {activityScan.suggestions.title ? (
+                  <small className="scan-suggestion-note">
+                    Suggested from the scan — confirm or edit it.
+                  </small>
+                ) : null}
               </label>
               <div className="form-grid">
-                <label className="field">
+                <label
+                  className={`field ${
+                    activityScan.suggestions.completionDate
+                      ? "scan-suggested"
+                      : ""
+                  }`}
+                >
                   <span>Completion date</span>
                   <input
                     name="completionDate"
                     type="date"
-                    defaultValue={todayIso()}
+                    value={activityDraft.completionDate}
+                    disabled={scanningActivityEvidence}
+                    onChange={(event) =>
+                      setActivityDraft((current) => ({
+                        ...current,
+                        completionDate: event.currentTarget.value,
+                      }))
+                    }
                     min={activityCredential?.cycleStart}
                     max={activityCredential?.deadline}
                     required
                   />
-                  <small>
-                    Must fall within the selected renewal cycle.
+                  <small
+                    className={
+                      activityScan.suggestions.completionDate
+                        ? "scan-suggestion-note"
+                        : undefined
+                    }
+                  >
+                    {activityScan.suggestions.completionDate
+                      ? "Suggested from the scan — confirm it falls within this renewal cycle."
+                      : "Must fall within the selected renewal cycle."}
                   </small>
                 </label>
-                <label className="field">
+                <label
+                  className={`field ${
+                    activityScan.suggestions.credits ? "scan-suggested" : ""
+                  }`}
+                >
                   <span>Credits earned</span>
                   <input
                     name="totalUnits"
@@ -1103,8 +1631,21 @@ export function LicenseLanternApp() {
                     step="0.1"
                     inputMode="decimal"
                     placeholder="1.0"
+                    value={activityDraft.totalUnits}
+                    disabled={scanningActivityEvidence}
+                    onChange={(event) =>
+                      setActivityDraft((current) => ({
+                        ...current,
+                        totalUnits: event.currentTarget.value,
+                      }))
+                    }
                     required
                   />
+                  {activityScan.suggestions.credits ? (
+                    <small className="scan-suggestion-note">
+                      Suggested from the scan — confirm the units.
+                    </small>
+                  ) : null}
                 </label>
               </div>
               <label className="field">
@@ -1128,12 +1669,29 @@ export function LicenseLanternApp() {
                 key={activityCredential?.id}
                 credential={activityCredential}
               />
-              <label className="field">
+              <label
+                className={`field ${
+                  activityScan.suggestions.provider ? "scan-suggested" : ""
+                }`}
+              >
                 <span>Provider or organizer <em>Optional</em></span>
                 <input
                   name="provider"
                   placeholder="Organization or conference name"
+                  value={activityDraft.provider}
+                  disabled={scanningActivityEvidence}
+                  onChange={(event) =>
+                    setActivityDraft((current) => ({
+                      ...current,
+                      provider: event.currentTarget.value,
+                    }))
+                  }
                 />
+                {activityScan.suggestions.provider ? (
+                  <small className="scan-suggestion-note">
+                    Suggested from the scan — confirm or edit it.
+                  </small>
+                ) : null}
               </label>
               <fieldset className="segmented-field">
                 <legend>Proof requirement</legend>
@@ -1155,29 +1713,24 @@ export function LicenseLanternApp() {
                   <span>Not required</span>
                 </label>
               </fieldset>
-              <label className="field file-field">
-                <span>Certificate or proof <em>Optional</em></span>
-                <input
-                  name="evidenceFile"
-                  type="file"
-                  accept=".pdf,image/jpeg,image/png,image/webp"
-                />
-                <small>PDF, JPEG, PNG, or WebP · up to 10 MB</small>
-              </label>
               <div className="form-actions">
                 <button
                   className="button button-ghost"
                   type="button"
-                  onClick={() => setActivityOpen(false)}
+                  onClick={closeActivityEntry}
                 >
                   Cancel
                 </button>
                 <button
                   className="button button-primary"
                   type="submit"
-                  disabled={pending}
+                  disabled={pending || scanningActivityEvidence}
                 >
-                  {pending ? "Saving…" : "Save activity"}
+                  {pending
+                    ? "Saving…"
+                    : scanningActivityEvidence
+                      ? "Reading certificate…"
+                      : "Save activity"}
                 </button>
               </div>
             </form>
@@ -2029,6 +2582,8 @@ function TodayView({
   onReminders,
   onReminderState,
   onToggleTask,
+  onClaimQuest,
+  progressionPending,
   onRequirementApplicability,
 }: {
   workspace: Workspace;
@@ -2045,6 +2600,8 @@ function TodayView({
     status: "dismissed" | "snoozed",
   ) => void;
   onToggleTask: (task: RenewalTask) => void;
+  onClaimQuest: (quest: WeeklyQuest) => void;
+  progressionPending: boolean;
   onRequirementApplicability: (
     requirement: Requirement,
     status: "applies" | "not_applicable",
@@ -2119,10 +2676,6 @@ function TodayView({
 
   const progress = credentialProgress(credential);
   const readiness = readinessScore(credential);
-  const remaining = Math.max(
-    0,
-    credential.totalRequired - credential.totalEarned,
-  );
   const missingEvidence = workspace.activities.filter(
     (activity) =>
       allocationsFor(activity).some(
@@ -2132,10 +2685,38 @@ function TodayView({
   ).length;
   const deadlineDays = daysUntil(credential.deadline);
   const visibleReminders = workspace.reminders;
-  const needsRequirementConfirmation = credential.requirements.some(
-    (requirement) =>
-      requirementStatus(requirement) === "needs_confirmation",
+  const guidedAction = bestNextAction(credential, missingEvidence);
+  const progression = workspace.progression;
+  const xpToNextLevel = Math.max(
+    0,
+    progression.level.nextLevelXp - progression.lifetimeXp,
   );
+  const runGuidedAction = () => {
+    switch (guidedAction.kind) {
+      case "acceptance":
+        onAccept();
+        break;
+      case "conditions":
+      case "history":
+        onViewCredentials();
+        break;
+      case "learning":
+        onAddActivity();
+        break;
+      case "records":
+        onViewRecords();
+        break;
+      case "checklist": {
+        const checklist = document.getElementById("renewal-checklist");
+        checklist?.scrollIntoView({ behavior: "smooth", block: "center" });
+        checklist?.focus({ preventScroll: true });
+        break;
+      }
+      case "submission":
+        onSubmit();
+        break;
+    }
+  };
 
   return (
     <div className="view-stack">
@@ -2278,37 +2859,15 @@ function TodayView({
         </span>
         <div>
           <span className="section-kicker">Best next action</span>
-          <h2>{bestNextAction(credential)}</h2>
-          <p>
-            {remaining > 0
-              ? `${compactNumber(remaining)} ${credential.unitLabel} remain overall.`
-              : "Your overall credit total is met. Finish the remaining checks before submitting."}
-          </p>
+          <h2>{guidedAction.title}</h2>
+          <p>{guidedAction.body}</p>
         </div>
         <button
           className="button button-dark"
           type="button"
-          onClick={
-            credential.status === "renewed"
-              ? onViewCredentials
-              : credential.status === "submitted"
-                ? onAccept
-                : needsRequirementConfirmation
-                  ? onViewCredentials
-                : remaining > 0
-              ? onAddActivity
-                  : onSubmit
-          }
+          onClick={runGuidedAction}
         >
-          {credential.status === "renewed"
-            ? "View cycle history"
-            : credential.status === "submitted"
-              ? "Record acceptance"
-              : needsRequirementConfirmation
-                ? "Review conditions"
-              : remaining > 0
-            ? "Add completed learning"
-                : "Review submission"}
+          {guidedAction.buttonLabel}
         </button>
       </section>
 
@@ -2371,61 +2930,160 @@ function TodayView({
           </button>
         </section>
 
-        <section className="card coach-card" aria-labelledby="momentum-title">
+        <section
+          className="card coach-card progression-card"
+          aria-labelledby="momentum-title"
+        >
           <div className="card-heading">
             <div>
-              <span className="section-kicker">Momentum</span>
-              <h2 id="momentum-title">This week</h2>
+              <span className="section-kicker">Professional momentum</span>
+              <h2 id="momentum-title">
+                Level {progression.level.number} ·{" "}
+                {progression.level.title}
+              </h2>
             </div>
-            <span className="xp-chip">{workspace.profile.xp} XP</span>
+            <span className="xp-chip">{progression.lifetimeXp} XP</span>
           </div>
-          <div className="week-dots" aria-label={`${workspace.profile.weekActions} of ${workspace.profile.weeklyGoal} meaningful updates this week`}>
-            {Array.from({ length: workspace.profile.weeklyGoal }, (_, index) => (
-              <span
-                key={index}
-                className={
-                  index < workspace.profile.weekActions ? "complete" : ""
-                }
-                aria-hidden="true"
+          <div className="level-summary">
+            <span className="level-orb" aria-hidden="true">
+              {progression.level.number}
+            </span>
+            <div>
+              <div className="level-copy">
+                <strong>{progression.level.progressPercent}% to level{" "}
+                  {progression.level.number + 1}</strong>
+                <small>{xpToNextLevel} XP to go</small>
+              </div>
+              <div
+                className="level-track"
+                role="progressbar"
+                aria-label={`${progression.level.progressPercent}% toward level ${progression.level.number + 1}`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={progression.level.progressPercent}
               >
-                {index < workspace.profile.weekActions ? "✓" : index + 1}
-              </span>
-            ))}
+                <span
+                  style={{
+                    width: `${progression.level.progressPercent}%`,
+                  }}
+                />
+              </div>
+            </div>
           </div>
-          <h3>
-            {workspace.profile.weekActions >= workspace.profile.weeklyGoal
-              ? "Weekly rhythm complete"
-              : "One useful update at a time"}
-          </h3>
-          <p>
-            {workspace.profile.weekActions >= workspace.profile.weeklyGoal
-              ? "You kept your renewal record current this week."
-              : `${Math.max(
-                  0,
-                  workspace.profile.weeklyGoal -
-                    workspace.profile.weekActions,
-                )} meaningful ${
-                  workspace.profile.weeklyGoal -
-                    workspace.profile.weekActions ===
-                  1
-                    ? "update"
-                    : "updates"
-                } to your weekly rhythm.`}
-          </p>
-          <div className="mini-badges">
-            {workspace.profile.badges.slice(0, 3).map((badge) => (
-              <span
-                key={badge.id}
-                className={badge.earned || badge.earnedAt ? "earned" : ""}
-                title={badge.description}
-              >
-                {badge.name}
-              </span>
-            ))}
+
+          <div className="quest-heading">
+            <div>
+              <strong>Weekly quests</strong>
+              <small>
+                {formatDate(progression.week.startsOn, {
+                  month: "short",
+                  day: "numeric",
+                })}{" "}
+                –{" "}
+                {formatDate(progression.week.endsOn, {
+                  month: "short",
+                  day: "numeric",
+                })}
+              </small>
+            </div>
+            <span>
+              {Math.min(progression.weekActions, progression.weeklyGoal)}/
+              {progression.weeklyGoal} actions
+            </span>
+          </div>
+          <div className="quest-list">
+            {progression.quests.length ? (
+              progression.quests.map((quest) => {
+                const questPercent = clampPercent(
+                  (Math.min(quest.progress, quest.target) / quest.target) * 100,
+                );
+                return (
+                  <article
+                    className={`quest-row ${
+                      quest.claimed
+                        ? "claimed"
+                        : quest.claimable
+                          ? "claimable"
+                          : ""
+                    }`}
+                    key={quest.key}
+                  >
+                    <span className="quest-state" aria-hidden="true">
+                      {quest.claimed ? "✓" : quest.completed ? "◆" : "◇"}
+                    </span>
+                    <div className="quest-copy">
+                      <strong>{quest.title}</strong>
+                      <small>{quest.description}</small>
+                      <div
+                        className="quest-track"
+                        role="progressbar"
+                        aria-label={`${quest.title}: ${Math.min(
+                          quest.progress,
+                          quest.target,
+                        )} of ${quest.target}`}
+                        aria-valuemin={0}
+                        aria-valuemax={quest.target}
+                        aria-valuenow={Math.min(quest.progress, quest.target)}
+                      >
+                        <span style={{ width: `${questPercent}%` }} />
+                      </div>
+                    </div>
+                    {quest.claimable ? (
+                      <button
+                        type="button"
+                        disabled={progressionPending}
+                        onClick={() => onClaimQuest(quest)}
+                      >
+                        +{quest.rewardXp} XP
+                      </button>
+                    ) : (
+                      <span className="quest-count">
+                        {quest.claimed
+                          ? "Claimed"
+                          : `${Math.min(quest.progress, quest.target)}/${
+                              quest.target
+                            }`}
+                      </span>
+                    )}
+                  </article>
+                );
+              })
+            ) : (
+              <p className="quest-empty">
+                Nothing needs a quest right now. Your record is calm and clear.
+              </p>
+            )}
+          </div>
+          <div
+            className={`momentum-note ${progression.momentum.status}`}
+            role="status"
+          >
+            <span aria-hidden="true">
+              {progression.momentum.activeThisWeek ? "↗" : "○"}
+            </span>
+            <p>
+              <strong>
+                {progression.momentum.activeThisWeek
+                  ? `${progression.momentum.activeWeeks}-week rhythm`
+                  : progression.momentum.status === "grace_week"
+                    ? "A gentle grace week"
+                    : "Ready when you are"}
+              </strong>
+              {progression.momentum.activeThisWeek
+                ? " Meaningful work—not app opens—keeps this moving."
+                : progression.momentum.status === "grace_week"
+                  ? " One quiet week does not erase the work you already did."
+                  : " Your first useful compliance action starts the rhythm."}
+            </p>
           </div>
         </section>
 
-        <section className="card checklist-card" aria-labelledby="checklist-title">
+        <section
+          className="card checklist-card"
+          id="renewal-checklist"
+          tabIndex={-1}
+          aria-labelledby="checklist-title"
+        >
           <div className="card-heading">
             <div>
               <span className="section-kicker">Renewal checklist</span>
@@ -3008,11 +3666,42 @@ function AccountView({
         </section>
         <section className="card account-momentum">
           <span className="section-kicker">Meaningful momentum</span>
-          <h2>{workspace.profile.xp} XP earned</h2>
+          <h2>
+            Level {workspace.progression.level.number} ·{" "}
+            {workspace.progression.level.title}
+          </h2>
           <p>
             License Lantern rewards real compliance work—not opening the app or
             protecting a fragile daily streak.
           </p>
+          <div className="account-level">
+            <div>
+              <strong>{workspace.progression.lifetimeXp} XP earned</strong>
+              <small>
+                {workspace.progression.momentum.activeWeeks > 0
+                  ? `${workspace.progression.momentum.activeWeeks} active ${
+                      workspace.progression.momentum.activeWeeks === 1
+                        ? "week"
+                        : "weeks"
+                    } in your current rhythm`
+                  : "Your first completed compliance action starts a rhythm"}
+              </small>
+            </div>
+            <div
+              className="level-track"
+              role="progressbar"
+              aria-label={`${workspace.progression.level.progressPercent}% toward level ${workspace.progression.level.number + 1}`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={workspace.progression.level.progressPercent}
+            >
+              <span
+                style={{
+                  width: `${workspace.progression.level.progressPercent}%`,
+                }}
+              />
+            </div>
+          </div>
           <div className="badge-grid">
             {workspace.profile.badges.map((badge) => (
               <article

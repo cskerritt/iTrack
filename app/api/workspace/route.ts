@@ -288,6 +288,454 @@ function todayInTimeZone(timeZone: string) {
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
+const PROGRESSION_ACTION_TYPES = [
+  "credential_created",
+  "activity_logged",
+  "evidence_attached",
+  "requirement_confirmed",
+  "task_completed",
+  "renewal_submitted",
+  "renewal_accepted",
+] as const;
+
+type ProgressionActionType = (typeof PROGRESSION_ACTION_TYPES)[number];
+
+type ProgressionActionRow = {
+  id: string;
+  eventType: ProgressionActionType;
+  relatedType: string | null;
+  relatedId: string | null;
+  createdAt: string;
+};
+
+type WeeklyQuestClaimRow = {
+  id: string;
+  weekStart: string;
+  questKey: string;
+  progressAtClaim: number;
+  target: number;
+  xpReward: number;
+  claimedAt: string;
+};
+
+type ProgressionQuest = {
+  key: string;
+  title: string;
+  description: string;
+  target: number;
+  progress: number;
+  completed: boolean;
+  claimed: boolean;
+  claimable: boolean;
+  rewardXp: number;
+  claimedAt: string | null;
+};
+
+type ProgressionContext = {
+  activeCredentials: number;
+  submittedCredentials: number;
+  pendingTasks: number;
+  pendingConditions: number;
+  missingEvidence: number;
+};
+
+type ProgressionData = {
+  lifetimeXp: number;
+  weeklyGoal: number;
+  weekActions: number;
+  level: {
+    number: number;
+    title: string;
+    floorXp: number;
+    nextLevelXp: number;
+    progressPercent: number;
+  };
+  week: {
+    startsOn: string;
+    endsOn: string;
+    timeZone: string;
+  };
+  momentum: {
+    activeWeeks: number;
+    activeThisWeek: boolean;
+    status: "active_this_week" | "grace_week" | "ready_to_start";
+    graceUsed: boolean;
+    graceAvailable: boolean;
+    lastActiveWeekStart: string | null;
+  };
+  quests: ProgressionQuest[];
+};
+
+function dateInTimeZone(value: string, timeZone: string) {
+  const timestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+    ? `${value.replace(" ", "T")}Z`
+    : /^\d{4}-\d{2}-\d{2}$/.test(value)
+      ? `${value}T12:00:00.000Z`
+      : value;
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return value.slice(0, 10);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((candidate) => candidate.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function weekStartForDate(isoDate: string) {
+  const date = new Date(`${isoDate}T12:00:00.000Z`);
+  const daysSinceMonday = (date.getUTCDay() + 6) % 7;
+  date.setUTCDate(date.getUTCDate() - daysSinceMonday);
+  return date.toISOString().slice(0, 10);
+}
+
+function progressionLevel(lifetimeXp: number) {
+  const number = Math.floor(Math.sqrt(lifetimeXp / 100)) + 1;
+  const floorXp = (number - 1) ** 2 * 100;
+  const nextLevelXp = number ** 2 * 100;
+  const progressPercent = Math.min(
+    100,
+    Math.max(
+      0,
+      Math.round(
+        ((lifetimeXp - floorXp) / (nextLevelXp - floorXp)) * 100,
+      ),
+    ),
+  );
+  const title =
+    number >= 12
+      ? "Master record keeper"
+      : number >= 8
+        ? "Seasoned record keeper"
+        : number >= 5
+          ? "Steady record keeper"
+          : number >= 3
+            ? "Building rhythm"
+            : "Getting organized";
+  return { number, title, floorXp, nextLevelXp, progressPercent };
+}
+
+function weeklyQuests(
+  weeklyGoal: number,
+  currentActions: ProgressionActionRow[],
+  currentClaims: WeeklyQuestClaimRow[],
+  context: ProgressionContext,
+): ProgressionQuest[] {
+  const claimsByKey = new Map(
+    currentClaims.map((claim) => [claim.questKey, claim]),
+  );
+  const progressFor = (...eventTypes: ProgressionActionType[]) =>
+    currentActions.filter((action) => eventTypes.includes(action.eventType))
+      .length;
+  const hasOpenWork =
+    context.activeCredentials > 0 ||
+    context.submittedCredentials > 0 ||
+    context.pendingTasks > 0 ||
+    context.pendingConditions > 0 ||
+    context.missingEvidence > 0;
+  const specs = [
+    {
+      key: "compliance-momentum",
+      title: "Move compliance forward",
+      description: `Complete ${weeklyGoal} meaningful compliance actions this week.`,
+      target: weeklyGoal,
+      progress: currentActions.length,
+      rewardXp: 75,
+      available: hasOpenWork,
+    },
+    {
+      key: "acceptance-recorded",
+      title: "Close the renewal loop",
+      description: "Record an issuer’s acceptance for one submitted renewal.",
+      target: 1,
+      progress: progressFor("renewal_accepted"),
+      rewardXp: 60,
+      available: context.submittedCredentials > 0,
+    },
+    {
+      key: "rule-confirmed",
+      title: "Resolve a rule condition",
+      description: "Confirm whether one conditional requirement applies.",
+      target: 1,
+      progress: progressFor("requirement_confirmed"),
+      rewardXp: 20,
+      available: context.pendingConditions > 0,
+    },
+    {
+      key: "evidence-secured",
+      title: "Protect one learning record",
+      description: "Attach audit-ready proof to an activity that needs it.",
+      target: 1,
+      progress: progressFor("evidence_attached"),
+      rewardXp: 40,
+      available: context.missingEvidence > 0,
+    },
+    {
+      key: "learning-logged",
+      title: "Log a learning win",
+      description: "Record one completed course or professional learning activity.",
+      target: 1,
+      progress: progressFor("activity_logged"),
+      rewardXp: 40,
+      available: context.activeCredentials > 0,
+    },
+    {
+      key: "checklist-progress",
+      title: "Clear one next step",
+      description: "Complete one renewal checklist item.",
+      target: 1,
+      progress: progressFor("task_completed"),
+      rewardXp: 30,
+      available: context.pendingTasks > 0,
+    },
+  ];
+  return specs
+    .map((spec) => {
+      const claim = claimsByKey.get(spec.key);
+      const completed = spec.progress >= spec.target;
+      return {
+        key: spec.key,
+        title: spec.title,
+        description: spec.description,
+        target: spec.target,
+        progress: spec.progress,
+        rewardXp: spec.rewardXp,
+        completed,
+        claimed: Boolean(claim),
+        claimable: completed && !claim,
+        claimedAt: claim?.claimedAt ?? null,
+        available: spec.available,
+      };
+    })
+    .filter(
+      (quest) =>
+        quest.available ||
+        quest.progress > 0 ||
+        quest.claimed ||
+        quest.claimable,
+    )
+    .map((quest) => ({
+      key: quest.key,
+      title: quest.title,
+      description: quest.description,
+      target: quest.target,
+      progress: quest.progress,
+      rewardXp: quest.rewardXp,
+      completed: quest.completed,
+      claimed: quest.claimed,
+      claimable: quest.claimable,
+      claimedAt: quest.claimedAt,
+    }));
+}
+
+function momentumForWeeks(activeWeekStarts: Set<string>, currentWeekStart: string) {
+  let cursor = currentWeekStart;
+  let activeWeeks = 0;
+  let graceUsed = false;
+  for (let index = 0; index < 5200; index += 1) {
+    if (activeWeekStarts.has(cursor)) {
+      activeWeeks += 1;
+      cursor = daysBefore(cursor, 7);
+      continue;
+    }
+    const weekBeforeGap = daysBefore(cursor, 7);
+    if (!graceUsed && activeWeekStarts.has(weekBeforeGap)) {
+      graceUsed = true;
+      cursor = weekBeforeGap;
+      continue;
+    }
+    break;
+  }
+  const activeThisWeek = activeWeekStarts.has(currentWeekStart);
+  const lastActiveWeekStart =
+    [...activeWeekStarts].sort((left, right) => right.localeCompare(left))[0] ??
+    null;
+  return {
+    activeWeeks,
+    activeThisWeek,
+    status: activeThisWeek
+      ? ("active_this_week" as const)
+      : activeWeeks > 0
+        ? ("grace_week" as const)
+        : ("ready_to_start" as const),
+    graceUsed: activeWeeks > 0 && graceUsed,
+    graceAvailable: activeWeeks > 0 && !graceUsed,
+    lastActiveWeekStart,
+  };
+}
+
+async function getProgressionData(
+  database: D1Database,
+  identity: RequestIdentity,
+): Promise<ProgressionData> {
+  const [profile, actions, claims, preference, context] = await Promise.all([
+    query(
+      database,
+      `SELECT
+        p.weekly_goal AS weeklyGoal,
+        COALESCE(
+          (SELECT SUM(points) FROM xp_events WHERE user_id = p.user_id),
+          0
+        ) AS lifetimeXp
+      FROM profiles p
+      WHERE p.user_id = ?`,
+      [identity.userId],
+    ).first<{ weeklyGoal: number; lifetimeXp: number }>(),
+    query(
+      database,
+      `SELECT
+        id,
+        event_type AS eventType,
+        related_type AS relatedType,
+        related_id AS relatedId,
+        created_at AS createdAt
+      FROM xp_events
+      WHERE user_id = ?
+        AND event_type IN (${PROGRESSION_ACTION_TYPES.map(() => "?").join(", ")})
+      ORDER BY created_at DESC`,
+      [identity.userId, ...PROGRESSION_ACTION_TYPES],
+    ).all<ProgressionActionRow>(),
+    query(
+      database,
+      `SELECT
+        id,
+        week_start AS weekStart,
+        quest_key AS questKey,
+        progress_at_claim AS progressAtClaim,
+        target,
+        xp_reward AS xpReward,
+        claimed_at AS claimedAt
+      FROM weekly_quest_claims
+      WHERE user_id = ?
+      ORDER BY week_start DESC, claimed_at DESC`,
+      [identity.userId],
+    ).all<WeeklyQuestClaimRow>(),
+    query(
+      database,
+      `SELECT time_zone AS timeZone
+       FROM reminder_preferences
+       WHERE user_id = ?`,
+      [identity.userId],
+    ).first<{ timeZone: string }>(),
+    query(
+      database,
+      `SELECT
+        (
+          SELECT COUNT(*)
+          FROM credentials credential
+          WHERE credential.user_id = user.id
+            AND credential.status = 'active'
+        ) AS activeCredentials,
+        (
+          SELECT COUNT(*)
+          FROM credentials credential
+          WHERE credential.user_id = user.id
+            AND credential.status = 'submitted'
+        ) AS submittedCredentials,
+        (
+          SELECT COUNT(*)
+          FROM checklist_tasks task
+          JOIN credentials credential
+            ON credential.id = task.credential_id
+            AND credential.user_id = task.user_id
+          WHERE task.user_id = user.id
+            AND task.status = 'pending'
+            AND credential.status <> 'renewed'
+        ) AS pendingTasks,
+        (
+          SELECT COUNT(*)
+          FROM credential_requirements requirement
+          JOIN credentials credential
+            ON credential.id = requirement.credential_id
+          WHERE credential.user_id = user.id
+            AND credential.status = 'active'
+            AND requirement.applicability_status = 'needs_confirmation'
+        ) AS pendingConditions,
+        (
+          SELECT COUNT(*)
+          FROM activities activity
+          WHERE activity.user_id = user.id
+            AND activity.evidence_status = 'missing'
+            AND EXISTS (
+              SELECT 1
+              FROM activity_allocations allocation
+              JOIN credentials credential
+                ON credential.id = allocation.credential_id
+              WHERE allocation.activity_id = activity.id
+                AND credential.user_id = user.id
+                AND credential.status <> 'renewed'
+            )
+        ) AS missingEvidence
+      FROM users user
+      WHERE user.id = ?`,
+      [identity.userId],
+    ).first<ProgressionContext>(),
+  ]);
+
+  const timeZone =
+    preference?.timeZone && validTimeZone(preference.timeZone)
+      ? preference.timeZone
+      : "UTC";
+  const weeklyGoal = Math.min(
+    20,
+    Math.max(1, Number(profile?.weeklyGoal ?? 4)),
+  );
+  const lifetimeXp = Math.max(0, Number(profile?.lifetimeXp ?? 0));
+  const currentWeekStart = weekStartForDate(todayInTimeZone(timeZone));
+  const currentActionsByKey = new Map<string, ProgressionActionRow>();
+  for (const action of actions.results) {
+    if (
+      weekStartForDate(dateInTimeZone(action.createdAt, timeZone)) !==
+      currentWeekStart
+    ) {
+      continue;
+    }
+    const stableActionKey =
+      action.relatedType && action.relatedId
+        ? `${action.eventType}:${action.relatedType}:${action.relatedId}`
+        : action.id;
+    currentActionsByKey.set(stableActionKey, action);
+  }
+  const currentActions = [...currentActionsByKey.values()];
+  const currentClaims = claims.results.filter(
+    (claim) => claim.weekStart === currentWeekStart,
+  );
+  const activeWeekStarts = new Set(
+    actions.results.map((action) =>
+      weekStartForDate(dateInTimeZone(action.createdAt, timeZone)),
+    ),
+  );
+  const progressionContext: ProgressionContext = {
+    activeCredentials: Number(context?.activeCredentials ?? 0),
+    submittedCredentials: Number(context?.submittedCredentials ?? 0),
+    pendingTasks: Number(context?.pendingTasks ?? 0),
+    pendingConditions: Number(context?.pendingConditions ?? 0),
+    missingEvidence: Number(context?.missingEvidence ?? 0),
+  };
+
+  return {
+    lifetimeXp,
+    weeklyGoal,
+    weekActions: currentActions.length,
+    level: progressionLevel(lifetimeXp),
+    week: {
+      startsOn: currentWeekStart,
+      endsOn: daysAfter(currentWeekStart, 6),
+      timeZone,
+    },
+    momentum: momentumForWeeks(activeWeekStarts, currentWeekStart),
+    quests: weeklyQuests(
+      weeklyGoal,
+      currentActions,
+      currentClaims,
+      progressionContext,
+    ),
+  };
+}
+
 function reminderActivationDate(
   dueDate: string,
   leadDays: number[],
@@ -706,7 +1154,7 @@ async function getWorkspace(
     name: string;
     description: string;
     icon: string;
-    earnedAt: string;
+    earnedAt: string | null;
   };
 
   const [
@@ -717,7 +1165,7 @@ async function getWorkspace(
     taskResult,
     activityResult,
     activityMatchResult,
-    profile,
+    progression,
     badgeResult,
   ] = await Promise.all([
     query(
@@ -921,27 +1369,7 @@ async function getWorkspace(
       ORDER BY allocation.id, requirement.sort_order, requirement.name`,
       [identity.userId],
     ).all<ActivityMatchRow>(),
-    query(
-      database,
-      `SELECT
-        p.weekly_goal AS weeklyGoal,
-        COALESCE(
-          (SELECT SUM(points) FROM xp_events WHERE user_id = p.user_id),
-          0
-        ) AS xp,
-        COALESCE(
-          (
-            SELECT COUNT(*)
-            FROM xp_events
-            WHERE user_id = p.user_id
-              AND created_at >= datetime('now', '-7 days')
-          ),
-          0
-        ) AS weekActions
-      FROM profiles p
-      WHERE p.user_id = ?`,
-      [identity.userId],
-    ).first<{ weeklyGoal: number; xp: number; weekActions: number }>(),
+    getProgressionData(database, identity),
     query(
       database,
       `SELECT
@@ -950,10 +1378,14 @@ async function getWorkspace(
         def.description,
         def.icon,
         event.created_at AS earnedAt
-      FROM badge_events event
-      JOIN badge_definitions def ON def.id = event.badge_id
-      WHERE event.user_id = ?
-      ORDER BY event.created_at DESC`,
+      FROM badge_definitions def
+      LEFT JOIN badge_events event
+        ON event.badge_id = def.id
+        AND event.user_id = ?
+      ORDER BY
+        CASE WHEN event.created_at IS NULL THEN 1 ELSE 0 END,
+        event.created_at DESC,
+        def.name`,
       [identity.userId],
     ).all<BadgeRow>(),
   ]);
@@ -1198,11 +1630,12 @@ async function getWorkspace(
       isDemo: identity.isDemo,
     },
     profile: {
-      xp: Number(profile?.xp ?? 0),
-      weekActions: Number(profile?.weekActions ?? 0),
-      weeklyGoal: Number(profile?.weeklyGoal ?? 4),
+      xp: progression.lifetimeXp,
+      weekActions: progression.weekActions,
+      weeklyGoal: progression.weeklyGoal,
       badges: badgeResult.results,
     },
+    progression,
     catalog: catalogResult.results.map((rule) => ({
       ...rule,
       totalUnits: Number(rule.totalUnits),
@@ -1902,6 +2335,98 @@ async function addActivity(
 
   await database.batch(statements);
   return activityId;
+}
+
+async function claimWeeklyQuest(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  const questKey = textField(payload, "questKey", {
+    required: true,
+    max: 80,
+  })!;
+  const requestedWeekStart = isoDateField(payload, "weekStart", false);
+  const progression = await getProgressionData(database, identity);
+  if (
+    requestedWeekStart &&
+    requestedWeekStart !== progression.week.startsOn
+  ) {
+    throw new RequestError(
+      "That quest week has ended. Refresh to see this week’s quests.",
+      409,
+      "quest_week_changed",
+    );
+  }
+  const quest = progression.quests.find(
+    (candidate) => candidate.key === questKey,
+  );
+  if (!quest) {
+    throw new RequestError("Weekly quest not found.", 404, "quest_not_found");
+  }
+
+  const existing = await query(
+    database,
+    `SELECT id
+     FROM weekly_quest_claims
+     WHERE user_id = ? AND week_start = ? AND quest_key = ?`,
+    [identity.userId, progression.week.startsOn, quest.key],
+  ).first<{ id: string }>();
+  if (existing) return existing.id;
+  if (!quest.completed) {
+    throw new RequestError(
+      "Complete the quest before claiming its XP reward.",
+      409,
+      "quest_incomplete",
+    );
+  }
+
+  const claimId = crypto.randomUUID();
+  const rewardKey = `${identity.userId}:weekly-quest:${progression.week.startsOn}:${quest.key}`;
+  await database.batch([
+    query(
+      database,
+      `INSERT OR IGNORE INTO weekly_quest_claims (
+        id, user_id, week_start, quest_key, progress_at_claim, target,
+        xp_reward
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        claimId,
+        identity.userId,
+        progression.week.startsOn,
+        quest.key,
+        quest.progress,
+        quest.target,
+        quest.rewardXp,
+      ],
+    ),
+    query(
+      database,
+      `INSERT OR IGNORE INTO xp_events (
+        id, user_id, idempotency_key, event_type, points, related_type,
+        related_id
+      ) VALUES (?, ?, ?, 'weekly_quest_claimed', ?, 'weekly_quest', ?)`,
+      [
+        crypto.randomUUID(),
+        identity.userId,
+        rewardKey,
+        quest.rewardXp,
+        `${progression.week.startsOn}:${quest.key}`,
+      ],
+    ),
+  ]);
+
+  const saved = await query(
+    database,
+    `SELECT id
+     FROM weekly_quest_claims
+     WHERE user_id = ? AND week_start = ? AND quest_key = ?`,
+    [identity.userId, progression.week.startsOn, quest.key],
+  ).first<{ id: string }>();
+  if (!saved) {
+    throw new Error("Weekly quest claim was not saved");
+  }
+  return saved.id;
 }
 
 async function toggleTask(
@@ -2695,9 +3220,9 @@ async function updateRequirementApplicability(
     }
   }
 
-  await database.batch(
-    [...normalizedChoices].map(([requirementId, status]) =>
-      query(
+  const statements = [...normalizedChoices].flatMap(
+    ([requirementId, status]) => {
+      const update = query(
         database,
         `UPDATE credential_requirements
          SET applicability_status = ?, is_active = ?
@@ -2716,9 +3241,27 @@ async function updateRequirementApplicability(
           credentialId,
           identity.userId,
         ],
-      ),
-    ),
+      );
+      if (status === "needs_confirmation") return [update];
+      return [
+        update,
+        query(
+          database,
+          `INSERT OR IGNORE INTO xp_events (
+            id, user_id, idempotency_key, event_type, points, related_type,
+            related_id
+          ) VALUES (?, ?, ?, 'requirement_confirmed', 20, 'requirement', ?)`,
+          [
+            crypto.randomUUID(),
+            identity.userId,
+            `${identity.userId}:requirement:${requirementId}:confirmed`,
+            requirementId,
+          ],
+        ),
+      ];
+    },
   );
+  await database.batch(statements);
   return credentialId;
 }
 
@@ -2943,6 +3486,9 @@ export async function POST(request: Request) {
         break;
       case "addActivityAllocation":
         id = await addActivityAllocation(database, identity, body.payload);
+        break;
+      case "claimWeeklyQuest":
+        id = await claimWeeklyQuest(database, identity, body.payload);
         break;
       case "toggleTask":
         id = await toggleTask(database, identity, body.payload);

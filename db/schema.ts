@@ -458,6 +458,33 @@ export const xpEvents = sqliteTable(
   ],
 );
 
+export const weeklyQuestClaims = sqliteTable(
+  "weekly_quest_claims",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    weekStart: text("week_start").notNull(),
+    questKey: text("quest_key").notNull(),
+    progressAtClaim: integer("progress_at_claim").notNull(),
+    target: integer("target").notNull(),
+    xpReward: integer("xp_reward").notNull(),
+    claimedAt: text("claimed_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("weekly_quest_claims_user_week_quest_unique").on(
+      table.userId,
+      table.weekStart,
+      table.questKey,
+    ),
+    index("weekly_quest_claims_user_week_idx").on(
+      table.userId,
+      table.weekStart,
+    ),
+  ],
+);
+
 export const badgeEvents = sqliteTable(
   "badge_events",
   {

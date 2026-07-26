@@ -1,0 +1,16 @@
+License Lantern's on-device certificate reader includes:
+
+- Tesseract.js 7.0.0, Apache License 2.0
+  Copyright contributors to the Tesseract.js project
+  https://github.com/naptha/tesseract.js
+
+- Tesseract.js Core 7.0.0, Apache License 2.0
+  Copyright contributors to the Tesseract.js Core project
+  https://github.com/naptha/tesseract.js-core
+
+- Tesseract English trained data, MIT License
+  Copyright contributors to the Tesseract tessdata projects
+  https://github.com/naptha/tessdata
+
+The bundled Apache License text is in public/ocr/core/LICENSE. Minified-worker
+notices are in public/ocr/worker.min.js.LICENSE.txt.

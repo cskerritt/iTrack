@@ -11,6 +11,7 @@ rewards meaningful record-keeping without punitive daily streaks.
 - cycle dates, renewal deadlines, total-credit requirements, minimums, and caps
 - explicit conditional-rule answers with nested and overlapping requirements
 - fast course, conference, and activity entry
+- private, on-device certificate photo scanning with reviewable field suggestions
 - durable per-user records in Cloudflare D1
 - private certificate/photo/PDF evidence in Cloudflare R2
 - one learning activity reusable across eligible credentials
@@ -20,13 +21,13 @@ rewards meaningful record-keeping without punitive daily streaks.
 - regulator acceptance, read-only cycle history, and clean next-cycle rollover
 - configurable in-app due-date and acceptance check-ins with snooze/dismiss
 - activity CSV export
-- weekly momentum, XP, and milestone badges
+- durable levels, weekly quests, gentle one-week-grace momentum, XP, and badges
 - responsive dashboard and installable web-app manifest
 - server-derived ownership from authenticated workspace identity
 
-The starter catalog contains 15 current, source-linked templates spanning
-nursing, legal, accounting, engineering, project management, psychology, and
-social work credentials. Templates model applicable minimums, nested
+The starter catalog contains 20 current, source-linked templates spanning
+nursing, medicine, legal, accounting, engineering, project management,
+psychology, and social work credentials. Templates model applicable minimums, nested
 subrequirements, overlapping facets, and reporting caps where the source can
 be represented safely. Conditional rules require an explicit answer for each
 cycle. Users can search the catalog or create a custom credential, and the
@@ -79,8 +80,7 @@ Node.js `>=22.13.0` is required.
 
 ## Next product phases
 
-- evidence review and OCR-assisted entry
 - opt-in email and push reminder delivery
 - broader effective-dated profession/state rule research
 - packet-style PDF export and richer archive browsing
-- native mobile packaging and regulator/provider integrations
+- offline capture, native mobile packaging, and regulator/provider integrations

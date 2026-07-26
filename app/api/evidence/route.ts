@@ -264,6 +264,19 @@ export async function POST(request: Request) {
             evidenceId,
           ],
         ),
+        query(
+          database,
+          `INSERT OR IGNORE INTO xp_events (
+            id, user_id, idempotency_key, event_type, points, related_type,
+            related_id
+          ) VALUES (?, ?, ?, 'evidence_attached', 40, 'activity', ?)`,
+          [
+            crypto.randomUUID(),
+            identity.userId,
+            `${identity.userId}:activity:${activityId}:evidence-attached`,
+            activityId,
+          ],
+        ),
       ]);
     } catch (error) {
       await bucket.delete(uploadedObjectKey).catch(() => undefined);
