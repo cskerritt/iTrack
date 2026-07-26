@@ -8,6 +8,17 @@ import {
   findRequirementIncompatibility,
   REQUIREMENT_INCOMPATIBILITIES,
 } from "../../lib/requirementCompatibility";
+import {
+  calendarYearsBefore,
+  portalCarryoverCategoryIds,
+  portalCarryoverLookbackYears,
+} from "../../lib/carryover";
+import { cappedCreditTotals } from "../../lib/cappedCredit";
+import {
+  isFloridaMentalHealthCycle,
+  nextFloridaMentalHealthCycle,
+  oppositeFloridaMentalHealthRuleSetId,
+} from "../../lib/floridaMentalHealth";
 
 export const dynamic = "force-dynamic";
 
@@ -54,7 +65,17 @@ const NJ_LCSW_CREDIT_CATEGORY_GROUP = "New Jersey LCSW credit category";
 const ISC2_AUTOMATIC_RENEWAL_RULE_SET_PREFIX = "isc2-";
 const COMPLIANCE_PERIOD_RULE_SET_PREFIXES = [
   "fl-insurance-producer-",
+  "ny-professional-classroom-teacher-",
+  "ny-professional-esol-bilingual-",
+  "nj-employed-teacher-annual-pd-",
+  "pa-professional-educator-act-48-",
 ] as const;
+const NREMT_RULE_SET_PREFIX = "nremt-";
+const TEXAS_LPC_RULE_SET_ID = "tx-lpc-standard-renewal-2026-v1";
+const FLORIDA_INSURANCE_RULE_SET_PREFIX = "fl-insurance-producer-";
+const FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX = "fl-lcsw-lmft-lmhc-";
+const FLORIDA_MENTAL_HEALTH_CREDIT_BUCKET_GROUP =
+  "Florida mental-health CE credit bucket";
 const CARRYOVER_REVIEW_TASK_TITLES = new Map([
   [
     CFP_2027_RULE_SET_ID,
@@ -259,6 +280,346 @@ function requirementIdsField(payload: JsonRecord) {
   return ids;
 }
 
+type RequirementMatchInput = {
+  requirementId: string;
+  matchedUnits: number;
+};
+
+type NremtRequirementMetadata = {
+  id: string;
+  name: string;
+  ruleCategoryId: string | null;
+  relation: RequirementRelation;
+  parentRequirementId: string | null;
+  isActive: number;
+  applicabilityStatus: ApplicabilityStatus;
+  exclusiveGroup: string | null;
+};
+
+type NremtAllocationIssue = {
+  code: string;
+  message: string;
+  unresolvedExclusiveGroups: string[];
+};
+
+function requirementMatchesField(
+  payload: JsonRecord,
+  options: { required?: boolean } = {},
+) {
+  const raw = payload.requirementMatches;
+  if (raw === undefined || raw === null) {
+    if (options.required) {
+      throw new RequestError(
+        "requirementMatches is required for National Registry credit.",
+        409,
+        "nremt_requirement_amounts_required",
+      );
+    }
+    return [] as RequirementMatchInput[];
+  }
+  if (!Array.isArray(raw) || raw.length > 30) {
+    throw new RequestError(
+      "requirementMatches must be an array of up to 30 requirement amounts",
+    );
+  }
+  if (options.required && raw.length === 0) {
+    throw new RequestError(
+      "Enter the National Registry component and topic credit amounts.",
+      409,
+      "nremt_requirement_amounts_required",
+    );
+  }
+  const matches = raw.map((value, index) => {
+    if (!isRecord(value)) {
+      throw new RequestError(
+        `requirementMatches[${index}] must be an object`,
+      );
+    }
+    return {
+      requirementId: textField(value, "requirementId", {
+        required: true,
+        max: 160,
+      })!,
+      matchedUnits: positiveNumber(value, "matchedUnits", {
+        required: true,
+      })!,
+    };
+  });
+  if (
+    new Set(matches.map((match) => match.requirementId)).size !==
+    matches.length
+  ) {
+    throw new RequestError(
+      "requirementMatches cannot contain duplicate requirementId values",
+    );
+  }
+  return matches;
+}
+
+function unitsEqual(left: number, right: number) {
+  return Math.abs(left - right) <= 0.001;
+}
+
+function nremtComponentRole(
+  requirement: NremtRequirementMetadata,
+): "national" | "local" | "individual" | null {
+  if (
+    requirement.relation !== "independent" ||
+    !requirement.exclusiveGroup?.endsWith("-component") ||
+    !requirement.ruleCategoryId
+  ) {
+    return null;
+  }
+  if (requirement.ruleCategoryId.endsWith("-national")) return "national";
+  if (requirement.ruleCategoryId.endsWith("-local")) return "local";
+  if (requirement.ruleCategoryId.endsWith("-individual")) return "individual";
+  return null;
+}
+
+function nremtAllocationIssue(
+  requirementsById: ReadonlyMap<string, NremtRequirementMetadata>,
+  matches: readonly RequirementMatchInput[],
+  allocatedUnits: number,
+): NremtAllocationIssue | null {
+  const activeRequirements = [...requirementsById.values()].filter(
+    (requirement) =>
+      Boolean(requirement.isActive) &&
+      requirement.applicabilityStatus === "applies",
+  );
+  const componentRequirements = activeRequirements
+    .map((requirement) => ({
+      requirement,
+      role: nremtComponentRole(requirement),
+    }))
+    .filter(
+      (
+        item,
+      ): item is {
+        requirement: NremtRequirementMetadata;
+        role: "national" | "local" | "individual";
+      } => item.role !== null,
+    );
+  const componentsByRole = new Map<
+    "national" | "local" | "individual",
+    NremtRequirementMetadata
+  >();
+  for (const { requirement, role } of componentRequirements) {
+    componentsByRole.set(role, requirement);
+  }
+  const componentGroup =
+    componentsByRole.get("national")?.exclusiveGroup ??
+    componentsByRole.get("local")?.exclusiveGroup ??
+    componentsByRole.get("individual")?.exclusiveGroup ??
+    "National Registry component";
+  const unresolvedExclusiveGroups = [componentGroup];
+  const componentGroups = new Set(
+    componentRequirements.map(
+      ({ requirement }) => requirement.exclusiveGroup,
+    ),
+  );
+  if (
+    componentRequirements.length !== 3 ||
+    componentsByRole.size !== 3 ||
+    componentGroups.size !== 1
+  ) {
+    return {
+      code: "nremt_current_template_required",
+      message:
+        "This credential does not contain the current National, Local/State, and Individual component structure. Create or roll into the current National Registry template.",
+      unresolvedExclusiveGroups,
+    };
+  }
+  const nationalRequirement = componentsByRole.get("national")!;
+  const topicRequirements = activeRequirements.filter(
+    (requirement) =>
+      requirement.relation === "nested" &&
+      requirement.parentRequirementId === nationalRequirement.id,
+  );
+  const requiredTopicSuffixes = [
+    "-national-airway",
+    "-national-cardiology",
+    "-national-trauma",
+    "-national-medical",
+    "-national-operations",
+  ];
+  const topicSuffixes = new Set(
+    topicRequirements.flatMap((requirement) => {
+      const suffix = requiredTopicSuffixes.find((candidate) =>
+        requirement.ruleCategoryId?.endsWith(candidate),
+      );
+      return suffix ? [suffix] : [];
+    }),
+  );
+  const pediatricRequirements = activeRequirements.filter(
+    (requirement) =>
+      requirement.relation === "overlapping" &&
+      requirement.ruleCategoryId?.endsWith("-national-pediatric"),
+  );
+  if (
+    topicRequirements.length !== requiredTopicSuffixes.length ||
+    topicSuffixes.size !== requiredTopicSuffixes.length ||
+    pediatricRequirements.length !== 1
+  ) {
+    return {
+      code: "nremt_current_template_required",
+      message:
+        "This credential does not contain the current five National topic minima and overlapping pediatric minimum. Create or roll into the current National Registry template.",
+      unresolvedExclusiveGroups,
+    };
+  }
+
+  const topicIds = new Set(topicRequirements.map((requirement) => requirement.id));
+  const pediatricId = pediatricRequirements[0].id;
+  const componentAmounts = {
+    national: 0,
+    local: 0,
+    individual: 0,
+  };
+  let topicTotal = 0;
+  let pediatricAmount = 0;
+  for (const match of matches) {
+    const requirement = requirementsById.get(match.requirementId);
+    if (
+      !requirement ||
+      !Boolean(requirement.isActive) ||
+      requirement.applicabilityStatus !== "applies" ||
+      !Number.isFinite(match.matchedUnits) ||
+      match.matchedUnits <= 0 ||
+      match.matchedUnits > allocatedUnits + 0.001
+    ) {
+      return {
+        code: "nremt_invalid_requirement_amount",
+        message:
+          "Each National Registry requirement amount must be positive, within the allocation, and belong to an active requirement on this credential.",
+        unresolvedExclusiveGroups,
+      };
+    }
+    const componentRole = nremtComponentRole(requirement);
+    if (componentRole) {
+      componentAmounts[componentRole] += match.matchedUnits;
+    } else if (topicIds.has(requirement.id)) {
+      topicTotal += match.matchedUnits;
+    } else if (requirement.id === pediatricId) {
+      pediatricAmount += match.matchedUnits;
+    } else {
+      return {
+        code: "nremt_invalid_requirement_amount",
+        message:
+          "Use only the current National Registry component, National topic, and pediatric requirements for this allocation.",
+        unresolvedExclusiveGroups,
+      };
+    }
+  }
+
+  const componentTotal =
+    componentAmounts.national +
+    componentAmounts.local +
+    componentAmounts.individual;
+  if (!unitsEqual(componentTotal, allocatedUnits)) {
+    return {
+      code: "nremt_component_amount_mismatch",
+      message:
+        "National, Local/State, and Individual amounts must add up exactly to the allocated credit.",
+      unresolvedExclusiveGroups,
+    };
+  }
+  if (!unitsEqual(topicTotal, componentAmounts.national)) {
+    return {
+      code: "nremt_national_topic_amount_mismatch",
+      message:
+        "National topic amounts must add up exactly to the National Component amount.",
+      unresolvedExclusiveGroups,
+    };
+  }
+  if (pediatricAmount > componentAmounts.national + 0.001) {
+    return {
+      code: "nremt_pediatric_amount_exceeds_national",
+      message:
+        "Overlapping pediatric credit cannot exceed the National Component amount for this allocation.",
+      unresolvedExclusiveGroups,
+    };
+  }
+  return null;
+}
+
+async function validateNremtRequirementMatches(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+  matches: readonly RequirementMatchInput[],
+  allocatedUnits: number,
+) {
+  const requirements = await query(
+    database,
+    `SELECT
+      requirement.id,
+      requirement.name,
+      requirement.rule_category_id AS ruleCategoryId,
+      requirement.relation,
+      requirement.parent_requirement_id AS parentRequirementId,
+      requirement.is_active AS isActive,
+      requirement.applicability_status AS applicabilityStatus,
+      requirement.exclusive_group AS exclusiveGroup
+    FROM credential_requirements requirement
+    JOIN credentials credential ON credential.id = requirement.credential_id
+    WHERE requirement.credential_id = ?
+      AND credential.user_id = ?`,
+    [credentialId, identity.userId],
+  ).all<NremtRequirementMetadata>();
+  const requirementsById = new Map(
+    requirements.results.map((requirement) => [requirement.id, requirement]),
+  );
+  const issue = nremtAllocationIssue(
+    requirementsById,
+    matches,
+    allocatedUnits,
+  );
+  if (issue) {
+    throw new RequestError(issue.message, 409, issue.code);
+  }
+  return matches.map((match) => ({
+    ...requirementsById.get(match.requirementId)!,
+    matchedUnits: match.matchedUnits,
+  }));
+}
+
+function assertNremtAcceptedEducation(
+  payload: JsonRecord,
+  provider: string,
+) {
+  if (!provider.trim()) {
+    throw new RequestError(
+      "Provider is required for National Registry education.",
+      409,
+      "nremt_provider_required",
+    );
+  }
+  if (payload.acceptedEducationAttested !== true) {
+    throw new RequestError(
+      "Confirm that the provider and course are accepted by the National Registry and that every amount is post-cap credit shown or accepted in the dashboard.",
+      409,
+      "nremt_accepted_education_attestation_required",
+    );
+  }
+}
+
+async function isOwnedNremtCredential(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+) {
+  const row = await query(
+    database,
+    `SELECT 1 AS isNremt
+     FROM credentials
+     WHERE id = ?
+       AND user_id = ?
+       AND rule_set_id LIKE 'nremt-%'`,
+    [credentialId, identity.userId],
+  ).first<{ isNremt: number }>();
+  return Boolean(row?.isNremt);
+}
+
 function isoDateField(payload: JsonRecord, key: string, required = true) {
   const value = textField(payload, key, { required, max: 10 });
   if (!value) return null;
@@ -296,6 +657,138 @@ function daysAfter(isoDate: string, days: number) {
   return daysBefore(isoDate, -days);
 }
 
+function yearsAfter(isoDate: string, years: number) {
+  const year = Number(isoDate.slice(0, 4)) + years;
+  return `${String(year).padStart(4, "0")}${isoDate.slice(4)}`;
+}
+
+function isNremtRuleSet(ruleSetId: string | null) {
+  return ruleSetId?.startsWith(NREMT_RULE_SET_PREFIX) ?? false;
+}
+
+function isNremtEmrRuleSet(ruleSetId: string | null) {
+  return ruleSetId?.startsWith("nremt-emr-") ?? false;
+}
+
+function nremtMinimumDeadline(ruleSetId: string | null) {
+  return isNremtEmrRuleSet(ruleSetId) ? "2026-09-30" : "2026-03-31";
+}
+
+function nremtActiveVerifier(ruleSetId: string | null) {
+  return isNremtEmrRuleSet(ruleSetId) ||
+    ruleSetId?.startsWith("nremt-emt-")
+    ? "Training Officer"
+    : "Medical Director";
+}
+
+function assertNremtCredentialDates(
+  ruleSetId: string,
+  deadline: string,
+  payload: JsonRecord,
+) {
+  const isEmr = isNremtEmrRuleSet(ruleSetId);
+  const requiredMonthDay = isEmr ? "09-30" : "03-31";
+  const minimumDeadline = nremtMinimumDeadline(ruleSetId);
+  if (deadline.slice(5) !== requiredMonthDay) {
+    throw new RequestError(
+      isEmr
+        ? "National Registry EMR expiration must be September 30."
+        : "National Registry EMT, AEMT, and Paramedic expiration must be March 31.",
+      409,
+      "nremt_fixed_deadline_required",
+    );
+  }
+  if (deadline < minimumDeadline) {
+    throw new RequestError(
+      isEmr
+        ? "The 2025 EMR NCCP template applies to September 30, 2026 or later expirations. Use the model assigned in the National Registry dashboard."
+        : "The 2025 EMT, AEMT, and Paramedic NCCP templates apply to March 31, 2026 or later expirations. Use the model assigned in the National Registry dashboard.",
+      409,
+      "nremt_template_not_applicable",
+    );
+  }
+  if (payload.officialDatesAttested !== true) {
+    throw new RequestError(
+      "Confirm that the National Registry dashboard assigns this 2025 NCCP model and shows the entered cycle start and fixed expiration date.",
+      409,
+      "nremt_model_dates_attestation_required",
+    );
+  }
+}
+
+function assertNremtSubmissionWindow(
+  ruleSetId: string,
+  deadline: string,
+  submissionDate: string,
+  payload: JsonRecord,
+) {
+  const deadlineYear = Number(deadline.slice(0, 4));
+  const isEmr = isNremtEmrRuleSet(ruleSetId);
+  const expectedMonthDay = isEmr ? "09-30" : "03-31";
+  const minimumDeadline = nremtMinimumDeadline(ruleSetId);
+  if (
+    deadline.slice(5) !== expectedMonthDay ||
+    deadline < minimumDeadline
+  ) {
+    throw new RequestError(
+      "This credential does not use an applicable fixed National Registry expiration. Verify the assigned dashboard model and create a current-template credential.",
+      409,
+      "nremt_template_not_applicable",
+    );
+  }
+  const windowStart = isEmr
+    ? `${deadlineYear}-04-01`
+    : `${deadlineYear - 1}-10-01`;
+  const reinstatementEnd = isEmr
+    ? `${deadlineYear}-10-31`
+    : `${deadlineYear}-04-30`;
+  if (submissionDate < windowStart) {
+    throw new RequestError(
+      `The National Registry continuing-education application window opens ${windowStart}.`,
+      409,
+      "nremt_submission_window_not_open",
+    );
+  }
+  if (submissionDate > reinstatementEnd) {
+    throw new RequestError(
+      `The National Registry late reinstatement window closed ${reinstatementEnd}.`,
+      409,
+      "nremt_reinstatement_window_closed",
+    );
+  }
+  if (
+    submissionDate > deadline &&
+    payload.lateReinstatementAttested !== true
+  ) {
+    throw new RequestError(
+      `This is a late reinstatement application. Confirm that every continuing-education credit was completed by ${deadline}; education completed after expiration is not accepted, and reinstatement is not guaranteed.`,
+      409,
+      "nremt_late_reinstatement_attestation_required",
+    );
+  }
+}
+
+function assertFloridaMentalHealthCredentialDates(
+  cycleStart: string,
+  deadline: string,
+  payload: JsonRecord,
+) {
+  if (!isFloridaMentalHealthCycle(cycleStart, deadline)) {
+    throw new RequestError(
+      "A standard Florida mental-health biennium must run from April 1 of an odd year through March 31 two years later. Use the exact CE Broker period, or create a custom plan for a nonstandard period.",
+      409,
+      "florida_mental_health_cycle_invalid",
+    );
+  }
+  if (payload.officialDatesAttested !== true) {
+    throw new RequestError(
+      "Confirm that CE Broker shows the selected alternating phase and the entered biennium dates.",
+      409,
+      "florida_mental_health_dates_attestation_required",
+    );
+  }
+}
+
 function isCompliancePeriodRuleSet(ruleSetId: string | null) {
   return Boolean(
     ruleSetId &&
@@ -307,6 +800,16 @@ function isCompliancePeriodRuleSet(ruleSetId: string | null) {
 
 function isIsc2AutomaticRenewalRuleSet(ruleSetId: string | null) {
   return ruleSetId?.startsWith(ISC2_AUTOMATIC_RENEWAL_RULE_SET_PREFIX) ?? false;
+}
+
+function nextTemplateFamily(ruleSetId: string | null) {
+  if (ruleSetId?.startsWith(FLORIDA_INSURANCE_RULE_SET_PREFIX)) {
+    return "florida_insurance" as const;
+  }
+  if (ruleSetId?.startsWith(FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX)) {
+    return "florida_mental_health" as const;
+  }
+  return null;
 }
 
 function renewalTaskSpecs(
@@ -330,6 +833,256 @@ function renewalTaskSpecs(
       },
       {
         title: "Save an attested ISC2 requirements checkpoint",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (ruleSetId?.startsWith(NREMT_RULE_SET_PREFIX)) {
+    const verifier = nremtActiveVerifier(ruleSetId);
+    const submissionWindow = isNremtEmrRuleSet(ruleSetId)
+      ? "April 1 through September 30; late reinstatement is October 1-31 only when all education was complete by September 30"
+      : "October 1 through March 31; late reinstatement is April 1-30 only when all education was complete by March 31";
+    return [
+      {
+        title:
+          reviewTitle ??
+          `Confirm dashboard dates, the assigned NCCP model, Local/State topics, and active ${verifier} verification or inactive status`,
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title:
+          "Classify accepted credits as National, Local/State, or Individual; verify post-cap amounts and split National credit across topics, including pediatric overlap",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title:
+          `Submit in the National Registry CE window (${submissionWindow}) and save dashboard approval`,
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (ruleSetId === TEXAS_LPC_RULE_SET_ID) {
+    return [
+      {
+        title:
+          reviewTitle ??
+          "Confirm the official license period, supervisor status, and any CE Broker-supported carryover",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title:
+          "Complete the required CE and pass the Texas jurisprudence examination",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title: "Submit the LPC renewal and save CE Broker confirmation",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (ruleSetId === "ca-child-development-permit-2026-v1") {
+    return [
+      {
+        title:
+          "Confirm CTC validity dates, permit level, and the professional-growth plan with your advisor",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title:
+          "Complete and document advisor-approved professional growth",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title:
+          "Submit the permit renewal and self-verification, then save the receipt",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (ruleSetId === "tx-standard-classroom-teacher-2026-v1") {
+    return [
+      {
+        title:
+          "Confirm ECOS dates, approved providers, and required disabilities and dyslexia training",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title:
+          "Complete approved CPE and classify every capped activity type",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title: "Renew and attest in TEAL/ECOS, then save confirmation",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (
+    ruleSetId ===
+      "ny-professional-classroom-teacher-standard-ctle-2026-v1" ||
+    ruleSetId === "ny-professional-esol-bilingual-ctle-2026-v1"
+  ) {
+    return [
+      {
+        title:
+          "Confirm TEACH registration dates, practiced years, and any language-acquisition waiver",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title:
+          "Complete sponsor-approved CTLE and the applicable language-acquisition hours",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title:
+          "Attest and re-register in TEACH, then save the official CTLE record",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (ruleSetId === "ny-lmsw-lcsw-standard-registration-2026-v1") {
+    return [
+      {
+        title:
+          "Confirm NYSED registration dates, initial-period status, and child-abuse training",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title:
+          "Complete the updated NYSED child-abuse curriculum and 15-minute addendum by November 17, 2026 if not already documented",
+        kind: "progress",
+        dueDate:
+          deadline < "2026-11-17" ? deadline : "2026-11-17",
+      },
+      {
+        title:
+          "Complete approved CE, including boundaries, and classify self-study",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title: "Re-register with NYSED and save the official confirmation",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (ruleSetId === "pa-lpc-standard-renewal-2026-v1") {
+    return [
+      {
+        title:
+          "Confirm the PALS biennium, full-cycle status, and electronically reported Act 31 training",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title:
+          "Complete approved CE, including ethics, Act 31 child-abuse training, and suicide prevention",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title:
+          "Renew in PALS and save the receipt plus the Act 31 provider record",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (ruleSetId?.startsWith(FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX)) {
+    return [
+      {
+        title:
+          "Confirm the CE Broker phase, every-third-biennium topics, and supervisor status",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title:
+          "Complete and report the three separate Florida credit buckets",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title: "Submit the Florida renewal and save CE Broker confirmation",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (ruleSetId === "nj-employed-teacher-annual-pd-2026-v1") {
+    return [
+      {
+        title:
+          "Confirm the annual PDP, supervisor-approved scope, and role-specific rolling duties",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title: "Complete and document supervisor-approved PDP learning",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title:
+          "Track role-specific foundational-literacy and other rolling New Jersey professional-development duties",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title:
+          "Verify annual PDP completion with the employer and save the record",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  if (ruleSetId === "pa-professional-educator-act-48-2026-v1") {
+    return [
+      {
+        title:
+          "Confirm the PERMS period, posted carryover, and any Act 126 duty",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title: "Complete PDE-approved Act 48 learning and verify PERMS posts it",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title:
+          "Review and maintain the employer’s separate annual Act 55 school-safety records; this one reminder does not certify each covered school year",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title:
+          "Before the 2028–29 school year, confirm Act 47 coverage and the official local start date, then complete the PDE-approved structured-literacy program if required",
+        kind: "review",
+        dueDate:
+          deadline < "2028-07-01" ? deadline : "2028-07-01",
+      },
+      {
+        title:
+          "Verify active Act 48 status in PERMS and save the official record",
         kind: "submission",
         dueDate: deadline,
       },
@@ -433,6 +1186,7 @@ const PROGRESSION_ACTION_TYPES = [
   "task_completed",
   "renewal_submitted",
   "renewal_checkpoint_recorded",
+  "compliance_checkpoint_recorded",
   "renewal_accepted",
   "compliance_period_completed",
 ] as const;
@@ -1183,27 +1937,47 @@ async function validateRequirementTags(
         ON credential.id = requirement.credential_id
       WHERE requirement.credential_id = ?
         AND credential.user_id = ?
-        AND requirement.kind = 'maximum'
         AND requirement.is_active = 1
         AND requirement.applicability_status = 'applies'
         AND requirement.exclusive_group IS NOT NULL
         AND (
-          credential.status = 'active'
-          OR credential.rule_set_id = ?
-          OR EXISTS (
-            SELECT 1
-            FROM credential_requirements complete_group
-            WHERE complete_group.credential_id =
-              requirement.credential_id
-              AND complete_group.kind = 'informational'
-              AND complete_group.is_active = 1
-              AND complete_group.applicability_status = 'applies'
-              AND complete_group.exclusive_group =
-                requirement.exclusive_group
+          (
+            requirement.kind = 'maximum'
+            AND (
+              credential.status = 'active'
+              OR credential.rule_set_id = ?
+              OR EXISTS (
+                SELECT 1
+                FROM credential_requirements complete_group
+                WHERE complete_group.credential_id =
+                  requirement.credential_id
+                  AND complete_group.kind = 'informational'
+                  AND complete_group.is_active = 1
+                  AND complete_group.applicability_status = 'applies'
+                  AND complete_group.exclusive_group =
+                    requirement.exclusive_group
+              )
+            )
+          )
+          OR (
+            credential.rule_set_id LIKE 'nremt-%'
+            AND credential.status IN ('active', 'submitted')
+            AND requirement.kind = 'minimum'
+          )
+          OR (
+            credential.rule_set_id LIKE 'fl-lcsw-lmft-lmhc-%'
+            AND credential.status IN ('active', 'submitted')
+            AND requirement.kind = 'minimum'
+            AND requirement.exclusive_group = ?
           )
         )
       ORDER BY requirement.exclusive_group`,
-      [credentialId, identity.userId, CFP_2027_RULE_SET_ID],
+      [
+        credentialId,
+        identity.userId,
+        CFP_2027_RULE_SET_ID,
+        FLORIDA_MENTAL_HEALTH_CREDIT_BUCKET_GROUP,
+      ],
     ).all<RequiredMaximumGroupRow>();
   const credential = await query(
     database,
@@ -1230,6 +2004,22 @@ async function validateRequirementTags(
     const requiredMaximumGroups = await getRequiredMaximumGroups();
     const missingGroup = requiredMaximumGroups.results[0]?.exclusiveGroup;
     if (missingGroup) {
+      if (credential?.ruleSetId?.startsWith(NREMT_RULE_SET_PREFIX)) {
+        throw new RequestError(
+          "Classify every National Registry credit as National, Local/State, or Individual.",
+          409,
+          "nremt_component_required",
+        );
+      }
+      if (
+        missingGroup === FLORIDA_MENTAL_HEALTH_CREDIT_BUCKET_GROUP
+      ) {
+        throw new RequestError(
+          "Choose exactly one Florida credit bucket—General CE, Prevention of Medical Errors, or the current Ethics and Boundaries or Telehealth phase—for every credited time block.",
+          409,
+          "florida_mental_health_credit_bucket_required",
+        );
+      }
       throw new RequestError(
         `Choose one ${missingGroup} option for this activity so capped credit can be counted safely.`,
         409,
@@ -1344,6 +2134,22 @@ async function validateRequirementTags(
     (group) => !selectedExclusiveGroups.has(group.exclusiveGroup),
   )?.exclusiveGroup;
   if (missingGroup) {
+    if (credential?.ruleSetId?.startsWith(NREMT_RULE_SET_PREFIX)) {
+      throw new RequestError(
+        "Classify every National Registry credit as National, Local/State, or Individual.",
+        409,
+        "nremt_component_required",
+      );
+    }
+    if (
+      missingGroup === FLORIDA_MENTAL_HEALTH_CREDIT_BUCKET_GROUP
+    ) {
+      throw new RequestError(
+        "Choose exactly one Florida credit bucket—General CE, Prevention of Medical Errors, or the current Ethics and Boundaries or Telehealth phase—for every credited time block.",
+        409,
+        "florida_mental_health_credit_bucket_required",
+      );
+    }
     throw new RequestError(
       `Choose one ${missingGroup} option for this activity so capped credit can be counted safely.`,
       409,
@@ -1353,12 +2159,243 @@ async function validateRequirementTags(
   return selectedRequirements;
 }
 
+function assertActivityDateAllowedForRequirements(
+  completionDate: string,
+  cycleStart: string,
+  deadline: string,
+  selectedRequirements: Array<{ ruleCategoryId: string | null }>,
+  options: {
+    portalCarryoverAttested: boolean;
+    evidenceStatus: string;
+  },
+) {
+  if (completionDate > deadline) {
+    throw new RequestError(
+      `The activity date must not be after the target renewal deadline (${deadline}).`,
+      409,
+      "activity_outside_cycle",
+    );
+  }
+  const policies = selectedRequirements.map((requirement) =>
+    portalCarryoverLookbackYears(requirement.ruleCategoryId),
+  );
+  const carryoverSelectionCount = policies.filter(
+    (lookbackYears) => lookbackYears !== null,
+  ).length;
+  if (
+    carryoverSelectionCount > 0 &&
+    carryoverSelectionCount !== selectedRequirements.length
+  ) {
+    throw new RequestError(
+      "A portal-confirmed carryover entry cannot be mixed with current-period requirement tags.",
+      409,
+      "mixed_carryover_requirement_tags",
+    );
+  }
+  if (carryoverSelectionCount === 0) {
+    if (completionDate >= cycleStart) return;
+    throw new RequestError(
+      `The activity date must fall within the target renewal cycle (${cycleStart} through ${deadline}). A prior-period date is allowed only when every selected requirement is a portal-confirmed carryover category.`,
+      409,
+      "activity_outside_cycle",
+    );
+  }
+  if (completionDate >= cycleStart) {
+    throw new RequestError(
+      "Portal-confirmed carryover must use the actual eligible prior-period completion date, not a date inside the current cycle.",
+      409,
+      "carryover_requires_prior_period_date",
+    );
+  }
+  const earliestEligibleDate = policies.reduce(
+    (latest, lookbackYears) => {
+      const candidate = calendarYearsBefore(
+        cycleStart,
+        lookbackYears!,
+      );
+      return candidate > latest ? candidate : latest;
+    },
+    "0000-01-01",
+  );
+  if (completionDate < earliestEligibleDate) {
+    throw new RequestError(
+      `This portal-confirmed carryover must have been earned between ${earliestEligibleDate} and ${daysBefore(cycleStart, 1)}. Use the actual prior-period date and only the amount posted for this consecutive cycle.`,
+      409,
+      "carryover_outside_eligible_lookback",
+    );
+  }
+  if (!options.portalCarryoverAttested) {
+    throw new RequestError(
+      "Confirm that the issuing portal posted this carryover into the current consecutive period before saving the prior-period activity.",
+      409,
+      "portal_carryover_attestation_required",
+    );
+  }
+  if (options.evidenceStatus === "not_required") {
+    throw new RequestError(
+      "Portal-confirmed carryover requires a portal reference or uploaded proof before the cycle can be completed.",
+      409,
+      "portal_carryover_evidence_required",
+    );
+  }
+}
+
+async function assertPortalCarryoverEvidenceReady(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+) {
+  const carryoverCategoryIds = portalCarryoverCategoryIds();
+  const placeholders = carryoverCategoryIds.map(() => "?").join(", ");
+  const missingEvidence = await query(
+    database,
+    `SELECT activity.id
+     FROM activity_allocations allocation
+     JOIN activities activity ON activity.id = allocation.activity_id
+     JOIN credentials credential ON credential.id = allocation.credential_id
+     JOIN activity_requirement_matches match
+       ON match.allocation_id = allocation.id
+       AND match.user_id = activity.user_id
+     JOIN credential_requirements requirement
+       ON requirement.id = match.requirement_id
+       AND requirement.credential_id = credential.id
+     WHERE allocation.credential_id = ?
+       AND activity.user_id = ?
+       AND credential.user_id = activity.user_id
+       AND activity.completion_date < credential.cycle_start
+       AND requirement.rule_category_id IN (${placeholders})
+       AND COALESCE(TRIM(activity.evidence_reference), '') = ''
+       AND NOT EXISTS (
+         SELECT 1
+         FROM evidence_files evidence
+         WHERE evidence.activity_id = activity.id
+           AND evidence.user_id = activity.user_id
+           AND evidence.status = 'ready'
+       )
+     LIMIT 1`,
+    [
+      credentialId,
+      identity.userId,
+      ...carryoverCategoryIds,
+    ],
+  ).first<{ id: string }>();
+  if (missingEvidence) {
+    throw new RequestError(
+      "Add the issuing portal reference or upload the portal record for every prior-period carryover activity before completing this cycle.",
+      409,
+      "portal_carryover_evidence_required",
+    );
+  }
+}
+
+async function findUnresolvedNremtClassification(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+) {
+  const [requirementResult, allocationResult, matchResult] =
+    await Promise.all([
+      query(
+        database,
+        `SELECT
+          requirement.id,
+          requirement.name,
+          requirement.rule_category_id AS ruleCategoryId,
+          requirement.relation,
+          requirement.parent_requirement_id AS parentRequirementId,
+          requirement.is_active AS isActive,
+          requirement.applicability_status AS applicabilityStatus,
+          requirement.exclusive_group AS exclusiveGroup
+        FROM credential_requirements requirement
+        JOIN credentials credential
+          ON credential.id = requirement.credential_id
+        WHERE requirement.credential_id = ?
+          AND credential.user_id = ?`,
+        [credentialId, identity.userId],
+      ).all<NremtRequirementMetadata>(),
+      query(
+        database,
+        `SELECT
+           allocation.id,
+           allocation.allocated_units AS allocatedUnits
+         FROM activity_allocations allocation
+         JOIN activities activity ON activity.id = allocation.activity_id
+         JOIN credentials credential
+           ON credential.id = allocation.credential_id
+         WHERE allocation.credential_id = ?
+           AND activity.user_id = ?
+           AND credential.user_id = ?`,
+        [credentialId, identity.userId, identity.userId],
+      ).all<{ id: string; allocatedUnits: number }>(),
+      query(
+        database,
+        `SELECT
+          match.allocation_id AS allocationId,
+          match.requirement_id AS requirementId,
+          match.matched_units AS matchedUnits
+         FROM activity_requirement_matches match
+         JOIN activity_allocations allocation
+           ON allocation.id = match.allocation_id
+         JOIN activities activity ON activity.id = allocation.activity_id
+         JOIN credentials credential
+           ON credential.id = allocation.credential_id
+         WHERE allocation.credential_id = ?
+           AND match.user_id = ?
+           AND activity.user_id = match.user_id
+           AND credential.user_id = match.user_id`,
+        [credentialId, identity.userId],
+      ).all<{
+        allocationId: string;
+        requirementId: string;
+        matchedUnits: number;
+      }>(),
+    ]);
+  const requirementsById = new Map(
+    requirementResult.results.map((requirement) => [
+      requirement.id,
+      requirement,
+    ]),
+  );
+  const matchesByAllocation = new Map<string, RequirementMatchInput[]>();
+  for (const match of matchResult.results) {
+    const matches = matchesByAllocation.get(match.allocationId) ?? [];
+    matches.push({
+      requirementId: match.requirementId,
+      matchedUnits: Number(match.matchedUnits),
+    });
+    matchesByAllocation.set(match.allocationId, matches);
+  }
+  for (const allocation of allocationResult.results) {
+    const matches = matchesByAllocation.get(allocation.id) ?? [];
+    const issue = nremtAllocationIssue(
+      requirementsById,
+      matches,
+      Number(allocation.allocatedUnits),
+    );
+    if (issue) {
+      return {
+        allocationId: allocation.id,
+        unresolvedExclusiveGroups: issue.unresolvedExclusiveGroups,
+        classificationMessage: issue.message,
+      };
+    }
+  }
+  return null;
+}
+
 async function findUnresolvedCredentialClassification(
   database: D1Database,
   identity: RequestIdentity,
   credentialId: string,
   ruleSetId: string | null,
 ) {
+  if (isNremtRuleSet(ruleSetId)) {
+    return findUnresolvedNremtClassification(
+      database,
+      identity,
+      credentialId,
+    );
+  }
   type ClassificationRequirementRow = {
     id: string;
     name: string;
@@ -1455,6 +2492,13 @@ async function findUnresolvedCredentialClassification(
   if (ruleSetId === NJ_LCSW_RULE_SET_ID) {
     requiredGroups.add(NJ_LCSW_CREDIT_CATEGORY_GROUP);
   }
+  if (
+    ruleSetId?.startsWith(FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX)
+  ) {
+    requiredGroups.add(
+      FLORIDA_MENTAL_HEALTH_CREDIT_BUCKET_GROUP,
+    );
+  }
   const matchesByAllocation = new Map<
     string,
     ClassificationRequirementRow[]
@@ -1490,6 +2534,154 @@ async function findUnresolvedCredentialClassification(
     }
   }
   return null;
+}
+
+async function assertNremtSubmissionComplete(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+  ruleSetId: string,
+  deadline: string,
+  submissionDate: string,
+) {
+  const unresolvedClassification =
+    await findUnresolvedCredentialClassification(
+      database,
+      identity,
+      credentialId,
+      ruleSetId,
+    );
+  if (unresolvedClassification) {
+    throw new RequestError(
+      unresolvedClassification.classificationMessage ??
+        "Every National Registry allocation must have complete component and topic amounts.",
+      409,
+      "nremt_classification_incomplete",
+    );
+  }
+  const [total, requirementProgress] = await Promise.all([
+    query(
+      database,
+      `SELECT
+        credential.total_required AS totalRequired,
+        COALESCE(SUM(allocation.allocated_units), 0) AS totalEarned,
+        MAX(activity.completion_date) AS latestCompletionDate,
+        COALESCE(
+          SUM(
+            CASE
+              WHEN activity.completion_date > credential.deadline THEN 1
+              ELSE 0
+            END
+          ),
+          0
+        ) AS postDeadlineActivityCount
+      FROM credentials credential
+      LEFT JOIN activity_allocations allocation
+        ON allocation.credential_id = credential.id
+      LEFT JOIN activities activity
+        ON activity.id = allocation.activity_id
+        AND activity.user_id = credential.user_id
+      WHERE credential.id = ? AND credential.user_id = ?
+      GROUP BY credential.id`,
+      [credentialId, identity.userId],
+    ).first<{
+      totalRequired: number;
+      totalEarned: number;
+      latestCompletionDate: string | null;
+      postDeadlineActivityCount: number;
+    }>(),
+    query(
+      database,
+      `SELECT
+        requirement.name,
+        requirement.required_units AS requiredUnits,
+        COALESCE(
+          SUM(
+            MIN(
+              match.matched_units,
+              allocation.allocated_units,
+              activity.total_units
+            )
+          ),
+          0
+        ) AS earnedUnits
+      FROM credential_requirements requirement
+      JOIN credentials credential
+        ON credential.id = requirement.credential_id
+      LEFT JOIN activity_requirement_matches match
+        ON match.requirement_id = requirement.id
+        AND match.user_id = credential.user_id
+      LEFT JOIN activity_allocations allocation
+        ON allocation.id = match.allocation_id
+        AND allocation.credential_id = credential.id
+      LEFT JOIN activities activity
+        ON activity.id = allocation.activity_id
+        AND activity.user_id = credential.user_id
+      WHERE requirement.credential_id = ?
+        AND credential.user_id = ?
+        AND requirement.kind = 'minimum'
+        AND requirement.is_active = 1
+        AND requirement.applicability_status = 'applies'
+      GROUP BY requirement.id
+      ORDER BY requirement.sort_order, requirement.name`,
+      [credentialId, identity.userId],
+    ).all<{
+      name: string;
+      requiredUnits: number;
+      earnedUnits: number;
+    }>(),
+  ]);
+  if (!total) {
+    throw new RequestError(
+      "Credential not found.",
+      404,
+      "credential_not_found",
+    );
+  }
+  if (Number(total.postDeadlineActivityCount) > 0) {
+    throw new RequestError(
+      `National Registry education must be completed by the ${deadline} expiration cutoff, including during late reinstatement.`,
+      409,
+      "nremt_completion_after_expiration",
+    );
+  }
+  if (
+    total.latestCompletionDate &&
+    total.latestCompletionDate > submissionDate
+  ) {
+    throw new RequestError(
+      "The application date cannot be before the latest credited activity.",
+      409,
+      "nremt_submission_before_completion",
+    );
+  }
+  if (
+    Number(total.totalEarned) + 0.001 <
+    Number(total.totalRequired)
+  ) {
+    throw new RequestError(
+      `License Lantern records ${Number(total.totalEarned)} of ${Number(total.totalRequired)} required National Registry credits. Complete the local total before submitting.`,
+      409,
+      "nremt_total_incomplete",
+    );
+  }
+  const incompleteRequirements = requirementProgress.results.filter(
+    (requirement) =>
+      Number(requirement.earnedUnits) + 0.001 <
+      Number(requirement.requiredUnits),
+  );
+  if (incompleteRequirements.length > 0) {
+    throw new RequestError(
+      `Complete every National Registry component, National topic, and pediatric minimum before submitting. Still incomplete: ${incompleteRequirements
+        .map(
+          (requirement) =>
+            `${requirement.name} (${Number(requirement.earnedUnits)}/${Number(requirement.requiredUnits)})`,
+        )
+        .join(", ")}.`,
+      409,
+      "nremt_requirement_incomplete",
+    );
+  }
 }
 
 async function assertCredentialStillMutable(
@@ -1983,10 +3175,23 @@ async function getWorkspace(
   }
   for (const requirement of requirementResult.results) {
     const credential = credentialById.get(requirement.credentialId);
+    const isNremtComponent =
+      credential?.ruleSetId?.startsWith(NREMT_RULE_SET_PREFIX) &&
+      requirement.kind === "minimum" &&
+      requirement.exclusiveGroup?.startsWith(NREMT_RULE_SET_PREFIX);
+    const isFloridaMentalHealthCreditBucket =
+      credential?.ruleSetId?.startsWith(
+        FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX,
+      ) &&
+      requirement.kind === "minimum" &&
+      requirement.exclusiveGroup ===
+        FLORIDA_MENTAL_HEALTH_CREDIT_BUCKET_GROUP;
     if (
       !credential ||
       !["active", "submitted"].includes(credential.status) ||
-      requirement.kind !== "maximum" ||
+      (requirement.kind !== "maximum" &&
+        !isNremtComponent &&
+        !isFloridaMentalHealthCreditBucket) ||
       !requirement.exclusiveGroup ||
       !Boolean(requirement.isActive) ||
       requirement.applicabilityStatus !== "applies"
@@ -1994,6 +3199,8 @@ async function getWorkspace(
       continue;
     }
     const snapshotSupportsCompleteClassification =
+      isNremtComponent ||
+      isFloridaMentalHealthCreditBucket ||
       credential.status === "active" ||
       credential.ruleSetId === CFP_2027_RULE_SET_ID ||
       completeClassificationGroupsByCredential
@@ -2041,6 +3248,50 @@ async function getWorkspace(
     ) {
       continue;
     }
+    if (isNremtRuleSet(credential.ruleSetId)) {
+      const nremtRequirementsById = new Map(
+        requirementResult.results
+          .filter(
+            (requirement) =>
+              requirement.credentialId === activity.credentialId,
+          )
+          .map((requirement) => [requirement.id, requirement]),
+      );
+      const nremtIssue = nremtAllocationIssue(
+        nremtRequirementsById,
+        (matchesByAllocation.get(activity.allocationId) ?? []).map(
+          (match) => ({
+            requirementId: match.requirementId,
+            matchedUnits: match.matchedUnits,
+          }),
+        ),
+        Number(activity.allocatedUnits),
+      );
+      if (!nremtIssue) continue;
+      const issue = {
+        allocationId: activity.allocationId,
+        activityId: activity.id,
+        activityTitle: activity.title,
+        unresolvedExclusiveGroups:
+          nremtIssue.unresolvedExclusiveGroups,
+        allocatedUnits: Number(activity.allocatedUnits),
+        classificationMessage: nremtIssue.message,
+      };
+      classificationIssueByAllocation.set(activity.allocationId, issue);
+      const credentialIssues =
+        classificationIssuesByCredential.get(activity.credentialId) ?? [];
+      credentialIssues.push(issue);
+      classificationIssuesByCredential.set(
+        activity.credentialId,
+        credentialIssues,
+      );
+      unclassifiedUnitsByCredential.set(
+        activity.credentialId,
+        (unclassifiedUnitsByCredential.get(activity.credentialId) ?? 0) +
+          issue.allocatedUnits,
+      );
+      continue;
+    }
     const requiredGroups = [
       ...(requiredMaximumGroupsByCredential.get(activity.credentialId) ??
         new Set<string>()),
@@ -2060,16 +3311,43 @@ async function getWorkspace(
           Boolean(requirement?.isActive) &&
           requirement?.applicabilityStatus === "applies",
       );
+    const partialMaximumMatch = (
+      matchesByAllocation.get(activity.allocationId) ?? []
+    ).find((match) => {
+      const requirement = requirementMetadataById.get(
+        match.requirementId,
+      );
+      return (
+        requirement?.kind === "maximum" &&
+        Boolean(requirement.isActive) &&
+        requirement.applicabilityStatus === "applies" &&
+        Math.abs(
+          Number(match.matchedUnits) -
+            Number(activity.allocatedUnits),
+        ) > 0.000_001
+      );
+    });
     const incompatibility =
       findRequirementIncompatibility(matchedRequirements);
-    if (unresolvedExclusiveGroups.length === 0 && !incompatibility) continue;
+    if (
+      unresolvedExclusiveGroups.length === 0 &&
+      !incompatibility &&
+      !partialMaximumMatch
+    ) {
+      continue;
+    }
     const issue = {
       allocationId: activity.allocationId,
       activityId: activity.id,
       activityTitle: activity.title,
       unresolvedExclusiveGroups,
       allocatedUnits: Number(activity.allocatedUnits),
-      ...(incompatibility
+      ...(partialMaximumMatch
+        ? {
+            classificationMessage:
+              "A capped classification must cover the allocation’s full credited amount. Reclassify this preserved activity before it can count.",
+          }
+        : incompatibility
         ? {
             classificationMessage:
               incompatibility.incompatibility.message,
@@ -2201,40 +3479,61 @@ async function getWorkspace(
   }
 
   const maximumExcessByCredential = new Map<string, number>();
-  for (const [credentialId, requirements] of requirementsByCredential) {
-    const byId = new Map(
-      requirements.map((requirement) => [requirement.id, requirement]),
-    );
-    const excessByGraph = new Map<string, number>();
-    for (const requirement of requirements) {
-      if (
-        !requirement.isActive ||
-        requirement.kind !== "maximum" ||
-        requirement.excessUnits <= 0
-      ) {
-        continue;
-      }
-      let graphRoot = requirement.id;
-      let current: RequirementProgress | undefined = requirement;
-      const visited = new Set<string>();
-      while (
-        current &&
-        current.parentRequirementId &&
-        current.relation !== "independent" &&
-        !visited.has(current.id)
-      ) {
-        visited.add(current.id);
-        graphRoot = current.parentRequirementId;
-        current = byId.get(current.parentRequirementId);
-      }
-      excessByGraph.set(
-        graphRoot,
-        Math.max(excessByGraph.get(graphRoot) ?? 0, requirement.excessUnits),
-      );
+  const classifiedAllocationsByCredential = new Map<
+    string,
+    Map<string, number>
+  >();
+  for (const activity of activityResult.results) {
+    if (
+      !activity.allocationId ||
+      !activity.credentialId ||
+      classificationIssueByAllocation.has(activity.allocationId)
+    ) {
+      continue;
     }
+    const allocations =
+      classifiedAllocationsByCredential.get(activity.credentialId) ??
+      new Map<string, number>();
+    allocations.set(
+      activity.allocationId,
+      Number(activity.allocatedUnits),
+    );
+    classifiedAllocationsByCredential.set(
+      activity.credentialId,
+      allocations,
+    );
+  }
+  for (const [credentialId, requirements] of requirementsByCredential) {
+    const allocations =
+      classifiedAllocationsByCredential.get(credentialId) ??
+      new Map<string, number>();
+    const cappedTotals = cappedCreditTotals(
+      [...allocations].map(([allocationId, allocatedUnits]) => ({
+        allocationId,
+        allocatedUnits,
+      })),
+      requirements
+        .filter(
+          (requirement) =>
+            requirement.isActive && requirement.kind === "maximum",
+        )
+        .map((requirement) => ({
+          requirementId: requirement.id,
+          maximumUnits: requirement.requiredUnits,
+          matches: [
+            ...(unitsByRequirementAllocation.get(requirement.id) ??
+              new Map<string, number>()),
+          ]
+            .filter(([allocationId]) => allocations.has(allocationId))
+            .map(([allocationId, matchedUnits]) => ({
+              allocationId,
+              matchedUnits,
+            })),
+        })),
+    );
     maximumExcessByCredential.set(
       credentialId,
-      [...excessByGraph.values()].reduce((sum, excess) => sum + excess, 0),
+      cappedTotals.excludedUnits,
     );
   }
 
@@ -2526,6 +3825,9 @@ async function createCredential(
   const cycleStart = isoDateField(payload, "cycleStart")!;
   const deadline = isoDateField(payload, "deadline")!;
   if (cycleStart > deadline) {
+    if (ruleSetId && isNremtRuleSet(ruleSetId)) {
+      assertNremtCredentialDates(ruleSetId, deadline, payload);
+    }
     throw new RequestError("deadline must be on or after cycleStart");
   }
 
@@ -2560,6 +3862,16 @@ async function createCredential(
         "The selected rule set was not found or is no longer current.",
         404,
         "rule_set_not_found",
+      );
+    }
+    if (isNremtRuleSet(ruleSetId)) {
+      assertNremtCredentialDates(ruleSetId, deadline, payload);
+    }
+    if (ruleSetId.startsWith(FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX)) {
+      assertFloridaMentalHealthCredentialDates(
+        cycleStart,
+        deadline,
+        payload,
       );
     }
     if (
@@ -2913,8 +4225,7 @@ async function addActivity(
     required: true,
     max: 160,
   })!;
-  const requirementIds = requirementIdsField(payload);
-  const requirementId = requirementIds[0] ?? null;
+  const legacyRequirementIds = requirementIdsField(payload);
   const evidenceStatus = normalizedEvidenceStatus(payload);
   const evidenceReference = textField(payload, "evidenceReference", {
     max: 500,
@@ -2950,22 +4261,51 @@ async function addActivity(
       "cycle_closed",
     );
   }
-  if (
-    completionDate < credential.cycleStart ||
-    completionDate > credential.deadline
-  ) {
-    throw new RequestError(
-      `The completion date must fall within this renewal cycle (${credential.cycleStart} through ${credential.deadline}).`,
-      409,
-      "activity_outside_cycle",
-    );
-  }
-
-  await validateRequirementTags(
+  const isNremt = await isOwnedNremtCredential(
     database,
     identity,
     credentialId,
-    requirementIds,
+  );
+  const nremtMatches = isNremt
+    ? requirementMatchesField(payload, { required: true })
+    : [];
+  if (isNremt) assertNremtAcceptedEducation(payload, provider);
+  const selectedRequirements = isNremt
+    ? await validateNremtRequirementMatches(
+        database,
+        identity,
+        credentialId,
+        nremtMatches,
+        allocatedUnits,
+      )
+    : await validateRequirementTags(
+        database,
+        identity,
+        credentialId,
+        legacyRequirementIds,
+      );
+  const persistedMatches: RequirementMatchInput[] = isNremt
+    ? nremtMatches
+    : legacyRequirementIds.map((requirementId) => ({
+        requirementId,
+        matchedUnits: allocatedUnits,
+      }));
+  const primaryRequirementId =
+    selectedRequirements.find((requirement) =>
+      nremtComponentRole(requirement as NremtRequirementMetadata),
+    )?.id ??
+    persistedMatches[0]?.requirementId ??
+    null;
+  assertActivityDateAllowedForRequirements(
+    completionDate,
+    credential.cycleStart,
+    credential.deadline,
+    selectedRequirements,
+    {
+      portalCarryoverAttested:
+        payload.portalCarryoverAttested === true,
+      evidenceStatus,
+    },
   );
 
   const activityId = crypto.randomUUID();
@@ -3004,7 +4344,7 @@ async function addActivity(
         allocationId,
         activityId,
         credentialId,
-        requirementId,
+        primaryRequirementId,
         allocatedUnits,
       ],
     ),
@@ -3033,7 +4373,7 @@ async function addActivity(
       ],
     ),
   ];
-  for (const matchedRequirementId of requirementIds) {
+  for (const match of persistedMatches) {
     statements.push(
       query(
         database,
@@ -3044,8 +4384,8 @@ async function addActivity(
           crypto.randomUUID(),
           identity.userId,
           allocationId,
-          matchedRequirementId,
-          allocatedUnits,
+          match.requirementId,
+          match.matchedUnits,
         ],
       ),
     );
@@ -3323,8 +4663,11 @@ async function markSubmitted(
   const isComplianceCheckpoint = isCompliancePeriodRuleSet(
     credential.ruleSetId,
   );
+  const isNremtSubmission =
+    credential.ruleSetId?.startsWith(NREMT_RULE_SET_PREFIX) ?? false;
   const isLifecycleCheckpoint =
     isIsc2Checkpoint || isComplianceCheckpoint;
+  let isNremtLateReinstatement = false;
   const closedCycleMessage = isIsc2Checkpoint
     ? "This renewal cycle is closed and cannot receive another ISC2 dashboard checkpoint."
     : isComplianceCheckpoint
@@ -3351,11 +4694,58 @@ async function markSubmitted(
       "compliance_checkpoint_attestation_required",
     );
   }
+  if (isNremtSubmission && payload.complianceAttested !== true) {
+    throw new RequestError(
+      "Confirm that the National Registry dashboard shows the assigned model, all component and National-topic requirements, and the application as ready before submitting.",
+      409,
+      "nremt_submission_attestation_required",
+    );
+  }
+  await assertPortalCarryoverEvidenceReady(
+    database,
+    identity,
+    credentialId,
+  );
+  if (isNremtSubmission) {
+    const nremtCycle = await query(
+      database,
+      `SELECT deadline
+       FROM credentials
+       WHERE id = ? AND user_id = ?`,
+      [credentialId, identity.userId],
+    ).first<{ deadline: string }>();
+    if (!nremtCycle) {
+      throw new RequestError(
+        "Credential not found.",
+        404,
+        "credential_not_found",
+      );
+    }
+    assertNremtSubmissionWindow(
+      credential.ruleSetId!,
+      nremtCycle.deadline,
+      submissionDate,
+      payload,
+    );
+    isNremtLateReinstatement = submissionDate > nremtCycle.deadline;
+    await assertNremtSubmissionComplete(
+      database,
+      identity,
+      credentialId,
+      credential.ruleSetId!,
+      nremtCycle.deadline,
+      submissionDate,
+    );
+  }
   const attestationKind = isIsc2Checkpoint
     ? "isc2_requirements_satisfied"
     : isComplianceCheckpoint
       ? "compliance_period_complete"
-      : null;
+      : isNremtSubmission
+        ? isNremtLateReinstatement
+          ? "nremt_late_reinstatement_requirements_satisfied"
+          : "nremt_requirements_satisfied"
+        : null;
   const existing = await query(
     database,
     `SELECT id
@@ -3442,7 +4832,9 @@ async function markSubmitted(
             ? `${identity.userId}:credential:${credentialId}:compliance-checkpoint`
             : `${identity.userId}:credential:${credentialId}:submitted`,
         isLifecycleCheckpoint
-          ? "renewal_checkpoint_recorded"
+          ? isComplianceCheckpoint
+            ? "compliance_checkpoint_recorded"
+            : "renewal_checkpoint_recorded"
           : "renewal_submitted",
         isIsc2Checkpoint
           ? "renewal_checkpoint"
@@ -3531,8 +4923,7 @@ async function addActivityAllocation(
     required: true,
     max: 160,
   })!;
-  const requirementIds = requirementIdsField(payload);
-  const requirementId = requirementIds[0] ?? null;
+  const legacyRequirementIds = requirementIdsField(payload);
   const allocatedUnits = positiveNumber(payload, "allocatedUnits", {
     required: true,
   })!;
@@ -3543,11 +4934,17 @@ async function addActivityAllocation(
       `SELECT
         id,
         total_units AS totalUnits,
-        completion_date AS completionDate
+        completion_date AS completionDate,
+        evidence_status AS evidenceStatus
        FROM activities
        WHERE id = ? AND user_id = ?`,
       [activityId, identity.userId],
-    ).first<{ id: string; totalUnits: number; completionDate: string }>(),
+    ).first<{
+      id: string;
+      totalUnits: number;
+      completionDate: string;
+      evidenceStatus: string;
+    }>(),
     query(
       database,
       `SELECT
@@ -3590,16 +4987,6 @@ async function addActivityAllocation(
       "cycle_closed",
     );
   }
-  if (
-    activity.completionDate < credential.cycleStart ||
-    activity.completionDate > credential.deadline
-  ) {
-    throw new RequestError(
-      `The activity date must fall within the target renewal cycle (${credential.cycleStart} through ${credential.deadline}).`,
-      409,
-      "activity_outside_cycle",
-    );
-  }
   if (existing) {
     throw new RequestError(
       "This activity is already applied to that credential.",
@@ -3613,11 +5000,60 @@ async function addActivityAllocation(
     );
   }
 
-  await validateRequirementTags(
+  const isNremt = await isOwnedNremtCredential(
     database,
     identity,
     credentialId,
-    requirementIds,
+  );
+  const nremtMatches = isNremt
+    ? requirementMatchesField(payload, { required: true })
+    : [];
+  if (isNremt) {
+    const activityProvider = await query(
+      database,
+      `SELECT provider
+       FROM activities
+       WHERE id = ? AND user_id = ?`,
+      [activityId, identity.userId],
+    ).first<{ provider: string }>();
+    assertNremtAcceptedEducation(payload, activityProvider?.provider ?? "");
+  }
+  const selectedRequirements = isNremt
+    ? await validateNremtRequirementMatches(
+        database,
+        identity,
+        credentialId,
+        nremtMatches,
+        allocatedUnits,
+      )
+    : await validateRequirementTags(
+        database,
+        identity,
+        credentialId,
+        legacyRequirementIds,
+      );
+  const persistedMatches: RequirementMatchInput[] = isNremt
+    ? nremtMatches
+    : legacyRequirementIds.map((requirementId) => ({
+        requirementId,
+        matchedUnits: allocatedUnits,
+      }));
+  const primaryRequirementId =
+    selectedRequirements.find((requirement) =>
+      nremtComponentRole(requirement as NremtRequirementMetadata),
+    )?.id ??
+    persistedMatches[0]?.requirementId ??
+    null;
+  assertActivityDateAllowedForRequirements(
+    activity.completionDate,
+    credential.cycleStart,
+    credential.deadline,
+    selectedRequirements,
+    {
+      portalCarryoverAttested:
+        payload.portalCarryoverAttested === true,
+      evidenceStatus: activity.evidenceStatus,
+    },
   );
 
   const allocationId = crypto.randomUUID();
@@ -3635,14 +5071,14 @@ async function addActivityAllocation(
       [
         allocationId,
         activityId,
-        requirementId,
+        primaryRequirementId,
         allocatedUnits,
         credentialId,
         identity.userId,
       ],
     ),
   ];
-  for (const matchedRequirementId of requirementIds) {
+  for (const match of persistedMatches) {
     statements.push(
       query(
         database,
@@ -3653,8 +5089,8 @@ async function addActivityAllocation(
           crypto.randomUUID(),
           identity.userId,
           allocationId,
-          matchedRequirementId,
-          allocatedUnits,
+          match.requirementId,
+          match.matchedUnits,
         ],
       ),
     );
@@ -3698,8 +5134,7 @@ async function updateActivityAllocationRequirements(
     required: true,
     max: 160,
   })!;
-  const requirementIds = requirementIdsField(payload);
-  const requirementId = requirementIds[0] ?? null;
+  const legacyRequirementIds = requirementIdsField(payload);
 
   const allocation = await query(
     database,
@@ -3707,7 +5142,11 @@ async function updateActivityAllocationRequirements(
       allocation.id,
       allocation.credential_id AS credentialId,
       allocation.allocated_units AS allocatedUnits,
-      credential.status
+      activity.completion_date AS completionDate,
+      activity.evidence_status AS evidenceStatus,
+      credential.status,
+      credential.cycle_start AS cycleStart,
+      credential.deadline
      FROM activity_allocations allocation
      JOIN activities activity ON activity.id = allocation.activity_id
      JOIN credentials credential ON credential.id = allocation.credential_id
@@ -3719,7 +5158,11 @@ async function updateActivityAllocationRequirements(
     id: string;
     credentialId: string;
     allocatedUnits: number;
+    completionDate: string;
+    evidenceStatus: string;
     status: string;
+    cycleStart: string;
+    deadline: string;
   }>();
   if (!allocation) {
     throw new RequestError(
@@ -3736,11 +5179,64 @@ async function updateActivityAllocationRequirements(
     );
   }
 
-  await validateRequirementTags(
+  const isNremt = await isOwnedNremtCredential(
     database,
     identity,
     allocation.credentialId,
-    requirementIds,
+  );
+  const nremtMatches = isNremt
+    ? requirementMatchesField(payload, { required: true })
+    : [];
+  if (isNremt) {
+    const activityProvider = await query(
+      database,
+      `SELECT activity.provider
+       FROM activity_allocations allocation
+       JOIN activities activity ON activity.id = allocation.activity_id
+       JOIN credentials credential ON credential.id = allocation.credential_id
+       WHERE allocation.id = ?
+         AND activity.user_id = ?
+         AND credential.user_id = ?`,
+      [allocationId, identity.userId, identity.userId],
+    ).first<{ provider: string }>();
+    assertNremtAcceptedEducation(payload, activityProvider?.provider ?? "");
+  }
+  const selectedRequirements = isNremt
+    ? await validateNremtRequirementMatches(
+        database,
+        identity,
+        allocation.credentialId,
+        nremtMatches,
+        Number(allocation.allocatedUnits),
+      )
+    : await validateRequirementTags(
+        database,
+        identity,
+        allocation.credentialId,
+        legacyRequirementIds,
+      );
+  const persistedMatches: RequirementMatchInput[] = isNremt
+    ? nremtMatches
+    : legacyRequirementIds.map((requirementId) => ({
+        requirementId,
+        matchedUnits: Number(allocation.allocatedUnits),
+      }));
+  const primaryRequirementId =
+    selectedRequirements.find((requirement) =>
+      nremtComponentRole(requirement as NremtRequirementMetadata),
+    )?.id ??
+    persistedMatches[0]?.requirementId ??
+    null;
+  assertActivityDateAllowedForRequirements(
+    allocation.completionDate,
+    allocation.cycleStart,
+    allocation.deadline,
+    selectedRequirements,
+    {
+      portalCarryoverAttested:
+        payload.portalCarryoverAttested === true,
+      evidenceStatus: allocation.evidenceStatus,
+    },
   );
 
   const statements: D1PreparedStatement[] = [
@@ -3757,7 +5253,7 @@ async function updateActivityAllocationRequirements(
              AND credential.status IN ('active', 'submitted')
          )`,
       [
-        requirementId,
+        primaryRequirementId,
         allocationId,
         allocation.credentialId,
         identity.userId,
@@ -3780,14 +5276,16 @@ async function updateActivityAllocationRequirements(
       [allocationId, identity.userId, identity.userId],
     ),
   ];
-  for (const matchedRequirementId of requirementIds) {
+  for (const match of persistedMatches) {
     statements.push(
       query(
         database,
         `INSERT INTO activity_requirement_matches (
           id, user_id, allocation_id, requirement_id, matched_units
         )
-        SELECT ?, ?, allocation.id, ?, allocation.allocated_units
+        SELECT ?, ?, allocation.id, ?, ${
+          isNremt ? "?" : "allocation.allocated_units"
+        }
         FROM activity_allocations allocation
         JOIN credentials credential
           ON credential.id = allocation.credential_id
@@ -3798,7 +5296,8 @@ async function updateActivityAllocationRequirements(
         [
           crypto.randomUUID(),
           identity.userId,
-          matchedRequirementId,
+          match.requirementId,
+          ...(isNremt ? [match.matchedUnits] : []),
           allocationId,
           allocation.credentialId,
           identity.userId,
@@ -3861,11 +5360,13 @@ async function markRenewalAccepted(
   type CycleCredential = {
     id: string;
     ruleSetId: string | null;
+    ruleStableKey: string | null;
     credentialName: string;
     profession: string;
     jurisdiction: string;
     issuer: string;
     status: string;
+    cycleStart: string;
     deadline: string;
     totalRequired: number;
     unitLabel: string;
@@ -3913,11 +5414,13 @@ async function markRenewalAccepted(
       `SELECT
         credential.id,
         credential.rule_set_id AS ruleSetId,
+        rules.stable_key AS ruleStableKey,
         credential.credential_name AS credentialName,
         credential.profession,
         credential.jurisdiction,
         credential.issuer,
         credential.status,
+        credential.cycle_start AS cycleStart,
         credential.deadline,
         credential.total_required AS totalRequired,
         credential.unit_label AS unitLabel,
@@ -3988,14 +5491,65 @@ async function markRenewalAccepted(
   const isCompliancePeriod = isCompliancePeriodRuleSet(
     credential.ruleSetId,
   );
+  const replacementTemplateFamily = nextTemplateFamily(
+    credential.ruleSetId,
+  );
+  const isNremtRenewal =
+    credential.ruleSetId?.startsWith(NREMT_RULE_SET_PREFIX) ?? false;
+  const requiresOfficialNextPeriodAttestation =
+    isIsc2AutomaticRenewal ||
+    isCompliancePeriod ||
+    replacementTemplateFamily === "florida_mental_health" ||
+    isNremtRenewal;
+  const requiresNonOverlappingNextPeriod =
+    isIsc2AutomaticRenewal ||
+    isCompliancePeriod ||
+    replacementTemplateFamily === "florida_mental_health";
   if (
-    (isIsc2AutomaticRenewal || isCompliancePeriod) &&
+    requiresOfficialNextPeriodAttestation &&
     payload.officialDatesAttested !== true
   ) {
     throw new RequestError(
       "Confirm that the completion record and next cycle dates match the official source before closing this period.",
       409,
       "official_next_period_attestation_required",
+    );
+  }
+  if (replacementTemplateFamily === "florida_mental_health") {
+    const expectedNextCycle = nextFloridaMentalHealthCycle(
+      credential.deadline,
+    );
+    if (
+      !isFloridaMentalHealthCycle(
+        credential.cycleStart,
+        credential.deadline,
+      ) ||
+      !expectedNextCycle ||
+      nextCycleStart !== expectedNextCycle.cycleStart ||
+      nextDeadline !== expectedNextCycle.deadline
+    ) {
+      throw new RequestError(
+        "The next standard Florida mental-health biennium must immediately follow the current odd-year April 1 through March 31 period.",
+        409,
+        "florida_mental_health_next_cycle_invalid",
+      );
+    }
+  }
+  if (
+    isNremtRenewal &&
+    nextDeadline !== yearsAfter(credential.deadline, 2)
+  ) {
+    throw new RequestError(
+      `The next National Registry expiration must be exactly two years after the current expiration: ${yearsAfter(credential.deadline, 2)}.`,
+      409,
+      "nremt_next_deadline_invalid",
+    );
+  }
+  if (isNremtRenewal && nextCycleStart <= acceptedAt) {
+    throw new RequestError(
+      "Enter the next cycle start shown in the National Registry dashboard; it must follow the recorded approval date.",
+      409,
+      "nremt_next_cycle_start_invalid",
     );
   }
   if (isIsc2AutomaticRenewal && acceptedAt < credential.deadline) {
@@ -4005,19 +5559,47 @@ async function markRenewalAccepted(
       "isc2_renewal_before_cycle_end",
     );
   }
-  const requiresFloridaTemplateSelection =
-    credential.ruleSetId?.startsWith("fl-insurance-producer-") ?? false;
+  if (
+    requiresNonOverlappingNextPeriod &&
+    nextCycleStart <= credential.deadline
+  ) {
+    throw new RequestError(
+      "The next period must start after the current period ends.",
+      409,
+      "next_cycle_overlaps_current_period",
+    );
+  }
   let selectedNextRule: NextRuleTemplate | null = null;
   let selectedNextCategories: NextRuleCategory[] = [];
-  if (requiresFloridaTemplateSelection) {
+  if (replacementTemplateFamily) {
+    const expectedPrefix =
+      replacementTemplateFamily === "florida_insurance"
+        ? FLORIDA_INSURANCE_RULE_SET_PREFIX
+        : FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX;
+    const expectedProfession =
+      replacementTemplateFamily === "florida_insurance"
+        ? "Insurance"
+        : "Mental Health";
+    if (!requestedNextRuleSetId?.startsWith(expectedPrefix)) {
+      throw new RequestError(
+        replacementTemplateFamily === "florida_insurance"
+          ? "Choose the current Florida producer template shown for the next MyProfile compliance period."
+          : "Choose the Florida mental-health phase shown by CE Broker for the next renewal period.",
+        409,
+        replacementTemplateFamily === "florida_insurance"
+          ? "florida_next_template_required"
+          : "florida_mental_health_next_template_required",
+      );
+    }
     if (
-      !requestedNextRuleSetId ||
-      !requestedNextRuleSetId.startsWith("fl-insurance-producer-")
+      replacementTemplateFamily === "florida_mental_health" &&
+      requestedNextRuleSetId !==
+        oppositeFloridaMentalHealthRuleSetId(credential.ruleSetId)
     ) {
       throw new RequestError(
-        "Choose the current Florida producer template shown for the next MyProfile compliance period.",
+        "Florida Ethics and Boundaries and Telehealth phases alternate each biennium. Choose the opposite phase for the next CE Broker period.",
         409,
-        "florida_next_template_required",
+        "florida_mental_health_phase_must_alternate",
       );
     }
     selectedNextRule = await query(
@@ -4034,16 +5616,72 @@ async function markRenewalAccepted(
        FROM rule_sets
        WHERE id = ?
          AND is_current = 1
-         AND profession = 'Insurance'
+         AND profession = ?
          AND jurisdiction = 'Florida'
-         AND id LIKE 'fl-insurance-producer-%'`,
-      [requestedNextRuleSetId],
+         AND id LIKE ?`,
+      [requestedNextRuleSetId, expectedProfession, `${expectedPrefix}%`],
     ).first<NextRuleTemplate>();
     if (!selectedNextRule) {
       throw new RequestError(
-        "The selected Florida producer template is unavailable or no longer current.",
+        replacementTemplateFamily === "florida_insurance"
+          ? "The selected Florida producer template is unavailable or no longer current."
+          : "The selected Florida mental-health phase is unavailable or no longer current.",
         409,
-        "florida_next_template_unavailable",
+        replacementTemplateFamily === "florida_insurance"
+          ? "florida_next_template_unavailable"
+          : "florida_mental_health_next_template_unavailable",
+      );
+    }
+    const categoryResult = await query(
+      database,
+      `SELECT
+        id,
+        name,
+        required_units AS requiredUnits,
+        kind,
+        relation,
+        parent_category_id AS parentCategoryId,
+        applicability,
+        condition_note AS conditionNote,
+        exclusive_group AS exclusiveGroup,
+        sort_order AS sortOrder
+       FROM rule_categories
+       WHERE rule_set_id = ?
+       ORDER BY sort_order, name`,
+      [selectedNextRule.id],
+    ).all<NextRuleCategory>();
+    selectedNextCategories = categoryResult.results;
+  } else if (isNremtRenewal) {
+    if (!requestedNextRuleSetId) {
+      throw new RequestError(
+        "Choose the current same-level National Registry template shown in the catalog for the next cycle.",
+        409,
+        "nremt_next_template_required",
+      );
+    }
+    selectedNextRule = await query(
+      database,
+      `SELECT
+        id,
+        credential_name AS credentialName,
+        profession,
+        jurisdiction,
+        issuer,
+        total_units AS totalUnits,
+        unit_label AS unitLabel,
+        cycle_months AS cycleMonths
+       FROM rule_sets
+       WHERE id = ?
+         AND is_current = 1
+         AND stable_key = ?
+         AND id LIKE 'nremt-%'`,
+      [requestedNextRuleSetId, credential.ruleStableKey],
+    ).first<NextRuleTemplate>();
+    if (!selectedNextRule) {
+      throw new RequestError(
+        "The selected National Registry template is not the current same-level template. Refresh the catalog and verify the model shown in the dashboard.",
+        409,
+        "nremt_next_template_unavailable",
       );
     }
     const categoryResult = await query(
@@ -4067,18 +5705,23 @@ async function markRenewalAccepted(
     selectedNextCategories = categoryResult.results;
   } else if (requestedNextRuleSetId) {
     throw new RequestError(
-      "A replacement rule template may be selected only for a Florida producer compliance rollover.",
+      "A replacement rule template may be selected only for a supported Florida rollover.",
       400,
       "next_template_not_allowed",
     );
   }
-  const floridaCatalogSnapshotGuard = selectedNextRule
+  const nextCatalogSnapshotGuard = selectedNextRule
     ? {
         sql: `EXISTS (
           SELECT 1
           FROM rule_sets selected_rule
           WHERE selected_rule.id = ?
             AND selected_rule.is_current = 1
+            ${
+              isNremtRenewal
+                ? "AND selected_rule.stable_key IS ?"
+                : ""
+            }
             AND selected_rule.credential_name IS ?
             AND selected_rule.profession IS ?
             AND selected_rule.jurisdiction IS ?
@@ -4113,6 +5756,7 @@ async function markRenewalAccepted(
         )`,
         bindings: [
           selectedNextRule.id,
+          ...(isNremtRenewal ? [credential.ruleStableKey] : []),
           selectedNextRule.credentialName,
           selectedNextRule.profession,
           selectedNextRule.jurisdiction,
@@ -4136,22 +5780,30 @@ async function markRenewalAccepted(
         ] as readonly unknown[],
       }
     : null;
-  const floridaCatalogSnapshotStillMatches = async () => {
-    if (!floridaCatalogSnapshotGuard) return true;
+  const nextCatalogSnapshotStillMatches = async () => {
+    if (!nextCatalogSnapshotGuard) return true;
     const result = await query(
       database,
       `SELECT 1 AS matches
-       WHERE ${floridaCatalogSnapshotGuard.sql}`,
-      floridaCatalogSnapshotGuard.bindings,
+       WHERE ${nextCatalogSnapshotGuard.sql}`,
+      nextCatalogSnapshotGuard.bindings,
     ).first<{ matches: number }>();
     return Boolean(result?.matches);
   };
-  const throwIfFloridaCatalogSnapshotChanged = async () => {
-    if (await floridaCatalogSnapshotStillMatches()) return;
+  const throwIfNextCatalogSnapshotChanged = async () => {
+    if (await nextCatalogSnapshotStillMatches()) return;
     throw new RequestError(
-      "The selected Florida producer template changed while the next compliance period was being created. Review the current template and try again.",
+      isNremtRenewal
+        ? "The selected National Registry template changed while the next cycle was being created. Review the current dashboard model and catalog template, then try again."
+        : replacementTemplateFamily === "florida_mental_health"
+          ? "The selected Florida mental-health phase changed while the next biennium was being created. Review the current CE Broker phase and catalog template, then try again."
+          : "The selected Florida producer template changed while the next compliance period was being created. Review the current template and try again.",
       409,
-      "florida_next_template_changed",
+      isNremtRenewal
+        ? "nremt_next_template_changed"
+        : replacementTemplateFamily === "florida_mental_health"
+          ? "florida_mental_health_next_template_changed"
+          : "florida_next_template_changed",
     );
   };
   const unresolvedClassification =
@@ -4166,6 +5818,40 @@ async function markRenewalAccepted(
       "Resolve every activity classification conflict before marking this renewal accepted.",
       409,
       "classification_required_before_acceptance",
+    );
+  }
+  await assertPortalCarryoverEvidenceReady(
+    database,
+    identity,
+    credentialId,
+  );
+  if (isNremtRenewal) {
+    const nremtSubmissionState = await query(
+      database,
+      `SELECT attestation_kind AS attestationKind
+       FROM renewal_submissions
+       WHERE id = ?
+         AND credential_id = ?
+         AND user_id = ?`,
+      [submission.id, credentialId, identity.userId],
+    ).first<{ attestationKind: string | null }>();
+    assertNremtSubmissionWindow(
+      credential.ruleSetId!,
+      credential.deadline,
+      submission.submittedAt.slice(0, 10),
+      {
+        lateReinstatementAttested:
+          nremtSubmissionState?.attestationKind ===
+          "nremt_late_reinstatement_requirements_satisfied",
+      },
+    );
+    await assertNremtSubmissionComplete(
+      database,
+      identity,
+      credentialId,
+      credential.ruleSetId!,
+      credential.deadline,
+      submission.submittedAt.slice(0, 10),
     );
   }
   const assertSubmissionStillAcceptable = async () => {
@@ -4229,13 +5915,17 @@ async function markRenewalAccepted(
   const nextCycleMonths =
     selectedNextRule?.cycleMonths ?? Number(credential.cycleMonths);
   const officialRecordAttestedAt =
-    isIsc2AutomaticRenewal || isCompliancePeriod
+    requiresOfficialNextPeriodAttestation
       ? new Date().toISOString()
       : null;
   const carryoverReviewTaskTitle =
     nextRuleSetId === null
       ? null
       : (CARRYOVER_REVIEW_TASK_TITLES.get(nextRuleSetId) ?? null);
+  const portalCarryoverCategoryIdsForGuard =
+    portalCarryoverCategoryIds();
+  const portalCarryoverPlaceholders =
+    portalCarryoverCategoryIdsForGuard.map(() => "?").join(", ");
   const statements: D1PreparedStatement[] = [
     query(
       database,
@@ -4257,10 +5947,10 @@ async function markRenewalAccepted(
           FROM credential_requirements requirement
           JOIN credentials owner
             ON owner.id = requirement.credential_id
-          WHERE requirement.kind = 'maximum'
-            AND requirement.is_active = 1
+          WHERE requirement.is_active = 1
             AND requirement.applicability_status = 'applies'
             AND requirement.exclusive_group IS NOT NULL
+            AND requirement.kind = 'maximum'
             AND (
               owner.rule_set_id = ?
               OR EXISTS (
@@ -4270,12 +5960,16 @@ async function markRenewalAccepted(
                   requirement.credential_id
                   AND complete_group.exclusive_group =
                     requirement.exclusive_group
+                )
               )
-            )
           UNION
           SELECT credential.id, ?
           FROM credentials credential
           WHERE credential.rule_set_id = ?
+          UNION
+          SELECT credential.id, ?
+          FROM credentials credential
+          WHERE credential.rule_set_id LIKE ?
         ),
         incompatible_categories (
           first_category_id,
@@ -4297,8 +5991,8 @@ async function markRenewalAccepted(
             AND substr(guarded_submission.submitted_at, 1, 10) <= ?
         )
         ${
-          floridaCatalogSnapshotGuard
-            ? `AND ${floridaCatalogSnapshotGuard.sql}`
+          nextCatalogSnapshotGuard
+            ? `AND ${nextCatalogSnapshotGuard.sql}`
             : ""
         }
         AND NOT EXISTS (
@@ -4361,17 +6055,56 @@ async function markRenewalAccepted(
             AND first_requirement.applicability_status = 'applies'
             AND second_requirement.is_active = 1
             AND second_requirement.applicability_status = 'applies'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM activity_allocations carryover_allocation
+          JOIN activities carryover_activity
+            ON carryover_activity.id =
+              carryover_allocation.activity_id
+            AND carryover_activity.user_id = credentials.user_id
+          JOIN activity_requirement_matches carryover_match
+            ON carryover_match.allocation_id =
+              carryover_allocation.id
+            AND carryover_match.user_id = credentials.user_id
+          JOIN credential_requirements carryover_requirement
+            ON carryover_requirement.id =
+              carryover_match.requirement_id
+            AND carryover_requirement.credential_id =
+              carryover_allocation.credential_id
+          WHERE carryover_allocation.credential_id = credentials.id
+            AND carryover_activity.completion_date <
+              credentials.cycle_start
+            AND carryover_requirement.rule_category_id IN (
+              ${portalCarryoverPlaceholders}
+            )
+            AND COALESCE(
+              TRIM(carryover_activity.evidence_reference),
+              ''
+            ) = ''
+            AND NOT EXISTS (
+              SELECT 1
+              FROM evidence_files carryover_evidence
+              WHERE carryover_evidence.activity_id =
+                carryover_activity.id
+                AND carryover_evidence.user_id =
+                  credentials.user_id
+                AND carryover_evidence.status = 'ready'
+            )
         )`,
       [
         CFP_2027_RULE_SET_ID,
         NJ_LCSW_CREDIT_CATEGORY_GROUP,
         NJ_LCSW_RULE_SET_ID,
+        FLORIDA_MENTAL_HEALTH_CREDIT_BUCKET_GROUP,
+        `${FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX}%`,
         ...REQUIREMENT_INCOMPATIBILITY_BINDINGS,
         credentialId,
         identity.userId,
         submission.id,
         acceptedAt,
-        ...(floridaCatalogSnapshotGuard?.bindings ?? []),
+        ...(nextCatalogSnapshotGuard?.bindings ?? []),
+        ...portalCarryoverCategoryIdsForGuard,
       ],
     ),
     query(
@@ -4698,7 +6431,7 @@ async function markRenewalAccepted(
       [credentialId, identity.userId],
     ).first<{ nextCredentialId: string }>();
     if (racedAcceptance) return racedAcceptance.nextCredentialId;
-    await throwIfFloridaCatalogSnapshotChanged();
+    await throwIfNextCatalogSnapshotChanged();
     const racedClassification =
       await findUnresolvedCredentialClassification(
         database,
@@ -4713,6 +6446,11 @@ async function markRenewalAccepted(
         "classification_required_before_acceptance",
       );
     }
+    await assertPortalCarryoverEvidenceReady(
+      database,
+      identity,
+      credentialId,
+    );
     await assertSubmissionStillAcceptable();
     throw error;
   }
@@ -4727,7 +6465,7 @@ async function markRenewalAccepted(
       [credentialId, identity.userId],
     ).first<{ nextCredentialId: string }>();
     if (racedAcceptance) return racedAcceptance.nextCredentialId;
-    await throwIfFloridaCatalogSnapshotChanged();
+    await throwIfNextCatalogSnapshotChanged();
     const racedClassification =
       await findUnresolvedCredentialClassification(
         database,
@@ -4742,6 +6480,11 @@ async function markRenewalAccepted(
         "classification_required_before_acceptance",
       );
     }
+    await assertPortalCarryoverEvidenceReady(
+      database,
+      identity,
+      credentialId,
+    );
     await assertSubmissionStillAcceptable();
     throw new RequestError(
       "The renewal changed while acceptance was being recorded. Refresh and try again.",

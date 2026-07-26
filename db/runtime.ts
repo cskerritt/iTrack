@@ -12,6 +12,20 @@ import {
   INSURANCE_CATEGORY_SEED_BINDINGS,
   INSURANCE_RULE_SET_SEED_BINDINGS,
 } from "./catalog/insurance";
+import {
+  NREMT_CATEGORY_SEED_BINDINGS,
+  NREMT_RULE_SET_SEED_BINDINGS,
+} from "./catalog/nremt";
+import {
+  EDUCATION_CATEGORY_SEED_BINDINGS,
+  EDUCATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+  EDUCATION_RULE_SET_SEED_BINDINGS,
+} from "./catalog/education";
+import {
+  MENTAL_HEALTH_CATEGORY_SEED_BINDINGS,
+  MENTAL_HEALTH_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+  MENTAL_HEALTH_RULE_SET_SEED_BINDINGS,
+} from "./catalog/mentalHealth";
 
 const TABLE_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS users (
@@ -3325,6 +3339,9 @@ const CATALOG_2026_RULE_SET_SEED_BINDINGS = [
   ...ISC2_RULE_SET_SEED_BINDINGS,
   ...COMPTIA_RULE_SET_SEED_BINDINGS,
   ...INSURANCE_RULE_SET_SEED_BINDINGS,
+  ...NREMT_RULE_SET_SEED_BINDINGS,
+  ...EDUCATION_RULE_SET_SEED_BINDINGS,
+  ...MENTAL_HEALTH_RULE_SET_SEED_BINDINGS,
 ] as const;
 
 const CATALOG_2026_CATEGORY_INSERT_SQL = `INSERT INTO rule_categories (
@@ -4127,18 +4144,27 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
   ...ISC2_CATEGORY_SEED_BINDINGS,
   ...COMPTIA_CATEGORY_SEED_BINDINGS,
   ...INSURANCE_CATEGORY_SEED_BINDINGS,
+  ...NREMT_CATEGORY_SEED_BINDINGS,
+  ...EDUCATION_CATEGORY_SEED_BINDINGS,
+  ...MENTAL_HEALTH_CATEGORY_SEED_BINDINGS,
 ] as const;
 
 const MANAGED_EXTERNAL_RULE_SET_IDS = [
   ...ISC2_RULE_SET_SEED_BINDINGS,
   ...COMPTIA_RULE_SET_SEED_BINDINGS,
   ...INSURANCE_RULE_SET_SEED_BINDINGS,
+  ...NREMT_RULE_SET_SEED_BINDINGS,
+  ...EDUCATION_RULE_SET_SEED_BINDINGS,
+  ...MENTAL_HEALTH_RULE_SET_SEED_BINDINGS,
 ].map((bindings) => bindings[0]);
 
 const MANAGED_EXTERNAL_CATEGORY_IDS = [
   ...ISC2_CATEGORY_SEED_BINDINGS,
   ...COMPTIA_CATEGORY_SEED_BINDINGS,
   ...INSURANCE_CATEGORY_SEED_BINDINGS,
+  ...NREMT_CATEGORY_SEED_BINDINGS,
+  ...EDUCATION_CATEGORY_SEED_BINDINGS,
+  ...MENTAL_HEALTH_CATEGORY_SEED_BINDINGS,
 ].map((bindings) => bindings[0]);
 
 function trustedSqlStringList(values: readonly string[]) {
@@ -4155,7 +4181,20 @@ const MANAGED_EXTERNAL_CATEGORY_ID_LITERALS = trustedSqlStringList(
 );
 const MANAGED_EXTERNAL_SCOPE_SQL = `(managed_rule.id LIKE 'isc2-%'
   OR managed_rule.id LIKE 'comptia-%'
-  OR managed_rule.profession = 'Insurance')`;
+  OR managed_rule.profession = 'Insurance'
+  OR managed_rule.id LIKE 'nremt-%'
+  OR managed_rule.id LIKE 'ca-child-development-permit-%'
+  OR managed_rule.id LIKE 'tx-standard-classroom-teacher-%'
+  OR managed_rule.id LIKE 'ny-professional-classroom-teacher-%'
+  OR managed_rule.id LIKE 'ny-professional-esol-bilingual-%'
+  OR managed_rule.id LIKE 'nj-employed-teacher-%'
+  OR managed_rule.id LIKE 'pa-professional-educator-%'
+  OR managed_rule.id LIKE 'ca-bbs-%'
+  OR managed_rule.id LIKE 'tx-lpc-%'
+  OR managed_rule.id LIKE 'ny-lmsw-lcsw-%'
+  OR managed_rule.id LIKE 'nj-lpc-%'
+  OR managed_rule.id LIKE 'pa-lpc-%'
+  OR managed_rule.id LIKE 'fl-lcsw-lmft-lmhc-%')`;
 
 const RETIRE_MISSING_MANAGED_RULE_SETS_SQL = `UPDATE rule_sets AS managed_rule
 SET is_current = 0
@@ -4285,6 +4324,8 @@ const MAXIMUM_CLASSIFICATION_RULE_SET_IDS = [
   "isc2-csslp-2026-v1",
   "isc2-cgrc-2026-v1",
   ...COMPTIA_RULE_SET_IDS,
+  ...EDUCATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+  ...MENTAL_HEALTH_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
 ] as const;
 
 const ACTIVE_CATALOG_SNAPSHOT_RULE_SET_IDS = [

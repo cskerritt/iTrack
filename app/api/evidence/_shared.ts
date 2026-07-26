@@ -172,6 +172,32 @@ export async function findOwnedEvidence(
   ).first<EvidenceRow>();
 }
 
+export async function assertActivityEvidenceMutable(
+  database: D1Database,
+  userId: string,
+  activityId: string,
+) {
+  const closedCycle = await query(
+    database,
+    `SELECT 1 AS isClosed
+     FROM activity_allocations allocation
+     JOIN credentials credential
+       ON credential.id = allocation.credential_id
+      AND credential.user_id = ?
+     WHERE allocation.activity_id = ?
+       AND credential.status = 'renewed'
+     LIMIT 1`,
+    [userId, activityId],
+  ).first<{ isClosed: number }>();
+  if (closedCycle) {
+    throw new EvidenceApiError(
+      "Evidence linked to an accepted renewal cycle cannot be changed.",
+      409,
+      "cycle_closed",
+    );
+  }
+}
+
 export function sanitizeFilename(value: string, detected: DetectedFile) {
   const leaf = value.split(/[\\/]/).pop() ?? "";
   let safe = leaf

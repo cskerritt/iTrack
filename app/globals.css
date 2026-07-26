@@ -2537,6 +2537,123 @@ a {
   margin: 0;
 }
 
+.nremt-requirement-allocator {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  border: 1px solid #cfe0d7;
+  border-radius: 13px;
+  background: #f7faf8;
+  padding: 14px;
+}
+
+.nremt-requirement-allocator > legend {
+  color: #536762;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 0 5px;
+}
+
+.nremt-requirement-allocator > p,
+.nremt-allocation-heading small {
+  margin: 0;
+  color: #78847f;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.nremt-requirement-allocator > section {
+  display: grid;
+  gap: 7px;
+}
+
+.nremt-allocation-heading {
+  display: grid;
+  gap: 2px;
+}
+
+.nremt-allocation-heading strong {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.nremt-allocation-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.nremt-allocation-list.topics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.nremt-allocation-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 76px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--white);
+  padding: 8px;
+}
+
+.nremt-allocation-row span,
+.nremt-allocation-row strong,
+.nremt-allocation-row small {
+  display: block;
+}
+
+.nremt-allocation-row strong {
+  color: var(--ink);
+  font-size: 9px;
+}
+
+.nremt-allocation-row small {
+  margin-top: 2px;
+  color: #87918d;
+  font-size: 7px;
+  line-height: 1.35;
+}
+
+.nremt-allocation-row input {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--white);
+  color: var(--ink-deep);
+  padding: 8px;
+}
+
+.nremt-education-attestation {
+  margin-top: 2px;
+}
+
+.nremt-current-template > strong {
+  margin-top: 5px;
+}
+
+.nremt-checklist-note {
+  margin-bottom: 12px;
+  border: 1px solid #d9e4dd;
+  border-radius: 11px;
+  background: #f8faf7;
+  padding: 11px 12px;
+}
+
+.nremt-checklist-note strong {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.nremt-checklist-note p {
+  margin: 4px 0 0;
+  color: #78847f;
+  font-size: 8px;
+  line-height: 1.5;
+}
+
 .condition-review {
   border: 1px solid #d9e4dd;
   border-radius: 13px;
@@ -4152,6 +4269,11 @@ a {
 
   .requirement-choice.nested {
     margin-left: 8px;
+  }
+
+  .nremt-allocation-list,
+  .nremt-allocation-list.topics {
+    grid-template-columns: 1fr;
   }
 
   .condition-list > article {

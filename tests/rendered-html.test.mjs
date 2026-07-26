@@ -37,13 +37,13 @@ function normalizedSql(value) {
 }
 
 function isOwnedCredentialCycleLookup(sql) {
-  return /SELECT id, status, cycle_start AS cycleStart, deadline FROM credentials WHERE id = \? AND user_id = \?/i.test(
+  return /SELECT id, status,(?: rule_set_id AS ruleSetId,)? cycle_start AS cycleStart, deadline FROM credentials WHERE id = \? AND user_id = \?/i.test(
     sql,
   );
 }
 
 function isOwnedActivityCycleLookup(sql) {
-  return /SELECT id, total_units AS totalUnits, completion_date AS completionDate FROM activities WHERE id = \? AND user_id = \?/i.test(
+  return /SELECT id, total_units AS totalUnits, completion_date AS completionDate, evidence_status AS evidenceStatus FROM activities WHERE id = \? AND user_id = \?/i.test(
     sql,
   );
 }
@@ -55,8 +55,12 @@ function isRequirementTagLookup(sql) {
 }
 
 function isRequiredMaximumGroupLookup(sql) {
-  return /SELECT DISTINCT requirement\.exclusive_group AS exclusiveGroup FROM credential_requirements requirement JOIN credentials credential[\s\S]*?requirement\.kind = 'maximum'[\s\S]*?requirement\.exclusive_group IS NOT NULL/i.test(
-    sql,
+  return (
+    /SELECT DISTINCT requirement\.exclusive_group AS exclusiveGroup FROM credential_requirements requirement JOIN credentials credential/i.test(
+      sql,
+    ) &&
+    /requirement\.kind = 'maximum'/i.test(sql) &&
+    /requirement\.exclusive_group IS NOT NULL/i.test(sql)
   );
 }
 
@@ -110,11 +114,12 @@ class FakeStatement {
 }
 
 class FakeDatabase {
-  constructor({ resolveFirst, resolveAll } = {}) {
+  constructor({ resolveFirst, resolveAll, resolveBatch } = {}) {
     this.calls = [];
     this.batches = [];
     this.resolveFirst = resolveFirst ?? (() => null);
     this.resolveAll = resolveAll ?? (() => []);
+    this.resolveBatch = resolveBatch ?? (() => undefined);
   }
 
   prepare(sql) {
@@ -129,6 +134,8 @@ class FakeDatabase {
     }));
     this.batches.push(snapshot);
     this.calls.push(...snapshot);
+    const resolved = await this.resolveBatch(snapshot);
+    if (resolved !== undefined) return resolved;
     return snapshot.map(() => ({ success: true, results: [], meta: {} }));
   }
 }
@@ -403,6 +410,32 @@ const runtimeCatalogModules = [
       "INSURANCE_RULE_SET_SEED_BINDINGS",
     ],
   },
+  {
+    moduleName: "nremt",
+    sourceUrl: new URL("../db/catalog/nremt.ts", import.meta.url),
+    exports: [
+      "NREMT_CATEGORY_SEED_BINDINGS",
+      "NREMT_RULE_SET_SEED_BINDINGS",
+    ],
+  },
+  {
+    moduleName: "education",
+    sourceUrl: new URL("../db/catalog/education.ts", import.meta.url),
+    exports: [
+      "EDUCATION_CATEGORY_SEED_BINDINGS",
+      "EDUCATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+      "EDUCATION_RULE_SET_SEED_BINDINGS",
+    ],
+  },
+  {
+    moduleName: "mentalHealth",
+    sourceUrl: new URL("../db/catalog/mentalHealth.ts", import.meta.url),
+    exports: [
+      "MENTAL_HEALTH_CATEGORY_SEED_BINDINGS",
+      "MENTAL_HEALTH_MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+      "MENTAL_HEALTH_RULE_SET_SEED_BINDINGS",
+    ],
+  },
 ];
 
 async function importTypeScriptModule(source) {
@@ -656,6 +689,688 @@ test("License Lantern product contract", async (t) => {
           credits: 2,
         },
       );
+    },
+  );
+
+  await t.test(
+    "seeds source-linked EMS, educator, and mental-health templates with enforceable boundaries",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const [runtimeSource, workspaceRouteSource, clientSource] =
+        await Promise.all([
+          readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
+          readFile(
+            new URL("../app/api/workspace/route.ts", import.meta.url),
+            "utf8",
+          ),
+          readFile(
+            new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+            "utf8",
+          ),
+        ]);
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __licensedProfessionCatalogNonce = "expanded";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      testCloudflareEnv.DB = database;
+      const raw = database.raw;
+      const rows = (sql) =>
+        raw
+          .prepare(sql)
+          .all()
+          .map((row) => ({ ...row }));
+      const newRuleScope = `(
+        rule.id LIKE 'nremt-%'
+        OR rule.id LIKE 'ca-child-development-permit-%'
+        OR rule.id LIKE 'tx-standard-classroom-teacher-%'
+        OR rule.id LIKE 'ny-professional-classroom-teacher-%'
+        OR rule.id LIKE 'ny-professional-esol-bilingual-%'
+        OR rule.id LIKE 'nj-employed-teacher-%'
+        OR rule.id LIKE 'pa-professional-educator-%'
+        OR rule.id LIKE 'ca-bbs-%'
+        OR rule.id LIKE 'tx-lpc-%'
+        OR rule.id LIKE 'ny-lmsw-lcsw-%'
+        OR rule.id LIKE 'nj-lpc-%'
+        OR rule.id LIKE 'pa-lpc-%'
+        OR rule.id LIKE 'fl-lcsw-lmft-lmhc-%'
+      )`;
+
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(*) AS totalRules,
+                 SUM(CASE WHEN rule.is_current = 1 THEN 1 ELSE 0 END) AS currentRules,
+                 SUM(
+                   CASE
+                     WHEN rule.last_verified_at = '2026-07-26'
+                       AND rule.review_status = 'source_linked_check_conditions'
+                       AND rule.source_url LIKE 'https://%'
+                     THEN 1 ELSE 0
+                   END
+                 ) AS verifiedRules
+               FROM rule_sets rule
+               WHERE ${newRuleScope}`,
+            )
+            .get(),
+        },
+        { totalRules: 17, currentRules: 17, verifiedRules: 17 },
+      );
+      assert.equal(
+        raw.prepare("SELECT COUNT(*) AS count FROM rule_categories").get()
+          .count,
+        440,
+      );
+
+      assert.deepEqual(
+        rows(
+          `SELECT
+             rule.id,
+             rule.total_units AS totalUnits,
+             COUNT(category.id) AS categoryCount,
+             SUM(category.required_units) AS requiredTotal,
+             COUNT(DISTINCT category.exclusive_group) AS groupCount
+           FROM rule_sets rule
+           JOIN rule_categories category ON category.rule_set_id = rule.id
+           WHERE rule.id LIKE 'nremt-%'
+           GROUP BY rule.id, rule.total_units
+           ORDER BY rule.total_units`,
+        ),
+        [
+          {
+            id: "nremt-emr-nccp-ce-2025-v1",
+            totalUnits: 16,
+            categoryCount: 9,
+            requiredTotal: 24.8,
+            groupCount: 1,
+          },
+          {
+            id: "nremt-emt-nccp-ce-2025-v1",
+            totalUnits: 40,
+            categoryCount: 9,
+            requiredTotal: 62,
+            groupCount: 1,
+          },
+          {
+            id: "nremt-aemt-nccp-ce-2025-v1",
+            totalUnits: 50,
+            categoryCount: 9,
+            requiredTotal: 77.5,
+            groupCount: 1,
+          },
+          {
+            id: "nremt-paramedic-nccp-ce-2025-v1",
+            totalUnits: 60,
+            categoryCount: 9,
+            requiredTotal: 93,
+            groupCount: 1,
+          },
+        ],
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT
+             rule_set_id AS ruleSetId,
+             COUNT(DISTINCT exclusive_group) AS groupCount
+           FROM rule_categories
+           WHERE rule_set_id LIKE 'fl-lcsw-lmft-lmhc-%'
+           GROUP BY rule_set_id
+           ORDER BY rule_set_id`,
+        ),
+        [
+          {
+            ruleSetId:
+              "fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-v1",
+            groupCount: 3,
+          },
+          {
+            ruleSetId:
+              "fl-lcsw-lmft-lmhc-telehealth-phase-2026-v1",
+            groupCount: 3,
+          },
+        ],
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT
+             name,
+             required_units AS requiredUnits,
+             relation,
+             parent_category_id AS parentCategoryId,
+             exclusive_group AS exclusiveGroup
+           FROM rule_categories
+           WHERE rule_set_id = 'nremt-emt-nccp-ce-2025-v1'
+           ORDER BY sort_order`,
+        ),
+        [
+          {
+            name: "National Component",
+            requiredUnits: 20,
+            relation: "independent",
+            parentCategoryId: null,
+            exclusiveGroup: "nremt-emt-nccp-ce-2025-component",
+          },
+          {
+            name: "National Topic — Airway",
+            requiredUnits: 4,
+            relation: "nested",
+            parentCategoryId: "nremt-emt-nccp-ce-2025-national",
+            exclusiveGroup: null,
+          },
+          {
+            name: "National Topic — Cardiology",
+            requiredUnits: 5,
+            relation: "nested",
+            parentCategoryId: "nremt-emt-nccp-ce-2025-national",
+            exclusiveGroup: null,
+          },
+          {
+            name: "National Topic — Trauma",
+            requiredUnits: 3,
+            relation: "nested",
+            parentCategoryId: "nremt-emt-nccp-ce-2025-national",
+            exclusiveGroup: null,
+          },
+          {
+            name: "National Topic — Medical",
+            requiredUnits: 6,
+            relation: "nested",
+            parentCategoryId: "nremt-emt-nccp-ce-2025-national",
+            exclusiveGroup: null,
+          },
+          {
+            name: "National Topic — Operations",
+            requiredUnits: 2,
+            relation: "nested",
+            parentCategoryId: "nremt-emt-nccp-ce-2025-national",
+            exclusiveGroup: null,
+          },
+          {
+            name: "National Pediatric Content",
+            requiredUnits: 2,
+            relation: "overlapping",
+            parentCategoryId: null,
+            exclusiveGroup: null,
+          },
+          {
+            name: "Local/State Component",
+            requiredUnits: 10,
+            relation: "independent",
+            parentCategoryId: null,
+            exclusiveGroup: "nremt-emt-nccp-ce-2025-component",
+          },
+          {
+            name: "Individual Component",
+            requiredUnits: 10,
+            relation: "independent",
+            parentCategoryId: null,
+            exclusiveGroup: "nremt-emt-nccp-ce-2025-component",
+          },
+        ],
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_sets
+             WHERE id LIKE 'nremt-%'
+               AND source_title LIKE '%Recertification by Examination is a separate%'
+               AND source_title LIKE '%state EMS license%'
+               AND source_title LIKE '%post-cap credit%'
+               AND (
+                 source_title LIKE '%Training Officer%'
+                 OR source_title LIKE '%Medical Director%'
+               )`,
+          )
+          .get().count,
+        4,
+      );
+
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(DISTINCT rule.id) AS ruleCount,
+                 COUNT(category.id) AS categoryCount
+               FROM rule_sets rule
+               JOIN rule_categories category ON category.rule_set_id = rule.id
+               WHERE rule.profession = 'Education'`,
+            )
+            .get(),
+        },
+        { ruleCount: 6, categoryCount: 20 },
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT
+             rule_set_id AS ruleSetId,
+             required_units AS requiredUnits
+           FROM rule_categories
+           WHERE name = 'Language Acquisition Addressing English Language Learners'
+           ORDER BY required_units`,
+        ),
+        [
+          {
+            ruleSetId:
+              "ny-professional-classroom-teacher-standard-ctle-2026-v1",
+            requiredUnits: 15,
+          },
+          {
+            ruleSetId: "ny-professional-esol-bilingual-ctle-2026-v1",
+            requiredUnits: 50,
+          },
+        ],
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT name, required_units AS requiredUnits, kind
+           FROM rule_categories
+           WHERE rule_set_id = 'tx-standard-classroom-teacher-2026-v1'
+           ORDER BY sort_order`,
+        ),
+        [
+          {
+            name: "Other Approved CPE Activity",
+            requiredUnits: 0,
+            kind: "informational",
+          },
+          {
+            name: "Independent Study",
+            requiredUnits: 30,
+            kind: "maximum",
+          },
+          {
+            name: "Developing, Teaching, or Presenting CPE",
+            requiredUnits: 15,
+            kind: "maximum",
+          },
+          {
+            name: "Mentoring Another Educator",
+            requiredUnits: 45,
+            kind: "maximum",
+          },
+          {
+            name:
+              "Listed Classroom-Teacher Topic Pool — confirm current TEA instruction",
+            requiredUnits: 0,
+            kind: "informational",
+          },
+        ],
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 source_url AS sourceUrl,
+                 source_title LIKE '%§21.054(d-2)%' AS creditsExcess,
+                 source_title LIKE '%does not enforce a 37.5-hour minimum%' AS noFalseFloor
+               FROM rule_sets
+               WHERE id = 'tx-standard-classroom-teacher-2026-v1'`,
+            )
+            .get(),
+        },
+        {
+          sourceUrl:
+            "https://tea.texas.gov/laws-and-rules/sbec-rules-tac/sbec-tac-currently-effect/ch232a-3.pdf",
+          creditsExcess: 1,
+          noFalseFloor: 1,
+        },
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT required_units AS requiredUnits, applicability
+               FROM rule_categories
+               WHERE id = 'nj-employed-teacher-annual-pd-2026-dyslexia'`,
+            )
+            .get(),
+        },
+        { requiredUnits: 2, applicability: "conditional" },
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_sets
+             WHERE id = 'nj-employed-teacher-annual-pd-2026-v1'
+               AND source_title LIKE '%media-specialist%'
+               AND source_title LIKE '%July 1, 2025%'
+               AND source_title LIKE '%no statewide numeric duration%'`,
+          )
+          .get().count,
+        1,
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_sets
+             WHERE id = 'pa-professional-educator-act-48-2026-v1'
+               AND source_title LIKE '%Act 55%'
+               AND source_title LIKE '%three hours of school-safety%'
+               AND source_title LIKE '%2028–29%'
+               AND source_title LIKE '%custom plan%'`,
+          )
+          .get().count,
+        1,
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_sets
+             WHERE profession = 'Education'
+               AND (
+                 jurisdiction = 'Florida'
+                 OR credential_name LIKE '%Clear%'
+                 OR credential_name LIKE '%Preliminary%'
+               )`,
+          )
+          .get().count,
+        0,
+      );
+
+      const mentalRuleScope = `(
+        rule.id LIKE 'ca-bbs-%'
+        OR rule.id LIKE 'tx-lpc-%'
+        OR rule.id LIKE 'ny-lmsw-lcsw-%'
+        OR rule.id LIKE 'nj-lpc-%'
+        OR rule.id LIKE 'pa-lpc-%'
+        OR rule.id LIKE 'fl-lcsw-lmft-lmhc-%'
+      )`;
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(DISTINCT rule.id) AS ruleCount,
+                 COUNT(category.id) AS categoryCount,
+                 SUM(CASE WHEN category.applicability = 'conditional' THEN 1 ELSE 0 END) AS conditionalCount
+               FROM rule_sets rule
+               JOIN rule_categories category ON category.rule_set_id = rule.id
+               WHERE ${mentalRuleScope}`,
+            )
+            .get(),
+        },
+        { ruleCount: 7, categoryCount: 57, conditionalCount: 13 },
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT
+             rule_set_id AS ruleSetId,
+             SUM(required_units) AS requiredTotal,
+             COUNT(*) AS bucketCount,
+             COUNT(DISTINCT exclusive_group) AS groupCount
+           FROM rule_categories
+           WHERE rule_set_id LIKE 'fl-lcsw-lmft-lmhc-%'
+             AND kind = 'minimum'
+             AND relation = 'independent'
+           GROUP BY rule_set_id
+           ORDER BY rule_set_id`,
+        ),
+        [
+          {
+            ruleSetId:
+              "fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-v1",
+            requiredTotal: 30,
+            bucketCount: 3,
+            groupCount: 1,
+          },
+          {
+            ruleSetId:
+              "fl-lcsw-lmft-lmhc-telehealth-phase-2026-v1",
+            requiredTotal: 30,
+            bucketCount: 3,
+            groupCount: 1,
+          },
+        ],
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT id, required_units AS requiredUnits, kind
+           FROM rule_categories
+           WHERE id IN (
+             'ca-bbs-lmft-lcsw-lpcc-standard-2026-enforcement-case-review',
+             'ca-bbs-lmft-lcsw-lpcc-standard-2026-occupational-analysis-survey',
+             'nj-lpc-standard-renewal-2026-refereed-articles',
+             'nj-lpc-standard-renewal-2026-new-course-program-presentation',
+             'fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-administrative-nonclinical',
+             'fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-presenter-moderator',
+             'fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-disciplinary-board-meeting',
+             'fl-lcsw-lmft-lmhc-telehealth-phase-2026-administrative-nonclinical',
+             'fl-lcsw-lmft-lmhc-telehealth-phase-2026-presenter-moderator',
+             'fl-lcsw-lmft-lmhc-telehealth-phase-2026-disciplinary-board-meeting'
+           )
+           ORDER BY id`,
+        ),
+        [
+          {
+            id: "ca-bbs-lmft-lcsw-lpcc-standard-2026-enforcement-case-review",
+            requiredUnits: 6,
+            kind: "maximum",
+          },
+          {
+            id: "ca-bbs-lmft-lcsw-lpcc-standard-2026-occupational-analysis-survey",
+            requiredUnits: 6,
+            kind: "maximum",
+          },
+          {
+            id: "fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-administrative-nonclinical",
+            requiredUnits: 6,
+            kind: "maximum",
+          },
+          {
+            id: "fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-disciplinary-board-meeting",
+            requiredUnits: 3,
+            kind: "maximum",
+          },
+          {
+            id: "fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-presenter-moderator",
+            requiredUnits: 10,
+            kind: "maximum",
+          },
+          {
+            id: "fl-lcsw-lmft-lmhc-telehealth-phase-2026-administrative-nonclinical",
+            requiredUnits: 6,
+            kind: "maximum",
+          },
+          {
+            id: "fl-lcsw-lmft-lmhc-telehealth-phase-2026-disciplinary-board-meeting",
+            requiredUnits: 3,
+            kind: "maximum",
+          },
+          {
+            id: "fl-lcsw-lmft-lmhc-telehealth-phase-2026-presenter-moderator",
+            requiredUnits: 10,
+            kind: "maximum",
+          },
+          {
+            id: "nj-lpc-standard-renewal-2026-new-course-program-presentation",
+            requiredUnits: 9,
+            kind: "maximum",
+          },
+          {
+            id: "nj-lpc-standard-renewal-2026-refereed-articles",
+            requiredUnits: 8,
+            kind: "maximum",
+          },
+        ],
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_sets
+             WHERE id = 'ny-lmsw-lcsw-standard-registration-2026-v1'
+               AND source_title LIKE '%November 17, 2026%'
+               AND source_title LIKE '%15-minute addendum%'
+               AND source_title LIKE '%15 hours per semester credit%'`,
+          )
+          .get().count,
+        1,
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_sets
+             WHERE id LIKE 'fl-lcsw-lmft-lmhc-%'
+               AND source_title LIKE '%two years following the renewal period%'
+               AND source_title LIKE '%graduate-course instructor%'
+               AND source_title LIKE '%initial two-hour Domestic Violence%'`,
+          )
+          .get().count,
+        2,
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT id, required_units AS requiredUnits, kind, applicability
+           FROM rule_categories
+           WHERE id IN (
+             'ca-bbs-lmft-lcsw-lpcc-standard-2026-law-ethics',
+             'ca-bbs-lmft-lcsw-lpcc-standard-2026-teaching',
+             'tx-lpc-standard-renewal-2026-confirmed-carryover',
+             'ny-lmsw-lcsw-standard-registration-2026-self-study',
+             'nj-lpc-standard-renewal-2026-confirmed-carryover'
+           )
+           ORDER BY id`,
+        ),
+        [
+          {
+            id: "ca-bbs-lmft-lcsw-lpcc-standard-2026-law-ethics",
+            requiredUnits: 6,
+            kind: "minimum",
+            applicability: "always",
+          },
+          {
+            id: "ca-bbs-lmft-lcsw-lpcc-standard-2026-teaching",
+            requiredUnits: 18,
+            kind: "maximum",
+            applicability: "optional",
+          },
+          {
+            id: "nj-lpc-standard-renewal-2026-confirmed-carryover",
+            requiredUnits: 10,
+            kind: "maximum",
+            applicability: "conditional",
+          },
+          {
+            id: "ny-lmsw-lcsw-standard-registration-2026-self-study",
+            requiredUnits: 12,
+            kind: "maximum",
+            applicability: "optional",
+          },
+          {
+            id: "tx-lpc-standard-renewal-2026-confirmed-carryover",
+            requiredUnits: 10,
+            kind: "maximum",
+            applicability: "conditional",
+          },
+        ],
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT
+             id,
+             relation,
+             exclusive_group AS exclusiveGroup
+           FROM rule_categories
+           WHERE id IN (
+             'tx-lpc-standard-renewal-2026-confirmed-carryover',
+             'nj-lpc-standard-renewal-2026-confirmed-carryover'
+           )
+           ORDER BY id`,
+        ),
+        [
+          {
+            id: "nj-lpc-standard-renewal-2026-confirmed-carryover",
+            relation: "independent",
+            exclusiveGroup: "New Jersey LPC CE activity source",
+          },
+          {
+            id: "tx-lpc-standard-renewal-2026-confirmed-carryover",
+            relation: "independent",
+            exclusiveGroup: "Texas LPC CE activity source",
+          },
+        ],
+      );
+
+      assert.equal(
+        raw
+          .prepare(
+            `WITH ranked AS (
+               SELECT
+                 category.sort_order AS sortOrder,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY category.rule_set_id
+                   ORDER BY category.sort_order, category.id
+                 ) - 1 AS expectedSortOrder
+               FROM rule_categories category
+               JOIN rule_sets rule ON rule.id = category.rule_set_id
+               WHERE ${newRuleScope}
+             )
+             SELECT COUNT(*) AS count
+             FROM ranked
+             WHERE sortOrder <> expectedSortOrder`,
+          )
+          .get().count,
+        0,
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_categories category
+             JOIN rule_sets rule ON rule.id = category.rule_set_id
+             LEFT JOIN rule_categories parent
+               ON parent.id = category.parent_category_id
+               AND parent.rule_set_id = category.rule_set_id
+             WHERE ${newRuleScope}
+               AND category.relation = 'nested'
+               AND parent.id IS NULL`,
+          )
+          .get().count,
+        0,
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_categories category
+             JOIN rule_sets rule ON rule.id = category.rule_set_id
+             WHERE ${newRuleScope}
+               AND category.applicability = 'conditional'
+               AND (
+                 category.condition_note IS NULL
+                 OR LENGTH(TRIM(category.condition_note)) < 30
+               )`,
+          )
+          .get().count,
+        0,
+      );
+
+      assert.match(
+        runtimeSource,
+        /MAXIMUM_CLASSIFICATION_RULE_SET_IDS[\s\S]*?\.\.\.EDUCATION_MAXIMUM_CLASSIFICATION_RULE_SET_IDS[\s\S]*?\.\.\.MENTAL_HEALTH_MAXIMUM_CLASSIFICATION_RULE_SET_IDS/,
+      );
+      assert.match(
+        workspaceRouteSource,
+        /NREMT_RULE_SET_PREFIX[\s\S]*?Classify accepted credits as National, Local\/State, or Individual[\s\S]*?nremt_submission_attestation_required/,
+      );
+      assert.match(
+        workspaceRouteSource,
+        /COMPLIANCE_PERIOD_RULE_SET_PREFIXES[\s\S]*?ny-professional-classroom-teacher-[\s\S]*?ny-professional-esol-bilingual-[\s\S]*?nj-employed-teacher-annual-pd-[\s\S]*?pa-professional-educator-act-48-/,
+      );
+      assert.match(
+        clientSource,
+        /isFloridaMentalHealthPhaseCredential[\s\S]*?requiresCurrentNextTemplate[\s\S]*?Choose the phase shown by CE Broker/,
+      );
+      database.close();
     },
   );
 
@@ -980,6 +1695,40 @@ test("License Lantern product contract", async (t) => {
         name: "Ways of Working",
         ruleCategoryId: "pmi-pmp-2026-ways-of-working",
       };
+      const californiaSupervision = {
+        id: "requirement-ca-supervision",
+        name: "Supervision Continuing Professional Development",
+        ruleCategoryId:
+          "ca-bbs-lmft-lcsw-lpcc-standard-2026-supervision-cpd",
+      };
+      const californiaLawEthics = {
+        id: "requirement-ca-law-ethics",
+        name: "Law and Ethics",
+        ruleCategoryId:
+          "ca-bbs-lmft-lcsw-lpcc-standard-2026-law-ethics",
+      };
+      const newJerseyCarryover = {
+        id: "requirement-nj-carryover",
+        name: "Committee-Confirmed Carryover",
+        ruleCategoryId:
+          "nj-lpc-standard-renewal-2026-confirmed-carryover",
+      };
+      const newJerseyOpioid = {
+        id: "requirement-nj-opioid",
+        name: "Prescription Opioid Risks",
+        ruleCategoryId: "nj-lpc-standard-renewal-2026-opioid",
+      };
+      const pennsylvaniaEthics = {
+        id: "requirement-pa-ethics",
+        name: "Ethics",
+        ruleCategoryId: "pa-lpc-standard-renewal-2026-ethics",
+      };
+      const pennsylvaniaSuicidePrevention = {
+        id: "requirement-pa-suicide",
+        name: "Suicide Prevention",
+        ruleCategoryId:
+          "pa-lpc-standard-renewal-2026-suicide-prevention",
+      };
       for (const [classifier, disallowedTag, messagePattern] of [
         [
           bls,
@@ -995,6 +1744,21 @@ test("License Lantern product contract", async (t) => {
           givingBack,
           waysOfWorking,
           /Giving Back PDUs[\s\S]*?cannot satisfy Talent Triangle Education/i,
+        ],
+        [
+          californiaSupervision,
+          californiaLawEthics,
+          /supervision CPD cannot also satisfy the general Law and Ethics/i,
+        ],
+        [
+          newJerseyCarryover,
+          newJerseyOpioid,
+          /carryover cannot satisfy the current-period prescription-opioid/i,
+        ],
+        [
+          pennsylvaniaEthics,
+          pennsylvaniaSuicidePrevention,
+          /suicide-prevention credit cannot also satisfy the ethics/i,
         ],
       ]) {
         assert.equal(
@@ -1034,6 +1798,216 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
+    "models Florida mental-health phase alternation and fixed odd-year cycles",
+    async () => {
+      const floridaSource = await readFile(
+        new URL("../app/lib/floridaMentalHealth.ts", import.meta.url),
+        "utf8",
+      );
+      const floridaModule = await importTypeScriptModule(floridaSource);
+      const ethics =
+        "fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-v1";
+      const telehealth =
+        "fl-lcsw-lmft-lmhc-telehealth-phase-2026-v1";
+      assert.equal(
+        floridaModule.oppositeFloridaMentalHealthRuleSetId(ethics),
+        telehealth,
+      );
+      assert.equal(
+        floridaModule.oppositeFloridaMentalHealthRuleSetId(telehealth),
+        ethics,
+      );
+      assert.equal(
+        floridaModule.oppositeFloridaMentalHealthRuleSetId(
+          "fl-lcsw-lmft-lmhc-unknown",
+        ),
+        null,
+      );
+      assert.equal(
+        floridaModule.isFloridaMentalHealthCycle(
+          "2025-04-01",
+          "2027-03-31",
+        ),
+        true,
+      );
+      for (const [cycleStart, deadline] of [
+        ["2026-04-01", "2028-03-31"],
+        ["2025-04-02", "2027-03-31"],
+        ["2025-04-01", "2028-03-31"],
+        ["not-a-date", "2027-03-31"],
+      ]) {
+        assert.equal(
+          floridaModule.isFloridaMentalHealthCycle(cycleStart, deadline),
+          false,
+        );
+      }
+      assert.deepEqual(
+        floridaModule.nextFloridaMentalHealthCycle("2027-03-31"),
+        {
+          cycleStart: "2027-04-01",
+          deadline: "2029-03-31",
+        },
+      );
+      assert.equal(
+        floridaModule.nextFloridaMentalHealthCycle("2028-03-31"),
+        null,
+      );
+    },
+  );
+
+  await t.test(
+    "uses explicit carryover policies and clamps leap-day lookbacks",
+    async () => {
+      const carryoverSource = await readFile(
+        new URL("../app/lib/carryover.ts", import.meta.url),
+        "utf8",
+      );
+      const carryoverModule =
+        await importTypeScriptModule(carryoverSource);
+      assert.equal(
+        carryoverModule.portalCarryoverLookbackYears(
+          "pa-professional-educator-act-48-2026-confirmed-carryover",
+        ),
+        2,
+      );
+      assert.equal(
+        carryoverModule.portalCarryoverLookbackYears(
+          "invented-confirmed-carryover",
+        ),
+        null,
+      );
+      assert.equal(
+        carryoverModule.calendarYearsBefore("2028-02-29", 1),
+        "2027-02-28",
+      );
+      assert.equal(
+        carryoverModule.calendarYearsBefore("2028-02-29", 2),
+        "2026-02-28",
+      );
+    },
+  );
+
+  await t.test(
+    "solves overlapping capped credit as one exact feasible allocation",
+    async () => {
+      const cappedCreditSource = await readFile(
+        new URL("../app/lib/cappedCredit.ts", import.meta.url),
+        "utf8",
+      );
+      const cappedCreditModule =
+        await importTypeScriptModule(cappedCreditSource);
+      const solve = cappedCreditModule.cappedCreditTotals;
+
+      assert.deepEqual(
+        solve(
+          [{ allocationId: "shared", allocatedUnits: 12 }],
+          [
+            {
+              requirementId: "administrative",
+              maximumUnits: 6,
+              matches: [
+                { allocationId: "shared", matchedUnits: 12 },
+              ],
+            },
+            {
+              requirementId: "presenter",
+              maximumUnits: 10,
+              matches: [
+                { allocationId: "shared", matchedUnits: 12 },
+              ],
+            },
+          ],
+        ),
+        { countableUnits: 6, excludedUnits: 6 },
+      );
+
+      const intersectionModel = {
+        allocations: [
+          { allocationId: "shared", allocatedUnits: 10 },
+          { allocationId: "a-only", allocatedUnits: 10 },
+          { allocationId: "b-only", allocatedUnits: 10 },
+        ],
+        constraints: [
+          {
+            requirementId: "a",
+            maximumUnits: 10,
+            matches: [
+              { allocationId: "shared", matchedUnits: 10 },
+              { allocationId: "a-only", matchedUnits: 10 },
+            ],
+          },
+          {
+            requirementId: "b",
+            maximumUnits: 10,
+            matches: [
+              { allocationId: "shared", matchedUnits: 10 },
+              { allocationId: "b-only", matchedUnits: 10 },
+            ],
+          },
+        ],
+      };
+      assert.deepEqual(
+        solve(
+          intersectionModel.allocations,
+          intersectionModel.constraints,
+        ),
+        { countableUnits: 20, excludedUnits: 10 },
+      );
+      assert.deepEqual(
+        solve(
+          [...intersectionModel.allocations].reverse(),
+          [...intersectionModel.constraints].reverse(),
+        ),
+        { countableUnits: 20, excludedUnits: 10 },
+      );
+      assert.deepEqual(
+        solve(
+          [
+            { allocationId: "a-only", allocatedUnits: 10 },
+            { allocationId: "b-only", allocatedUnits: 10 },
+          ],
+          [
+            {
+              requirementId: "a",
+              maximumUnits: 6,
+              matches: [
+                { allocationId: "a-only", matchedUnits: 10 },
+              ],
+            },
+            {
+              requirementId: "b",
+              maximumUnits: 7,
+              matches: [
+                { allocationId: "b-only", matchedUnits: 10 },
+              ],
+            },
+          ],
+        ),
+        { countableUnits: 13, excludedUnits: 7 },
+      );
+      assert.throws(
+        () =>
+          solve(
+            [{ allocationId: "partial", allocatedUnits: 1 }],
+            [
+              {
+                requirementId: "cap",
+                maximumUnits: 1,
+                matches: [
+                  {
+                    allocationId: "partial",
+                    matchedUnits: 0.5,
+                  },
+                ],
+              },
+            ],
+          ),
+        /partial allocation match/i,
+      );
+    },
+  );
+
+  await t.test(
     "builds safe all-day calendar files with escaping and Unicode-aware folding",
     async () => {
       const calendarSource = await readFile(
@@ -1041,6 +2015,13 @@ test("License Lantern product contract", async (t) => {
         "utf8",
       );
       const calendarModule = await importTypeScriptModule(calendarSource);
+      const checkInCalendarSource = await readFile(
+        new URL("../app/lib/checkInCalendar.ts", import.meta.url),
+        "utf8",
+      );
+      const checkInCalendarModule = await importTypeScriptModule(
+        checkInCalendarSource,
+      );
       const generatedAt = new Date("2026-07-26T14:05:06.000Z");
       const baseEvent = {
         uid: "credential:one/renewal",
@@ -1055,6 +2036,10 @@ test("License Lantern product contract", async (t) => {
         generatedAt,
       );
       assert.match(allDayInvite, /\r\n$/);
+      assert.match(
+        allDayInvite,
+        /\r\nX-WR-CALNAME:License Lantern check-ins\r\n/,
+      );
       assert.match(allDayInvite, /\r\nDTSTAMP:20260726T140506Z\r\n/);
       assert.match(
         allDayInvite,
@@ -1065,6 +2050,144 @@ test("License Lantern product contract", async (t) => {
       assert.doesNotMatch(
         allDayInvite,
         /DTSTART(?:;[^:]*)?:\d{8}T\d{6}/,
+      );
+
+      const reminderSchedule = [1, 30, 7, 30, -4, 999];
+      const reminderScheduleSnapshot = [...reminderSchedule];
+      const multiAlarmInvite = calendarModule.buildCalendarInvite(
+        [
+          {
+            ...baseEvent,
+            reminderDaysBefore: reminderSchedule,
+          },
+        ],
+        generatedAt,
+      );
+      assert.deepEqual(reminderSchedule, reminderScheduleSnapshot);
+      assert.deepEqual(
+        [...multiAlarmInvite.matchAll(/\r\nTRIGGER:([^\r]+)\r\n/g)].map(
+          (match) => match[1],
+        ),
+        ["-P365D", "-P30D", "-P7D", "-P1D", "-PT0M"],
+      );
+      assert.equal(
+        (multiAlarmInvite.match(/\r\nBEGIN:VALARM\r\n/g) ?? []).length,
+        5,
+      );
+      const noAlarmInvite = calendarModule.buildCalendarInvite(
+        [{ ...baseEvent, reminderDaysBefore: [] }],
+        generatedAt,
+      );
+      assert.doesNotMatch(noAlarmInvite, /BEGIN:VALARM/);
+      assert.deepEqual(
+        checkInCalendarModule.normalizedCalendarLeadDays(undefined),
+        [30],
+      );
+      assert.deepEqual(
+        checkInCalendarModule.normalizedCalendarLeadDays([]),
+        [],
+      );
+      assert.deepEqual(
+        checkInCalendarModule.normalizedCalendarLeadDays([
+          7, 30, 7,
+        ]),
+        [30, 7],
+      );
+
+      const bulkEvents =
+        checkInCalendarModule.allCheckInCalendarEvents(
+          [
+            {
+              id: "active",
+              credentialName: "Active license",
+              jurisdiction: "Test",
+              status: "active",
+              deadline: "2028-12-31",
+              tasks: [
+                {
+                  id: "review",
+                  title: "Review requirements",
+                  kind: "review",
+                  status: "pending",
+                  dueDate: "2028-09-01",
+                },
+                {
+                  id: "submission",
+                  title: "Submit renewal",
+                  kind: "submission",
+                  status: "pending",
+                  dueDate: "2028-12-31",
+                },
+              ],
+            },
+            {
+              id: "submitted",
+              ruleSetId:
+                "ny-professional-classroom-teacher-standard-ctle-2026-v1",
+              credentialName: "Submitted compliance period",
+              jurisdiction: "New York",
+              status: "submitted",
+              submittedAt: "2028-02-01T12:00:00.000Z",
+              deadline: "2028-12-31",
+              tasks: [
+                {
+                  id: "progress",
+                  title: "Retain official record",
+                  kind: "progress",
+                  status: "pending",
+                  dueDate: "2028-06-01",
+                },
+              ],
+            },
+          ],
+          [],
+        );
+      assert.deepEqual(
+        bulkEvents.map((event) => event.uid),
+        [
+          "credential-active-2028-12-31",
+          "task:review:2028-09-01",
+          "task:progress:2028-06-01",
+          "acceptance:submitted:2028-02-01",
+        ],
+      );
+      assert.equal(
+        bulkEvents.find(
+          (event) =>
+            event.uid === "acceptance:submitted:2028-02-01",
+        ).date,
+        "2028-12-31",
+      );
+      assert.ok(
+        bulkEvents.every(
+          (event) => event.reminderDaysBefore.length === 0,
+        ),
+      );
+      assert.deepEqual(
+        checkInCalendarModule.reminderCalendarEvent(
+          {
+            key: "reminder-one",
+            title: "Check status",
+            body: "Review the portal.",
+            eventDate: "2028-03-01",
+          },
+          [30, 7],
+        ).reminderDaysBefore,
+        [30, 7],
+      );
+      assert.equal(
+        checkInCalendarModule.reminderCalendarEvent(
+          {
+            key: "deadline:active:2028-12-31",
+            credentialId: "active",
+            kind: "deadline",
+            title: "Active license renewal deadline",
+            body: "Review the official record.",
+            eventDate: "2028-12-31",
+          },
+          [],
+        ).uid,
+        "credential-active-2028-12-31",
       );
 
       const escapedInvite = calendarModule.buildCalendarInvite(
@@ -1085,6 +2208,30 @@ test("License Lantern product contract", async (t) => {
       assert.ok(
         escapedInvite.includes(
           "DESCRIPTION:First\\, verify\\; then \\\\ file\\nKeep proof",
+        ),
+      );
+      const controlSafeInvite = calendarModule.buildCalendarInvite(
+        [
+          {
+            ...baseEvent,
+            title: "Before\u0000\u0007\u0085After\tTabbed\u2028Next",
+            description: "Proof\u0001\u007f retained\u2029Review",
+          },
+        ],
+        generatedAt,
+      );
+      assert.doesNotMatch(
+        controlSafeInvite,
+        /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/,
+      );
+      assert.ok(
+        controlSafeInvite.includes(
+          "SUMMARY:BeforeAfter\tTabbed\\nNext",
+        ),
+      );
+      assert.ok(
+        controlSafeInvite.includes(
+          "DESCRIPTION:Proof retained\\nReview",
         ),
       );
 
@@ -1169,6 +2316,10 @@ test("License Lantern product contract", async (t) => {
             new Date("not-a-date"),
           ),
         /calendar generation time is invalid/i,
+      );
+      assert.match(
+        calendarSource,
+        /title: "License Lantern calendar check-ins"[\s\S]*?text: "Add these license and compliance check-ins to your calendar\."/,
       );
     },
   );
@@ -1327,7 +2478,11 @@ test("License Lantern product contract", async (t) => {
         assert.match(source, /Reconnect to save/);
         assert.match(source, /Install on this device/);
         assert.match(source, /date to calendar/);
-        assert.match(source, /Add renewal dates to calendar/);
+        assert.match(source, /Add all check-ins to calendar/);
+        assert.match(
+          source,
+          /calendar can alert on the lead days selected here/,
+        );
       }
       assert.match(
         clientSource,
@@ -1436,11 +2591,11 @@ test("License Lantern product contract", async (t) => {
       );
       assert.match(
         clientSource,
-        /date:\s*reminder\.eventDate/,
+        /reminderCalendarEvent\(\s*reminder,\s*preferredCalendarLeadDays\(\)/,
       );
       assert.match(
         clientSource,
-        /date:\s*credential\.deadline/,
+        /credentialDeadlineCalendarEvent\(\s*credential,\s*preferredCalendarLeadDays\(\)/,
       );
     },
   );
@@ -3732,7 +4887,7 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
-    "seeds current ISC2, CompTIA, and state insurance templates with bounded rule graphs",
+    "seeds current cyber and insurance templates with bounded rule graphs",
     async () => {
       const { DatabaseSync } = await import("node:sqlite");
       const database = new SQLiteD1Database(DatabaseSync);
@@ -3770,7 +4925,7 @@ test("License Lantern product contract", async (t) => {
             )
             .get(),
         },
-        { totalRules: 76, currentRules: 75 },
+        { totalRules: 93, currentRules: 92 },
       );
       assert.equal(
         raw
@@ -4055,7 +5210,7 @@ test("License Lantern product contract", async (t) => {
       );
       assert.match(
         workspaceRouteSource,
-        /COMPLIANCE_PERIOD_RULE_SET_PREFIXES[\s\S]*?fl-insurance-producer-[\s\S]*?Verify official compliance status and save portal proof[\s\S]*?renewal_checkpoint_recorded[\s\S]*?compliance_checkpoint/,
+        /COMPLIANCE_PERIOD_RULE_SET_PREFIXES[\s\S]*?fl-insurance-producer-[\s\S]*?Verify official compliance status and save portal proof[\s\S]*?compliance_checkpoint_recorded[\s\S]*?compliance_checkpoint/,
       );
       assert.match(
         clientSource,
@@ -6050,12 +7205,156 @@ test("License Lantern product contract", async (t) => {
         "ethics-certificate.pdf",
         "activity-owner",
         userId,
+        result.evidence.id,
       ]);
       assert.deepEqual(evidenceXpInsert.bindings.slice(1), [
         userId,
         `${userId}:activity:activity-owner:evidence-attached`,
         "activity-owner",
+        result.evidence.id,
+        userId,
       ]);
+    },
+  );
+
+  await t.test(
+    "freezes accepted-cycle evidence and closes upload and delete races",
+    async () => {
+      const userId = await expectedStableUserId("owner@example.com");
+      const bytes = new Uint8Array([
+        0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0a,
+      ]);
+      const form = new FormData();
+      form.set("activityId", "activity-racing-acceptance");
+      form.set(
+        "file",
+        new File([bytes], "race-proof.pdf", {
+          type: "application/pdf",
+        }),
+      );
+
+      const uploadBucket = new FakeEvidenceBucket();
+      const uploadDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /SELECT id FROM activities WHERE id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return { id: call.bindings[0] };
+          }
+          if (/SELECT 1 AS isClosed FROM activity_allocations/i.test(call.sql)) {
+            return this.raceClosed ? { isClosed: 1 } : null;
+          }
+          if (/SELECT COUNT\(\*\) AS count FROM evidence_files/i.test(call.sql)) {
+            return { count: 0 };
+          }
+          return null;
+        },
+        resolveBatch(statements) {
+          if (
+            statements.some((statement) =>
+              /^INSERT INTO evidence_files \(/i.test(statement.sql),
+            )
+          ) {
+            this.raceClosed = true;
+            return statements.map(() => ({
+              success: true,
+              results: [],
+              meta: { changes: 0 },
+            }));
+          }
+          return undefined;
+        },
+      });
+      testCloudflareEnv.DB = uploadDatabase;
+      testCloudflareEnv.EVIDENCE = uploadBucket;
+
+      const uploadResponse = await postEvidence(form);
+      assert.equal(uploadResponse.status, 409);
+      assert.deepEqual(await uploadResponse.json(), {
+        error:
+          "Evidence linked to an accepted renewal cycle cannot be changed.",
+        code: "cycle_closed",
+      });
+      assert.equal(uploadBucket.puts.length, 1);
+      assert.deepEqual(uploadBucket.deletes, [uploadBucket.puts[0].key]);
+      const guardedInsert = flattenedStatements(uploadDatabase).find(
+        (statement) => /^INSERT INTO evidence_files \(/i.test(statement.sql),
+      );
+      assert.ok(guardedInsert);
+      assert.match(
+        guardedInsert.sql,
+        /SELECT \?, \?, \?, \?, \?, \?, \?, \?, \?, 'ready' WHERE NOT EXISTS \( SELECT 1 FROM activity_allocations allocation JOIN credentials credential[\s\S]*?credential\.status = 'renewed'/i,
+      );
+
+      const evidenceId = "36d2e90b-a0e9-4f61-83a7-d14a5dd467a6";
+      const deleteBucket = new FakeEvidenceBucket();
+      const deleteDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /FROM evidence_files WHERE id = \? AND user_id = \? AND status = 'ready'/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: evidenceId,
+              activityId: "activity-racing-acceptance",
+              objectKey: `evidence/${userId}/activity-racing-acceptance/${evidenceId}`,
+              originalFilename: "race-proof.pdf",
+              contentType: "application/pdf",
+              sizeBytes: bytes.byteLength,
+              sha256: "a".repeat(64),
+              storageEtag: "test-etag",
+              createdAt: "2026-07-25T12:00:00.000Z",
+            };
+          }
+          if (/SELECT 1 AS isClosed FROM activity_allocations/i.test(call.sql)) {
+            return this.raceClosed ? { isClosed: 1 } : null;
+          }
+          return null;
+        },
+        resolveBatch(statements) {
+          if (
+            /^UPDATE evidence_files SET status = 'deleting'/i.test(
+              statements[0]?.sql ?? "",
+            )
+          ) {
+            this.raceClosed = true;
+            return statements.map(() => ({
+              success: true,
+              results: [],
+              meta: { changes: 0 },
+            }));
+          }
+          return undefined;
+        },
+      });
+      testCloudflareEnv.DB = deleteDatabase;
+      testCloudflareEnv.EVIDENCE = deleteBucket;
+
+      const deleteResponse = await fetchWorker(
+        `https://license-lantern.example/api/evidence/${evidenceId}`,
+        { method: "DELETE", headers: authHeaders() },
+      );
+      assert.equal(deleteResponse.status, 409);
+      assert.deepEqual(await deleteResponse.json(), {
+        error:
+          "Evidence linked to an accepted renewal cycle cannot be changed.",
+        code: "cycle_closed",
+      });
+      assert.equal(deleteBucket.deletes.length, 0);
+      const guardedTransition = flattenedStatements(deleteDatabase).find(
+        (statement) =>
+          /^UPDATE evidence_files SET status = 'deleting'/i.test(
+            statement.sql,
+          ),
+      );
+      assert.ok(guardedTransition);
+      assert.match(
+        guardedTransition.sql,
+        /status = 'ready' AND NOT EXISTS \( SELECT 1 FROM activity_allocations allocation JOIN credentials credential[\s\S]*?credential\.status = 'renewed'/i,
+      );
     },
   );
 
@@ -7444,7 +8743,10 @@ test("License Lantern product contract", async (t) => {
                 id: "allocation-legacy",
                 credentialId: "credential-arrt",
                 allocatedUnits: 4,
+                completionDate: "2027-05-20",
                 status: "active",
+                cycleStart: "2027-01-01",
+                deadline: "2027-12-31",
               };
             }
             return null;
@@ -7705,7 +9007,10 @@ test("License Lantern product contract", async (t) => {
               id: "allocation-legacy-ptcb",
               credentialId: "credential-legacy-ptcb",
               allocatedUnits: 1,
+              completionDate: "2027-05-20",
               status: "submitted",
+              cycleStart: "2027-01-01",
+              deadline: "2027-12-31",
             };
           }
           if (
@@ -7796,6 +9101,61 @@ test("License Lantern product contract", async (t) => {
           error:
             "Giving Back PDUs, including Working as a Professional, cannot satisfy Talent Triangle Education minimums for the same activity. Choose the Giving Back activity type without Education child tags.",
         },
+        {
+          credentialId: "credential-ca-bbs",
+          left: {
+            id: "requirement-ca-supervision",
+            name: "Supervision Continuing Professional Development",
+            ruleCategoryId:
+              "ca-bbs-lmft-lcsw-lpcc-standard-2026-supervision-cpd",
+            exclusiveGroup: null,
+          },
+          right: {
+            id: "requirement-ca-law-ethics",
+            name: "Law and Ethics",
+            ruleCategoryId:
+              "ca-bbs-lmft-lcsw-lpcc-standard-2026-law-ethics",
+            exclusiveGroup: null,
+          },
+          error:
+            "California BBS supervision CPD cannot also satisfy the general Law and Ethics minimum for the same credited time.",
+        },
+        {
+          credentialId: "credential-nj-lpc",
+          left: {
+            id: "requirement-nj-carryover",
+            name: "Committee-Confirmed Carryover",
+            ruleCategoryId:
+              "nj-lpc-standard-renewal-2026-confirmed-carryover",
+            exclusiveGroup: "New Jersey LPC CE activity source",
+          },
+          right: {
+            id: "requirement-nj-opioid",
+            name: "Prescription Opioid Risks",
+            ruleCategoryId: "nj-lpc-standard-renewal-2026-opioid",
+            exclusiveGroup: null,
+          },
+          error:
+            "New Jersey LPC carryover cannot satisfy the current-period prescription-opioid requirement.",
+        },
+        {
+          credentialId: "credential-pa-lpc",
+          left: {
+            id: "requirement-pa-ethics",
+            name: "Ethics",
+            ruleCategoryId: "pa-lpc-standard-renewal-2026-ethics",
+            exclusiveGroup: null,
+          },
+          right: {
+            id: "requirement-pa-suicide",
+            name: "Suicide Prevention",
+            ruleCategoryId:
+              "pa-lpc-standard-renewal-2026-suicide-prevention",
+            exclusiveGroup: null,
+          },
+          error:
+            "Pennsylvania LPC suicide-prevention credit cannot also satisfy the ethics minimum for the same credited time.",
+        },
       ];
 
       for (const testCase of cases) {
@@ -7876,7 +9236,7 @@ test("License Lantern product contract", async (t) => {
       assert.equal(directActivityResponse.status, 409);
       assert.deepEqual(await directActivityResponse.json(), {
         error:
-          "The completion date must fall within this renewal cycle (2026-01-01 through 2026-12-31).",
+          "The activity date must fall within the target renewal cycle (2026-01-01 through 2026-12-31). A prior-period date is allowed only when every selected requirement is a portal-confirmed carryover category.",
         code: "activity_outside_cycle",
       });
       assert.equal(
@@ -7922,7 +9282,7 @@ test("License Lantern product contract", async (t) => {
       assert.equal(reusedActivityResponse.status, 409);
       assert.deepEqual(await reusedActivityResponse.json(), {
         error:
-          "The activity date must fall within the target renewal cycle (2026-01-01 through 2026-12-31).",
+          "The activity date must not be after the target renewal deadline (2026-12-31).",
         code: "activity_outside_cycle",
       });
       assert.equal(
@@ -7933,6 +9293,800 @@ test("License Lantern product contract", async (t) => {
         ),
         false,
       );
+
+      const carryoverGroup = "Pennsylvania Act 48 activity type";
+      const carryoverRequirement = {
+        id: "requirement-pa-carryover",
+        name: "PERMS-Confirmed Carryover",
+        ruleCategoryId:
+          "pa-professional-educator-act-48-2026-confirmed-carryover",
+        isActive: 1,
+        applicabilityStatus: "applies",
+        exclusiveGroup: carryoverGroup,
+      };
+      const ordinaryRequirement = {
+        id: "requirement-pa-act-126",
+        name: "Act 126 Child-Abuse Recognition and Reporting",
+        ruleCategoryId: "pa-professional-educator-act-48-2026-act-126",
+        isActive: 1,
+        applicabilityStatus: "applies",
+        exclusiveGroup: null,
+      };
+      const carryoverDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (isOwnedCredentialCycleLookup(call.sql)) {
+            return {
+              id: call.bindings[0],
+              status: "active",
+              cycleStart: "2026-01-01",
+              deadline: "2026-12-31",
+            };
+          }
+          if (
+            /SELECT rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              ruleSetId: "pa-professional-educator-act-48-2026-v1",
+            };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (isRequiredMaximumGroupLookup(call.sql)) {
+            return [{ exclusiveGroup: carryoverGroup }];
+          }
+          if (isRequirementTagLookup(call.sql)) {
+            return [carryoverRequirement, ordinaryRequirement].filter(
+              (requirement) => call.bindings.includes(requirement.id),
+            );
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = carryoverDatabase;
+      const unattestedCarryover = await postWorkspace("addActivity", {
+        title: "Unconfirmed prior-period credit",
+        provider: "PERMS",
+        completionDate: "2025-11-15",
+        totalUnits: 10,
+        credentialId: "credential-pa-current",
+        requirementIds: [carryoverRequirement.id],
+        evidenceStatus: "missing",
+      });
+      assert.equal(unattestedCarryover.status, 409);
+      assert.equal(
+        (await unattestedCarryover.json()).code,
+        "portal_carryover_attestation_required",
+      );
+
+      const staleCarryover = await postWorkspace("addActivity", {
+        title: "Too-old prior-period credit",
+        provider: "PERMS",
+        completionDate: "2023-12-31",
+        totalUnits: 10,
+        credentialId: "credential-pa-current",
+        requirementIds: [carryoverRequirement.id],
+        evidenceStatus: "missing",
+        portalCarryoverAttested: true,
+      });
+      assert.equal(staleCarryover.status, 409);
+      assert.equal(
+        (await staleCarryover.json()).code,
+        "carryover_outside_eligible_lookback",
+      );
+
+      const acceptedCarryover = await postWorkspace("addActivity", {
+        title: "PERMS-posted prior-period credit",
+        provider: "PERMS",
+        completionDate: "2025-11-15",
+        totalUnits: 10,
+        credentialId: "credential-pa-current",
+        requirementIds: [carryoverRequirement.id],
+        evidenceStatus: "missing",
+        portalCarryoverAttested: true,
+      });
+      assert.equal(acceptedCarryover.status, 200);
+      assert.ok(
+        flattenedStatements(carryoverDatabase).some((statement) =>
+          /^INSERT INTO activities \(/i.test(statement.sql),
+        ),
+      );
+
+      const reusedCarryoverDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (isOwnedActivityCycleLookup(call.sql)) {
+            return {
+              id: "activity-pa-prior",
+              totalUnits: 10,
+              completionDate: "2025-11-15",
+              evidenceStatus: "attached",
+            };
+          }
+          if (isOwnedCredentialCycleLookup(call.sql)) {
+            return {
+              id: "credential-pa-current",
+              status: "active",
+              cycleStart: "2026-01-01",
+              deadline: "2026-12-31",
+            };
+          }
+          if (
+            /SELECT rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              ruleSetId: "pa-professional-educator-act-48-2026-v1",
+            };
+          }
+          return null;
+        },
+        resolveAll: carryoverDatabase.resolveAll,
+      });
+      testCloudflareEnv.DB = reusedCarryoverDatabase;
+      const reusedCarryover = await postWorkspace(
+        "addActivityAllocation",
+        {
+          activityId: "activity-pa-prior",
+          credentialId: "credential-pa-current",
+          requirementIds: [carryoverRequirement.id],
+          allocatedUnits: 10,
+          portalCarryoverAttested: true,
+        },
+      );
+      assert.equal(reusedCarryover.status, 200);
+      assert.ok(
+        flattenedStatements(reusedCarryoverDatabase).some(
+          (statement) =>
+            /^INSERT INTO activity_allocations \(/i.test(
+              statement.sql,
+            ),
+        ),
+      );
+
+      const mixedCarryoverDatabase = new FakeDatabase({
+        resolveFirst: carryoverDatabase.resolveFirst,
+        resolveAll: carryoverDatabase.resolveAll,
+      });
+      testCloudflareEnv.DB = mixedCarryoverDatabase;
+      const mixedCarryover = await postWorkspace("addActivity", {
+        title: "Mixed prior-period allocation",
+        completionDate: "2025-11-15",
+        totalUnits: 10,
+        credentialId: "credential-pa-current",
+        requirementIds: [
+          carryoverRequirement.id,
+          ordinaryRequirement.id,
+        ],
+        evidenceStatus: "missing",
+      });
+      assert.equal(mixedCarryover.status, 409);
+      assert.equal(
+        (await mixedCarryover.json()).code,
+        "mixed_carryover_requirement_tags",
+      );
+      assert.equal(
+        flattenedStatements(mixedCarryoverDatabase).some((statement) =>
+          /^INSERT INTO (activities|activity_allocations|activity_requirement_matches) \(/i.test(
+            statement.sql,
+          ),
+        ),
+        false,
+      );
+
+      const currentPeriodCarryoverDatabase = new FakeDatabase({
+        resolveFirst: carryoverDatabase.resolveFirst,
+        resolveAll: carryoverDatabase.resolveAll,
+      });
+      testCloudflareEnv.DB = currentPeriodCarryoverDatabase;
+      const currentPeriodCarryover = await postWorkspace("addActivity", {
+        title: "Current-period credit mislabeled as carryover",
+        completionDate: "2026-02-15",
+        totalUnits: 10,
+        credentialId: "credential-pa-current",
+        requirementIds: [carryoverRequirement.id],
+        evidenceStatus: "missing",
+        portalCarryoverAttested: true,
+      });
+      assert.equal(currentPeriodCarryover.status, 409);
+      assert.equal(
+        (await currentPeriodCarryover.json()).code,
+        "carryover_requires_prior_period_date",
+      );
+
+      const retagDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /FROM activity_allocations allocation JOIN activities activity ON activity\.id = allocation\.activity_id JOIN credentials credential ON credential\.id = allocation\.credential_id WHERE allocation\.id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "allocation-pa-carryover",
+              credentialId: "credential-pa-current",
+              allocatedUnits: 10,
+              completionDate: "2025-11-15",
+              status: "active",
+              cycleStart: "2026-01-01",
+              deadline: "2026-12-31",
+            };
+          }
+          if (
+            /SELECT rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              ruleSetId: "pa-professional-educator-act-48-2026-v1",
+            };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (isRequiredMaximumGroupLookup(call.sql)) return [];
+          if (isRequirementTagLookup(call.sql)) {
+            return [ordinaryRequirement];
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = retagDatabase;
+      const unsafeRetag = await postWorkspace(
+        "updateActivityAllocationRequirements",
+        {
+          allocationId: "allocation-pa-carryover",
+          requirementIds: [ordinaryRequirement.id],
+        },
+      );
+      assert.equal(unsafeRetag.status, 409);
+      assert.equal((await unsafeRetag.json()).code, "activity_outside_cycle");
+      assert.equal(
+        flattenedStatements(retagDatabase).some((statement) =>
+          /^INSERT INTO (activities|activity_allocations|activity_requirement_matches) \(/i.test(
+            statement.sql,
+          ),
+        ),
+        false,
+      );
+    },
+  );
+
+  await t.test(
+    "rechecks portal-carryover proof when a submitted cycle changes before acceptance",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __carryoverAcceptanceNonce = "proof-race";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      testCloudflareEnv.DB = database;
+
+      const carryoverCategoryId =
+        "pa-professional-educator-act-48-2026-confirmed-carryover";
+      const credentialResponse = await postWorkspace(
+        "createCredential",
+        {
+          ruleSetId:
+            "pa-professional-educator-act-48-2026-v1",
+          cycleStart: "2026-01-01",
+          deadline: "2030-12-31",
+          applicabilityChoices: [
+            {
+              ruleCategoryId: carryoverCategoryId,
+              status: "applies",
+            },
+            {
+              ruleCategoryId:
+                "pa-professional-educator-act-48-2026-act-126",
+              status: "not_applicable",
+            },
+          ],
+        },
+      );
+      assert.equal(credentialResponse.status, 200);
+      const credentialId = (await credentialResponse.json()).id;
+      const requirementId = database.raw
+        .prepare(
+          `SELECT id
+           FROM credential_requirements
+           WHERE credential_id = ?
+             AND rule_category_id = ?`,
+        )
+        .get(credentialId, carryoverCategoryId).id;
+
+      const checkpoint = await postWorkspace("markSubmitted", {
+        credentialId,
+        submissionDate: "2030-12-15",
+        confirmationNumber: "PERMS-COMPLETE",
+        complianceAttested: true,
+      });
+      assert.equal(checkpoint.status, 200);
+
+      const lateCarryoverWrite = await postWorkspace("addActivity", {
+        title: "PERMS-posted carryover after checkpoint",
+        provider: "PERMS",
+        completionDate: "2025-12-15",
+        totalUnits: 10,
+        credentialId,
+        requirementIds: [requirementId],
+        evidenceStatus: "missing",
+        portalCarryoverAttested: true,
+      });
+      assert.equal(lateCarryoverWrite.status, 200);
+
+      const acceptance = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          credentialId,
+          acceptedAt: "2030-12-16",
+          nextCycleStart: "2031-01-01",
+          nextDeadline: "2035-12-31",
+          officialDatesAttested: true,
+        },
+      );
+      assert.equal(acceptance.status, 409);
+      assert.equal(
+        (await acceptance.json()).code,
+        "portal_carryover_evidence_required",
+      );
+      assert.deepEqual(
+        {
+          ...database.raw
+            .prepare(
+              `SELECT status FROM credentials WHERE id = ?`,
+            )
+            .get(credentialId),
+        },
+        { status: "submitted" },
+      );
+      assert.equal(
+        database.raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM renewal_acceptances
+             WHERE credential_id = ?`,
+          )
+          .get(credentialId).count,
+        0,
+      );
+      database.close();
+    },
+  );
+
+  await t.test(
+    "enforces NREMT level-specific transition deadlines",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __nremtTransitionNonce = "level-deadlines";`,
+      );
+      const database = new SQLiteD1Database(DatabaseSync);
+      await runtimeModule.initializeDatabase(database);
+      testCloudflareEnv.DB = database;
+
+      const ruleSetId = "nremt-emr-nccp-ce-2025-v1";
+      const preTransition = await postWorkspace("createCredential", {
+        ruleSetId,
+        cycleStart: "2023-10-01",
+        deadline: "2025-09-30",
+        officialDatesAttested: true,
+      });
+      assert.equal(preTransition.status, 409);
+      assert.equal(
+        (await preTransition.json()).code,
+        "nremt_template_not_applicable",
+      );
+
+      const boundary = await postWorkspace("createCredential", {
+        ruleSetId,
+        cycleStart: "2024-10-01",
+        deadline: "2026-09-30",
+        officialDatesAttested: true,
+      });
+      assert.equal(boundary.status, 200);
+      const credentialId = (await boundary.json()).id;
+      assert.ok(credentialId);
+
+      database.raw
+        .prepare(
+          `UPDATE credentials
+           SET deadline = '2025-09-30'
+           WHERE id = ?`,
+        )
+        .run(credentialId);
+      const legacySubmission = await postWorkspace("markSubmitted", {
+        credentialId,
+        submissionDate: "2025-04-01",
+        complianceAttested: true,
+      });
+      assert.equal(legacySubmission.status, 409);
+      assert.equal(
+        (await legacySubmission.json()).code,
+        "nremt_template_not_applicable",
+      );
+      database.close();
+    },
+  );
+
+  await t.test(
+    "tracks split NREMT credit, gates filing, and rolls to an attested two-year cycle",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __nremtLifecycleNonce = "split-credit";`,
+      );
+      const database = new SQLiteD1Database(DatabaseSync);
+      await runtimeModule.initializeDatabase(database);
+      testCloudflareEnv.DB = database;
+
+      const ruleSetId = "nremt-emt-nccp-ce-2025-v1";
+      const createPayload = {
+        ruleSetId,
+        cycleStart: "2026-04-01",
+        deadline: "2028-03-31",
+      };
+      const wrongDeadline = await postWorkspace("createCredential", {
+        ...createPayload,
+        deadline: "2028-04-01",
+        officialDatesAttested: true,
+      });
+      assert.equal(wrongDeadline.status, 409);
+      assert.equal(
+        (await wrongDeadline.json()).code,
+        "nremt_fixed_deadline_required",
+      );
+      const preTransition = await postWorkspace("createCredential", {
+        ...createPayload,
+        deadline: "2025-03-31",
+        officialDatesAttested: true,
+      });
+      assert.equal(preTransition.status, 409);
+      assert.equal(
+        (await preTransition.json()).code,
+        "nremt_template_not_applicable",
+      );
+      const unattestedDates = await postWorkspace(
+        "createCredential",
+        createPayload,
+      );
+      assert.equal(unattestedDates.status, 409);
+      assert.equal(
+        (await unattestedDates.json()).code,
+        "nremt_model_dates_attestation_required",
+      );
+
+      const credentialResponse = await postWorkspace("createCredential", {
+        ...createPayload,
+        officialDatesAttested: true,
+      });
+      assert.equal(credentialResponse.status, 200);
+      const credentialId = (await credentialResponse.json()).id;
+      assert.ok(credentialId);
+
+      const workspaceResponse = await fetchWorker(
+        "https://license-lantern.example/api/workspace",
+        { headers: authHeaders() },
+      );
+      assert.equal(workspaceResponse.status, 200);
+      const workspace = await workspaceResponse.json();
+      const credential = workspace.credentials.find(
+        (item) => item.id === credentialId,
+      );
+      assert.ok(credential);
+      assert.equal(credential.requirements.length, 9);
+      const requirementId = (categoryId) =>
+        credential.requirements.find(
+          (requirement) => requirement.ruleCategoryId === categoryId,
+        )?.id;
+      const match = (categorySuffix, matchedUnits) => {
+        const id = requirementId(`nremt-emt-nccp-ce-2025-${categorySuffix}`);
+        assert.ok(id, `missing NREMT category ${categorySuffix}`);
+        return { requirementId: id, matchedUnits };
+      };
+      const validMatches = [
+        match("national", 20),
+        match("national-airway", 4),
+        match("national-cardiology", 5),
+        match("national-trauma", 3),
+        match("national-medical", 6),
+        match("national-operations", 2),
+        match("national-pediatric", 2),
+        match("local", 10),
+        match("individual", 10),
+      ];
+      const activityPayload = {
+        title: "Integrated NCCP course",
+        provider: "CAPCE Provider",
+        completionDate: "2027-10-01",
+        totalUnits: 40,
+        credentialId,
+        evidenceStatus: "missing",
+        requirementMatches: validMatches,
+      };
+
+      const legacyUnclassified = await postWorkspace("addActivity", {
+        ...activityPayload,
+        requirementMatches: undefined,
+        requirementIds: validMatches.map((item) => item.requirementId),
+        acceptedEducationAttested: true,
+      });
+      assert.equal(legacyUnclassified.status, 409);
+      assert.equal(
+        (await legacyUnclassified.json()).code,
+        "nremt_requirement_amounts_required",
+      );
+      const missingProvider = await postWorkspace("addActivity", {
+        ...activityPayload,
+        provider: "",
+        acceptedEducationAttested: true,
+      });
+      assert.equal(missingProvider.status, 409);
+      assert.equal(
+        (await missingProvider.json()).code,
+        "nremt_provider_required",
+      );
+      const unattestedEducation = await postWorkspace(
+        "addActivity",
+        activityPayload,
+      );
+      assert.equal(unattestedEducation.status, 409);
+      assert.equal(
+        (await unattestedEducation.json()).code,
+        "nremt_accepted_education_attestation_required",
+      );
+      const componentMismatch = await postWorkspace("addActivity", {
+        ...activityPayload,
+        requirementMatches: validMatches.map((item) =>
+          item.requirementId === requirementId(
+            "nremt-emt-nccp-ce-2025-individual",
+          )
+            ? { ...item, matchedUnits: 9 }
+            : item,
+        ),
+        acceptedEducationAttested: true,
+      });
+      assert.equal(componentMismatch.status, 409);
+      assert.equal(
+        (await componentMismatch.json()).code,
+        "nremt_component_amount_mismatch",
+      );
+      const topicMismatch = await postWorkspace("addActivity", {
+        ...activityPayload,
+        requirementMatches: validMatches.map((item) =>
+          item.requirementId === requirementId(
+            "nremt-emt-nccp-ce-2025-national-airway",
+          )
+            ? { ...item, matchedUnits: 3 }
+            : item,
+        ),
+        acceptedEducationAttested: true,
+      });
+      assert.equal(topicMismatch.status, 409);
+      assert.equal(
+        (await topicMismatch.json()).code,
+        "nremt_national_topic_amount_mismatch",
+      );
+      const pediatricExcess = await postWorkspace("addActivity", {
+        ...activityPayload,
+        requirementMatches: validMatches.map((item) =>
+          item.requirementId === requirementId(
+            "nremt-emt-nccp-ce-2025-national-pediatric",
+          )
+            ? { ...item, matchedUnits: 21 }
+            : item,
+        ),
+        acceptedEducationAttested: true,
+      });
+      assert.equal(pediatricExcess.status, 409);
+      assert.equal(
+        (await pediatricExcess.json()).code,
+        "nremt_pediatric_amount_exceeds_national",
+      );
+
+      const activityResponse = await postWorkspace("addActivity", {
+        ...activityPayload,
+        acceptedEducationAttested: true,
+      });
+      assert.equal(activityResponse.status, 200);
+      const raw = database.raw;
+      const persistedMatches = Object.fromEntries(
+        raw
+          .prepare(
+            `SELECT
+               requirement.rule_category_id AS categoryId,
+               match.matched_units AS matchedUnits
+             FROM activity_requirement_matches match
+             JOIN credential_requirements requirement
+               ON requirement.id = match.requirement_id
+             WHERE requirement.credential_id = ?`,
+          )
+          .all(credentialId)
+          .map((row) => [row.categoryId, row.matchedUnits]),
+      );
+      assert.deepEqual(persistedMatches, {
+        "nremt-emt-nccp-ce-2025-national": 20,
+        "nremt-emt-nccp-ce-2025-national-airway": 4,
+        "nremt-emt-nccp-ce-2025-national-cardiology": 5,
+        "nremt-emt-nccp-ce-2025-national-trauma": 3,
+        "nremt-emt-nccp-ce-2025-national-medical": 6,
+        "nremt-emt-nccp-ce-2025-national-operations": 2,
+        "nremt-emt-nccp-ce-2025-national-pediatric": 2,
+        "nremt-emt-nccp-ce-2025-local": 10,
+        "nremt-emt-nccp-ce-2025-individual": 10,
+      });
+
+      const unattestedSubmission = await postWorkspace("markSubmitted", {
+        credentialId,
+        submissionDate: "2027-10-02",
+        confirmationNumber: "NREMT-0042",
+      });
+      assert.equal(unattestedSubmission.status, 409);
+      assert.equal(
+        (await unattestedSubmission.json()).code,
+        "nremt_submission_attestation_required",
+      );
+      const beforeWindow = await postWorkspace("markSubmitted", {
+        credentialId,
+        submissionDate: "2027-09-30",
+        complianceAttested: true,
+      });
+      assert.equal(beforeWindow.status, 409);
+      assert.equal(
+        (await beforeWindow.json()).code,
+        "nremt_submission_window_not_open",
+      );
+      const unattestedLate = await postWorkspace("markSubmitted", {
+        credentialId,
+        submissionDate: "2028-04-01",
+        complianceAttested: true,
+      });
+      assert.equal(unattestedLate.status, 409);
+      assert.equal(
+        (await unattestedLate.json()).code,
+        "nremt_late_reinstatement_attestation_required",
+      );
+      const afterReinstatement = await postWorkspace("markSubmitted", {
+        credentialId,
+        submissionDate: "2028-05-01",
+        complianceAttested: true,
+        lateReinstatementAttested: true,
+      });
+      assert.equal(afterReinstatement.status, 409);
+      assert.equal(
+        (await afterReinstatement.json()).code,
+        "nremt_reinstatement_window_closed",
+      );
+      const submission = await postWorkspace("markSubmitted", {
+        credentialId,
+        submissionDate: "2027-10-02",
+        confirmationNumber: "NREMT-0042",
+        complianceAttested: true,
+      });
+      assert.equal(submission.status, 200);
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT attestation_kind AS attestationKind
+             FROM renewal_submissions
+             WHERE credential_id = ?`,
+          )
+          .get(credentialId).attestationKind,
+        "nremt_requirements_satisfied",
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM xp_events
+             WHERE event_type = 'renewal_submitted'
+               AND related_id IN (
+                 SELECT id FROM renewal_submissions WHERE credential_id = ?
+               )`,
+          )
+          .get(credentialId).count,
+        1,
+      );
+
+      const acceptancePayload = {
+        credentialId,
+        acceptedAt: "2027-10-03",
+        reference: "NREMT-DASHBOARD-APPROVED",
+        nextCycleStart: "2027-10-04",
+        nextDeadline: "2030-03-31",
+        nextRuleSetId: ruleSetId,
+      };
+      const unattestedAcceptance = await postWorkspace(
+        "markRenewalAccepted",
+        acceptancePayload,
+      );
+      assert.equal(unattestedAcceptance.status, 409);
+      assert.equal(
+        (await unattestedAcceptance.json()).code,
+        "official_next_period_attestation_required",
+      );
+      const wrongNextDeadline = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...acceptancePayload,
+          nextDeadline: "2029-03-31",
+          officialDatesAttested: true,
+        },
+      );
+      assert.equal(wrongNextDeadline.status, 409);
+      assert.equal(
+        (await wrongNextDeadline.json()).code,
+        "nremt_next_deadline_invalid",
+      );
+      const acceptance = await postWorkspace("markRenewalAccepted", {
+        ...acceptancePayload,
+        officialDatesAttested: true,
+      });
+      assert.equal(acceptance.status, 200);
+      const nextCredentialId = (await acceptance.json()).id;
+      assert.ok(nextCredentialId);
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 status,
+                 rule_set_id AS ruleSetId,
+                 cycle_start AS cycleStart,
+                 deadline
+               FROM credentials
+               WHERE id = ?`,
+            )
+            .get(nextCredentialId),
+        },
+        {
+          status: "active",
+          ruleSetId,
+          cycleStart: "2027-10-04",
+          deadline: "2030-03-31",
+        },
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM credential_requirements
+             WHERE credential_id = ?`,
+          )
+          .get(nextCredentialId).count,
+        9,
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM activity_allocations
+             WHERE credential_id = ?`,
+          )
+          .get(nextCredentialId).count,
+        0,
+      );
+      assert.equal(
+        raw
+          .prepare(`SELECT status FROM credentials WHERE id = ?`)
+          .get(credentialId).status,
+        "renewed",
+      );
+      database.close();
     },
   );
 
@@ -8153,8 +10307,17 @@ test("License Lantern product contract", async (t) => {
         /^INSERT OR IGNORE INTO xp_events \(/i.test(statement.sql),
       );
       assert.ok(checkpointXp);
-      assert.ok(checkpointXp.bindings.includes("renewal_checkpoint_recorded"));
+      assert.ok(
+        checkpointXp.bindings.includes("compliance_checkpoint_recorded"),
+      );
       assert.ok(checkpointXp.bindings.includes("compliance_checkpoint"));
+      const checkpointInsert = statements.find((statement) =>
+        /^INSERT INTO renewal_submissions \(/i.test(statement.sql),
+      );
+      assert.ok(checkpointInsert);
+      assert.ok(
+        checkpointInsert.bindings.includes("compliance_period_complete"),
+      );
       assert.equal(
         statements.some((statement) =>
           statement.bindings.includes("renewal_submitted"),
@@ -8167,6 +10330,231 @@ test("License Lantern product contract", async (t) => {
         ),
         false,
       );
+    },
+  );
+
+  await t.test(
+    "treats educator registration and employment cycles as attested compliance periods",
+    async () => {
+      for (const [ruleSetId, credentialId] of [
+        [
+          "ny-professional-classroom-teacher-standard-ctle-2026-v1",
+          "credential-ny-classroom-ctle",
+        ],
+        [
+          "ny-professional-esol-bilingual-ctle-2026-v1",
+          "credential-ny-esol-ctle",
+        ],
+        [
+          "nj-employed-teacher-annual-pd-2026-v1",
+          "credential-nj-teacher-pdp",
+        ],
+        [
+          "pa-professional-educator-act-48-2026-v1",
+          "credential-pa-act-48",
+        ],
+      ]) {
+        let complianceSubmissionLookupCount = 0;
+        const database = new FakeDatabase({
+          resolveFirst(call) {
+            if (
+              /SELECT id, status, rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+                call.sql,
+              )
+            ) {
+              return {
+                id: call.bindings[0],
+                status: "active",
+                ruleSetId,
+              };
+            }
+            if (
+              /FROM renewal_submissions WHERE credential_id = \? AND user_id = \?/i.test(
+                call.sql,
+              )
+            ) {
+              complianceSubmissionLookupCount += 1;
+              return complianceSubmissionLookupCount === 1
+                ? null
+                : { id: `submission-${credentialId}` };
+            }
+            return null;
+          },
+        });
+        testCloudflareEnv.DB = database;
+
+        const unattested = await postWorkspace("markSubmitted", {
+          credentialId,
+          submissionDate: "2028-02-20",
+          confirmationNumber: "OFFICIAL-COMPLIANCE-0042",
+        });
+        assert.equal(unattested.status, 409);
+        assert.equal(
+          (await unattested.json()).code,
+          "compliance_checkpoint_attestation_required",
+        );
+
+        const attested = await postWorkspace("markSubmitted", {
+          credentialId,
+          submissionDate: "2028-02-20",
+          confirmationNumber: "OFFICIAL-COMPLIANCE-0042",
+          complianceAttested: true,
+        });
+        assert.equal(attested.status, 200);
+        const statements = flattenedStatements(database);
+        assert.ok(
+          statements.some((statement) =>
+            statement.bindings.includes("compliance_period_complete"),
+          ),
+        );
+        assert.ok(
+          statements.some((statement) =>
+            statement.bindings.includes("compliance_checkpoint_recorded"),
+          ),
+        );
+        assert.equal(
+          statements.some((statement) =>
+            statement.bindings.includes("renewal_submitted"),
+          ),
+          false,
+        );
+        assert.equal(
+          statements.some((statement) =>
+            /^INSERT OR IGNORE INTO badge_events \(/i.test(statement.sql),
+          ),
+          false,
+        );
+      }
+    },
+  );
+
+  await t.test(
+    "rolls both New York CTLE compliance variants with official dates and TEACH tasks",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __nyCtleAcceptanceNonce = "teach";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      testCloudflareEnv.DB = database;
+
+      for (const ruleSetId of [
+        "ny-professional-classroom-teacher-standard-ctle-2026-v1",
+        "ny-professional-esol-bilingual-ctle-2026-v1",
+      ]) {
+        const createResponse = await postWorkspace(
+          "createCredential",
+          {
+            ruleSetId,
+            cycleStart: "2026-01-01",
+            deadline: "2030-12-31",
+          },
+        );
+        assert.equal(createResponse.status, 200);
+        const credentialId = (await createResponse.json()).id;
+        const checkpoint = await postWorkspace("markSubmitted", {
+          credentialId,
+          submissionDate: "2030-12-15",
+          confirmationNumber: "TEACH-COMPLETE",
+          complianceAttested: true,
+        });
+        assert.equal(checkpoint.status, 200);
+
+        const unattested = await postWorkspace(
+          "markRenewalAccepted",
+          {
+            credentialId,
+            acceptedAt: "2030-12-16",
+            nextCycleStart: "2031-01-01",
+            nextDeadline: "2035-12-31",
+          },
+        );
+        assert.equal(unattested.status, 409);
+        assert.equal(
+          (await unattested.json()).code,
+          "official_next_period_attestation_required",
+        );
+
+        const overlapping = await postWorkspace(
+          "markRenewalAccepted",
+          {
+            credentialId,
+            acceptedAt: "2030-12-16",
+            nextCycleStart: "2030-12-31",
+            nextDeadline: "2035-12-31",
+            officialDatesAttested: true,
+          },
+        );
+        assert.equal(overlapping.status, 409);
+        assert.equal(
+          (await overlapping.json()).code,
+          "next_cycle_overlaps_current_period",
+        );
+
+        const accepted = await postWorkspace(
+          "markRenewalAccepted",
+          {
+            credentialId,
+            acceptedAt: "2030-12-16",
+            nextCycleStart: "2031-01-01",
+            nextDeadline: "2035-12-31",
+            officialDatesAttested: true,
+          },
+        );
+        assert.equal(accepted.status, 200);
+        const nextCredentialId = (await accepted.json()).id;
+        assert.deepEqual(
+          database.raw
+            .prepare(
+              `SELECT title
+               FROM checklist_tasks
+               WHERE credential_id = ?
+               ORDER BY sort_order`,
+            )
+            .all(nextCredentialId)
+            .map((row) => row.title),
+          [
+            "Confirm TEACH registration dates, practiced years, and any language-acquisition waiver",
+            "Complete sponsor-approved CTLE and the applicable language-acquisition hours",
+            "Attest and re-register in TEACH, then save the official CTLE record",
+          ],
+        );
+        assert.deepEqual(
+          {
+            ...database.raw
+              .prepare(
+                `SELECT
+                   event.event_type AS eventType,
+                   event.related_type AS relatedType
+                 FROM xp_events event
+                 JOIN renewal_acceptances acceptance
+                   ON acceptance.id = event.related_id
+                 WHERE acceptance.credential_id = ?
+                   AND event.related_type = 'compliance_completion'`,
+              )
+              .get(credentialId),
+          },
+          {
+            eventType: "compliance_period_completed",
+            relatedType: "compliance_completion",
+          },
+        );
+        assert.ok(
+          database.raw
+            .prepare(
+              `SELECT official_record_attested_at AS attestedAt
+               FROM renewal_acceptances
+               WHERE credential_id = ?`,
+            )
+            .get(credentialId).attestedAt,
+        );
+      }
+      database.close();
     },
   );
 
@@ -8245,6 +10633,20 @@ test("License Lantern product contract", async (t) => {
       assert.equal(
         (await beforeCycleEnd.json()).code,
         "isc2_renewal_before_cycle_end",
+      );
+      const overlappingNextCycle = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...payload,
+          acceptedAt: "2028-03-02",
+          nextCycleStart: "2028-03-01",
+          officialDatesAttested: true,
+        },
+      );
+      assert.equal(overlappingNextCycle.status, 409);
+      assert.equal(
+        (await overlappingNextCycle.json()).code,
+        "next_cycle_overlaps_current_period",
       );
       assert.equal(
         flattenedStatements(database).some((statement) =>
@@ -8530,6 +10932,310 @@ test("License Lantern product contract", async (t) => {
              WHERE rule_set_id = ?`,
           )
           .get(selectedRuleSetId).count,
+      );
+      database.close();
+    },
+  );
+
+
+  await t.test(
+    "rolls a Florida mental-health renewal onto the CE Broker-confirmed phase with fresh conditions",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __floridaMentalHealthRolloverNonce = "phase";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      testCloudflareEnv.DB = database;
+      const raw = database.raw;
+      const userId = await expectedStableUserId("owner@example.com");
+      const credentialId = "credential-fl-mental-health-ethics";
+      const currentRuleSetId =
+        "fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-v1";
+      const nextRuleSetId =
+        "fl-lcsw-lmft-lmhc-telehealth-phase-2026-v1";
+
+      const invalidCycle = await postWorkspace("createCredential", {
+        ruleSetId: currentRuleSetId,
+        cycleStart: "2026-04-01",
+        deadline: "2028-03-31",
+        officialDatesAttested: true,
+      });
+      assert.equal(invalidCycle.status, 409);
+      assert.equal(
+        (await invalidCycle.json()).code,
+        "florida_mental_health_cycle_invalid",
+      );
+      const unattestedCycle = await postWorkspace("createCredential", {
+        ruleSetId: currentRuleSetId,
+        cycleStart: "2025-04-01",
+        deadline: "2027-03-31",
+      });
+      assert.equal(unattestedCycle.status, 409);
+      assert.equal(
+        (await unattestedCycle.json()).code,
+        "florida_mental_health_dates_attestation_required",
+      );
+
+      raw
+        .prepare(
+          `INSERT OR IGNORE INTO users (id, email, display_name, is_demo)
+           VALUES (?, ?, ?, 0)`,
+        )
+        .run(userId, "owner@example.com", "Owner");
+      raw
+        .prepare(
+          `INSERT INTO credentials (
+             id, user_id, rule_set_id, credential_name, profession,
+             jurisdiction, issuer, cycle_start, deadline, total_required,
+             unit_label, status
+           )
+           SELECT
+             ?, ?, id, credential_name, profession, jurisdiction, issuer,
+             '2025-04-01', '2027-03-31', total_units, unit_label,
+             'submitted'
+           FROM rule_sets
+           WHERE id = ?`,
+        )
+        .run(credentialId, userId, currentRuleSetId);
+      raw
+        .prepare(
+          `INSERT INTO credential_cycle_links (
+             id, user_id, credential_id, series_id,
+             previous_credential_id, cycle_months
+           ) VALUES (?, ?, ?, ?, NULL, 24)`,
+        )
+        .run(
+          "link-fl-mental-health-ethics",
+          userId,
+          credentialId,
+          "series-fl-mental-health",
+        );
+      raw
+        .prepare(
+          `INSERT INTO credential_requirements (
+             id, credential_id, rule_category_id, name, required_units,
+             kind, relation, parent_requirement_id, applicability,
+             applicability_status, condition_note, exclusive_group,
+             is_active, sort_order
+           )
+           SELECT
+             'current:' || category.id,
+             ?,
+             category.id,
+             category.name,
+             category.required_units,
+             category.kind,
+             category.relation,
+             CASE
+               WHEN category.parent_category_id IS NULL THEN NULL
+               ELSE 'current:' || category.parent_category_id
+             END,
+             category.applicability,
+             CASE
+               WHEN category.applicability = 'conditional'
+                 THEN 'needs_confirmation'
+               ELSE 'applies'
+             END,
+             category.condition_note,
+             category.exclusive_group,
+             CASE
+               WHEN category.applicability = 'conditional' THEN 0
+               ELSE 1
+             END,
+             category.sort_order
+           FROM rule_categories category
+           WHERE category.rule_set_id = ?`,
+        )
+        .run(credentialId, currentRuleSetId);
+      raw
+        .prepare(
+          `INSERT INTO renewal_submissions (
+             id, user_id, credential_id, submitted_at,
+             confirmation_number, proof_reference
+           ) VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "submission-fl-mental-health",
+          userId,
+          credentialId,
+          "2027-03-30",
+          "FL-RENEWAL-0042",
+          "FL-RENEWAL-0042",
+        );
+      const missingCreditBucket = await postWorkspace("addActivity", {
+        title: "Unbucketed Florida CE",
+        provider: "Approved Florida provider",
+        completionDate: "2026-06-15",
+        totalUnits: 1,
+        credentialId,
+        requirementIds: [
+          "current:fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-clinical-other-content",
+          "current:fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-other-qualifying-activity",
+        ],
+        evidenceStatus: "missing",
+      });
+      assert.equal(missingCreditBucket.status, 409);
+      assert.equal(
+        (await missingCreditBucket.json()).code,
+        "florida_mental_health_credit_bucket_required",
+      );
+      const samePhase = await postWorkspace("markRenewalAccepted", {
+        credentialId,
+        acceptedAt: "2027-04-01",
+        reference: "CE-BROKER-ETHICS",
+        nextCycleStart: "2027-04-01",
+        nextDeadline: "2029-03-31",
+        nextRuleSetId: currentRuleSetId,
+        officialDatesAttested: true,
+      });
+      assert.equal(samePhase.status, 409);
+      assert.equal(
+        (await samePhase.json()).code,
+        "florida_mental_health_phase_must_alternate",
+      );
+
+      const invalidNextCycle = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          credentialId,
+          acceptedAt: "2027-04-01",
+          reference: "CE-BROKER-TELEHEALTH",
+          nextCycleStart: "2028-04-01",
+          nextDeadline: "2030-03-31",
+          nextRuleSetId,
+          officialDatesAttested: true,
+        },
+      );
+      assert.equal(invalidNextCycle.status, 409);
+      assert.equal(
+        (await invalidNextCycle.json()).code,
+        "florida_mental_health_next_cycle_invalid",
+      );
+
+      const response = await postWorkspace("markRenewalAccepted", {
+        credentialId,
+        acceptedAt: "2027-04-01",
+        reference: "CE-BROKER-TELEHEALTH",
+        nextCycleStart: "2027-04-01",
+        nextDeadline: "2029-03-31",
+        nextRuleSetId,
+        officialDatesAttested: true,
+      });
+      assert.equal(response.status, 200);
+      const result = await response.json();
+      const nextCredentialId = result.id;
+      assert.ok(nextCredentialId);
+
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT status FROM credentials WHERE id = ?`,
+            )
+            .get(credentialId),
+        },
+        { status: "renewed" },
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 rule_set_id AS ruleSetId,
+                 total_required AS totalRequired,
+                 cycle_start AS cycleStart,
+                 deadline
+               FROM credentials
+               WHERE id = ?`,
+            )
+            .get(nextCredentialId),
+        },
+        {
+          ruleSetId: nextRuleSetId,
+          totalRequired: 30,
+          cycleStart: "2027-04-01",
+          deadline: "2029-03-31",
+        },
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(*) AS categoryCount,
+                 SUM(
+                   CASE
+                     WHEN applicability_status = 'needs_confirmation'
+                       AND is_active = 0
+                     THEN 1 ELSE 0
+                   END
+                 ) AS resetConditionCount,
+                 SUM(CASE WHEN name = 'Telehealth' THEN 1 ELSE 0 END) AS telehealthCount,
+                 SUM(CASE WHEN name = 'Ethics and Boundaries' THEN 1 ELSE 0 END) AS ethicsPhaseCount
+               FROM credential_requirements
+               WHERE credential_id = ?`,
+            )
+            .get(nextCredentialId),
+        },
+        {
+          categoryCount: 11,
+          resetConditionCount: 3,
+          telehealthCount: 1,
+          ethicsPhaseCount: 0,
+        },
+      );
+      assert.deepEqual(
+        raw
+          .prepare(
+            `SELECT title
+             FROM checklist_tasks
+             WHERE credential_id = ?
+             ORDER BY sort_order`,
+          )
+          .all(nextCredentialId)
+          .map((row) => row.title),
+        [
+          "Confirm the CE Broker phase, every-third-biennium topics, and supervisor status",
+          "Complete and report the three separate Florida credit buckets",
+          "Submit the Florida renewal and save CE Broker confirmation",
+        ],
+      );
+      assert.ok(
+        raw
+          .prepare(
+            `SELECT official_record_attested_at AS attestedAt
+             FROM renewal_acceptances
+             WHERE credential_id = ?`,
+          )
+          .get(credentialId).attestedAt,
+      );
+
+      const retry = await postWorkspace("markRenewalAccepted", {
+        credentialId,
+        acceptedAt: "2027-04-01",
+        nextCycleStart: "2027-04-01",
+        nextDeadline: "2029-03-31",
+        nextRuleSetId: currentRuleSetId,
+        officialDatesAttested: true,
+      });
+      assert.equal(retry.status, 200);
+      assert.equal((await retry.json()).id, nextCredentialId);
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM credentials
+             WHERE rule_set_id LIKE 'fl-lcsw-lmft-lmhc-%'
+               AND user_id = ?`,
+          )
+          .get(userId).count,
+        2,
       );
       database.close();
     },
@@ -9344,6 +12050,292 @@ test("License Lantern product contract", async (t) => {
           allocatedUnits: 2,
         },
       ]);
+    },
+  );
+
+  await t.test(
+    "applies intersecting Florida caps without double-subtracting one activity",
+    async () => {
+      const credentialId = "credential-florida-intersecting-caps";
+      const requirements = [
+        {
+          id: "fl-requirement-general",
+          credentialId,
+          ruleCategoryId:
+            "fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-general",
+          name: "General",
+          requiredUnits: 25,
+          kind: "minimum",
+          relation: "independent",
+          parentRequirementId: null,
+          applicability: "always",
+          applicabilityStatus: "applies",
+          conditionNote: null,
+          exclusiveGroup: "Florida mental-health CE credit bucket",
+          isActive: 1,
+          rawEarned: 30,
+        },
+        {
+          id: "fl-requirement-administrative",
+          credentialId,
+          ruleCategoryId:
+            "fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-administrative-nonclinical",
+          name: "Administrative, Office-Management, or Nonclinical Skills",
+          requiredUnits: 6,
+          kind: "maximum",
+          relation: "independent",
+          parentRequirementId: null,
+          applicability: "optional",
+          applicabilityStatus: "applies",
+          conditionNote: null,
+          exclusiveGroup: "Florida mental-health CE content type",
+          isActive: 1,
+          rawEarned: 12,
+        },
+        {
+          id: "fl-requirement-clinical",
+          credentialId,
+          ruleCategoryId:
+            "fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-clinical-other-content",
+          name: "Clinical or Other Qualifying Content",
+          requiredUnits: 0,
+          kind: "informational",
+          relation: "independent",
+          parentRequirementId: null,
+          applicability: "always",
+          applicabilityStatus: "applies",
+          conditionNote: null,
+          exclusiveGroup: "Florida mental-health CE content type",
+          isActive: 1,
+          rawEarned: 18,
+        },
+        {
+          id: "fl-requirement-presenter",
+          credentialId,
+          ruleCategoryId:
+            "fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-presenter-moderator",
+          name: "Presenter or Moderator",
+          requiredUnits: 10,
+          kind: "maximum",
+          relation: "independent",
+          parentRequirementId: null,
+          applicability: "optional",
+          applicabilityStatus: "applies",
+          conditionNote: null,
+          exclusiveGroup: "Florida mental-health CE activity source",
+          isActive: 1,
+          rawEarned: 12,
+        },
+        {
+          id: "fl-requirement-other-source",
+          credentialId,
+          ruleCategoryId:
+            "fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-other-qualifying-activity",
+          name: "Other Qualifying CE Activity",
+          requiredUnits: 0,
+          kind: "informational",
+          relation: "independent",
+          parentRequirementId: null,
+          applicability: "always",
+          applicabilityStatus: "applies",
+          conditionNote: null,
+          exclusiveGroup: "Florida mental-health CE activity source",
+          isActive: 1,
+          rawEarned: 18,
+        },
+      ];
+      const activities = [
+        {
+          id: "activity-florida-shared-cap",
+          title: "Administrative presenter program",
+          provider: "Approved Florida provider",
+          completionDate: "2026-06-15",
+          totalUnits: 12,
+          evidenceStatus: "attached",
+          evidenceReference: "shared.pdf",
+          evidenceCount: 1,
+          allocationId: "allocation-florida-shared-cap",
+          credentialId,
+          credentialName: "Florida LCSW",
+          requirementId: "fl-requirement-general",
+          categoryName: "General",
+          allocatedUnits: 12,
+        },
+        {
+          id: "activity-florida-ordinary",
+          title: "Ordinary clinical education",
+          provider: "Approved Florida provider",
+          completionDate: "2026-07-15",
+          totalUnits: 18,
+          evidenceStatus: "attached",
+          evidenceReference: "ordinary.pdf",
+          evidenceCount: 1,
+          allocationId: "allocation-florida-ordinary",
+          credentialId,
+          credentialName: "Florida LCSW",
+          requirementId: "fl-requirement-general",
+          categoryName: "General",
+          allocatedUnits: 18,
+        },
+      ];
+      const requirementById = new Map(
+        requirements.map((requirement) => [
+          requirement.id,
+          requirement,
+        ]),
+      );
+      const matchSpecs = [
+        [
+          "allocation-florida-shared-cap",
+          "activity-florida-shared-cap",
+          12,
+          [
+            "fl-requirement-general",
+            "fl-requirement-administrative",
+            "fl-requirement-presenter",
+          ],
+        ],
+        [
+          "allocation-florida-ordinary",
+          "activity-florida-ordinary",
+          18,
+          [
+            "fl-requirement-general",
+            "fl-requirement-clinical",
+            "fl-requirement-other-source",
+          ],
+        ],
+      ];
+      const matches = matchSpecs.flatMap(
+        ([allocationId, activityId, matchedUnits, requirementIds]) =>
+          requirementIds.map((requirementId) => ({
+            id: `${allocationId}:${requirementId}`,
+            activityId,
+            allocationId,
+            credentialId,
+            requirementId,
+            categoryName: requirementById.get(requirementId).name,
+            matchedUnits,
+          })),
+      );
+      const database = new FakeDatabase({
+        resolveFirst(call) {
+          if (/FROM profiles p WHERE p\.user_id = \?/i.test(call.sql)) {
+            return { weeklyGoal: 4, xp: 0, weekActions: 0 };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (/FROM credentials c LEFT JOIN rule_sets rs/i.test(call.sql)) {
+            return [
+              {
+                id: credentialId,
+                ruleSetId:
+                  "fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-v1",
+                credentialName: "Florida LCSW",
+                profession: "Mental Health",
+                jurisdiction: "Florida",
+                issuer: "Florida Board",
+                deadline: "2027-03-31",
+                cycleStart: "2025-04-01",
+                totalRequired: 30,
+                unitLabel: "CE hours",
+                cycleMonths: 24,
+                seriesId: credentialId,
+                previousCredentialId: null,
+                status: "active",
+                submittedAt: null,
+                confirmationNumber: null,
+                submissionProof: null,
+                acceptedAt: null,
+                acceptanceReference: null,
+                nextCredentialId: null,
+                sourceUrl: null,
+                sourceTitle: null,
+                ruleReviewStatus: "source_linked_check_conditions",
+                totalEarned: 30,
+              },
+            ];
+          }
+          if (
+            /FROM credential_requirements req JOIN credentials c/i.test(
+              call.sql,
+            )
+          ) {
+            return requirements;
+          }
+          if (
+            /FROM activities a LEFT JOIN activity_allocations alloc/i.test(
+              call.sql,
+            )
+          ) {
+            return activities;
+          }
+          if (
+            /FROM activity_requirement_matches match JOIN activity_allocations allocation/i.test(
+              call.sql,
+            )
+          ) {
+            return matches;
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = database;
+
+      const response = await fetchWorker(
+        "https://license-lantern.example/api/workspace",
+        { headers: authHeaders() },
+      );
+      assert.equal(response.status, 200);
+      const workspace = await response.json();
+      const credential = workspace.credentials.find(
+        (candidate) => candidate.id === credentialId,
+      );
+      assert.ok(credential);
+      assert.deepEqual(credential.classificationIssues, []);
+      assert.deepEqual(
+        {
+          totalLoggedUnits: credential.totalLoggedUnits,
+          totalRawEarned: credential.totalRawEarned,
+          totalExcessUnits: credential.totalExcessUnits,
+          totalEarned: credential.totalEarned,
+        },
+        {
+          totalLoggedUnits: 30,
+          totalRawEarned: 30,
+          totalExcessUnits: 6,
+          totalEarned: 24,
+        },
+      );
+      const progress = new Map(
+        credential.requirements.map((requirement) => [
+          requirement.id,
+          requirement,
+        ]),
+      );
+      assert.deepEqual(
+        {
+          administrative: {
+            raw: progress.get("fl-requirement-administrative").rawEarned,
+            countable:
+              progress.get("fl-requirement-administrative")
+                .countableEarned,
+            excess:
+              progress.get("fl-requirement-administrative").excessUnits,
+          },
+          presenter: {
+            raw: progress.get("fl-requirement-presenter").rawEarned,
+            countable:
+              progress.get("fl-requirement-presenter").countableEarned,
+            excess: progress.get("fl-requirement-presenter").excessUnits,
+          },
+        },
+        {
+          administrative: { raw: 12, countable: 6, excess: 6 },
+          presenter: { raw: 12, countable: 10, excess: 2 },
+        },
+      );
     },
   );
 
@@ -10552,12 +13544,21 @@ test("License Lantern product contract", async (t) => {
         "credential-prior",
         userId,
       ]);
-      assert.deepEqual(oldCycleUpdate.bindings.slice(-4), [
-        "credential-prior",
-        userId,
-        "submission-prior",
-        "2028-02-25",
-      ]);
+      const guardedCredentialBindingIndex =
+        oldCycleUpdate.bindings.indexOf("credential-prior");
+      assert.ok(guardedCredentialBindingIndex >= 0);
+      assert.deepEqual(
+        oldCycleUpdate.bindings.slice(
+          guardedCredentialBindingIndex,
+          guardedCredentialBindingIndex + 4,
+        ),
+        [
+          "credential-prior",
+          userId,
+          "submission-prior",
+          "2028-02-25",
+        ],
+      );
       assert.match(
         oldCycleUpdate.sql,
         /required_classification_groups[\s\S]*?incompatible_categories[\s\S]*?status = 'submitted'[\s\S]*?guarded_submission[\s\S]*?submitted_at, 1, 10\) <= \?/i,

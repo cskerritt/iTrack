@@ -65,6 +65,30 @@ export const REQUIREMENT_INCOMPATIBILITIES: readonly RequirementIncompatibility[
         "Giving Back PDUs, including Working as a Professional, cannot satisfy Talent Triangle Education minimums for the same activity. Choose the Giving Back activity type without Education child tags.",
       ),
     ),
+    {
+      categoryIds: [
+        "ca-bbs-lmft-lcsw-lpcc-standard-2026-supervision-cpd",
+        "ca-bbs-lmft-lcsw-lpcc-standard-2026-law-ethics",
+      ],
+      message:
+        "California BBS supervision CPD cannot also satisfy the general Law and Ethics minimum for the same credited time.",
+    },
+    {
+      categoryIds: [
+        "nj-lpc-standard-renewal-2026-confirmed-carryover",
+        "nj-lpc-standard-renewal-2026-opioid",
+      ],
+      message:
+        "New Jersey LPC carryover cannot satisfy the current-period prescription-opioid requirement.",
+    },
+    {
+      categoryIds: [
+        "pa-lpc-standard-renewal-2026-ethics",
+        "pa-lpc-standard-renewal-2026-suicide-prevention",
+      ],
+      message:
+        "Pennsylvania LPC suicide-prevention credit cannot also satisfy the ethics minimum for the same credited time.",
+    },
   ];
 
 function matchingIncompatibility(

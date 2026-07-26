@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  ChangeEvent,
   FormEvent,
   ReactNode,
   useCallback,
@@ -28,6 +29,16 @@ import {
   CalendarInviteEvent,
   offerCalendarInvite,
 } from "./lib/calendarInvite";
+import {
+  allCheckInCalendarEvents,
+  credentialDeadlineCalendarEvent,
+  normalizedCalendarLeadDays,
+  reminderCalendarEvent,
+} from "./lib/checkInCalendar";
+import { portalCarryoverLookbackYears } from "./lib/carryover";
+import {
+  oppositeFloridaMentalHealthRuleSetId,
+} from "./lib/floridaMentalHealth";
 import {
   nextRequirementSelection,
   requirementIncompatibilityMessage,
@@ -137,6 +148,10 @@ type ActivityAllocation = {
   categoryName?: string | null;
   requirementIds?: string[];
   categoryNames?: string[];
+  requirementMatches?: Array<{
+    requirementId: string;
+    matchedUnits: number;
+  }>;
   allocatedUnits: number;
   classificationStatus?: "classified" | "needs_classification";
   unresolvedExclusiveGroups?: string[];
@@ -480,11 +495,179 @@ function isIsc2AutomaticRenewalCredential(
   return credential?.ruleSetId?.startsWith("isc2-") ?? false;
 }
 
+function isNremtCredential(credential: Credential | null | undefined) {
+  return credential?.ruleSetId?.startsWith("nremt-") ?? false;
+}
+
+function isNremtCatalogRule(rule: CatalogRule | null | undefined) {
+  return rule?.id.startsWith("nremt-") ?? false;
+}
+
+function isFloridaMentalHealthCatalogRule(
+  rule: CatalogRule | null | undefined,
+) {
+  return rule?.id.startsWith("fl-lcsw-lmft-lmhc-") ?? false;
+}
+
+function requiresOfficialCatalogDates(
+  rule: CatalogRule | null | undefined,
+) {
+  return (
+    isNremtCatalogRule(rule) ||
+    isFloridaMentalHealthCatalogRule(rule)
+  );
+}
+
+function nremtLevelKey(ruleSetId: string | null | undefined) {
+  return /^nremt-(emr|emt|aemt|paramedic)-/.exec(ruleSetId ?? "")?.[1] ?? null;
+}
+
+function currentNremtCatalogRule(
+  catalog: CatalogRule[],
+  credential: Credential | null | undefined,
+) {
+  const level = nremtLevelKey(credential?.ruleSetId);
+  if (!level) return null;
+  return (
+    catalog.find((rule) => rule.id.startsWith(`nremt-${level}-`)) ?? null
+  );
+}
+
+type RequirementMatchPayload = {
+  requirementId: string;
+  matchedUnits: number;
+};
+
+function nremtRequirementMatchPayload(
+  form: FormData,
+  credential: Credential,
+  allocatedUnits: number,
+): RequirementMatchPayload[] {
+  const requirements = credential.requirements.filter(
+    (requirement) =>
+      requirementStatus(requirement) === "applies" &&
+      requirement.isActive !== false,
+  );
+  const amountFor = (requirement: Requirement) => {
+    const value = Number(form.get(`requirementMatch:${requirement.id}`) ?? 0);
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(
+        `Enter a valid accepted-credit amount for ${requirement.name}.`,
+      );
+    }
+    if (value > allocatedUnits + 0.0001) {
+      throw new Error(
+        `${requirement.name} cannot exceed the ${compactNumber(
+          allocatedUnits,
+        )} credits applied to this credential.`,
+      );
+    }
+    return value;
+  };
+  const national = requirements.find((requirement) =>
+    requirement.ruleCategoryId?.endsWith("-national"),
+  );
+  const local = requirements.find((requirement) =>
+    requirement.ruleCategoryId?.endsWith("-local"),
+  );
+  const individual = requirements.find((requirement) =>
+    requirement.ruleCategoryId?.endsWith("-individual"),
+  );
+  if (!national || !local || !individual) {
+    throw new Error(
+      "This National Registry template is missing a component requirement. Refresh the credential before saving.",
+    );
+  }
+
+  const nationalUnits = amountFor(national);
+  const localUnits = amountFor(local);
+  const individualUnits = amountFor(individual);
+  const componentTotal = nationalUnits + localUnits + individualUnits;
+  if (Math.abs(componentTotal - allocatedUnits) > 0.0001) {
+    throw new Error(
+      `National, Local/State, and Individual must total ${compactNumber(
+        allocatedUnits,
+      )} credits.`,
+    );
+  }
+
+  const nationalTopics = requirements.filter(
+    (requirement) =>
+      requirement.relation === "nested" &&
+      requirement.parentRequirementId === national.id,
+  );
+  const topicTotal = nationalTopics.reduce(
+    (sum, requirement) => sum + amountFor(requirement),
+    0,
+  );
+  if (Math.abs(topicTotal - nationalUnits) > 0.0001) {
+    throw new Error(
+      `The five National topic amounts must total ${compactNumber(
+        nationalUnits,
+      )} National credits.`,
+    );
+  }
+
+  const overlapping = requirements.filter(
+    (requirement) => requirement.relation === "overlapping",
+  );
+  for (const requirement of overlapping) {
+    if (amountFor(requirement) > nationalUnits + 0.0001) {
+      throw new Error(
+        `${requirement.name} is overlapping National content and cannot exceed the National amount.`,
+      );
+    }
+  }
+  if (form.get("acceptedEducationAttested") !== "on") {
+    throw new Error(
+      "Confirm that the provider, course, and post-cap credit are accepted by the National Registry.",
+    );
+  }
+
+  return requirements
+    .map((requirement) => ({
+      requirementId: requirement.id,
+      matchedUnits: amountFor(requirement),
+    }))
+    .filter((match) => match.matchedUnits > 0);
+}
+
+function hasPortalConfirmedCarryover(
+  credential: Credential | null | undefined,
+) {
+  return Boolean(
+    credential?.requirements.some(
+      (requirement) =>
+        requirement.isActive !== false &&
+        requirement.applicabilityStatus !== "not_applicable" &&
+        portalCarryoverLookbackYears(requirement.ruleCategoryId) !== null,
+    ),
+  );
+}
+
+function isPriorPeriodCarryoverEntry(
+  completionDate: string | null | undefined,
+  credential: Credential | null | undefined,
+) {
+  return Boolean(
+    completionDate &&
+      credential &&
+      completionDate < credential.cycleStart &&
+      hasPortalConfirmedCarryover(credential),
+  );
+}
+
 function isCompliancePeriodCredential(
   credential: Credential | null | undefined,
 ) {
-  return (
-    credential?.ruleSetId?.startsWith("fl-insurance-producer-") ?? false
+  const ruleSetId = credential?.ruleSetId;
+  return Boolean(
+    ruleSetId &&
+      (ruleSetId.startsWith("fl-insurance-producer-") ||
+        ruleSetId.startsWith("ny-professional-classroom-teacher-") ||
+        ruleSetId.startsWith("ny-professional-esol-bilingual-") ||
+        ruleSetId.startsWith("nj-employed-teacher-annual-pd-") ||
+        ruleSetId.startsWith("pa-professional-educator-act-48-")),
   );
 }
 
@@ -493,6 +676,44 @@ function isFloridaInsuranceComplianceCredential(
 ) {
   return (
     credential?.ruleSetId?.startsWith("fl-insurance-producer-") ?? false
+  );
+}
+
+function isFloridaMentalHealthPhaseCredential(
+  credential: Credential | null | undefined,
+) {
+  return (
+    credential?.ruleSetId?.startsWith("fl-lcsw-lmft-lmhc-") ?? false
+  );
+}
+
+function requiresCurrentNextTemplate(
+  credential: Credential | null | undefined,
+) {
+  return (
+    isFloridaInsuranceComplianceCredential(credential) ||
+    isFloridaMentalHealthPhaseCredential(credential)
+  );
+}
+
+function requiresOfficialNextPeriodAttestation(
+  credential: Credential | null | undefined,
+) {
+  return (
+    isIsc2AutomaticRenewalCredential(credential) ||
+    isCompliancePeriodCredential(credential) ||
+    isFloridaMentalHealthPhaseCredential(credential) ||
+    isNremtCredential(credential)
+  );
+}
+
+function requiresNonOverlappingNextPeriod(
+  credential: Credential | null | undefined,
+) {
+  return (
+    isIsc2AutomaticRenewalCredential(credential) ||
+    isCompliancePeriodCredential(credential) ||
+    isFloridaMentalHealthPhaseCredential(credential)
   );
 }
 
@@ -537,6 +758,14 @@ function bestNextAction(
         title: "Confirm the next compliance period from the official record",
         body: "Keep this period open until you have verified the new compliance dates.",
         buttonLabel: "Start next period",
+      };
+    }
+    if (isNremtCredential(credential)) {
+      return {
+        kind: "acceptance",
+        title: "Confirm the renewed dates in your National Registry dashboard",
+        body: "Use the same current level template and enter the cycle start and fixed expiration exactly as displayed.",
+        buttonLabel: "Confirm renewed cycle",
       };
     }
     return {
@@ -656,6 +885,8 @@ function bestNextAction(
         ? "Credits are covered. Finish this dashboard step before confirming renewal."
         : isCompliancePeriodCredential(credential)
           ? "Credits are covered. Finish this official-record step before closing the period."
+          : isNremtCredential(credential)
+            ? "Credits are covered. Complete the Training Officer or Medical Director verification required for Active status, or confirm the Inactive pathway, before applying."
           : "Credits are covered. Finish this packet step before submitting.",
       buttonLabel: "Open checklist",
     };
@@ -676,6 +907,14 @@ function bestNextAction(
       buttonLabel: "Record compliance",
     };
   }
+  if (isNremtCredential(credential)) {
+    return {
+      kind: "submission",
+      title: "Verify the National Registry dashboard and submit",
+      body: "Confirm accepted post-cap education, every NCCP component, status verification, and the current on-time or reinstatement path.",
+      buttonLabel: "Save application record",
+    };
+  }
   return {
     kind: "submission",
     title: "Review and submit your renewal",
@@ -691,6 +930,7 @@ export function LicenseLanternApp() {
   const [activityOpen, setActivityOpen] = useState(false);
   const [credentialOpen, setCredentialOpen] = useState(false);
   const [submissionOpen, setSubmissionOpen] = useState(false);
+  const [nremtSubmissionDate, setNremtSubmissionDate] = useState(todayIso());
   const [acceptanceOpen, setAcceptanceOpen] = useState(false);
   const [remindersOpen, setRemindersOpen] = useState(false);
   const [allocationActivity, setAllocationActivity] =
@@ -1062,6 +1302,15 @@ export function LicenseLanternApp() {
     );
   }, [selectedCredentialId, workspace]);
 
+  const selectedNremtNextRule = useMemo(
+    () =>
+      currentNremtCatalogRule(
+        workspace?.catalog ?? [],
+        selectedCredential,
+      ),
+    [selectedCredential, workspace],
+  );
+
   const selectedRule = useMemo(
     () =>
       workspace?.catalog.find((rule) => rule.id === selectedRuleId) ?? null,
@@ -1109,7 +1358,8 @@ export function LicenseLanternApp() {
       (credential) =>
         credential.status !== "renewed" &&
         !existingIds.has(credential.id) &&
-        allocationActivity.completionDate >= credential.cycleStart &&
+        (allocationActivity.completionDate >= credential.cycleStart ||
+          hasPortalConfirmedCarryover(credential)) &&
         allocationActivity.completionDate <= credential.deadline,
     );
   }, [allocationActivity, workspace]);
@@ -1235,34 +1485,18 @@ export function LicenseLanternApp() {
   }
 
   function preferredCalendarLeadDays() {
-    const leadDays =
-      workspace?.reminderPreferences.leadDays.filter(
-        (day) => day > 0 && day <= 365,
-      ) ?? [];
-    return leadDays.length ? Math.min(30, Math.max(...leadDays)) : 30;
+    return normalizedCalendarLeadDays(
+      workspace?.reminderPreferences.leadDays,
+    );
   }
 
   function credentialCalendarEvent(
     credential: Credential,
   ): CalendarInviteEvent {
-    const compliancePeriod = isCompliancePeriodCredential(credential);
-    return {
-      uid: `credential-${credential.id}-${credential.deadline}`,
-      title: `${credential.credentialName} ${
-        compliancePeriod ? "compliance" : "renewal"
-      } deadline`,
-      description: [
-        `${credential.credentialName} ${
-          compliancePeriod ? "compliance" : "renewal"
-        } deadline in ${credential.jurisdiction}.`,
-        compliancePeriod
-          ? "Confirm current requirements and completion status with the official authority or employer record."
-          : "Confirm current requirements with the licensing authority before submitting.",
-      ].join(" "),
-      date: credential.deadline,
-      reminderDaysBefore: preferredCalendarLeadDays(),
-      url: credential.sourceUrl,
-    };
+    return credentialDeadlineCalendarEvent(
+      credential,
+      preferredCalendarLeadDays(),
+    );
   }
 
   async function deliverCalendarInvite(
@@ -1295,34 +1529,31 @@ export function LicenseLanternApp() {
   async function addReminderToCalendar(reminder: Reminder) {
     await deliverCalendarInvite(
       [
-        {
-          uid: reminder.key,
-          title: reminder.title,
-          description: `${reminder.body} Added from License Lantern.`,
-          date: reminder.eventDate,
-          reminderDaysBefore: reminder.kind === "acceptance" ? 0 : 7,
-        },
+        reminderCalendarEvent(
+          reminder,
+          preferredCalendarLeadDays(),
+        ),
       ],
       `${reminder.credentialName}-${reminder.eventDate}`,
       "Check-in handed off to your calendar.",
     );
   }
 
-  async function addAllRenewalsToCalendar() {
-    const credentials =
-      workspace?.credentials.filter(
-        (credential) => credential.status === "active",
-      ) ?? [];
-    if (!credentials.length) {
-      setToast({ message: "There are no active renewal dates to add yet." });
+  async function addAllCheckInsToCalendar() {
+    const events = allCheckInCalendarEvents(
+      workspace?.credentials ?? [],
+      preferredCalendarLeadDays(),
+    );
+    if (!events.length) {
+      setToast({ message: "There are no open check-ins to add yet." });
       return;
     }
     await deliverCalendarInvite(
-      credentials.map(credentialCalendarEvent),
-      "license-lantern-renewals",
-      `${credentials.length} ${
-        credentials.length === 1 ? "renewal date" : "renewal dates"
-      } handed off to your calendar.`,
+      events,
+      "license-lantern-check-ins",
+      `${events.length} calendar ${
+        events.length === 1 ? "check-in" : "check-ins"
+      } handed off with your reminder schedule.`,
     );
   }
 
@@ -1493,6 +1724,25 @@ export function LicenseLanternApp() {
     const form = new FormData(formElement);
     const credentialId = String(form.get("credentialId") ?? "");
     const totalUnits = Number(form.get("totalUnits"));
+    const credential =
+      workspace?.credentials.find((item) => item.id === credentialId) ?? null;
+    let nremtMatches: RequirementMatchPayload[] | undefined;
+    if (isNremtCredential(credential)) {
+      try {
+        nremtMatches = nremtRequirementMatchPayload(
+          form,
+          credential!,
+          totalUnits,
+        );
+      } catch (matchError) {
+        setError(
+          matchError instanceof Error
+            ? matchError.message
+            : "Review the National Registry credit allocation.",
+        );
+        return;
+      }
+    }
     const evidenceFile = activityEvidenceFile;
     const hasEvidenceFile = Boolean(evidenceFile && evidenceFile.size > 0);
     const result = await runAction(
@@ -1503,12 +1753,21 @@ export function LicenseLanternApp() {
         completionDate: String(form.get("completionDate") ?? ""),
         totalUnits,
         credentialId,
-        requirementIds: form
-          .getAll("requirementIds")
-          .map((value) => String(value))
-          .filter(Boolean),
+        ...(nremtMatches
+          ? {
+              requirementMatches: nremtMatches,
+              acceptedEducationAttested: true,
+            }
+          : {
+              requirementIds: form
+                .getAll("requirementIds")
+                .map((value) => String(value))
+                .filter(Boolean),
+            }),
         allocatedUnits: totalUnits,
         evidenceStatus: String(form.get("evidenceStatus") ?? "missing"),
+        portalCarryoverAttested:
+          form.get("portalCarryoverAttested") === "on",
       },
       `${compactNumber(totalUnits)} ${
         totalUnits === 1 ? "credit" : "credits"
@@ -1700,6 +1959,9 @@ export function LicenseLanternApp() {
           : (rule?.unitLabel ?? "hours"),
         categories,
         applicabilityChoices,
+        officialDatesAttested: requiresOfficialCatalogDates(rule)
+          ? form.get("officialDatesAttested") === "on"
+          : undefined,
       },
       "Credential added. Your renewal plan is ready.",
     );
@@ -1724,17 +1986,31 @@ export function LicenseLanternApp() {
         confirmationNumber: String(form.get("confirmationNumber") ?? ""),
         complianceAttested:
           isIsc2AutomaticRenewalCredential(selectedCredential) ||
-          isCompliancePeriodCredential(selectedCredential)
+          isCompliancePeriodCredential(selectedCredential) ||
+          isNremtCredential(selectedCredential)
             ? form.get("complianceAttested") === "on"
+            : undefined,
+        lateReinstatementAttested:
+          isNremtCredential(selectedCredential) &&
+          String(form.get("submissionDate") ?? "") >
+            selectedCredential.deadline
+            ? form.get("lateReinstatementAttested") === "on"
             : undefined,
       },
       isIsc2AutomaticRenewalCredential(selectedCredential)
         ? "ISC2 dashboard checkpoint saved. Confirm renewal only after the new dates appear."
         : isCompliancePeriodCredential(selectedCredential)
           ? "Compliance-period milestone saved. Confirm the next period from the official record."
-          : "Submission logged. Keep the confirmation until your renewal is accepted.",
+          : isNremtCredential(selectedCredential)
+            ? "National Registry application logged. Keep the dashboard approval with your record."
+            : "Submission logged. Keep the confirmation until your renewal is accepted.",
     );
     if (success) setSubmissionOpen(false);
+  }
+
+  function openSubmission() {
+    setNremtSubmissionDate(todayIso());
+    setSubmissionOpen(true);
   }
 
   async function handleAcceptance(event: FormEvent<HTMLFormElement>) {
@@ -1749,20 +2025,21 @@ export function LicenseLanternApp() {
         reference: String(form.get("reference") ?? ""),
         nextCycleStart: String(form.get("nextCycleStart") ?? ""),
         nextDeadline: String(form.get("nextDeadline") ?? ""),
-        nextRuleSetId: isFloridaInsuranceComplianceCredential(
-          selectedCredential,
-        )
+        nextRuleSetId: requiresCurrentNextTemplate(selectedCredential)
           ? String(form.get("nextRuleSetId") ?? "")
-          : undefined,
+          : isNremtCredential(selectedCredential)
+            ? selectedNremtNextRule?.id
+            : undefined,
         officialDatesAttested:
-          isIsc2AutomaticRenewalCredential(selectedCredential) ||
-          isCompliancePeriodCredential(selectedCredential)
+          requiresOfficialNextPeriodAttestation(selectedCredential)
             ? form.get("officialDatesAttested") === "on"
             : undefined,
       },
       isCompliancePeriodCredential(selectedCredential)
         ? "Compliance period completed. Your next period is ready."
-        : "Renewal accepted. Your next cycle is ready.",
+        : isNremtCredential(selectedCredential)
+          ? "National Registry renewal confirmed. Your dashboard dates are preserved."
+          : "Renewal accepted. Your next cycle is ready.",
     );
     if (result) {
       setAcceptanceOpen(false);
@@ -1815,16 +2092,42 @@ export function LicenseLanternApp() {
     if (!allocationActivity) return;
     const form = new FormData(event.currentTarget);
     const allocatedUnits = Number(form.get("allocatedUnits"));
+    let nremtMatches: RequirementMatchPayload[] | undefined;
+    if (isNremtCredential(allocationCredential)) {
+      try {
+        nremtMatches = nremtRequirementMatchPayload(
+          form,
+          allocationCredential!,
+          allocatedUnits,
+        );
+      } catch (matchError) {
+        setError(
+          matchError instanceof Error
+            ? matchError.message
+            : "Review the National Registry credit allocation.",
+        );
+        return;
+      }
+    }
     const result = await runAction(
       "addActivityAllocation",
       {
         activityId: allocationActivity.id,
         credentialId: String(form.get("credentialId") ?? ""),
-        requirementIds: form
-          .getAll("requirementIds")
-          .map((value) => String(value))
-          .filter(Boolean),
+        ...(nremtMatches
+          ? {
+              requirementMatches: nremtMatches,
+              acceptedEducationAttested: true,
+            }
+          : {
+              requirementIds: form
+                .getAll("requirementIds")
+                .map((value) => String(value))
+                .filter(Boolean),
+            }),
         allocatedUnits,
+        portalCarryoverAttested:
+          form.get("portalCarryoverAttested") === "on",
       },
       `Activity applied to another credential.`,
     );
@@ -1840,14 +2143,40 @@ export function LicenseLanternApp() {
     event.preventDefault();
     if (!classificationRepair) return;
     const form = new FormData(event.currentTarget);
+    let nremtMatches: RequirementMatchPayload[] | undefined;
+    if (isNremtCredential(classificationCredential)) {
+      try {
+        nremtMatches = nremtRequirementMatchPayload(
+          form,
+          classificationCredential!,
+          classificationRepair.allocation.allocatedUnits,
+        );
+      } catch (matchError) {
+        setError(
+          matchError instanceof Error
+            ? matchError.message
+            : "Review the National Registry credit allocation.",
+        );
+        return;
+      }
+    }
     const result = await runAction(
       "updateActivityAllocationRequirements",
       {
         allocationId: classificationRepair.allocation.id,
-        requirementIds: form
-          .getAll("requirementIds")
-          .map((value) => String(value))
-          .filter(Boolean),
+        ...(nremtMatches
+          ? {
+              requirementMatches: nremtMatches,
+              acceptedEducationAttested: true,
+            }
+          : {
+              requirementIds: form
+                .getAll("requirementIds")
+                .map((value) => String(value))
+                .filter(Boolean),
+            }),
+        portalCarryoverAttested:
+          form.get("portalCarryoverAttested") === "on",
       },
       "Activity classification updated and credit recalculated.",
     );
@@ -1982,7 +2311,7 @@ export function LicenseLanternApp() {
               onAddCredential={() => setCredentialOpen(true)}
               onViewCredentials={() => setView("credentials")}
               onViewRecords={() => setView("records")}
-              onSubmit={() => setSubmissionOpen(true)}
+              onSubmit={openSubmission}
               onAccept={() => setAcceptanceOpen(true)}
               onReminders={() => setRemindersOpen(true)}
               onReminderState={(reminder, status) =>
@@ -2010,7 +2339,7 @@ export function LicenseLanternApp() {
               selectedId={selectedCredential?.id ?? ""}
               onSelect={(id) => setSelectedCredentialId(id)}
               onAdd={() => setCredentialOpen(true)}
-              onSubmit={() => setSubmissionOpen(true)}
+              onSubmit={openSubmission}
               onAccept={() => setAcceptanceOpen(true)}
               onReminders={() => setRemindersOpen(true)}
               onAddToCalendar={(credential) =>
@@ -2059,7 +2388,7 @@ export function LicenseLanternApp() {
               isStandalone={isStandalone}
               installAvailable={Boolean(installPrompt)}
               onInstall={() => void handleInstallApp()}
-              onAddAllRenewals={() => void addAllRenewalsToCalendar()}
+              onAddAllCheckIns={() => void addAllCheckInsToCalendar()}
             />
           )}
         </main>
@@ -2277,7 +2606,11 @@ export function LicenseLanternApp() {
                         completionDate: event.currentTarget.value,
                       }))
                     }
-                    min={activityCredential?.cycleStart}
+                    min={
+                      hasPortalConfirmedCarryover(activityCredential)
+                        ? undefined
+                        : activityCredential?.cycleStart
+                    }
                     max={activityCredential?.deadline}
                     required
                   />
@@ -2289,8 +2622,12 @@ export function LicenseLanternApp() {
                     }
                   >
                     {activityScan.suggestions.completionDate
-                      ? "Suggested from the scan — confirm it falls within this renewal cycle."
-                      : "Must fall within the selected renewal cycle."}
+                      ? hasPortalConfirmedCarryover(activityCredential)
+                        ? "Suggested from the scan — confirm it is in this cycle, or tag it only as portal-confirmed carryover."
+                        : "Suggested from the scan — confirm it falls within this renewal cycle."
+                      : hasPortalConfirmedCarryover(activityCredential)
+                        ? "Use the actual date. A prior-period date is accepted only when tagged solely as portal-confirmed carryover."
+                        : "Must fall within the selected renewal cycle."}
                   </small>
                 </label>
                 <label
@@ -2362,19 +2699,59 @@ export function LicenseLanternApp() {
                   </small>
                 ) : null}
               </label>
-              <RequirementPicker
-                key={activityCredential?.id}
-                credential={activityCredential}
-              />
+              {isNremtCredential(activityCredential) ? (
+                <NremtRequirementAllocator
+                  key={activityCredential?.id}
+                  credential={activityCredential!}
+                  availableUnits={Number(activityDraft.totalUnits) || 0}
+                />
+              ) : (
+                <RequirementPicker
+                  key={activityCredential?.id}
+                  credential={activityCredential}
+                />
+              )}
+              {isPriorPeriodCarryoverEntry(
+                activityDraft.completionDate,
+                activityCredential,
+              ) ? (
+                <label className="switch-row">
+                  <span>
+                    <strong>
+                      The issuing portal posted this carryover
+                    </strong>
+                    <small>
+                      I selected only the portal-confirmed carryover
+                      classifier, entered the actual eligible prior-period
+                      date, and will retain the portal record. A reference or
+                      uploaded proof is required before cycle completion.
+                    </small>
+                  </span>
+                  <input
+                    name="portalCarryoverAttested"
+                    type="checkbox"
+                    required
+                  />
+                </label>
+              ) : null}
               <label
                 className={`field ${
                   activityScan.suggestions.provider ? "scan-suggested" : ""
                 }`}
               >
-                <span>Provider or organizer <em>Optional</em></span>
+                <span>
+                  Provider or organizer{" "}
+                  {!isNremtCredential(activityCredential) ? (
+                    <em>Optional</em>
+                  ) : null}
+                </span>
                 <input
                   name="provider"
-                  placeholder="Organization or conference name"
+                  placeholder={
+                    isNremtCredential(activityCredential)
+                      ? "State EMS-approved, CAPCE, or other accepted provider"
+                      : "Organization or conference name"
+                  }
                   value={activityDraft.provider}
                   maxLength={ACTIVITY_DRAFT_PROVIDER_MAX_LENGTH}
                   disabled={scanningActivityEvidence}
@@ -2384,6 +2761,7 @@ export function LicenseLanternApp() {
                       provider: event.currentTarget.value,
                     }))
                   }
+                  required={isNremtCredential(activityCredential)}
                 />
                 {activityScan.suggestions.provider ? (
                   <small className="scan-suggestion-note">
@@ -2407,6 +2785,10 @@ export function LicenseLanternApp() {
                     type="radio"
                     name="evidenceStatus"
                     value="not_required"
+                    disabled={isPriorPeriodCarryoverEntry(
+                      activityDraft.completionDate,
+                      activityCredential,
+                    )}
                   />
                   <span>Not required</span>
                 </label>
@@ -2695,22 +3077,67 @@ export function LicenseLanternApp() {
               <label className="field">
                 <span>Cycle started</span>
                 <input
+                  key={`cycle-start:${selectedRule?.id ?? "custom"}`}
                   name="cycleStart"
                   type="date"
-                  defaultValue={yearAgoIso()}
+                  defaultValue={
+                    requiresOfficialCatalogDates(selectedRule)
+                      ? ""
+                      : yearAgoIso()
+                  }
                   required
                 />
               </label>
               <label className="field">
                 <span>Renewal deadline</span>
                 <input
+                  key={`deadline:${selectedRule?.id ?? "custom"}`}
                   name="deadline"
                   type="date"
-                  defaultValue={nextYearIso()}
+                  defaultValue={
+                    requiresOfficialCatalogDates(selectedRule)
+                      ? ""
+                      : nextYearIso()
+                  }
                   required
                 />
               </label>
             </div>
+
+            {isNremtCatalogRule(selectedRule) ? (
+              <label className="switch-row">
+                <span>
+                  <strong>I checked my National Registry dashboard</strong>
+                  <small>
+                    It assigns this 2025 NCCP level template, and the cycle
+                    start and fixed expiration entered above match the
+                    dashboard exactly.
+                  </small>
+                </span>
+                <input
+                  name="officialDatesAttested"
+                  type="checkbox"
+                  required
+                />
+              </label>
+            ) : null}
+            {isFloridaMentalHealthCatalogRule(selectedRule) ? (
+              <label className="switch-row">
+                <span>
+                  <strong>I checked my CE Broker period and phase</strong>
+                  <small>
+                    CE Broker shows this Ethics and Boundaries or Telehealth
+                    phase, beginning April 1 of an odd year and ending March
+                    31 two years later.
+                  </small>
+                </span>
+                <input
+                  name="officialDatesAttested"
+                  type="checkbox"
+                  required
+                />
+              </label>
+            ) : null}
 
             <div className="advisory-note">
               <span aria-hidden="true">i</span>
@@ -2748,14 +3175,18 @@ export function LicenseLanternApp() {
               ? "Save an ISC2 dashboard checkpoint"
               : isCompliancePeriodCredential(selectedCredential)
                 ? "Record compliance"
-              : "Log your submission"
+                : isNremtCredential(selectedCredential)
+                  ? "Save the National Registry application"
+                  : "Log your submission"
           }
           eyebrow={
             isIsc2AutomaticRenewalCredential(selectedCredential)
               ? "Automatic-renewal milestone"
               : isCompliancePeriodCredential(selectedCredential)
                 ? "Compliance-period milestone"
-              : "Renewal milestone"
+                : isNremtCredential(selectedCredential)
+                  ? "National Registry milestone"
+                  : "Renewal milestone"
           }
           onClose={() => setSubmissionOpen(false)}
         >
@@ -2770,6 +3201,8 @@ export function LicenseLanternApp() {
                     ? "Record what the ISC2 dashboard shows"
                     : isCompliancePeriodCredential(selectedCredential)
                       ? "Save the official compliance milestone"
+                      : isNremtCredential(selectedCredential)
+                        ? "Save the National Registry application record"
                     : "One last record for your future self"}
                 </strong>
                 <p>
@@ -2777,6 +3210,8 @@ export function LicenseLanternApp() {
                     ? "This checkpoint records your attestation that required CPEs and annual maintenance fees are satisfied. It does not mean ISC2 has renewed the certification."
                     : isCompliancePeriodCredential(selectedCredential)
                       ? "Record when the official record shows this period’s education requirement is complete."
+                      : isNremtCredential(selectedCredential)
+                        ? "Confirm the assigned NCCP model and every component in the National Registry dashboard before recording the application."
                     : "Logging the date and confirmation keeps “credits earned” separate from “renewal submitted.”"}
                 </p>
               </div>
@@ -2787,13 +3222,21 @@ export function LicenseLanternApp() {
                   ? "Dashboard checked"
                   : isCompliancePeriodCredential(selectedCredential)
                     ? "Compliance confirmed"
+                    : isNremtCredential(selectedCredential)
+                      ? "Application submitted"
                   : "Submission date"}
               </span>
               <input
                 autoFocus
                 name="submissionDate"
                 type="date"
-                defaultValue={todayIso()}
+                {...(isNremtCredential(selectedCredential)
+                  ? {
+                      value: nremtSubmissionDate,
+                      onChange: (event: ChangeEvent<HTMLInputElement>) =>
+                        setNremtSubmissionDate(event.currentTarget.value),
+                    }
+                  : { defaultValue: todayIso() })}
                 required
               />
             </label>
@@ -2803,6 +3246,8 @@ export function LicenseLanternApp() {
                   ? "Dashboard or payment reference"
                   : isCompliancePeriodCredential(selectedCredential)
                     ? "Official record reference"
+                    : isNremtCredential(selectedCredential)
+                      ? "Dashboard or application reference"
                   : "Confirmation or receipt number"}{" "}
                 <em>Optional</em>
               </span>
@@ -2813,27 +3258,53 @@ export function LicenseLanternApp() {
                     ? "e.g., dashboard receipt ID"
                     : isCompliancePeriodCredential(selectedCredential)
                       ? "e.g., portal or employer record ID"
+                      : isNremtCredential(selectedCredential)
+                        ? "e.g., National Registry application ID"
                     : "e.g., RNL-2048-194"
                 }
               />
             </label>
             {isIsc2AutomaticRenewalCredential(selectedCredential) ||
-            isCompliancePeriodCredential(selectedCredential) ? (
+            isCompliancePeriodCredential(selectedCredential) ||
+            isNremtCredential(selectedCredential) ? (
               <label className="switch-row">
                 <span>
                   <strong>
                     {isIsc2AutomaticRenewalCredential(selectedCredential)
                       ? "I checked the ISC2 Dashboard"
-                      : "I checked the official compliance record"}
+                      : isCompliancePeriodCredential(selectedCredential)
+                        ? "I checked the official compliance record"
+                        : "I checked the National Registry dashboard"}
                   </strong>
                   <small>
                     {isIsc2AutomaticRenewalCredential(selectedCredential)
                       ? "It shows this cycle’s required CPEs and annual maintenance fees as satisfied."
-                      : "It shows this period’s education requirement as complete."}
+                      : isCompliancePeriodCredential(selectedCredential)
+                        ? "It shows this period’s education requirement as complete."
+                        : "It shows the assigned model, component totals, National topics, and pediatric content as satisfied."}
                   </small>
                 </span>
                 <input
                   name="complianceAttested"
+                  type="checkbox"
+                  required
+                />
+              </label>
+            ) : null}
+            {isNremtCredential(selectedCredential) &&
+            nremtSubmissionDate > selectedCredential.deadline ? (
+              <label className="switch-row">
+                <span>
+                  <strong>I am using the late reinstatement path</strong>
+                  <small>
+                    All continuing education was completed by the credential’s
+                    expiration cutoff. Education completed during
+                    reinstatement is not accepted, and late acceptance is not
+                    guaranteed.
+                  </small>
+                </span>
+                <input
+                  name="lateReinstatementAttested"
                   type="checkbox"
                   required
                 />
@@ -2846,6 +3317,8 @@ export function LicenseLanternApp() {
                   ? "ISC2 performs automatic recertification at the end of the three-year cycle when its requirements are met. Close this cycle only after the dashboard displays renewed certification dates."
                   : isCompliancePeriodCredential(selectedCredential)
                     ? "This records an education-compliance milestone, not a license-renewal filing. Close the period only after confirming the next official compliance dates."
+                    : isNremtCredential(selectedCredential)
+                      ? "For Active status, EMR and EMT skills are verified by a Training Officer; AEMT and Paramedic skills are verified by a Medical Director. Inactive status still requires the full continuing-education or RBE pathway. If expired, follow the dashboard’s current reinstatement process."
                   : "This records what you submitted. Mark the cycle renewed only after the issuing organization confirms acceptance."}
               </p>
             </div>
@@ -2883,14 +3356,18 @@ export function LicenseLanternApp() {
               ? "Confirm the renewed ISC2 cycle"
               : isCompliancePeriodCredential(selectedCredential)
                 ? "Start the next compliance period"
-              : "Close this renewal cycle"
+                : isNremtCredential(selectedCredential)
+                  ? "Confirm the renewed National Registry cycle"
+                  : "Close this renewal cycle"
           }
           eyebrow={
             isIsc2AutomaticRenewalCredential(selectedCredential)
               ? "Dashboard renewed"
               : isCompliancePeriodCredential(selectedCredential)
                 ? "Official record updated"
-              : "Acceptance received"
+                : isNremtCredential(selectedCredential)
+                  ? "Dashboard renewal approved"
+                  : "Acceptance received"
           }
           onClose={() => setAcceptanceOpen(false)}
         >
@@ -2939,18 +3416,47 @@ export function LicenseLanternApp() {
                 <input name="reference" placeholder="e.g., license receipt ID" />
               </label>
             </div>
-            {isFloridaInsuranceComplianceCredential(
-              selectedCredential,
-            ) ? (
+            {isNremtCredential(selectedCredential) ? (
+              <div className="source-card nremt-current-template">
+                <span className="section-kicker">
+                  Current National Registry template
+                </span>
+                <strong>
+                  {selectedNremtNextRule?.credentialName ??
+                    selectedCredential.credentialName}
+                </strong>
+                <p>
+                  The next cycle must stay on this current same-level catalog
+                  template. Enter the cycle start and fixed expiration exactly
+                  as displayed in the National Registry dashboard.
+                </p>
+              </div>
+            ) : null}
+            {requiresCurrentNextTemplate(selectedCredential) ? (
               <label className="field">
-                <span>Next period’s official Florida template</span>
+                <span>
+                  {isFloridaMentalHealthPhaseCredential(selectedCredential)
+                    ? "Next renewal’s Florida phase"
+                    : "Next period’s official Florida template"}
+                </span>
                 <select name="nextRuleSetId" defaultValue="" required>
                   <option value="" disabled>
-                    Choose the variant shown by MyProfile
+                    {isFloridaMentalHealthPhaseCredential(selectedCredential)
+                      ? "Choose the phase shown by CE Broker"
+                      : "Choose the variant shown by MyProfile"}
                   </option>
                   {(workspace?.catalog ?? [])
                     .filter((rule) =>
-                      rule.id.startsWith("fl-insurance-producer-"),
+                      isFloridaMentalHealthPhaseCredential(
+                        selectedCredential,
+                      )
+                        ? rule.id ===
+                          oppositeFloridaMentalHealthRuleSetId(
+                            selectedCredential.ruleSetId,
+                          )
+                        : rule.id.startsWith(
+                            "fl-insurance-producer-",
+                          ),
                     )
                     .map((rule) => (
                       <option key={rule.id} value={rule.id}>
@@ -2959,8 +3465,9 @@ export function LicenseLanternApp() {
                     ))}
                 </select>
                 <small>
-                  Reconfirm both license line and tenure tier. License Lantern
-                  will seed the new period from this current official template.
+                  {isFloridaMentalHealthPhaseCredential(selectedCredential)
+                    ? "Florida alternates Ethics and Boundaries with Telehealth each biennium. Confirm the displayed opposite phase against CE Broker; the new cycle will reset every third-biennium and supervisor condition for review."
+                    : "Reconfirm both license line and tenure tier. License Lantern will seed the new period from this current official template."}
                 </small>
               </label>
             ) : null}
@@ -2973,11 +3480,26 @@ export function LicenseLanternApp() {
               <p>Confirm the dates shown by your issuing organization.</p>
               <div className="form-grid">
                 <label className="field">
-                  <span>New cycle starts</span>
+                  <span>
+                    {isNremtCredential(selectedCredential)
+                      ? "Dashboard cycle start"
+                      : "New cycle starts"}
+                  </span>
                   <input
                     name="nextCycleStart"
                     type="date"
-                    defaultValue={addDaysIso(selectedCredential.deadline, 1)}
+                    defaultValue={
+                      isNremtCredential(selectedCredential)
+                        ? undefined
+                        : addDaysIso(selectedCredential.deadline, 1)
+                    }
+                    min={
+                      requiresNonOverlappingNextPeriod(
+                        selectedCredential,
+                      )
+                        ? addDaysIso(selectedCredential.deadline, 1)
+                        : undefined
+                    }
                     required
                   />
                 </label>
@@ -2985,28 +3507,38 @@ export function LicenseLanternApp() {
                   <span>
                     {isCompliancePeriodCredential(selectedCredential)
                       ? "Next compliance deadline"
+                      : isNremtCredential(selectedCredential)
+                        ? "Dashboard fixed expiration"
                       : "Next renewal deadline"}
                   </span>
                   <input
                     name="nextDeadline"
                     type="date"
-                    defaultValue={addMonthsIso(
-                      selectedCredential.deadline,
-                      selectedCredential.cycleMonths || 12,
-                    )}
+                    defaultValue={
+                      isNremtCredential(selectedCredential)
+                        ? undefined
+                        : addMonthsIso(
+                            selectedCredential.deadline,
+                            selectedCredential.cycleMonths || 12,
+                          )
+                    }
                     required
                   />
                 </label>
               </div>
             </div>
-            {isIsc2AutomaticRenewalCredential(selectedCredential) ||
-            isCompliancePeriodCredential(selectedCredential) ? (
+            {requiresOfficialNextPeriodAttestation(selectedCredential) ? (
               <label className="switch-row">
                 <span>
-                  <strong>I verified the official next-period record</strong>
+                  <strong>
+                    {isNremtCredential(selectedCredential)
+                      ? "I verified the current-template dashboard dates"
+                      : "I verified the official next-period record"}
+                  </strong>
                   <small>
-                    The confirmation and next cycle dates above match the
-                    issuer, authority, or employer record.
+                    {isNremtCredential(selectedCredential)
+                      ? "The same-level template, cycle start, and fixed expiration above match the National Registry dashboard."
+                      : "The confirmation and next cycle dates above match the issuer, authority, or employer record."}
                   </small>
                 </span>
                 <input
@@ -3021,6 +3553,10 @@ export function LicenseLanternApp() {
               <p>
                 {isFloridaInsuranceComplianceCredential(selectedCredential)
                   ? "The next period will use the selected current template and will reset every conditional rule for confirmation."
+                  : isFloridaMentalHealthPhaseCredential(selectedCredential)
+                    ? "The next renewal will use the CE Broker-confirmed phase and reset every third-biennium and supervisor condition for review."
+                    : isNremtCredential(selectedCredential)
+                      ? "Do not infer the new cycle start from the old expiration. National Registry can assign an early rolling start while retaining the fixed expiration; the dashboard dates control."
                   : "Requirements are copied as a starting snapshot. Review the current official rules before relying on the new plan."}
               </p>
             </div>
@@ -3052,7 +3588,7 @@ export function LicenseLanternApp() {
 
       {remindersOpen && workspace ? (
         <Modal
-          title="Renewal check-ins"
+          title="Due-date check-ins"
           eyebrow="Reminder preferences"
           onClose={() => setRemindersOpen(false)}
         >
@@ -3101,9 +3637,10 @@ export function LicenseLanternApp() {
             <div className="advisory-note">
               <span aria-hidden="true">i</span>
               <p>
-                This release provides reliable in-app check-ins. Email and push
-                delivery will be added after explicit opt-in and delivery
-                verification.
+                In-app check-ins stay inside License Lantern. When you import
+                its calendar events, your phone calendar can alert on the lead days selected here;
+                your calendar controls final delivery.
+                Email and web push remain off.
               </p>
             </div>
             <div className="form-actions">
@@ -3158,10 +3695,6 @@ export function LicenseLanternApp() {
                   ))}
                 </select>
               </label>
-              <RequirementPicker
-                key={allocationCredential?.id}
-                credential={allocationCredential}
-              />
               <label className="field">
                 <span>Credits to apply</span>
                 <input
@@ -3174,6 +3707,40 @@ export function LicenseLanternApp() {
                   required
                 />
               </label>
+              {isNremtCredential(allocationCredential) ? (
+                <NremtRequirementAllocator
+                  key={allocationCredential?.id}
+                  credential={allocationCredential!}
+                  availableUnits={allocationActivity.totalUnits}
+                />
+              ) : (
+                <RequirementPicker
+                  key={allocationCredential?.id}
+                  credential={allocationCredential}
+                />
+              )}
+              {isPriorPeriodCarryoverEntry(
+                allocationActivity.completionDate,
+                allocationCredential,
+              ) ? (
+                <label className="switch-row">
+                  <span>
+                    <strong>
+                      The target portal posted this carryover
+                    </strong>
+                    <small>
+                      Apply this prior-period record only to the
+                      portal-confirmed carryover classifier and retain the
+                      issuer’s supporting record.
+                    </small>
+                  </span>
+                  <input
+                    name="portalCarryoverAttested"
+                    type="checkbox"
+                    required
+                  />
+                </label>
+              ) : null}
               <div className="form-actions">
                 <button
                   className="button button-ghost"
@@ -3244,13 +3811,48 @@ export function LicenseLanternApp() {
                   </p>
                 )}
               </div>
-              <RequirementPicker
-                key={classificationRepair.allocation.id}
-                credential={classificationCredential}
-                initialRequirementIds={
-                  classificationRepair.allocation.requirementIds
-                }
-              />
+              {isNremtCredential(classificationCredential) ? (
+                <NremtRequirementAllocator
+                  key={classificationRepair.allocation.id}
+                  credential={classificationCredential!}
+                  availableUnits={
+                    classificationRepair.allocation.allocatedUnits
+                  }
+                  initialMatches={
+                    classificationRepair.allocation.requirementMatches
+                  }
+                />
+              ) : (
+                <RequirementPicker
+                  key={classificationRepair.allocation.id}
+                  credential={classificationCredential}
+                  initialRequirementIds={
+                    classificationRepair.allocation.requirementIds
+                  }
+                />
+              )}
+              {isPriorPeriodCarryoverEntry(
+                classificationRepair.activity.completionDate,
+                classificationCredential,
+              ) ? (
+                <label className="switch-row">
+                  <span>
+                    <strong>
+                      The issuing portal posted this carryover
+                    </strong>
+                    <small>
+                      Keep this prior-period activity tagged only to the
+                      portal-confirmed carryover classifier and retain the
+                      official supporting record.
+                    </small>
+                  </span>
+                  <input
+                    name="portalCarryoverAttested"
+                    type="checkbox"
+                    required
+                  />
+                </label>
+              ) : null}
               <div className="form-actions">
                 <button
                   className="button button-ghost"
@@ -4086,6 +4688,18 @@ function TodayView({
               /{credential.tasks.length} done
             </span>
           </div>
+          {isNremtCredential(credential) ? (
+            <div className="nremt-checklist-note">
+              <strong>Confirm the status pathway shown in your dashboard</strong>
+              <p>
+                Active EMR/EMT status uses Training Officer skills
+                verification; Active AEMT/Paramedic status uses Medical
+                Director verification. Inactive status still requires all CE
+                or RBE requirements. After expiration, use the dashboard’s
+                current late reinstatement path and cutoff dates.
+              </p>
+            </div>
+          ) : null}
           <div className="task-list">
             {credential.tasks.map((task) => (
               <label
@@ -4781,14 +5395,14 @@ function AccountView({
   isStandalone,
   installAvailable,
   onInstall,
-  onAddAllRenewals,
+  onAddAllCheckIns,
 }: {
   workspace: Workspace;
   onReminders: () => void;
   isStandalone: boolean;
   installAvailable: boolean;
   onInstall: () => void;
-  onAddAllRenewals: () => void;
+  onAddAllCheckIns: () => void;
 }) {
   return (
     <div className="view-stack">
@@ -4874,7 +5488,7 @@ function AccountView({
           </div>
         </section>
         <section className="card reminder-settings-card">
-          <span className="section-kicker">Renewal check-ins</span>
+          <span className="section-kicker">Due-date check-ins</span>
           <h2>
             {workspace.reminderPreferences.inAppEnabled
               ? "In-app reminders are on."
@@ -4898,9 +5512,9 @@ function AccountView({
             <button
               className="button button-outline"
               type="button"
-              onClick={onAddAllRenewals}
+              onClick={onAddAllCheckIns}
             >
-              Add renewal dates to calendar
+              Add all check-ins to calendar
             </button>
           </div>
         </section>
@@ -5092,6 +5706,134 @@ function ProgressRow({
         </button>
       ) : null}
     </div>
+  );
+}
+
+function NremtRequirementAllocator({
+  credential,
+  availableUnits,
+  initialMatches = [],
+}: {
+  credential: Credential;
+  availableUnits: number;
+  initialMatches?: RequirementMatchPayload[];
+}) {
+  const initialUnits = new Map(
+    initialMatches.map((match) => [
+      match.requirementId,
+      Number(match.matchedUnits),
+    ]),
+  );
+  const selectable = credential.requirements.filter(
+    (requirement) =>
+      requirementStatus(requirement) === "applies" &&
+      requirement.isActive !== false,
+  );
+  const national = selectable.find((requirement) =>
+    requirement.ruleCategoryId?.endsWith("-national"),
+  );
+  const componentRequirements = selectable.filter(
+    (requirement) =>
+      requirement === national ||
+      requirement.ruleCategoryId?.endsWith("-local") ||
+      requirement.ruleCategoryId?.endsWith("-individual"),
+  );
+  const nationalTopics = selectable.filter(
+    (requirement) =>
+      requirement.relation === "nested" &&
+      requirement.parentRequirementId === national?.id,
+  );
+  const overlappingRequirements = selectable.filter(
+    (requirement) => requirement.relation === "overlapping",
+  );
+
+  const amountInput = (requirement: Requirement) => (
+    <label className="nremt-allocation-row" key={requirement.id}>
+      <span>
+        <strong>{requirement.name}</strong>
+        <small>
+          {requirement.relation === "nested"
+            ? "Included within National"
+            : requirement.relation === "overlapping"
+              ? "Overlaps National; does not add credit"
+              : `Cycle minimum ${compactNumber(requirement.requiredUnits)}`}
+        </small>
+      </span>
+      <input
+        aria-label={`${requirement.name} accepted credits`}
+        name={`requirementMatch:${requirement.id}`}
+        type="number"
+        min="0"
+        max={availableUnits > 0 ? availableUnits : undefined}
+        step="0.1"
+        inputMode="decimal"
+        defaultValue={initialUnits.get(requirement.id) ?? 0}
+        required
+      />
+    </label>
+  );
+
+  return (
+    <fieldset className="nremt-requirement-allocator">
+      <legend>National Registry accepted-credit allocation</legend>
+      <p>
+        Enter the portion NREMT accepts after any published course cap—not raw
+        provider contact hours.
+      </p>
+      <section>
+        <div className="nremt-allocation-heading">
+          <strong>Component amounts</strong>
+          <small>
+            National + Local/State + Individual must equal the credits applied
+            to this credential.
+          </small>
+        </div>
+        <div className="nremt-allocation-list">
+          {componentRequirements.map(amountInput)}
+        </div>
+      </section>
+      <section>
+        <div className="nremt-allocation-heading">
+          <strong>National topic amounts</strong>
+          <small>
+            The five topics must total the National amount above. Assign each
+            credited portion once.
+          </small>
+        </div>
+        <div className="nremt-allocation-list topics">
+          {nationalTopics.map(amountInput)}
+        </div>
+      </section>
+      <section>
+        <div className="nremt-allocation-heading">
+          <strong>Pediatric overlap</strong>
+          <small>
+            Enter pediatric content already included in a National topic. It
+            does not increase National or overall credit.
+          </small>
+        </div>
+        <div className="nremt-allocation-list">
+          {overlappingRequirements.map(amountInput)}
+        </div>
+      </section>
+      <label className="switch-row nremt-education-attestation">
+        <span>
+          <strong>This is accepted, post-cap NREMT education</strong>
+          <small>
+            I confirmed the provider and course qualify under current National
+            Registry accepted-education rules, the content is direct EMS
+            clinical patient care at or above this certification level, and
+            these are the NREMT-accepted units after any standardized-course
+            maximum. Academic courses are not used for National credit.
+          </small>
+        </span>
+        <input
+          name="acceptedEducationAttested"
+          type="checkbox"
+          required
+        />
+      </label>
+    </fieldset>
   );
 }
 

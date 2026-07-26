@@ -1,4 +1,5 @@
 import {
+  assertActivityEvidenceMutable,
   EvidenceApiError,
   MAX_EVIDENCE_BYTES,
   MAX_EVIDENCE_PER_ACTIVITY,
@@ -164,6 +165,11 @@ export async function POST(request: Request) {
         "activity_not_found",
       );
     }
+    await assertActivityEvidenceMutable(
+      database,
+      identity.userId,
+      activityId,
+    );
 
     const buffer = await file.arrayBuffer();
     const detected = detectFileType(
@@ -223,13 +229,23 @@ export async function POST(request: Request) {
     }
 
     try {
-      await database.batch([
+      const results = await database.batch([
         query(
           database,
           `INSERT INTO evidence_files (
             id, user_id, activity_id, object_key, original_filename,
             content_type, size_bytes, sha256, storage_etag, status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready')`,
+          )
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready'
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM activity_allocations allocation
+            JOIN credentials credential
+              ON credential.id = allocation.credential_id
+             AND credential.user_id = ?
+            WHERE allocation.activity_id = ?
+              AND credential.status = 'renewed'
+          )`,
           [
             evidenceId,
             identity.userId,
@@ -240,6 +256,8 @@ export async function POST(request: Request) {
             file.size,
             checksum.hex,
             stored.etag,
+            identity.userId,
+            activityId,
           ],
         ),
         query(
@@ -249,19 +267,38 @@ export async function POST(request: Request) {
              evidence_status = 'attached',
              evidence_reference = ?,
              updated_at = CURRENT_TIMESTAMP
-           WHERE id = ? AND user_id = ?`,
-          [safeFilename, activityId, identity.userId],
+           WHERE id = ?
+             AND user_id = ?
+             AND EXISTS (
+               SELECT 1
+               FROM evidence_files stored
+               WHERE stored.id = ?
+                 AND stored.activity_id = activities.id
+                 AND stored.user_id = activities.user_id
+                 AND stored.status = 'ready'
+             )`,
+          [safeFilename, activityId, identity.userId, evidenceId],
         ),
         query(
           database,
           `INSERT OR IGNORE INTO badge_events (
             id, user_id, badge_id, idempotency_key, related_type, related_id
-          ) VALUES (?, ?, 'proof-ready', ?, 'evidence', ?)`,
+          )
+          SELECT ?, ?, 'proof-ready', ?, 'evidence', ?
+          WHERE EXISTS (
+            SELECT 1
+            FROM evidence_files stored
+            WHERE stored.id = ?
+              AND stored.user_id = ?
+              AND stored.status = 'ready'
+          )`,
           [
             crypto.randomUUID(),
             identity.userId,
             `${identity.userId}:badge:proof-ready`,
             evidenceId,
+            evidenceId,
+            identity.userId,
           ],
         ),
         query(
@@ -269,15 +306,37 @@ export async function POST(request: Request) {
           `INSERT OR IGNORE INTO xp_events (
             id, user_id, idempotency_key, event_type, points, related_type,
             related_id
-          ) VALUES (?, ?, ?, 'evidence_attached', 40, 'activity', ?)`,
+          )
+          SELECT ?, ?, ?, 'evidence_attached', 40, 'activity', ?
+          WHERE EXISTS (
+            SELECT 1
+            FROM evidence_files stored
+            WHERE stored.id = ?
+              AND stored.user_id = ?
+              AND stored.status = 'ready'
+          )`,
           [
             crypto.randomUUID(),
             identity.userId,
             `${identity.userId}:activity:${activityId}:evidence-attached`,
             activityId,
+            evidenceId,
+            identity.userId,
           ],
         ),
       ]);
+      if (Number(results[0]?.meta?.changes ?? Number.NaN) === 0) {
+        await assertActivityEvidenceMutable(
+          database,
+          identity.userId,
+          activityId,
+        );
+        throw new EvidenceApiError(
+          "The activity changed while evidence was being attached.",
+          409,
+          "evidence_upload_conflict",
+        );
+      }
     } catch (error) {
       await bucket.delete(uploadedObjectKey).catch(() => undefined);
       uploadedObjectKey = null;

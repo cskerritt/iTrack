@@ -3,7 +3,7 @@ export type CalendarInviteEvent = {
   title: string;
   description: string;
   date: string;
-  reminderDaysBefore?: number;
+  reminderDaysBefore?: number | number[];
   url?: string | null;
 };
 
@@ -41,8 +41,12 @@ function compactTimestamp(value: Date) {
 
 function escapeIcsText(value: string) {
   return value
+    .replace(
+      /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g,
+      "",
+    )
     .replace(/\\/g, "\\\\")
-    .replace(/\r\n|\r|\n/g, "\\n")
+    .replace(/\r\n|\r|\n|\u2028|\u2029/g, "\\n")
     .replace(/;/g, "\\;")
     .replace(/,/g, "\\,");
 }
@@ -72,10 +76,16 @@ function foldIcsLine(value: string) {
   return folded;
 }
 
-function safeReminderDays(value?: number) {
-  if (value === undefined) return 7;
-  if (!Number.isFinite(value)) return 7;
-  return Math.max(0, Math.min(365, Math.round(value)));
+function safeReminderDays(value?: number | number[]) {
+  if (value === undefined) return [7];
+  const values = Array.isArray(value) ? value : [value];
+  return [
+    ...new Set(
+      values
+        .filter((days) => Number.isFinite(days))
+        .map((days) => Math.max(0, Math.min(365, Math.round(days)))),
+    ),
+  ].sort((left, right) => right - left);
 }
 
 function safeHttpsUrl(value?: string | null) {
@@ -113,10 +123,10 @@ export function buildCalendarInvite(
   const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//License Lantern//Renewal Calendar//EN",
+    "PRODID:-//License Lantern//Compliance Check-ins//EN",
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
-    "X-WR-CALNAME:License Lantern renewals",
+    "X-WR-CALNAME:License Lantern check-ins",
   ];
 
   for (const event of events) {
@@ -137,16 +147,17 @@ export function buildCalendarInvite(
     if (eventUrl) {
       lines.push(`URL:${eventUrl}`);
     }
-    lines.push(
-      "STATUS:CONFIRMED",
-      "TRANSP:TRANSPARENT",
-      "BEGIN:VALARM",
-      reminderDays === 0 ? "TRIGGER:-PT0M" : `TRIGGER:-P${reminderDays}D`,
-      "ACTION:DISPLAY",
-      `DESCRIPTION:${escapeIcsText(event.title)}`,
-      "END:VALARM",
-      "END:VEVENT",
-    );
+    lines.push("STATUS:CONFIRMED", "TRANSP:TRANSPARENT");
+    for (const days of reminderDays) {
+      lines.push(
+        "BEGIN:VALARM",
+        days === 0 ? "TRIGGER:-PT0M" : `TRIGGER:-P${days}D`,
+        "ACTION:DISPLAY",
+        `DESCRIPTION:${escapeIcsText(event.title)}`,
+        "END:VALARM",
+      );
+    }
+    lines.push("END:VEVENT");
   }
   lines.push("END:VCALENDAR");
 
@@ -160,12 +171,12 @@ function safeFileName(value: string) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
-  return `${base || "license-lantern-renewals"}.ics`;
+  return `${base || "license-lantern-check-ins"}.ics`;
 }
 
 export async function offerCalendarInvite(
   events: CalendarInviteEvent[],
-  fileName = "license-lantern-renewals",
+  fileName = "license-lantern-check-ins",
 ): Promise<CalendarInviteDelivery> {
   const contents = buildCalendarInvite(events);
   const resolvedFileName = safeFileName(fileName);
@@ -189,8 +200,8 @@ export async function offerCalendarInvite(
   if (canShareFile) {
     try {
       await navigator.share({
-        title: "License Lantern renewal calendar",
-        text: "Add these renewal dates to your calendar.",
+        title: "License Lantern calendar check-ins",
+        text: "Add these license and compliance check-ins to your calendar.",
         files: [file],
       });
       return "shared";
