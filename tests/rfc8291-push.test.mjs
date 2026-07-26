@@ -287,7 +287,6 @@ test("push endpoints are restricted to mainstream browser push services", () => 
     "https://updates.push.services.mozilla.com/wpush/v2/token",
     "https://push.services.mozilla.com/wpush/v2/token",
     "https://web.push.apple.com/QHh5/token",
-    "https://api.push.apple.com/3/device/token",
     "https://wns2-db5p.notify.windows.com/w/?token=value",
   ]) {
     assert.equal(webPush.validatePushEndpoint(endpoint).href, endpoint);
@@ -299,6 +298,7 @@ test("push endpoints are restricted to mainstream browser push services", () => 
     "https://web.push.apple.com.attacker.example/message/token",
     "https://notify.windows.com.attacker.example/message/token",
     "https://web.push.apple.com./message/token",
+    "https://api.push.apple.com/3/device/token",
     "https://fcm.googleapis.com:444/message/token",
   ]) {
     assert.throws(

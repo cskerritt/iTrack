@@ -1,0 +1,1 @@
+ALTER TABLE `push_delivery_ledger` ADD `dispatched_at` text;

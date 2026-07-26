@@ -211,7 +211,7 @@ function permittedEndpointHostname(hostname: string) {
     normalized === "fcm.googleapis.com" ||
     normalized === "updates.push.services.mozilla.com" ||
     normalized === "push.services.mozilla.com" ||
-    isDomainOrSubdomain("push.apple.com") ||
+    normalized === "web.push.apple.com" ||
     isDomainOrSubdomain("notify.windows.com")
   );
 }

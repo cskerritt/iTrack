@@ -363,6 +363,7 @@ const TABLE_STATEMENTS = [
     next_attempt_at TEXT,
     http_status INTEGER,
     error_code TEXT,
+    dispatched_at TEXT,
     delivered_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

@@ -116,7 +116,7 @@ function safeLaunchTarget(value) {
   }
   const deliveryId = url.searchParams.get("delivery") || "";
   if (
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
       deliveryId,
     )
   ) {
@@ -188,9 +188,16 @@ self.addEventListener("notificationclick", (event) => {
         let targetClient = existingClient;
         if (launchTarget !== "/") {
           try {
-            targetClient =
-              (await existingClient.navigate(launchTarget)) ??
-              existingClient;
+            const navigatedClient =
+              await existingClient.navigate(launchTarget);
+            if (navigatedClient) {
+              targetClient = navigatedClient;
+            } else {
+              existingClient.postMessage({
+                type: "OPEN_REMINDER",
+                path: launchTarget,
+              });
+            }
           } catch {
             existingClient.postMessage({
               type: "OPEN_REMINDER",

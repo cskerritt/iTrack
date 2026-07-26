@@ -5667,7 +5667,7 @@ test("License Lantern product contract", async (t) => {
     const migrationJournal = JSON.parse(migrationJournalSource);
     assert.equal(
       migrationJournal.entries.at(-1)?.tag,
-      "0009_lethal_fat_cobra",
+      "0010_dear_franklin_storm",
     );
     assert.match(
       weeklyPeriodMigration,
@@ -5996,7 +5996,7 @@ test("License Lantern product contract", async (t) => {
       );
       assert.equal(
         journalEntries.at(-1)?.tag,
-        "0009_lethal_fat_cobra",
+        "0010_dear_franklin_storm",
       );
 
       assert.match(
@@ -18088,6 +18088,100 @@ test("License Lantern product contract", async (t) => {
           .replace(/\+/g, "-")
           .replace(/\//g, "_")
           .replace(/=+$/g, "");
+      const concatenateBytes = (...values) => {
+        const result = new Uint8Array(
+          values.reduce((total, value) => total + value.byteLength, 0),
+        );
+        let offset = 0;
+        for (const value of values) {
+          result.set(value, offset);
+          offset += value.byteLength;
+        }
+        return result;
+      };
+      const deriveHkdf = async (input, salt, info, byteLength) => {
+        const key = await crypto.subtle.importKey(
+          "raw",
+          input,
+          "HKDF",
+          false,
+          ["deriveBits"],
+        );
+        return new Uint8Array(
+          await crypto.subtle.deriveBits(
+            {
+              name: "HKDF",
+              hash: "SHA-256",
+              salt,
+              info,
+            },
+            key,
+            byteLength * 8,
+          ),
+        );
+      };
+      const decryptScheduledPush = async (body, secret) => {
+        const bytes = new Uint8Array(body);
+        assert.equal(new DataView(bytes.buffer).getUint32(16), 4_096);
+        assert.equal(bytes[20], 65);
+        const salt = bytes.slice(0, 16);
+        const senderPublicKeyBytes = bytes.slice(21, 86);
+        const senderPublicKey = await crypto.subtle.importKey(
+          "raw",
+          senderPublicKeyBytes,
+          { name: "ECDH", namedCurve: "P-256" },
+          false,
+          [],
+        );
+        const sharedSecret = new Uint8Array(
+          await crypto.subtle.deriveBits(
+            { name: "ECDH", public: senderPublicKey },
+            secret.privateKey,
+            256,
+          ),
+        );
+        const encoder = new TextEncoder();
+        const inputKeyMaterial = await deriveHkdf(
+          sharedSecret,
+          secret.auth,
+          concatenateBytes(
+            encoder.encode("WebPush: info\0"),
+            secret.publicKey,
+            senderPublicKeyBytes,
+          ),
+          32,
+        );
+        const contentEncryptionKey = await deriveHkdf(
+          inputKeyMaterial,
+          salt,
+          encoder.encode("Content-Encoding: aes128gcm\0"),
+          16,
+        );
+        const nonce = await deriveHkdf(
+          inputKeyMaterial,
+          salt,
+          encoder.encode("Content-Encoding: nonce\0"),
+          12,
+        );
+        const aesKey = await crypto.subtle.importKey(
+          "raw",
+          contentEncryptionKey,
+          { name: "AES-GCM", length: 128 },
+          false,
+          ["decrypt"],
+        );
+        const record = new Uint8Array(
+          await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv: nonce, tagLength: 128 },
+            aesKey,
+            bytes.slice(86),
+          ),
+        );
+        assert.equal(record.at(-1), 2);
+        return JSON.parse(
+          new TextDecoder().decode(record.slice(0, -1)),
+        );
+      };
       const vapidPair = await crypto.subtle.generateKey(
         { name: "ECDSA", namedCurve: "P-256" },
         true,
@@ -18109,22 +18203,28 @@ test("License Lantern product contract", async (t) => {
       testCloudflareEnv.VAPID_SUBJECT =
         "https://license-lantern.example";
 
+      const subscriptionSecrets = new Map();
       const makeSubscription = async (endpoint) => {
         const clientPair = await crypto.subtle.generateKey(
           { name: "ECDH", namedCurve: "P-256" },
           true,
           ["deriveBits"],
         );
+        const publicKey = new Uint8Array(
+          await crypto.subtle.exportKey("raw", clientPair.publicKey),
+        );
+        const auth = crypto.getRandomValues(new Uint8Array(16));
+        subscriptionSecrets.set(endpoint, {
+          privateKey: clientPair.privateKey,
+          publicKey,
+          auth,
+        });
         return {
           endpoint,
           expirationTime: null,
           keys: {
-            p256dh: encodeBase64Url(
-              new Uint8Array(
-                await crypto.subtle.exportKey("raw", clientPair.publicKey),
-              ),
-            ),
-            auth: encodeBase64Url(crypto.getRandomValues(new Uint8Array(16))),
+            p256dh: encodeBase64Url(publicKey),
+            auth: encodeBase64Url(auth),
           },
         };
       };
@@ -18230,6 +18330,7 @@ test("License Lantern product contract", async (t) => {
         (reminder) => reminder.credentialId === "credential-push-due",
       );
       assert.ok(pushReminder);
+      const deliveryId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
       database.raw
         .prepare(
           `INSERT INTO push_delivery_ledger (
@@ -18238,7 +18339,7 @@ test("License Lantern product contract", async (t) => {
            ) VALUES (?, ?, ?, ?, ?, 'pending', 0)`,
         )
         .run(
-          "11111111-1111-4111-8111-111111111111",
+          deliveryId,
           ownerId,
           firstId,
           pushReminder.key,
@@ -18250,6 +18351,11 @@ test("License Lantern product contract", async (t) => {
       const responseModes = new Map([
         [firstSubscription.endpoint, [201, 201]],
       ]);
+      let blockNextPush = false;
+      let resolveBlockedPush;
+      let resolvePushStarted;
+      let blockedPush = Promise.resolve();
+      let pushStarted = Promise.resolve();
       globalThis.fetch = async (input, init) => {
         const endpoint =
           typeof input === "string"
@@ -18258,6 +18364,11 @@ test("License Lantern product contract", async (t) => {
               ? input.href
               : input.url;
         pushCalls.push({ endpoint, init });
+        if (blockNextPush) {
+          blockNextPush = false;
+          resolvePushStarted();
+          await blockedPush;
+        }
         const statuses = responseModes.get(endpoint) ?? [500];
         const status = statuses.length > 1 ? statuses.shift() : statuses[0];
         return new Response(null, { status });
@@ -18299,22 +18410,75 @@ test("License Lantern product contract", async (t) => {
           await Promise.all(waits);
         };
         const scheduledTime = Date.parse("2026-07-26T14:00:00.000Z");
+        blockedPush = new Promise((resolve) => {
+          resolveBlockedPush = resolve;
+        });
+        pushStarted = new Promise((resolve) => {
+          resolvePushStarted = resolve;
+        });
+        blockNextPush = true;
+        const firstScheduledRun = runScheduled(scheduledTime);
+        await pushStarted;
         await runScheduled(scheduledTime);
+        assert.equal(
+          pushCalls.length,
+          1,
+          "concurrent schedulers must not claim the same occurrence twice",
+        );
+        resolveBlockedPush();
+        await firstScheduledRun;
         assert.equal(pushCalls.length, 1);
         assert.equal(pushCalls[0].endpoint, firstSubscription.endpoint);
         assert.equal(pushCalls[0].init.redirect, "manual");
+        const pushHeaders = new Headers(pushCalls[0].init.headers);
+        assert.equal(
+          pushHeaders.get("content-encoding"),
+          "aes128gcm",
+        );
+        assert.match(
+          pushHeaders.get("authorization") ?? "",
+          /^vapid t=[A-Za-z0-9._-]+,k=[A-Za-z0-9_-]+$/,
+        );
+        assert.equal(pushHeaders.get("topic"), "license-lantern-check-in");
+        assert.equal(pushHeaders.get("urgency"), "normal");
+        assert.equal(pushHeaders.get("ttl"), "86400");
+        assert.doesNotMatch(
+          JSON.stringify([...pushHeaders]),
+          new RegExp(deliveryId.slice(0, 16)),
+          "no delivery-token fragment may escape into request headers",
+        );
+        const decryptedPush = await decryptScheduledPush(
+          pushCalls[0].init.body,
+          subscriptionSecrets.get(firstSubscription.endpoint),
+        );
+        assert.deepEqual(decryptedPush, {
+          title: "License Lantern check-in",
+          body: "You have a renewal item that needs attention.",
+          tag: `ll-${deliveryId}`,
+          path: `/?view=today&delivery=${deliveryId}`,
+        });
+        assert.doesNotMatch(
+          JSON.stringify(decryptedPush),
+          /credential-push-due/,
+        );
+        assert.doesNotMatch(
+          JSON.stringify(decryptedPush),
+          new RegExp(pushReminder.key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+        );
         assert.equal(
           database.raw
             .prepare(
               `SELECT COUNT(*) AS count
                FROM push_delivery_ledger
-               WHERE status = 'delivered'`,
+               WHERE status = 'delivered'
+                 AND dispatched_at IS NOT NULL
+                 AND attempt_count = 1`,
             )
             .get().count,
           1,
         );
         const resolvedLaunch = await fetchWorker(
-          "https://license-lantern.example/api/workspace?delivery=11111111-1111-4111-8111-111111111111",
+          `https://license-lantern.example/api/workspace?delivery=${deliveryId}`,
           { headers: authHeaders() },
         );
         assert.equal(resolvedLaunch.status, 200);
@@ -18325,7 +18489,7 @@ test("License Lantern product contract", async (t) => {
           },
         });
         const crossOwnerLaunch = await fetchWorker(
-          "https://license-lantern.example/api/workspace?delivery=11111111-1111-4111-8111-111111111111",
+          `https://license-lantern.example/api/workspace?delivery=${deliveryId}`,
           { headers: authHeaders("other@example.com") },
         );
         assert.equal(crossOwnerLaunch.status, 404);
@@ -18333,6 +18497,48 @@ test("License Lantern product contract", async (t) => {
           error: "That check-in is no longer available.",
           code: "push_delivery_not_found",
         });
+        for (const invalidDeliveryQuery of [
+          `delivery=${deliveryId.toUpperCase()}`,
+          "delivery=11111111-1111-1111-8111-111111111111",
+          `delivery=${deliveryId}&credential=credential-push-due`,
+          `delivery=${deliveryId}&delivery=${deliveryId}`,
+        ]) {
+          const invalidLaunch = await fetchWorker(
+            `https://license-lantern.example/api/workspace?${invalidDeliveryQuery}`,
+            { headers: authHeaders() },
+          );
+          assert.equal(invalidLaunch.status, 404);
+          assert.deepEqual(await invalidLaunch.json(), {
+            error: "That check-in is no longer available.",
+            code: "push_delivery_not_found",
+          });
+        }
+        database.raw
+          .prepare(
+            `UPDATE push_delivery_ledger
+             SET status = 'retry',
+                 next_attempt_at = '2026-07-26 14:15:00'
+             WHERE id = ?`,
+          )
+          .run(deliveryId);
+        const ambiguousAcknowledgementLaunch = await fetchWorker(
+          `https://license-lantern.example/api/workspace?delivery=${deliveryId}`,
+          { headers: authHeaders() },
+        );
+        assert.equal(ambiguousAcknowledgementLaunch.status, 200);
+        assert.deepEqual(await ambiguousAcknowledgementLaunch.json(), {
+          target: {
+            credentialId: "credential-push-due",
+            reminderKey: pushReminder.key,
+          },
+        });
+        database.raw
+          .prepare(
+            `UPDATE push_delivery_ledger
+             SET status = 'delivered', next_attempt_at = NULL
+             WHERE id = ?`,
+          )
+          .run(deliveryId);
         assert.equal(
           Buffer.from(pushCalls[0].init.body).includes(
             Buffer.from(pushReminder.key),
@@ -18494,6 +18700,96 @@ test("License Lantern product contract", async (t) => {
           0,
           "removing the last active device must pause account push",
         );
+        for (let index = 0; index < 8; index += 1) {
+          const limitDevice = {
+            ...firstSubscription,
+            endpoint:
+              `https://fcm.googleapis.com/fcm/send/limit-device-${index}`,
+          };
+          const savedLimitDevice = await postWorkspace(
+            "savePushSubscription",
+            {
+              subscription: limitDevice,
+              deviceLabel: `Limit phone ${index + 1}`,
+              enableAccountPush: false,
+            },
+          );
+          assert.equal(savedLimitDevice.status, 200);
+        }
+        const ninthDevice = {
+          ...firstSubscription,
+          endpoint:
+            "https://fcm.googleapis.com/fcm/send/limit-device-ninth",
+        };
+        const deviceLimitResponse = await postWorkspace(
+          "savePushSubscription",
+          {
+            subscription: ninthDevice,
+            deviceLabel: "Ninth phone",
+            enableAccountPush: true,
+          },
+        );
+        assert.equal(deviceLimitResponse.status, 409);
+        assert.deepEqual(await deviceLimitResponse.json(), {
+          error: "License Lantern supports up to 8 active alert devices.",
+          code: "push_device_limit",
+        });
+        assert.equal(
+          database.raw
+            .prepare(
+              `SELECT push_enabled AS pushEnabled
+               FROM reminder_preferences
+               WHERE user_id = ?`,
+            )
+            .get(ownerId).pushEnabled,
+          0,
+          "a rejected device save must not resume account push",
+        );
+        const removableLimitDevice = database.raw
+          .prepare(
+            `SELECT id, endpoint
+             FROM push_subscriptions
+             WHERE endpoint =
+               'https://fcm.googleapis.com/fcm/send/limit-device-0'`,
+          )
+          .get();
+        const removableDeliveryId =
+          "33333333-3333-4333-8333-333333333333";
+        database.raw
+          .prepare(
+            `INSERT INTO push_delivery_ledger (
+               id, user_id, subscription_id, reminder_key, scheduled_for,
+               status, attempt_count
+             ) VALUES (?, ?, ?, ?, ?, 'pending', 0)`,
+          )
+          .run(
+            removableDeliveryId,
+            ownerId,
+            removableLimitDevice.id,
+            pushReminder.key,
+            pushReminder.scheduledFor,
+          );
+        const removeQueuedDevice = await postWorkspace(
+          "removePushSubscription",
+          { endpoint: removableLimitDevice.endpoint },
+        );
+        assert.equal(removeQueuedDevice.status, 200);
+        assert.deepEqual(
+          {
+            ...database.raw
+              .prepare(
+                `SELECT status, error_code AS errorCode
+                 FROM push_delivery_ledger
+                 WHERE id = ?`,
+              )
+              .get(removableDeliveryId),
+          },
+          {
+            status: "cancelled",
+            errorCode: "subscription_removed",
+          },
+          "removing a device must cancel its captured delivery queue",
+        );
       } finally {
         globalThis.fetch = originalFetch;
         delete testCloudflareEnv.VAPID_PUBLIC_KEY;
@@ -18502,7 +18798,12 @@ test("License Lantern product contract", async (t) => {
         database.close();
       }
 
-      const [wranglerSource, serviceWorkerSource, clientSource] =
+      const [
+        wranglerSource,
+        serviceWorkerSource,
+        clientSource,
+        pushDeliverySource,
+      ] =
         await Promise.all([
           readFile(
             new URL("../dist/server/wrangler.json", import.meta.url),
@@ -18511,6 +18812,10 @@ test("License Lantern product contract", async (t) => {
           readFile(new URL("../public/sw.js", import.meta.url), "utf8"),
           readFile(
             new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+            "utf8",
+          ),
+          readFile(
+            new URL("../app/lib/pushDelivery.ts", import.meta.url),
             "utf8",
           ),
         ]);
@@ -18540,6 +18845,101 @@ test("License Lantern product contract", async (t) => {
         clientSource,
         /Notification\.requestPermission\(\)/,
       );
+      assert.match(
+        pushDeliverySource,
+        /function launchPath\(deliveryId: string\)[\s\S]{0,240}delivery:\s*deliveryId/,
+      );
+      assert.match(
+        pushDeliverySource,
+        /url:\s*launchPath\(claimed\.deliveryId\)/,
+      );
+      assert.doesNotMatch(
+        pushDeliverySource,
+        /function launchPath\(reminder/,
+      );
+      assert.match(
+        pushDeliverySource,
+        /function claimDelivery[\s\S]*?AND EXISTS \([\s\S]*?subscription\.disabled_at IS NULL/,
+      );
+
+      const { runInNewContext } = await import("node:vm");
+      const serviceWorkerListeners = new Map();
+      const navigations = [];
+      const clientMessages = [];
+      let focusCount = 0;
+      const appClient = {
+        url: "https://license-lantern.example/",
+        async navigate(path) {
+          navigations.push(path);
+          return null;
+        },
+        postMessage(message) {
+          clientMessages.push(message);
+        },
+        async focus() {
+          focusCount += 1;
+        },
+      };
+      const serviceWorkerSelf = {
+        location: { origin: "https://license-lantern.example" },
+        addEventListener(name, listener) {
+          serviceWorkerListeners.set(name, listener);
+        },
+        clients: {
+          async matchAll() {
+            return [appClient];
+          },
+          async openWindow() {
+            throw new Error("An existing app client should be reused.");
+          },
+        },
+        registration: {
+          async showNotification() {},
+        },
+      };
+      runInNewContext(serviceWorkerSource, {
+        self: serviceWorkerSelf,
+        caches: {},
+        fetch,
+        URL,
+        URLSearchParams,
+        Request,
+        Response,
+        Headers,
+        Set,
+      });
+      const notificationClick =
+        serviceWorkerListeners.get("notificationclick");
+      assert.equal(typeof notificationClick, "function");
+      const clickNotification = async (launchTarget) => {
+        let completion;
+        notificationClick({
+          notification: {
+            data: { launchTarget },
+            close() {},
+          },
+          waitUntil(promise) {
+            completion = promise;
+          },
+        });
+        await completion;
+      };
+      const validClickPath =
+        "/?view=today&delivery=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      await clickNotification(validClickPath);
+      assert.deepEqual(navigations, [validClickPath]);
+      assert.deepEqual(JSON.parse(JSON.stringify(clientMessages)), [
+        { type: "OPEN_REMINDER", path: validClickPath },
+      ]);
+      assert.equal(focusCount, 1);
+
+      navigations.length = 0;
+      clientMessages.length = 0;
+      focusCount = 0;
+      await clickNotification(validClickPath.toUpperCase());
+      assert.deepEqual(navigations, []);
+      assert.deepEqual(clientMessages, []);
+      assert.equal(focusCount, 1);
     },
   );
 
@@ -19670,7 +20070,7 @@ test("License Lantern product contract", async (t) => {
       );
       assert.match(
         routeSource,
-        /LEFT JOIN renewal_acceptances acceptance[\s\S]*?acceptance\.accepted_at AS acceptedAt/i,
+        /acceptance\.accepted_at AS acceptedAt[\s\S]*?LEFT JOIN renewal_acceptances acceptance/i,
       );
       assert.match(
         routeSource,

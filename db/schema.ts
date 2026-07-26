@@ -526,6 +526,7 @@ export const pushDeliveryLedger = sqliteTable(
     nextAttemptAt: text("next_attempt_at"),
     httpStatus: integer("http_status"),
     errorCode: text("error_code"),
+    dispatchedAt: text("dispatched_at"),
     deliveredAt: text("delivered_at"),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),

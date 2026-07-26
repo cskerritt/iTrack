@@ -61,6 +61,7 @@ const DELIVERY_CONCURRENCY = 4;
 const READY_FETCH_LIMIT = MAX_DELIVERIES_PER_RUN * 4;
 const GENERIC_TITLE = "License Lantern check-in";
 const GENERIC_BODY = "You have a renewal item that needs attention.";
+const GENERIC_TOPIC = "license-lantern-check-in";
 const CONFIGURATION_ERROR_CODES = new Set([
   "invalid_vapid_config",
   "invalid_vapid_keys",
@@ -145,7 +146,7 @@ export async function sendWebPush(
     {
       ttl: 86_400,
       urgency: "normal",
-      topic: data.tag.slice(0, 32),
+      topic: GENERIC_TOPIC,
       now,
     },
     fetcher,
@@ -345,6 +346,7 @@ async function claimDelivery(
   database: D1Database,
   row: DeliveryRow,
   nowSql: string,
+  nowEpochMilliseconds: number,
 ) {
   const result = await query(
     database,
@@ -362,8 +364,28 @@ async function claimDelivery(
            AND next_attempt_at IS NOT NULL
            AND next_attempt_at <= ?
          )
+       )
+       AND EXISTS (
+         SELECT 1
+         FROM push_subscriptions subscription
+         JOIN reminder_preferences preference
+           ON preference.user_id = subscription.user_id
+         WHERE subscription.id = push_delivery_ledger.subscription_id
+           AND subscription.user_id = push_delivery_ledger.user_id
+           AND preference.push_enabled = 1
+           AND subscription.disabled_at IS NULL
+           AND (
+             subscription.expiration_time IS NULL
+             OR subscription.expiration_time > ?
+           )
        )`,
-    [nowSql, row.deliveryId, MAX_ATTEMPTS, nowSql],
+    [
+      nowSql,
+      row.deliveryId,
+      MAX_ATTEMPTS,
+      nowSql,
+      nowEpochMilliseconds,
+    ],
   ).run();
   if (changes(result) === 0) return null;
   return { ...row, attemptCount: row.attemptCount + 1 };
@@ -378,7 +400,12 @@ async function deliver(
   totals: PushDeliveryResult,
 ): Promise<"continue" | "stop"> {
   const nowSql = sqlTimestamp(now);
-  const claimed = await claimDelivery(database, row, nowSql);
+  const claimed = await claimDelivery(
+    database,
+    row,
+    nowSql,
+    now.getTime(),
+  );
   if (!claimed) return "continue";
   totals.considered += 1;
   const subscription = subscriptionFromRow(claimed);
@@ -392,6 +419,18 @@ async function deliver(
       null,
     );
     totals.expired += 1;
+    return "continue";
+  }
+  const dispatched = await query(
+    database,
+    `UPDATE push_delivery_ledger
+     SET dispatched_at = COALESCE(dispatched_at, ?),
+         updated_at = ?
+     WHERE id = ? AND status = 'sending'`,
+    [nowSql, nowSql, claimed.deliveryId],
+  ).run();
+  if (changes(dispatched) === 0) {
+    totals.cancelled += 1;
     return "continue";
   }
 
@@ -752,44 +791,67 @@ export async function runScheduledPushDelivery({
 
   const dueRows = await query(
     database,
-    `SELECT
-       delivery.id AS deliveryId,
-       delivery.user_id AS userId,
-       delivery.reminder_key AS reminderKey,
-       delivery.scheduled_for AS scheduledFor,
-       delivery.attempt_count AS attemptCount,
-       subscription.id,
-       subscription.endpoint,
-       subscription.p256dh,
-       subscription.auth,
-       subscription.expiration_time AS expirationTime,
-       preference.time_zone AS timeZone,
-       preference.push_hour_local AS pushHourLocal
-     FROM push_delivery_ledger delivery
-     JOIN push_subscriptions subscription
-       ON subscription.id = delivery.subscription_id
-       AND subscription.user_id = delivery.user_id
-     JOIN reminder_preferences preference
-       ON preference.user_id = delivery.user_id
-     WHERE (
-         delivery.status = 'pending'
-         OR (
-           delivery.status = 'retry'
-           AND delivery.next_attempt_at IS NOT NULL
-           AND delivery.next_attempt_at <= ?
+    `WITH ready_deliveries AS (
+       SELECT
+         delivery.id AS deliveryId,
+         delivery.user_id AS userId,
+         delivery.reminder_key AS reminderKey,
+         delivery.scheduled_for AS scheduledFor,
+         delivery.attempt_count AS attemptCount,
+         subscription.id,
+         subscription.endpoint,
+         subscription.p256dh,
+         subscription.auth,
+         subscription.expiration_time AS expirationTime,
+         preference.time_zone AS timeZone,
+         preference.push_hour_local AS pushHourLocal,
+         CASE WHEN delivery.status = 'retry' THEN 0 ELSE 1 END
+           AS retryPriority,
+         COALESCE(delivery.next_attempt_at, delivery.created_at) AS readyAt,
+         ROW_NUMBER() OVER (
+           PARTITION BY delivery.user_id
+           ORDER BY
+             CASE WHEN delivery.status = 'retry' THEN 0 ELSE 1 END,
+             COALESCE(delivery.next_attempt_at, delivery.created_at),
+             delivery.id
+         ) AS userPosition
+       FROM push_delivery_ledger delivery
+       JOIN push_subscriptions subscription
+         ON subscription.id = delivery.subscription_id
+         AND subscription.user_id = delivery.user_id
+       JOIN reminder_preferences preference
+         ON preference.user_id = delivery.user_id
+       WHERE (
+           delivery.status = 'pending'
+           OR (
+             delivery.status = 'retry'
+             AND delivery.next_attempt_at IS NOT NULL
+             AND delivery.next_attempt_at <= ?
+           )
          )
-       )
-       AND delivery.attempt_count < ?
-       AND preference.push_enabled = 1
-       AND subscription.disabled_at IS NULL
-       AND (
-         subscription.expiration_time IS NULL
-         OR subscription.expiration_time > ?
-       )
-     ORDER BY
-       CASE WHEN delivery.status = 'retry' THEN 0 ELSE 1 END,
-       COALESCE(delivery.next_attempt_at, delivery.created_at),
-       delivery.id
+         AND delivery.attempt_count < ?
+         AND preference.push_enabled = 1
+         AND subscription.disabled_at IS NULL
+         AND (
+           subscription.expiration_time IS NULL
+           OR subscription.expiration_time > ?
+         )
+     )
+     SELECT
+       deliveryId,
+       userId,
+       reminderKey,
+       scheduledFor,
+       attemptCount,
+       id,
+       endpoint,
+       p256dh,
+       auth,
+       expirationTime,
+       timeZone,
+       pushHourLocal
+     FROM ready_deliveries
+     ORDER BY userPosition, retryPriority, readyAt, deliveryId
      LIMIT ?`,
     [
       nowSql,

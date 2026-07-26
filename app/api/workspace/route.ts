@@ -1486,15 +1486,6 @@ function normalizeLeadDays(value: unknown): number[] {
   return [...new Set(normalized)].sort((a, b) => b - a);
 }
 
-function parsedLeadDays(value: string | null | undefined) {
-  if (!value) return [...DEFAULT_LEAD_DAYS];
-  try {
-    return normalizeLeadDays(JSON.parse(value));
-  } catch {
-    return [...DEFAULT_LEAD_DAYS];
-  }
-}
-
 function validTimeZone(value: string) {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: value }).format(new Date());
@@ -2081,325 +2072,34 @@ async function getProgressionData(
   };
 }
 
-function reminderActivationDate(
-  dueDate: string,
-  leadDays: number[],
-  today: string,
-) {
-  return leadDays
-    .map((leadDay) => daysBefore(dueDate, leadDay))
-    .filter((scheduledFor) => scheduledFor <= today)
-    .sort()
-    .at(-1) ?? null;
-}
-
-function reminderUrgency(
-  comparisonDate: string,
-  today: string,
-): "overdue" | "today" | "soon" {
-  if (comparisonDate < today) return "overdue";
-  if (comparisonDate === today) return "today";
-  return "soon";
-}
-
-function reminderDateLabel(isoDate: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(new Date(`${isoDate}T12:00:00.000Z`));
-}
-
 async function getReminderData(
   database: D1Database,
   identity: RequestIdentity,
 ) {
-  type PreferenceRow = {
-    inAppEnabled: number;
-    pushEnabled: number;
-    pushHourLocal: number;
-    leadDays: string;
-    timeZone: string;
-  };
-  type TaskCandidate = {
-    taskId: string;
-    credentialId: string;
-    credentialName: string;
-    title: string;
-    dueDate: string;
-  };
-  type CycleCandidate = {
-    credentialId: string;
-    ruleSetId: string | null;
-    credentialName: string;
-    status: string;
-    deadline: string;
-    submittedAt: string | null;
-  };
-  type ReminderStateRow = {
-    reminderKey: string;
-    status: string;
-    snoozedUntil: string | null;
-  };
-
-  const [preference, tasks, cycles, states, activeDeviceCount] =
-    await Promise.all([
-    query(
-      database,
-      `SELECT
-        in_app_enabled AS inAppEnabled,
-        push_enabled AS pushEnabled,
-        push_hour_local AS pushHourLocal,
-        lead_days AS leadDays,
-        time_zone AS timeZone
-      FROM reminder_preferences
-      WHERE user_id = ?`,
-      [identity.userId],
-    ).first<PreferenceRow>(),
-    query(
-      database,
-      `SELECT
-        task.id AS taskId,
-        credential.id AS credentialId,
-        credential.credential_name AS credentialName,
-        task.title,
-        task.due_date AS dueDate
-      FROM checklist_tasks task
-      JOIN credentials credential ON credential.id = task.credential_id
-      WHERE task.user_id = ?
-        AND credential.user_id = task.user_id
-        AND credential.status <> 'renewed'
-        AND task.archived_at IS NULL
-        AND task.status <> 'completed'
-        AND task.kind <> 'submission'
-        AND task.due_date IS NOT NULL`,
-      [identity.userId],
-    ).all<TaskCandidate>(),
-    query(
-      database,
-      `SELECT
-        credential.id AS credentialId,
-        credential.rule_set_id AS ruleSetId,
-        credential.credential_name AS credentialName,
-        credential.status,
-        credential.deadline,
-        submission.submitted_at AS submittedAt
-      FROM credentials credential
-      LEFT JOIN renewal_submissions submission
-        ON submission.credential_id = credential.id
-        AND submission.user_id = credential.user_id
-      LEFT JOIN renewal_acceptances acceptance
-        ON acceptance.credential_id = credential.id
-        AND acceptance.user_id = credential.user_id
-      WHERE credential.user_id = ?
-        AND (
-          credential.status = 'active'
-          OR (
-            credential.status = 'submitted'
-            AND acceptance.id IS NULL
-            AND submission.id IS NOT NULL
-          )
-        )`,
-      [identity.userId],
-    ).all<CycleCandidate>(),
-    query(
-      database,
-      `SELECT
-        reminder_key AS reminderKey,
-        status,
-        snoozed_until AS snoozedUntil
-      FROM reminder_states
-      WHERE user_id = ?`,
-      [identity.userId],
-    ).all<ReminderStateRow>(),
-    query(
-      database,
-      `SELECT COUNT(*) AS count
-       FROM push_subscriptions
-       WHERE user_id = ?
-         AND disabled_at IS NULL
-         AND (
-           expiration_time IS NULL
-           OR expiration_time > ?
-         )`,
-      [identity.userId, Date.now()],
-    ).first<{ count: number }>(),
-  ]);
-
-  const leadDays = parsedLeadDays(preference?.leadDays);
-  const timeZone =
-    preference?.timeZone && validTimeZone(preference.timeZone)
-      ? preference.timeZone
-      : "UTC";
-  const reminderPreferences = {
-    inAppEnabled: Boolean(preference?.inAppEnabled ?? 1),
-    pushEnabled: Boolean(preference?.pushEnabled ?? 0),
-    pushHourLocal:
-      Number.isInteger(preference?.pushHourLocal) &&
-      Number(preference?.pushHourLocal) >= 0 &&
-      Number(preference?.pushHourLocal) <= 23
-        ? Number(preference?.pushHourLocal)
-        : 9,
-    leadDays,
-    timeZone,
-    webPushConfigured: isWebPushConfigured({
-      publicKey:
-        typeof env.VAPID_PUBLIC_KEY === "string"
-          ? env.VAPID_PUBLIC_KEY
-          : undefined,
-      privateKey:
-        typeof env.VAPID_PRIVATE_KEY === "string"
-          ? env.VAPID_PRIVATE_KEY
-          : undefined,
-      subject:
-        typeof env.VAPID_SUBJECT === "string"
-          ? env.VAPID_SUBJECT
-          : undefined,
-    }),
-    vapidPublicKey:
-      typeof env.VAPID_PUBLIC_KEY === "string" && env.VAPID_PUBLIC_KEY
-        ? env.VAPID_PUBLIC_KEY
-        : null,
-    activePushDeviceCount: Number(activeDeviceCount?.count ?? 0),
-  };
-  if (!reminderPreferences.inAppEnabled) {
-    return { reminderPreferences, reminders: [] };
-  }
-
-  const today = todayInTimeZone(timeZone);
-  const reminders: Array<{
-    key: string;
-    credentialId: string;
-    credentialName: string;
-    kind: "task" | "deadline" | "acceptance";
-    title: string;
-    body: string;
-    scheduledFor: string;
-    eventDate: string;
-    urgency: "overdue" | "today" | "soon";
-  }> = [];
-
-  for (const task of tasks.results) {
-    const scheduledFor = reminderActivationDate(
-      task.dueDate,
-      leadDays,
-      today,
-    );
-    if (!scheduledFor) continue;
-    reminders.push({
-      key: `task:${task.taskId}:${task.dueDate}`,
-      credentialId: task.credentialId,
-      credentialName: task.credentialName,
-      kind: "task",
-      title: task.title,
-      body: `${task.credentialName} · due ${reminderDateLabel(task.dueDate)}.`,
-      scheduledFor,
-      eventDate: task.dueDate,
-      urgency: reminderUrgency(task.dueDate, today),
-    });
-  }
-
-  for (const cycle of cycles.results) {
-    if (cycle.status === "active") {
-      const isCompliancePeriod = isCompliancePeriodRuleSet(
-        cycle.ruleSetId,
-      );
-      const scheduledFor = reminderActivationDate(
-        cycle.deadline,
-        leadDays,
-        today,
-      );
-      if (!scheduledFor) continue;
-      reminders.push({
-        key: `deadline:${cycle.credentialId}:${cycle.deadline}`,
-        credentialId: cycle.credentialId,
-        credentialName: cycle.credentialName,
-        kind: "deadline",
-        title: `${cycle.credentialName} ${
-          isCompliancePeriod ? "compliance" : "renewal"
-        } deadline`,
-        body: `${
-          isCompliancePeriod ? "Compliance" : "Renewal"
-        } is due ${reminderDateLabel(cycle.deadline)}.`,
-        scheduledFor,
-        eventDate: cycle.deadline,
-        urgency: reminderUrgency(cycle.deadline, today),
-      });
-      continue;
-    }
-
-    if (cycle.status === "submitted" && cycle.submittedAt) {
-      const isIsc2Checkpoint = isIsc2AutomaticRenewalRuleSet(
-        cycle.ruleSetId,
-      );
-      const isComplianceCheckpoint = isCompliancePeriodRuleSet(
-        cycle.ruleSetId,
-      );
-      const ordinaryFollowUp = daysAfter(
-        cycle.submittedAt.slice(0, 10),
-        7,
-      );
-      const scheduledFor =
-        (isIsc2Checkpoint || isComplianceCheckpoint) &&
-        ordinaryFollowUp < cycle.deadline
-          ? cycle.deadline
-          : ordinaryFollowUp;
-      if (scheduledFor > today) continue;
-      reminders.push({
-        key: `acceptance:${cycle.credentialId}:${cycle.submittedAt.slice(
-          0,
-          10,
-        )}`,
-        credentialId: cycle.credentialId,
-        credentialName: cycle.credentialName,
-        kind: "acceptance",
-        title: isIsc2Checkpoint
-          ? "Check the ISC2 dashboard for renewal"
-          : isComplianceCheckpoint
-            ? "Check the official record for the next compliance period"
-          : "Check renewal acceptance",
-        body: isIsc2Checkpoint
-          ? `${cycle.credentialName} had a requirements checkpoint saved ${reminderDateLabel(
-              cycle.submittedAt.slice(0, 10),
-            )}. Confirm renewal only after ISC2 displays the renewed certification dates.`
-          : isComplianceCheckpoint
-            ? `${cycle.credentialName} had compliance recorded ${reminderDateLabel(
-                cycle.submittedAt.slice(0, 10),
-              )}. Start the next period only after confirming its official dates.`
-          : `${cycle.credentialName} was submitted ${reminderDateLabel(
-              cycle.submittedAt.slice(0, 10),
-            )}. Record acceptance when the issuer confirms it.`,
-        scheduledFor,
-        eventDate: scheduledFor,
-        urgency: reminderUrgency(scheduledFor, today),
-      });
-    }
-  }
-
-  const statesByKey = new Map(
-    states.results.map((state) => [state.reminderKey, state]),
-  );
-  const urgencyOrder = { overdue: 0, today: 1, soon: 2 };
+  const shared = await loadReminderData(database, identity.userId, {
+    channel: "in_app",
+  });
+  const publicKey =
+    typeof env.VAPID_PUBLIC_KEY === "string"
+      ? env.VAPID_PUBLIC_KEY.trim()
+      : "";
   return {
-    reminderPreferences,
-    reminders: reminders
-      .filter((reminder) => {
-        const state = statesByKey.get(reminder.key);
-        if (!state) return true;
-        if (state.status === "dismissed") return false;
-        return !(
-          state.status === "snoozed" &&
-          state.snoozedUntil &&
-          state.snoozedUntil > today
-        );
-      })
-      .sort(
-        (a, b) =>
-          urgencyOrder[a.urgency] - urgencyOrder[b.urgency] ||
-          a.scheduledFor.localeCompare(b.scheduledFor) ||
-          a.title.localeCompare(b.title),
-      ),
+    reminderPreferences: {
+      ...shared.reminderPreferences,
+      webPushConfigured: isWebPushConfigured({
+        publicKey: publicKey || undefined,
+        privateKey:
+          typeof env.VAPID_PRIVATE_KEY === "string"
+            ? env.VAPID_PRIVATE_KEY
+            : undefined,
+        subject:
+          typeof env.VAPID_SUBJECT === "string"
+            ? env.VAPID_SUBJECT
+            : undefined,
+      }),
+      vapidPublicKey: publicKey || null,
+    },
+    reminders: shared.reminders,
   };
 }
 
@@ -9390,13 +9090,43 @@ async function savePushSubscription(
         database,
         `UPDATE reminder_preferences
          SET push_enabled = 1, updated_at = CURRENT_TIMESTAMP
-         WHERE user_id = ?`,
-        [identity.userId],
+         WHERE user_id = ?
+           AND EXISTS (
+             SELECT 1
+             FROM push_subscriptions
+             WHERE endpoint = ?
+               AND user_id = ?
+               AND disabled_at IS NULL
+               AND (
+                 expiration_time IS NULL
+                 OR expiration_time > ?
+               )
+           )`,
+        [
+          identity.userId,
+          subscription.endpoint,
+          identity.userId,
+          now,
+        ],
       ),
     );
   }
   const [saved] = await database.batch(statements);
   if (Number(saved.meta?.changes ?? 0) === 0) {
+    const currentOwner = await query(
+      database,
+      `SELECT user_id AS userId
+       FROM push_subscriptions
+       WHERE endpoint = ?`,
+      [subscription.endpoint],
+    ).first<{ userId: string }>();
+    if (currentOwner && currentOwner.userId !== identity.userId) {
+      throw new RequestError(
+        "This browser subscription belongs to another account.",
+        409,
+        "push_subscription_conflict",
+      );
+    }
     throw new RequestError(
       `License Lantern supports up to ${MAX_PUSH_DEVICES} active alert devices.`,
       409,
@@ -9427,6 +9157,18 @@ async function removePushSubscription(
       `UPDATE push_subscriptions
        SET disabled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
        WHERE id = ? AND user_id = ?`,
+      [existing.id, identity.userId],
+    ),
+    query(
+      database,
+      `UPDATE push_delivery_ledger
+       SET status = 'cancelled',
+           error_code = 'subscription_removed',
+           next_attempt_at = NULL,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE subscription_id = ?
+         AND user_id = ?
+         AND status IN ('pending', 'retry', 'sending')`,
       [existing.id, identity.userId],
     ),
     query(
@@ -9836,7 +9578,7 @@ async function resolvePushDelivery(
     );
   if (
     !value ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
       value,
     )
   ) {
@@ -9850,7 +9592,7 @@ async function resolvePushDelivery(
      FROM push_delivery_ledger
      WHERE id = ?
        AND user_id = ?
-       AND status = 'delivered'`,
+       AND dispatched_at IS NOT NULL`,
     [value, identity.userId],
   ).first<{ reminderKey: string; scheduledFor: string }>();
   if (!delivery) throw unavailable();
