@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  type AnySQLiteColumn,
   index,
   integer,
   real,
@@ -71,6 +72,14 @@ export const ruleCategories = sqliteTable(
       .references(() => ruleSets.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     requiredUnits: real("required_units").notNull(),
+    kind: text("kind").notNull().default("minimum"),
+    relation: text("relation").notNull().default("independent"),
+    parentCategoryId: text("parent_category_id").references(
+      (): AnySQLiteColumn => ruleCategories.id,
+      { onDelete: "set null" },
+    ),
+    applicability: text("applicability").notNull().default("always"),
+    conditionNote: text("condition_note"),
     sortOrder: integer("sort_order").notNull().default(0),
   },
   (table) => [
@@ -79,6 +88,7 @@ export const ruleCategories = sqliteTable(
       table.name,
     ),
     index("rule_categories_rule_idx").on(table.ruleSetId, table.sortOrder),
+    index("rule_categories_parent_idx").on(table.parentCategoryId),
   ],
 );
 
@@ -123,6 +133,20 @@ export const credentialRequirements = sqliteTable(
     ),
     name: text("name").notNull(),
     requiredUnits: real("required_units").notNull(),
+    kind: text("kind").notNull().default("minimum"),
+    relation: text("relation").notNull().default("independent"),
+    parentRequirementId: text("parent_requirement_id").references(
+      (): AnySQLiteColumn => credentialRequirements.id,
+      { onDelete: "set null" },
+    ),
+    applicability: text("applicability").notNull().default("always"),
+    applicabilityStatus: text("applicability_status")
+      .notNull()
+      .default("applies"),
+    conditionNote: text("condition_note"),
+    isActive: integer("is_active", { mode: "boolean" })
+      .notNull()
+      .default(true),
     sortOrder: integer("sort_order").notNull().default(0),
   },
   (table) => [
@@ -130,6 +154,7 @@ export const credentialRequirements = sqliteTable(
       table.credentialId,
       table.sortOrder,
     ),
+    index("credential_requirements_parent_idx").on(table.parentRequirementId),
   ],
 );
 
@@ -213,6 +238,34 @@ export const activityAllocations = sqliteTable(
     ),
     index("activity_allocations_credential_idx").on(table.credentialId),
     index("activity_allocations_requirement_idx").on(table.requirementId),
+  ],
+);
+
+export const activityRequirementMatches = sqliteTable(
+  "activity_requirement_matches",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    allocationId: text("allocation_id")
+      .notNull()
+      .references(() => activityAllocations.id, { onDelete: "cascade" }),
+    requirementId: text("requirement_id")
+      .notNull()
+      .references(() => credentialRequirements.id, { onDelete: "cascade" }),
+    matchedUnits: real("matched_units").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("activity_requirement_matches_allocation_requirement_unique").on(
+      table.allocationId,
+      table.requirementId,
+    ),
+    index("activity_requirement_matches_user_idx").on(table.userId),
+    index("activity_requirement_matches_requirement_idx").on(
+      table.requirementId,
+    ),
   ],
 );
 

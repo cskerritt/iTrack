@@ -48,6 +48,18 @@ function isOwnedActivityCycleLookup(sql) {
   );
 }
 
+function isRequirementTagLookup(sql) {
+  return /SELECT requirement\.id, requirement\.name, requirement\.is_active AS isActive, requirement\.applicability_status AS applicabilityStatus FROM credential_requirements requirement JOIN credentials credential[\s\S]*?requirement\.id IN \(/i.test(
+    sql,
+  );
+}
+
+function isApplicabilityRequirementsLookup(sql) {
+  return /SELECT requirement\.id, requirement\.name, requirement\.relation, requirement\.parent_requirement_id AS parentRequirementId, requirement\.applicability, requirement\.applicability_status AS applicabilityStatus FROM credential_requirements requirement JOIN credentials credential/i.test(
+    sql,
+  );
+}
+
 class FakeStatement {
   constructor(database, sql) {
     this.database = database;
@@ -308,9 +320,13 @@ test("License Lantern product contract", async (t) => {
       baseMigration,
       evidenceMigration,
       lifecycleMigration,
+      richRuleMigration,
       builtBaseMigration,
       builtEvidenceMigration,
       builtLifecycleMigration,
+      builtRichRuleMigration,
+      schemaSource,
+      runtimeSource,
     ] = await Promise.all([
         readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
         readFile(
@@ -330,6 +346,10 @@ test("License Lantern product contract", async (t) => {
             "../drizzle/0002_lonely_green_goblin.sql",
             import.meta.url,
           ),
+          "utf8",
+        ),
+        readFile(
+          new URL("../drizzle/0003_lazy_ironclad.sql", import.meta.url),
           "utf8",
         ),
         readFile(
@@ -353,6 +373,15 @@ test("License Lantern product contract", async (t) => {
           ),
           "utf8",
         ),
+        readFile(
+          new URL(
+            "../dist/.openai/drizzle/0003_lazy_ironclad.sql",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+        readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+        readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
       ]);
 
     const hosting = JSON.parse(hostingSource);
@@ -364,8 +393,9 @@ test("License Lantern product contract", async (t) => {
     assert.equal(builtBaseMigration, baseMigration);
     assert.equal(builtEvidenceMigration, evidenceMigration);
     assert.equal(builtLifecycleMigration, lifecycleMigration);
+    assert.equal(builtRichRuleMigration, richRuleMigration);
 
-    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}`;
+    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}`;
     const migratedTables = new Set(
       [...migration.matchAll(/CREATE TABLE `([^`]+)`/g)].map(
         (match) => match[1],
@@ -381,6 +411,7 @@ test("License Lantern product contract", async (t) => {
       "activities",
       "evidence_files",
       "activity_allocations",
+      "activity_requirement_matches",
       "checklist_tasks",
       "renewal_submissions",
       "credential_cycle_links",
@@ -422,6 +453,66 @@ test("License Lantern product contract", async (t) => {
     assert.match(
       lifecycleMigration,
       /CREATE UNIQUE INDEX `reminder_states_user_key_unique`[\s\S]*?`user_id`,`reminder_key`/i,
+    );
+    assert.match(
+      richRuleMigration,
+      /CREATE UNIQUE INDEX `activity_requirement_matches_allocation_requirement_unique`[\s\S]*?`allocation_id`,`requirement_id`/i,
+    );
+    assert.match(
+      richRuleMigration,
+      /INSERT OR IGNORE INTO `activity_requirement_matches`[\s\S]*?'legacy-match-' \|\| allocation\.`id`[\s\S]*?allocation\.`allocated_units`[\s\S]*?allocation\.`requirement_id` IS NOT NULL/i,
+    );
+    for (const column of [
+      "kind",
+      "relation",
+      "parent_requirement_id",
+      "applicability",
+      "applicability_status",
+      "condition_note",
+      "is_active",
+    ]) {
+      assert.match(
+        richRuleMigration,
+        new RegExp(
+          `ALTER TABLE \\\`credential_requirements\\\` ADD \\\`${column}\\\``,
+          "i",
+        ),
+      );
+      assert.match(runtimeSource, new RegExp(`\\b${column}\\b`, "i"));
+      assert.match(schemaSource, new RegExp(`"${column}"`, "i"));
+    }
+    for (const column of [
+      "kind",
+      "relation",
+      "parent_category_id",
+      "applicability",
+      "condition_note",
+    ]) {
+      assert.match(
+        richRuleMigration,
+        new RegExp(
+          `ALTER TABLE \\\`rule_categories\\\` ADD \\\`${column}\\\``,
+          "i",
+        ),
+      );
+      assert.match(runtimeSource, new RegExp(`\\b${column}\\b`, "i"));
+      assert.match(schemaSource, new RegExp(`"${column}"`, "i"));
+    }
+    assert.match(
+      runtimeSource,
+      /CREATE TABLE IF NOT EXISTS activity_requirement_matches/i,
+    );
+    assert.match(
+      runtimeSource,
+      /CREATE UNIQUE INDEX IF NOT EXISTS activity_requirement_matches_allocation_requirement_unique[\s\S]*?allocation_id, requirement_id/i,
+    );
+    assert.match(
+      runtimeSource,
+      /INSERT OR IGNORE INTO activity_requirement_matches[\s\S]*?'legacy-match-' \|\| allocation\.id[\s\S]*?allocation\.allocated_units[\s\S]*?allocation\.requirement_id IS NOT NULL/i,
+    );
+    assert.match(
+      schemaSource,
+      /export const activityRequirementMatches = sqliteTable\([\s\S]*?"activity_requirement_matches"/i,
     );
     assert.match(
       migration,
@@ -837,6 +928,344 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
+    "snapshots conditional rules, scopes updates, and rejects inactive tags",
+    async () => {
+      const userId = await expectedStableUserId("owner@example.com");
+      const richRuleCategories = [
+        {
+          id: "category-core",
+          name: "Professional Responsibility",
+          requiredUnits: 4,
+          kind: "minimum",
+          relation: "independent",
+          parentCategoryId: null,
+          applicability: "always",
+          conditionNote: null,
+        },
+        {
+          id: "category-special-role",
+          name: "Special Role Training",
+          requiredUnits: 2,
+          kind: "minimum",
+          relation: "nested",
+          parentCategoryId: "category-core",
+          applicability: "conditional",
+          conditionNote: "Applies only when serving in the special role.",
+        },
+        {
+          id: "category-self-study",
+          name: "Self-study",
+          requiredUnits: 3,
+          kind: "maximum",
+          relation: "overlapping",
+          parentCategoryId: null,
+          applicability: "always",
+          conditionNote: null,
+        },
+      ];
+      const createDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (/FROM rule_sets WHERE id = \? AND is_current = 1/i.test(call.sql)) {
+            return {
+              id: "rule-rich",
+              credentialName: "Rich Semantics License",
+              profession: "Testing",
+              jurisdiction: "Test State",
+              issuer: "Test Board",
+              totalUnits: 10,
+              unitLabel: "hours",
+              cycleMonths: 12,
+            };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (/FROM rule_categories WHERE rule_set_id = \?/i.test(call.sql)) {
+            return richRuleCategories;
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = createDatabase;
+
+      const createResponse = await postWorkspace("createCredential", {
+        ruleSetId: "rule-rich",
+        cycleStart: "2027-01-01",
+        deadline: "2027-12-31",
+        applicabilityChoices: [
+          {
+            ruleCategoryId: "category-special-role",
+            status: "not_applicable",
+          },
+        ],
+      });
+      assert.equal(createResponse.status, 200);
+      const createResult = await createResponse.json();
+      const requirementInserts = flattenedStatements(createDatabase).filter(
+        (statement) => /^INSERT INTO credential_requirements \(/i.test(statement.sql),
+      );
+      assert.equal(requirementInserts.length, 3);
+      const requirementByName = new Map(
+        requirementInserts.map((statement) => [
+          statement.bindings[3],
+          statement,
+        ]),
+      );
+      const parentInsert = requirementByName.get("Professional Responsibility");
+      const conditionalInsert = requirementByName.get("Special Role Training");
+      const maximumInsert = requirementByName.get("Self-study");
+      assert.ok(parentInsert);
+      assert.ok(conditionalInsert);
+      assert.ok(maximumInsert);
+      assert.equal(parentInsert.bindings[1], createResult.id);
+      assert.deepEqual(parentInsert.bindings.slice(4, 13), [
+        4,
+        "minimum",
+        "independent",
+        null,
+        "always",
+        "applies",
+        null,
+        1,
+        0,
+      ]);
+      assert.equal(
+        conditionalInsert.bindings[7],
+        parentInsert.bindings[0],
+        "nested parent must use the credential requirement snapshot ID",
+      );
+      assert.deepEqual(conditionalInsert.bindings.slice(4, 13), [
+        2,
+        "minimum",
+        "nested",
+        parentInsert.bindings[0],
+        "conditional",
+        "not_applicable",
+        "Applies only when serving in the special role.",
+        0,
+        1,
+      ]);
+      assert.deepEqual(maximumInsert.bindings.slice(4, 13), [
+        3,
+        "maximum",
+        "overlapping",
+        null,
+        "always",
+        "applies",
+        null,
+        1,
+        2,
+      ]);
+
+      const updateRequirements = [
+        {
+          id: "requirement-core",
+          name: "Professional Responsibility",
+          relation: "independent",
+          parentRequirementId: null,
+          applicability: "always",
+          applicabilityStatus: "applies",
+        },
+        {
+          id: "requirement-special-role",
+          name: "Special Role Training",
+          relation: "nested",
+          parentRequirementId: "requirement-core",
+          applicability: "conditional",
+          applicabilityStatus: "not_applicable",
+        },
+      ];
+      const updateDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /SELECT id, status FROM credentials WHERE id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return { id: call.bindings[0], status: "active" };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (isApplicabilityRequirementsLookup(call.sql)) {
+            return updateRequirements;
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = updateDatabase;
+      const updateResponse = await postWorkspace(
+        "updateRequirementApplicability",
+        {
+          credentialId: "credential-rich",
+          choices: [
+            {
+              requirementId: "requirement-special-role",
+              status: "applies",
+            },
+          ],
+        },
+      );
+      assert.equal(updateResponse.status, 200);
+      const applicabilityUpdate = flattenedStatements(updateDatabase).find(
+        (statement) =>
+          /^UPDATE credential_requirements SET applicability_status = \?, is_active = \?/i.test(
+            statement.sql,
+          ),
+      );
+      assert.ok(applicabilityUpdate);
+      assert.match(
+        applicabilityUpdate.sql,
+        /WHERE id = \? AND credential_id = \? AND EXISTS \( SELECT 1 FROM credentials credential[\s\S]*?credential\.user_id = \? \)/i,
+      );
+      assert.deepEqual(applicabilityUpdate.bindings, [
+        "applies",
+        1,
+        "requirement-special-role",
+        "credential-rich",
+        userId,
+      ]);
+
+      const optionalCapDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /SELECT id, status FROM credentials WHERE id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return { id: call.bindings[0], status: "active" };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (isApplicabilityRequirementsLookup(call.sql)) {
+            return [
+              {
+                id: "requirement-self-study",
+                name: "Self-study",
+                relation: "overlapping",
+                parentRequirementId: null,
+                applicability: "optional",
+                applicabilityStatus: "applies",
+              },
+            ];
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = optionalCapDatabase;
+      const optionalCapResponse = await postWorkspace(
+        "updateRequirementApplicability",
+        {
+          credentialId: "credential-rich",
+          choices: [
+            {
+              requirementId: "requirement-self-study",
+              status: "not_applicable",
+            },
+          ],
+        },
+      );
+      assert.equal(optionalCapResponse.status, 400);
+      assert.deepEqual(await optionalCapResponse.json(), {
+        error:
+          "status for Self-study must be applies for an always or optional rule",
+        code: "invalid_request",
+      });
+      assert.equal(
+        flattenedStatements(optionalCapDatabase).some((statement) =>
+          /^UPDATE credential_requirements /i.test(statement.sql),
+        ),
+        false,
+        "an optional earning path must not allow its cap to be disabled",
+      );
+
+      const crossOwnerDatabase = new FakeDatabase({
+        resolveAll(call) {
+          return isApplicabilityRequirementsLookup(call.sql)
+            ? updateRequirements
+            : [];
+        },
+      });
+      testCloudflareEnv.DB = crossOwnerDatabase;
+      const crossOwnerResponse = await postWorkspace(
+        "updateRequirementApplicability",
+        {
+          credentialId: "credential-owned-by-someone-else",
+          choices: [
+            {
+              requirementId: "requirement-special-role",
+              status: "applies",
+            },
+          ],
+        },
+      );
+      assert.equal(crossOwnerResponse.status, 404);
+      assert.deepEqual(await crossOwnerResponse.json(), {
+        error: "Credential not found.",
+        code: "credential_not_found",
+      });
+      assert.equal(
+        flattenedStatements(crossOwnerDatabase).some((statement) =>
+          /^UPDATE credential_requirements /i.test(statement.sql),
+        ),
+        false,
+      );
+
+      const inactiveTagDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (isOwnedCredentialCycleLookup(call.sql)) {
+            return {
+              id: call.bindings[0],
+              status: "active",
+              cycleStart: "2027-01-01",
+              deadline: "2027-12-31",
+            };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (isRequirementTagLookup(call.sql)) {
+            return [
+              {
+                id: "requirement-special-role",
+                name: "Special Role Training",
+                isActive: 0,
+                applicabilityStatus: "not_applicable",
+              },
+            ];
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = inactiveTagDatabase;
+      const inactiveTagResponse = await postWorkspace("addActivity", {
+        title: "Special role seminar",
+        provider: "Professional Institute",
+        completionDate: "2027-05-20",
+        totalUnits: 2,
+        credentialId: "credential-rich",
+        requirementIds: ["requirement-special-role"],
+        evidenceStatus: "missing",
+      });
+      assert.equal(inactiveTagResponse.status, 409);
+      assert.deepEqual(await inactiveTagResponse.json(), {
+        error:
+          "Special Role Training is not active for this renewal cycle.",
+        code: "requirement_inactive",
+      });
+      assert.equal(
+        flattenedStatements(inactiveTagDatabase).some((statement) =>
+          /^INSERT INTO (activities|activity_allocations|activity_requirement_matches) \(/i.test(
+            statement.sql,
+          ),
+        ),
+        false,
+      );
+    },
+  );
+
+  await t.test(
     "calculates reminder dates and normalized activity allocation",
     async () => {
       const database = new FakeDatabase({
@@ -934,6 +1363,92 @@ test("License Lantern product contract", async (t) => {
       assert.equal(activityInsert.bindings[6], "attached");
       assert.equal(allocationInsert.bindings[2], credentialResult.id);
       assert.equal(allocationInsert.bindings[4], 1.24);
+    },
+  );
+
+  await t.test(
+    "writes one activity allocation with multiple requirement matches",
+    async () => {
+      const userId = await expectedStableUserId("owner@example.com");
+      const requirementIds = [
+        "requirement-ethics",
+        "requirement-participatory",
+      ];
+      const database = new FakeDatabase({
+        resolveFirst(call) {
+          if (isOwnedCredentialCycleLookup(call.sql)) {
+            return {
+              id: call.bindings[0],
+              status: "active",
+              cycleStart: "2027-01-01",
+              deadline: "2027-12-31",
+            };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (isRequirementTagLookup(call.sql)) {
+            return requirementIds.map((id) => ({
+              id,
+              name:
+                id === "requirement-ethics" ? "Ethics" : "Participatory",
+              isActive: 1,
+              applicabilityStatus: "applies",
+            }));
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = database;
+
+      const response = await postWorkspace("addActivity", {
+        title: "Live ethics workshop",
+        provider: "Professional Institute",
+        completionDate: "2027-05-20",
+        totalUnits: 2,
+        credentialId: "credential-rich",
+        requirementIds,
+        evidenceStatus: "missing",
+      });
+      assert.equal(response.status, 200);
+      const statements = flattenedStatements(database);
+      const activityInserts = statements.filter((statement) =>
+        /^INSERT INTO activities \(/i.test(statement.sql),
+      );
+      const allocationInserts = statements.filter((statement) =>
+        /^INSERT INTO activity_allocations \(/i.test(statement.sql),
+      );
+      const matchInserts = statements.filter((statement) =>
+        /^INSERT INTO activity_requirement_matches \(/i.test(statement.sql),
+      );
+      assert.equal(activityInserts.length, 1);
+      assert.equal(allocationInserts.length, 1);
+      assert.equal(matchInserts.length, 2);
+      const allocationId = allocationInserts[0].bindings[0];
+      assert.deepEqual(allocationInserts[0].bindings.slice(1), [
+        activityInserts[0].bindings[0],
+        "credential-rich",
+        requirementIds[0],
+        2,
+      ]);
+      assert.deepEqual(
+        matchInserts.map((statement) => statement.bindings.slice(1)),
+        requirementIds.map((requirementId) => [
+          userId,
+          allocationId,
+          requirementId,
+          2,
+        ]),
+      );
+      const validationLookup = database.calls.find(
+        (call) => call.method === "all" && isRequirementTagLookup(call.sql),
+      );
+      assert.ok(validationLookup);
+      assert.deepEqual(validationLookup.bindings, [
+        "credential-rich",
+        userId,
+        ...requirementIds,
+      ]);
     },
   );
 
@@ -1083,9 +1598,13 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
-    "allocates one activity across credentials while freezing closed cycles",
+    "reuses one activity with multiple tags while freezing closed cycles",
     async () => {
       const userId = await expectedStableUserId("owner@example.com");
+      const requirementIds = [
+        "requirement-second-ethics",
+        "requirement-second-live",
+      ];
       const database = new FakeDatabase({
         resolveFirst(call) {
           if (isOwnedActivityCycleLookup(call.sql)) {
@@ -1113,14 +1632,21 @@ test("License Lantern product contract", async (t) => {
           ) {
             return null;
           }
-          if (
-            /FROM credential_requirements requirement JOIN credentials credential/i.test(
-              call.sql,
-            )
-          ) {
-            return { id: call.bindings[0] };
-          }
           return null;
+        },
+        resolveAll(call) {
+          if (isRequirementTagLookup(call.sql)) {
+            return requirementIds.map((id) => ({
+              id,
+              name:
+                id === "requirement-second-ethics"
+                  ? "Ethics"
+                  : "Participatory",
+              isActive: 1,
+              applicabilityStatus: "applies",
+            }));
+          }
+          return [];
         },
       });
       testCloudflareEnv.DB = database;
@@ -1128,7 +1654,7 @@ test("License Lantern product contract", async (t) => {
       const response = await postWorkspace("addActivityAllocation", {
         activityId: "activity-shared",
         credentialId: "credential-second",
-        requirementId: "requirement-second-ethics",
+        requirementIds,
         allocatedUnits: 3,
       });
       assert.equal(response.status, 200);
@@ -1136,18 +1662,29 @@ test("License Lantern product contract", async (t) => {
       assert.equal(result.ok, true);
       assert.equal(result.action, "addActivityAllocation");
 
-      const allocationInsert = database.calls.find(
-        (call) =>
-          call.method === "run" &&
-          /^INSERT INTO activity_allocations \(/i.test(call.sql),
+      const allocationInsert = flattenedStatements(database).find((statement) =>
+        /^INSERT INTO activity_allocations \(/i.test(statement.sql),
       );
       assert.ok(allocationInsert);
       assert.deepEqual(allocationInsert.bindings.slice(1), [
         "activity-shared",
         "credential-second",
-        "requirement-second-ethics",
+        requirementIds[0],
         3,
       ]);
+      const matchInserts = flattenedStatements(database).filter((statement) =>
+        /^INSERT INTO activity_requirement_matches \(/i.test(statement.sql),
+      );
+      assert.equal(matchInserts.length, 2);
+      assert.deepEqual(
+        matchInserts.map((statement) => statement.bindings.slice(1)),
+        requirementIds.map((requirementId) => [
+          userId,
+          allocationInsert.bindings[0],
+          requirementId,
+          3,
+        ]),
+      );
       const activityLookup = database.calls.find(
         (call) =>
           call.method === "first" && isOwnedActivityCycleLookup(call.sql),
@@ -1159,10 +1696,7 @@ test("License Lantern product contract", async (t) => {
       );
       const requirementLookup = database.calls.find(
         (call) =>
-          call.method === "first" &&
-          /FROM credential_requirements requirement JOIN credentials credential/i.test(
-            call.sql,
-          ),
+          call.method === "all" && isRequirementTagLookup(call.sql),
       );
       assert.deepEqual(activityLookup.bindings, ["activity-shared", userId]);
       assert.deepEqual(credentialLookup.bindings, [
@@ -1170,9 +1704,9 @@ test("License Lantern product contract", async (t) => {
         userId,
       ]);
       assert.deepEqual(requirementLookup.bindings, [
-        "requirement-second-ethics",
         "credential-second",
         userId,
+        ...requirementIds,
       ]);
 
       const overAllocationResponse = await postWorkspace(
@@ -1380,6 +1914,384 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
+    "dedupes nested rollups, groups tags, and caps maximum credit",
+    async () => {
+      const credentialId = "credential-rich-progress";
+      const requirementRows = [
+        {
+          id: "requirement-parent",
+          credentialId,
+          name: "Professional Responsibility",
+          requiredUnits: 3,
+          kind: "minimum",
+          relation: "independent",
+          parentRequirementId: null,
+          applicability: "always",
+          applicabilityStatus: "applies",
+          conditionNote: null,
+          isActive: 1,
+          rawEarned: 0,
+        },
+        {
+          id: "requirement-ethics",
+          credentialId,
+          name: "Ethics",
+          requiredUnits: 2,
+          kind: "minimum",
+          relation: "nested",
+          parentRequirementId: "requirement-parent",
+          applicability: "always",
+          applicabilityStatus: "applies",
+          conditionNote: null,
+          isActive: 1,
+          rawEarned: 10,
+        },
+        {
+          id: "requirement-bias",
+          credentialId,
+          name: "Bias",
+          requiredUnits: 1,
+          kind: "minimum",
+          relation: "nested",
+          parentRequirementId: "requirement-parent",
+          applicability: "always",
+          applicabilityStatus: "applies",
+          conditionNote: null,
+          isActive: 1,
+          rawEarned: 4,
+        },
+        {
+          id: "requirement-participatory",
+          credentialId,
+          name: "Participatory",
+          requiredUnits: 4,
+          kind: "minimum",
+          relation: "overlapping",
+          parentRequirementId: null,
+          applicability: "always",
+          applicabilityStatus: "applies",
+          conditionNote: null,
+          isActive: 1,
+          rawEarned: 4,
+        },
+        {
+          id: "requirement-self-study",
+          credentialId,
+          name: "Self-study",
+          requiredUnits: 4,
+          kind: "maximum",
+          relation: "overlapping",
+          parentRequirementId: null,
+          applicability: "always",
+          applicabilityStatus: "applies",
+          conditionNote: null,
+          isActive: 1,
+          rawEarned: 6,
+        },
+        {
+          id: "requirement-special-role",
+          credentialId,
+          name: "Special Role Training",
+          requiredUnits: 2,
+          kind: "minimum",
+          relation: "independent",
+          parentRequirementId: null,
+          applicability: "conditional",
+          applicabilityStatus: "needs_confirmation",
+          conditionNote: "Confirm the role for this cycle.",
+          isActive: 0,
+          rawEarned: 0,
+        },
+      ];
+      const activityRows = [
+        {
+          id: "activity-a",
+          title: "Equal-unit workshop A",
+          provider: "Professional Institute",
+          completionDate: "2027-02-01",
+          totalUnits: 2,
+          evidenceStatus: "attached",
+          evidenceReference: null,
+          evidenceCount: 1,
+          allocationId: "allocation-a",
+          credentialId,
+          credentialName: "Rich Semantics License",
+          requirementId: "requirement-ethics",
+          categoryName: "Ethics",
+          allocatedUnits: 2,
+        },
+        {
+          id: "activity-b",
+          title: "Equal-unit workshop B",
+          provider: "Professional Institute",
+          completionDate: "2027-03-01",
+          totalUnits: 2,
+          evidenceStatus: "attached",
+          evidenceReference: null,
+          evidenceCount: 1,
+          allocationId: "allocation-b",
+          credentialId,
+          credentialName: "Rich Semantics License",
+          requirementId: "requirement-ethics",
+          categoryName: "Ethics",
+          allocatedUnits: 2,
+        },
+        {
+          id: "activity-c",
+          title: "Self-study course C",
+          provider: "Professional Institute",
+          completionDate: "2027-04-01",
+          totalUnits: 3,
+          evidenceStatus: "missing",
+          evidenceReference: null,
+          evidenceCount: 0,
+          allocationId: "allocation-c",
+          credentialId,
+          credentialName: "Rich Semantics License",
+          requirementId: "requirement-ethics",
+          categoryName: "Ethics",
+          allocatedUnits: 3,
+        },
+        {
+          id: "activity-d",
+          title: "Self-study course D",
+          provider: "Professional Institute",
+          completionDate: "2027-05-01",
+          totalUnits: 3,
+          evidenceStatus: "missing",
+          evidenceReference: null,
+          evidenceCount: 0,
+          allocationId: "allocation-d",
+          credentialId,
+          credentialName: "Rich Semantics License",
+          requirementId: "requirement-ethics",
+          categoryName: "Ethics",
+          allocatedUnits: 3,
+        },
+      ];
+      const activityMatchRows = [];
+      const addMatches = (activityId, allocationId, units, requirements) => {
+        requirements.forEach(([requirementId, categoryName], index) => {
+          activityMatchRows.push({
+            id: `${allocationId}-match-${index}`,
+            activityId,
+            allocationId,
+            credentialId,
+            requirementId,
+            categoryName,
+            matchedUnits: units,
+          });
+        });
+      };
+      addMatches("activity-a", "allocation-a", 2, [
+        ["requirement-ethics", "Ethics"],
+        ["requirement-bias", "Bias"],
+        ["requirement-participatory", "Participatory"],
+      ]);
+      addMatches("activity-b", "allocation-b", 2, [
+        ["requirement-ethics", "Ethics"],
+        ["requirement-bias", "Bias"],
+        ["requirement-participatory", "Participatory"],
+      ]);
+      addMatches("activity-c", "allocation-c", 3, [
+        ["requirement-ethics", "Ethics"],
+        ["requirement-self-study", "Self-study"],
+      ]);
+      addMatches("activity-d", "allocation-d", 3, [
+        ["requirement-ethics", "Ethics"],
+        ["requirement-self-study", "Self-study"],
+      ]);
+
+      const database = new FakeDatabase({
+        resolveFirst(call) {
+          if (/FROM profiles p WHERE p\.user_id = \?/i.test(call.sql)) {
+            return { weeklyGoal: 4, xp: 0, weekActions: 0 };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (/FROM credentials c LEFT JOIN rule_sets rs/i.test(call.sql)) {
+            return [
+              {
+                id: credentialId,
+                credentialName: "Rich Semantics License",
+                profession: "Testing",
+                jurisdiction: "Test State",
+                issuer: "Test Board",
+                deadline: "2027-12-31",
+                cycleStart: "2027-01-01",
+                totalRequired: 10,
+                unitLabel: "hours",
+                cycleMonths: 12,
+                seriesId: "series-rich",
+                previousCredentialId: null,
+                status: "active",
+                submittedAt: null,
+                confirmationNumber: null,
+                submissionProof: null,
+                acceptedAt: null,
+                acceptanceReference: null,
+                nextCredentialId: null,
+                sourceUrl: null,
+                ruleReviewStatus: "custom",
+                totalEarned: 10,
+              },
+            ];
+          }
+          if (
+            /FROM credential_requirements req JOIN credentials c/i.test(
+              call.sql,
+            )
+          ) {
+            return requirementRows;
+          }
+          if (
+            /FROM activities a LEFT JOIN activity_allocations alloc/i.test(
+              call.sql,
+            )
+          ) {
+            return activityRows;
+          }
+          if (
+            /FROM activity_requirement_matches match JOIN activity_allocations allocation/i.test(
+              call.sql,
+            )
+          ) {
+            return activityMatchRows;
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = database;
+
+      const response = await fetchWorker(
+        "https://license-lantern.example/api/workspace",
+        { headers: authHeaders() },
+      );
+      assert.equal(response.status, 200);
+      const workspace = await response.json();
+      const credential = workspace.credentials.find(
+        (candidate) => candidate.id === credentialId,
+      );
+      assert.ok(credential);
+      assert.deepEqual(
+        {
+          totalRawEarned: credential.totalRawEarned,
+          totalExcessUnits: credential.totalExcessUnits,
+          totalEarned: credential.totalEarned,
+          totalRemaining: credential.totalRemaining,
+          totalProgressPercent: credential.totalProgressPercent,
+        },
+        {
+          totalRawEarned: 10,
+          totalExcessUnits: 2,
+          totalEarned: 8,
+          totalRemaining: 2,
+          totalProgressPercent: 80,
+        },
+      );
+      const progressById = new Map(
+        credential.requirements.map((requirement) => [
+          requirement.id,
+          requirement,
+        ]),
+      );
+      assert.deepEqual(
+        {
+          rawEarned: progressById.get("requirement-parent").rawEarned,
+          countableEarned:
+            progressById.get("requirement-parent").countableEarned,
+          remainingUnits:
+            progressById.get("requirement-parent").remainingUnits,
+        },
+        { rawEarned: 10, countableEarned: 10, remainingUnits: 0 },
+        "two sibling matches on the same allocation must roll up once",
+      );
+      assert.deepEqual(
+        {
+          rawEarned: progressById.get("requirement-self-study").rawEarned,
+          countableEarned:
+            progressById.get("requirement-self-study").countableEarned,
+          excessUnits: progressById.get("requirement-self-study").excessUnits,
+          earnedUnits: progressById.get("requirement-self-study").earnedUnits,
+          remainingUnits:
+            progressById.get("requirement-self-study").remainingUnits,
+          progressPercent:
+            progressById.get("requirement-self-study").progressPercent,
+        },
+        {
+          rawEarned: 6,
+          countableEarned: 4,
+          excessUnits: 2,
+          earnedUnits: 4,
+          remainingUnits: null,
+          progressPercent: 100,
+        },
+      );
+      assert.deepEqual(
+        {
+          isActive: progressById.get("requirement-special-role").isActive,
+          rawEarned: progressById.get("requirement-special-role").rawEarned,
+          countableEarned:
+            progressById.get("requirement-special-role").countableEarned,
+          applicabilityStatus:
+            progressById.get("requirement-special-role").applicabilityStatus,
+          remainingUnits:
+            progressById.get("requirement-special-role").remainingUnits,
+          progressPercent:
+            progressById.get("requirement-special-role").progressPercent,
+        },
+        {
+          isActive: false,
+          rawEarned: 0,
+          countableEarned: 0,
+          applicabilityStatus: "needs_confirmation",
+          remainingUnits: null,
+          progressPercent: null,
+        },
+      );
+
+      assert.equal(workspace.activities.length, 4);
+      assert.deepEqual(
+        workspace.activities
+          .map((activity) => activity.totalUnits)
+          .sort((a, b) => a - b),
+        [2, 2, 3, 3],
+        "equal-unit activities must remain distinct in the overall total",
+      );
+      const firstActivity = workspace.activities.find(
+        (activity) => activity.id === "activity-a",
+      );
+      assert.ok(firstActivity);
+      assert.equal(firstActivity.allocations.length, 1);
+      assert.deepEqual(firstActivity.allocations[0].requirementIds, [
+        "requirement-ethics",
+        "requirement-bias",
+        "requirement-participatory",
+      ]);
+      assert.deepEqual(firstActivity.allocations[0].categoryNames, [
+        "Ethics",
+        "Bias",
+        "Participatory",
+      ]);
+      assert.equal(firstActivity.allocations[0].requirementMatches.length, 3);
+      assert.equal(firstActivity.allocations[0].allocatedUnits, 2);
+
+      const totalQuery = database.calls.find(
+        (call) =>
+          call.method === "all" &&
+          /FROM credentials c LEFT JOIN rule_sets rs/i.test(call.sql),
+      );
+      assert.ok(totalQuery);
+      assert.match(totalQuery.sql, /SUM\(alloc\.allocated_units\)/i);
+      assert.doesNotMatch(
+        totalQuery.sql,
+        /activity_requirement_matches|SUM\(DISTINCT/i,
+      );
+    },
+  );
+
+  await t.test(
     "persists normalized reminder preferences and owner-scoped occurrence state",
     async () => {
       const userId = await expectedStableUserId("owner@example.com");
@@ -1502,7 +2414,7 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
-    "accepts a submitted renewal idempotently and preserves prior-cycle history",
+    "rolls rich requirement snapshots forward idempotently without credit carryover",
     async () => {
       const userId = await expectedStableUserId("owner@example.com");
       const database = new FakeDatabase({
@@ -1553,16 +2465,41 @@ test("License Lantern product contract", async (t) => {
           ) {
             return [
               {
+                id: "requirement-general",
                 ruleCategoryId: null,
                 name: "General",
                 requiredUnits: 10,
+                kind: "minimum",
+                relation: "independent",
+                parentRequirementId: null,
+                applicability: "always",
+                conditionNote: null,
                 sortOrder: 0,
               },
               {
+                id: "requirement-ethics",
                 ruleCategoryId: null,
                 name: "Ethics",
                 requiredUnits: 2,
+                kind: "minimum",
+                relation: "nested",
+                parentRequirementId: "requirement-general",
+                applicability: "conditional",
+                conditionNote:
+                  "Confirm whether the ethics condition applies this cycle.",
                 sortOrder: 1,
+              },
+              {
+                id: "requirement-self-study",
+                ruleCategoryId: null,
+                name: "Self-study",
+                requiredUnits: 4,
+                kind: "maximum",
+                relation: "overlapping",
+                parentRequirementId: null,
+                applicability: "optional",
+                conditionNote: "No more than four self-study hours count.",
+                sortOrder: 2,
               },
             ];
           }
@@ -1628,15 +2565,71 @@ test("License Lantern product contract", async (t) => {
         "credential-prior",
         24,
       ]);
-      assert.deepEqual(
-        requirementSnapshots.map((statement) =>
-          statement.bindings.slice(1),
-        ),
-        [
-          [nextCredentialId, null, "General", 10, 0],
-          [nextCredentialId, null, "Ethics", 2, 1],
-        ],
+      assert.equal(requirementSnapshots.length, 3);
+      const snapshotByName = new Map(
+        requirementSnapshots.map((statement) => [
+          statement.bindings[3],
+          statement,
+        ]),
       );
+      const generalSnapshot = snapshotByName.get("General");
+      const ethicsSnapshot = snapshotByName.get("Ethics");
+      const maximumSnapshot = snapshotByName.get("Self-study");
+      assert.ok(generalSnapshot);
+      assert.ok(ethicsSnapshot);
+      assert.ok(maximumSnapshot);
+      assert.deepEqual(generalSnapshot.bindings.slice(1), [
+        nextCredentialId,
+        null,
+        "General",
+        10,
+        "minimum",
+        "independent",
+        null,
+        "always",
+        "applies",
+        null,
+        1,
+        0,
+      ]);
+      assert.notEqual(
+        generalSnapshot.bindings[0],
+        "requirement-general",
+        "the new cycle must receive fresh requirement IDs",
+      );
+      assert.deepEqual(ethicsSnapshot.bindings.slice(1), [
+        nextCredentialId,
+        null,
+        "Ethics",
+        2,
+        "minimum",
+        "nested",
+        generalSnapshot.bindings[0],
+        "conditional",
+        "needs_confirmation",
+        "Confirm whether the ethics condition applies this cycle.",
+        0,
+        1,
+      ]);
+      assert.notEqual(
+        ethicsSnapshot.bindings[7],
+        "requirement-general",
+        "nested parents must be remapped away from the prior cycle",
+      );
+      assert.deepEqual(maximumSnapshot.bindings.slice(1), [
+        nextCredentialId,
+        null,
+        "Self-study",
+        4,
+        "maximum",
+        "overlapping",
+        null,
+        "optional",
+        "applies",
+        "No more than four self-study hours count.",
+        1,
+        2,
+      ]);
       assert.equal(nextTasks.length, 3);
       assert.ok(
         nextTasks.every(
@@ -1660,7 +2653,7 @@ test("License Lantern product contract", async (t) => {
       ]);
       assert.equal(
         statements.some((statement) =>
-          /^INSERT INTO (activities|activity_allocations|renewal_submissions) \(/i.test(
+          /^INSERT INTO (activities|activity_allocations|activity_requirement_matches|renewal_submissions) \(/i.test(
             statement.sql,
           ),
         ),
@@ -1695,7 +2688,9 @@ test("License Lantern product contract", async (t) => {
       });
       assert.equal(
         flattenedStatements(retryDatabase).some((statement) =>
-          /^INSERT INTO credentials \(/i.test(statement.sql),
+          /^INSERT INTO (credentials|credential_requirements) \(/i.test(
+            statement.sql,
+          ),
         ),
         false,
       );

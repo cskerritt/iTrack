@@ -14,6 +14,16 @@ type Requirement = {
   name: string;
   requiredUnits: number;
   earnedUnits: number;
+  rawEarned?: number;
+  countableEarned?: number;
+  excessUnits?: number;
+  kind?: "minimum" | "maximum" | "informational";
+  relation?: "independent" | "nested" | "overlapping";
+  parentRequirementId?: string | null;
+  applicability?: "always" | "conditional" | "optional";
+  applicabilityStatus?: "applies" | "not_applicable" | "needs_confirmation";
+  isActive?: boolean;
+  conditionNote?: string | null;
 };
 
 type RenewalTask = {
@@ -47,6 +57,8 @@ type Credential = {
   sourceTitle?: string | null;
   ruleReviewStatus?: string | null;
   totalEarned: number;
+  totalRawEarned?: number;
+  totalExcessUnits?: number;
   requirements: Requirement[];
   tasks: RenewalTask[];
 };
@@ -55,6 +67,11 @@ type CatalogCategory = {
   id: string;
   name: string;
   requiredUnits: number;
+  kind?: "minimum" | "maximum" | "informational";
+  relation?: "independent" | "nested" | "overlapping";
+  parentCategoryId?: string | null;
+  applicability?: "always" | "conditional" | "optional";
+  conditionNote?: string | null;
 };
 
 type CatalogRule = {
@@ -80,6 +97,8 @@ type ActivityAllocation = {
   credentialName: string;
   requirementId?: string | null;
   categoryName?: string | null;
+  requirementIds?: string[];
+  categoryNames?: string[];
   allocatedUnits: number;
 };
 
@@ -223,6 +242,52 @@ function allocationsFor(activity: Activity): ActivityAllocation[] {
   ];
 }
 
+function requirementEarned(requirement: Requirement) {
+  return Number(
+    requirement.countableEarned ??
+      requirement.earnedUnits ??
+      requirement.rawEarned ??
+      0,
+  );
+}
+
+function requirementRawEarned(requirement: Requirement) {
+  return Number(requirement.rawEarned ?? requirement.earnedUnits ?? 0);
+}
+
+function requirementKind(requirement: Requirement) {
+  return requirement.kind ?? "minimum";
+}
+
+function requirementStatus(requirement: Requirement) {
+  return requirement.applicabilityStatus ?? "applies";
+}
+
+function activeMinimums(credential: Credential) {
+  return credential.requirements.filter(
+    (requirement) =>
+      requirementStatus(requirement) === "applies" &&
+      requirement.isActive !== false &&
+      requirementKind(requirement) === "minimum",
+  );
+}
+
+function allocationCategoryLabel(allocation: ActivityAllocation) {
+  if (allocation.categoryNames?.length) {
+    return allocation.categoryNames.join(" · ");
+  }
+  return allocation.categoryName ?? "General";
+}
+
+function catalogCategorySummary(category: CatalogCategory) {
+  const units = compactNumber(category.requiredUnits);
+  const prefix =
+    category.kind === "maximum" ? `Up to ${units}` : `${units}`;
+  const qualifier =
+    category.applicability === "conditional" ? " if applicable" : "";
+  return `${prefix} ${category.name}${qualifier}`;
+}
+
 function compactNumber(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
@@ -247,9 +312,13 @@ function credentialProgress(credential: Credential) {
 
 function readinessScore(credential: Credential) {
   const unitProgress = Math.min(1, credentialProgress(credential) / 100);
-  const requirementCount = credential.requirements.length;
-  const metRequirements = credential.requirements.filter(
-    (item) => item.earnedUnits >= item.requiredUnits,
+  const minimums = activeMinimums(credential);
+  const unresolved = credential.requirements.filter(
+    (item) => requirementStatus(item) === "needs_confirmation",
+  );
+  const requirementCount = minimums.length + unresolved.length;
+  const metRequirements = minimums.filter(
+    (item) => requirementEarned(item) >= item.requiredUnits,
   ).length;
   const requirementProgressValue =
     requirementCount === 0 ? 1 : metRequirements / requirementCount;
@@ -269,18 +338,25 @@ function bestNextAction(credential: Credential) {
   if (credential.status === "submitted")
     return "Record acceptance when your renewal is approved";
 
-  const missingRequirement = credential.requirements
-    .filter((item) => item.earnedUnits < item.requiredUnits)
+  const unresolvedRequirement = credential.requirements.find(
+    (item) => requirementStatus(item) === "needs_confirmation",
+  );
+  if (unresolvedRequirement) {
+    return `Confirm whether ${unresolvedRequirement.name} applies this cycle`;
+  }
+
+  const missingRequirement = activeMinimums(credential)
+    .filter((item) => requirementEarned(item) < item.requiredUnits)
     .sort(
       (a, b) =>
         b.requiredUnits -
-        b.earnedUnits -
-        (a.requiredUnits - a.earnedUnits),
+        requirementEarned(b) -
+        (a.requiredUnits - requirementEarned(a)),
     )[0];
 
   if (missingRequirement) {
     const left =
-      missingRequirement.requiredUnits - missingRequirement.earnedUnits;
+      missingRequirement.requiredUnits - requirementEarned(missingRequirement);
     return `Complete ${compactNumber(left)} more ${missingRequirement.name} ${
       left === 1 ? credential.unitLabel.replace(/s$/, "") : credential.unitLabel
     }`;
@@ -498,7 +574,10 @@ export function LicenseLanternApp() {
         completionDate: String(form.get("completionDate") ?? ""),
         totalUnits,
         credentialId,
-        requirementId: String(form.get("requirementId") ?? "") || null,
+        requirementIds: form
+          .getAll("requirementIds")
+          .map((value) => String(value))
+          .filter(Boolean),
         allocatedUnits: totalUnits,
         evidenceStatus: String(form.get("evidenceStatus") ?? "missing"),
       },
@@ -659,6 +738,14 @@ export function LicenseLanternApp() {
     const totalRequired = customCredential
       ? Number(form.get("totalRequired") ?? 0)
       : (rule?.totalUnits ?? 0);
+    const applicabilityChoices = (rule?.categories ?? [])
+      .filter((category) => category.applicability === "conditional")
+      .map((category) => ({
+        ruleCategoryId: category.id,
+        status: String(
+          form.get(`applicability:${category.id}`) ?? "needs_confirmation",
+        ),
+      }));
 
     const success = await runAction(
       "createCredential",
@@ -683,6 +770,7 @@ export function LicenseLanternApp() {
           ? String(form.get("unitLabel") ?? "hours")
           : (rule?.unitLabel ?? "hours"),
         categories,
+        applicabilityChoices,
       },
       "Credential added. Your renewal plan is ready.",
     );
@@ -782,7 +870,10 @@ export function LicenseLanternApp() {
       {
         activityId: allocationActivity.id,
         credentialId: String(form.get("credentialId") ?? ""),
-        requirementId: String(form.get("requirementId") ?? "") || null,
+        requirementIds: form
+          .getAll("requirementIds")
+          .map((value) => String(value))
+          .filter(Boolean),
         allocatedUnits,
       },
       `Activity applied to another credential.`,
@@ -791,6 +882,28 @@ export function LicenseLanternApp() {
       setAllocationActivity(null);
       setAllocationCredentialId("");
     }
+  }
+
+  async function setRequirementApplicability(
+    credentialId: string,
+    requirement: Requirement,
+    applicabilityStatus: "applies" | "not_applicable",
+  ) {
+    await runAction(
+      "updateRequirementApplicability",
+      {
+        credentialId,
+        choices: [
+          {
+            requirementId: requirement.id,
+            status: applicabilityStatus,
+          },
+        ],
+      },
+      applicabilityStatus === "applies"
+        ? `${requirement.name} added to this cycle.`
+        : `${requirement.name} marked not applicable for this cycle.`,
+    );
   }
 
   async function toggleTask(task: RenewalTask) {
@@ -871,6 +984,15 @@ export function LicenseLanternApp() {
                 void setReminderState(reminder, status)
               }
               onToggleTask={toggleTask}
+              onRequirementApplicability={(requirement, status) =>
+                selectedCredential
+                  ? void setRequirementApplicability(
+                      selectedCredential.id,
+                      requirement,
+                      status,
+                    )
+                  : undefined
+              }
             />
           ) : view === "credentials" ? (
             <CredentialsView
@@ -881,6 +1003,17 @@ export function LicenseLanternApp() {
               onSubmit={() => setSubmissionOpen(true)}
               onAccept={() => setAcceptanceOpen(true)}
               onReminders={() => setRemindersOpen(true)}
+              onRequirementApplicability={(
+                credentialId,
+                requirement,
+                status,
+              ) =>
+                void setRequirementApplicability(
+                  credentialId,
+                  requirement,
+                  status,
+                )
+              }
             />
           ) : view === "records" ? (
             <RecordsView
@@ -991,24 +1124,10 @@ export function LicenseLanternApp() {
                   ))}
                 </select>
               </label>
-              <label className="field">
-                <span>Category</span>
-                <select
-                  key={activityCredential?.id}
-                  name="requirementId"
-                  defaultValue=""
-                >
-                  <option value="">General / decide later</option>
-                  {(activityCredential?.requirements ?? []).map((requirement) => (
-                    <option key={requirement.id} value={requirement.id}>
-                      {requirement.name}
-                    </option>
-                  ))}
-                </select>
-                <small>
-                  Unsure? Save it as General and review the category later.
-                </small>
-              </label>
+              <RequirementPicker
+                key={activityCredential?.id}
+                credential={activityCredential}
+              />
               <label className="field">
                 <span>Provider or organizer <em>Optional</em></span>
                 <input
@@ -1216,12 +1335,7 @@ export function LicenseLanternApp() {
                     </strong>
                     <p>
                       {selectedRule.categories
-                        .map(
-                          (category) =>
-                            `${compactNumber(category.requiredUnits)} ${
-                              category.name
-                            }`,
-                        )
+                        .map(catalogCategorySummary)
                         .join(" · ") || "No special minimums in this template"}
                     </p>
                     {selectedRule.sourceTitle ? (
@@ -1245,6 +1359,59 @@ export function LicenseLanternApp() {
                     can edit dates before saving.
                   </p>
                 )}
+                {selectedRule?.categories.some(
+                  (category) => category.applicability === "conditional",
+                ) ? (
+                  <fieldset className="condition-review">
+                    <legend>Which conditions apply this cycle?</legend>
+                    <p>
+                      Answer each item so a conditional rule is never silently
+                      added or left out.
+                    </p>
+                    <div className="condition-list">
+                      {selectedRule.categories
+                        .filter(
+                          (category) =>
+                            category.applicability === "conditional",
+                        )
+                        .map((category) => (
+                          <article key={category.id}>
+                            <div>
+                              <strong>{category.name}</strong>
+                              <small>
+                                {category.conditionNote ??
+                                  "Review the official source to decide whether this applies."}
+                              </small>
+                            </div>
+                            <div
+                              className="condition-options"
+                              role="radiogroup"
+                              aria-label={`Does ${category.name} apply?`}
+                            >
+                              <label>
+                                <input
+                                  type="radio"
+                                  name={`applicability:${category.id}`}
+                                  value="applies"
+                                  required
+                                />
+                                <span>Applies</span>
+                              </label>
+                              <label>
+                                <input
+                                  type="radio"
+                                  name={`applicability:${category.id}`}
+                                  value="not_applicable"
+                                  required
+                                />
+                                <span>Not this cycle</span>
+                              </label>
+                            </div>
+                          </article>
+                        ))}
+                    </div>
+                  </fieldset>
+                ) : null}
               </>
             )}
 
@@ -1560,35 +1727,22 @@ export function LicenseLanternApp() {
                   ))}
                 </select>
               </label>
-              <div className="form-grid">
-                <label className="field">
-                  <span>Category</span>
-                  <select
-                    key={allocationCredential?.id}
-                    name="requirementId"
-                    defaultValue=""
-                  >
-                    <option value="">General / decide later</option>
-                    {allocationCredential?.requirements.map((requirement) => (
-                      <option key={requirement.id} value={requirement.id}>
-                        {requirement.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  <span>Credits to apply</span>
-                  <input
-                    name="allocatedUnits"
-                    type="number"
-                    min="0.1"
-                    max={allocationActivity.totalUnits}
-                    step="0.1"
-                    defaultValue={allocationActivity.totalUnits}
-                    required
-                  />
-                </label>
-              </div>
+              <RequirementPicker
+                key={allocationCredential?.id}
+                credential={allocationCredential}
+              />
+              <label className="field">
+                <span>Credits to apply</span>
+                <input
+                  name="allocatedUnits"
+                  type="number"
+                  min="0.1"
+                  max={allocationActivity.totalUnits}
+                  step="0.1"
+                  defaultValue={allocationActivity.totalUnits}
+                  required
+                />
+              </label>
               <div className="form-actions">
                 <button
                   className="button button-ghost"
@@ -1875,6 +2029,7 @@ function TodayView({
   onReminders,
   onReminderState,
   onToggleTask,
+  onRequirementApplicability,
 }: {
   workspace: Workspace;
   credential: Credential | null;
@@ -1890,6 +2045,10 @@ function TodayView({
     status: "dismissed" | "snoozed",
   ) => void;
   onToggleTask: (task: RenewalTask) => void;
+  onRequirementApplicability: (
+    requirement: Requirement,
+    status: "applies" | "not_applicable",
+  ) => void;
 }) {
   if (!credential) {
     return (
@@ -1973,6 +2132,10 @@ function TodayView({
   ).length;
   const deadlineDays = daysUntil(credential.deadline);
   const visibleReminders = workspace.reminders;
+  const needsRequirementConfirmation = credential.requirements.some(
+    (requirement) =>
+      requirementStatus(requirement) === "needs_confirmation",
+  );
 
   return (
     <div className="view-stack">
@@ -2040,7 +2203,7 @@ function TodayView({
                   {compactNumber(credential.totalEarned)} of{" "}
                   {compactNumber(credential.totalRequired)}
                 </strong>{" "}
-                {credential.unitLabel} documented
+                {credential.unitLabel} counted
               </p>
             </div>
           </div>
@@ -2061,7 +2224,7 @@ function TodayView({
             </span>
           </div>
           <p>
-            Based on documented units, category minimums, and checklist steps.
+            Based on countable units, active minimums, and checklist steps.
           </p>
         </div>
       </section>
@@ -2130,6 +2293,8 @@ function TodayView({
               ? onViewCredentials
               : credential.status === "submitted"
                 ? onAccept
+                : needsRequirementConfirmation
+                  ? onViewCredentials
                 : remaining > 0
               ? onAddActivity
                   : onSubmit
@@ -2139,6 +2304,8 @@ function TodayView({
             ? "View cycle history"
             : credential.status === "submitted"
               ? "Record acceptance"
+              : needsRequirementConfirmation
+                ? "Review conditions"
               : remaining > 0
             ? "Add completed learning"
                 : "Review submission"}
@@ -2152,7 +2319,7 @@ function TodayView({
               <span className="section-kicker">Requirements</span>
               <h2 id="progress-title">Credit progress</h2>
             </div>
-            <span className="card-summary">{progress}% documented</span>
+            <span className="card-summary">{progress}% counted</span>
           </div>
           <div className="requirement-list">
             <ProgressRow
@@ -2161,13 +2328,28 @@ function TodayView({
               required={credential.totalRequired}
               unit={credential.unitLabel}
             />
+            {Number(credential.totalExcessUnits ?? 0) > 0 ? (
+              <p className="total-excess-note">
+                {compactNumber(credential.totalRawEarned ?? 0)}{" "}
+                {credential.unitLabel} are documented;{" "}
+                {compactNumber(credential.totalExcessUnits ?? 0)} exceed a
+                category limit and are excluded from the overall count.
+              </p>
+            ) : null}
             {credential.requirements.map((requirement) => (
               <ProgressRow
                 key={requirement.id}
                 name={requirement.name}
-                earned={requirement.earnedUnits}
+                earned={requirementEarned(requirement)}
                 required={requirement.requiredUnits}
                 unit={credential.unitLabel}
+                requirement={requirement}
+                onApplicability={
+                  credential.status === "active"
+                    ? (status) =>
+                        onRequirementApplicability(requirement, status)
+                    : undefined
+                }
               />
             ))}
           </div>
@@ -2383,6 +2565,7 @@ function CredentialsView({
   onSubmit,
   onAccept,
   onReminders,
+  onRequirementApplicability,
 }: {
   credentials: Credential[];
   selectedId: string;
@@ -2391,6 +2574,11 @@ function CredentialsView({
   onSubmit: () => void;
   onAccept: () => void;
   onReminders: () => void;
+  onRequirementApplicability: (
+    credentialId: string,
+    requirement: Requirement,
+    status: "applies" | "not_applicable",
+  ) => void;
 }) {
   const selected =
     credentials.find((credential) => credential.id === selectedId) ??
@@ -2462,7 +2650,7 @@ function CredentialsView({
             ) : null}
             <div className="detail-stats">
               <div>
-                <span>Documented</span>
+                <span>Counted</span>
                 <strong>
                   {compactNumber(selected.totalEarned)} /{" "}
                   {compactNumber(selected.totalRequired)}
@@ -2492,7 +2680,7 @@ function CredentialsView({
               <div className="card-heading">
                 <div>
                   <span className="section-kicker">Requirements</span>
-                  <h3>Category minimums</h3>
+                  <h3>Rule progress and limits</h3>
                 </div>
               </div>
               <ProgressRow
@@ -2501,13 +2689,32 @@ function CredentialsView({
                 required={selected.totalRequired}
                 unit={selected.unitLabel}
               />
+              {Number(selected.totalExcessUnits ?? 0) > 0 ? (
+                <p className="total-excess-note">
+                  {compactNumber(selected.totalRawEarned ?? 0)}{" "}
+                  {selected.unitLabel} are documented;{" "}
+                  {compactNumber(selected.totalExcessUnits ?? 0)} exceed a
+                  category limit.
+                </p>
+              ) : null}
               {selected.requirements.map((requirement) => (
                 <ProgressRow
                   key={requirement.id}
                   name={requirement.name}
-                  earned={requirement.earnedUnits}
+                  earned={requirementEarned(requirement)}
                   required={requirement.requiredUnits}
                   unit={selected.unitLabel}
+                  requirement={requirement}
+                  onApplicability={
+                    selected.status === "active"
+                      ? (status) =>
+                          onRequirementApplicability(
+                            selected.id,
+                            requirement,
+                            status,
+                          )
+                      : undefined
+                  }
                 />
               ))}
             </div>
@@ -2702,7 +2909,7 @@ function RecordsView({
                       <span key={allocation.id}>
                         {allocation.credentialName}
                         <small>
-                          {allocation.categoryName ?? "General"} ·{" "}
+                          {allocationCategoryLabel(allocation)} ·{" "}
                           {compactNumber(allocation.allocatedUnits)}
                         </small>
                       </span>
@@ -2869,42 +3076,225 @@ function ProgressRow({
   earned,
   required,
   unit,
+  requirement,
+  onApplicability,
 }: {
   name: string;
   earned: number;
   required: number;
   unit: string;
+  requirement?: Requirement;
+  onApplicability?: (
+    status: "applies" | "not_applicable",
+  ) => void;
 }) {
+  const kind = requirement ? requirementKind(requirement) : "minimum";
+  const status = requirement ? requirementStatus(requirement) : "applies";
+  const rawEarned = requirement
+    ? requirementRawEarned(requirement)
+    : earned;
+  const excess = requirement
+    ? Number(
+        requirement.excessUnits ??
+          (kind === "maximum" ? Math.max(0, rawEarned - required) : 0),
+      )
+    : 0;
+  const nested = requirement?.relation === "nested";
+  const conditional = requirement?.applicability === "conditional";
+
+  if (status !== "applies") {
+    return (
+      <div
+        className={`progress-row requirement-condition ${
+          nested ? "nested" : ""
+        }`}
+      >
+        <div>
+          <span>
+            <strong>{name}</strong>
+            <small>
+              {status === "needs_confirmation"
+                ? "Needs confirmation"
+                : "Not applicable this cycle"}
+            </small>
+          </span>
+          {requirement?.conditionNote ? (
+            <p>{requirement.conditionNote}</p>
+          ) : null}
+        </div>
+        {onApplicability ? (
+          <div className="requirement-condition-actions">
+            {status !== "not_applicable" ? (
+              <button
+                type="button"
+                onClick={() => onApplicability("not_applicable")}
+              >
+                Not this cycle
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => onApplicability("applies")}
+            >
+              {status === "not_applicable" ? "Add to plan" : "Applies"}
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   const progress =
-    required <= 0 ? 100 : clampPercent((earned / required) * 100);
-  const met = earned >= required;
+    required <= 0
+      ? kind === "maximum"
+        ? 0
+        : 100
+      : clampPercent((rawEarned / required) * 100);
+  const met = kind === "maximum" ? excess === 0 : earned >= required;
+  const statusLabel =
+    kind === "maximum"
+      ? excess > 0
+        ? `${compactNumber(excess)} over limit`
+        : "Within limit"
+      : kind === "informational"
+        ? "Track only"
+        : met
+          ? "Minimum met"
+          : null;
   return (
-    <div className="progress-row">
+    <div
+      className={`progress-row ${nested ? "nested" : ""} ${
+        kind === "maximum" ? "maximum" : ""
+      } ${excess > 0 ? "over-limit" : ""}`}
+    >
       <div className="progress-label">
         <span>
           <strong>{name}</strong>
-          {met ? <small className="met-label">Minimum met</small> : null}
+          {statusLabel ? (
+            <small className={excess > 0 ? "limit-label" : "met-label"}>
+              {statusLabel}
+            </small>
+          ) : null}
         </span>
         <span>
           <strong>
-            {compactNumber(earned)} / {compactNumber(required)}
+            {kind === "maximum"
+              ? `${compactNumber(rawEarned)} of ${compactNumber(required)} max`
+              : `${compactNumber(earned)} / ${compactNumber(required)}`}
           </strong>{" "}
           {unit}
         </span>
       </div>
       <div
-        className={`progress-track ${met ? "met" : ""}`}
+        className={`progress-track ${met ? "met" : ""} ${
+          excess > 0 ? "over-limit" : ""
+        }`}
         role="progressbar"
-        aria-label={`${name}: ${compactNumber(earned)} of ${compactNumber(
+        aria-label={`${name}: ${compactNumber(rawEarned)} of ${compactNumber(
           required,
-        )} ${unit}`}
+        )} ${unit}${kind === "maximum" ? " maximum" : ""}`}
         aria-valuemin={0}
         aria-valuemax={required}
-        aria-valuenow={Math.min(earned, required)}
+        aria-valuenow={Math.min(rawEarned, required)}
       >
         <span style={{ width: `${progress}%` }} />
       </div>
+      {kind === "maximum" && excess > 0 ? (
+        <p className="limit-note">
+          {compactNumber(earned)} {unit} count toward this limit;{" "}
+          {compactNumber(excess)} are preserved but excluded.
+        </p>
+      ) : conditional && onApplicability ? (
+        <button
+          className="condition-change"
+          type="button"
+          onClick={() => onApplicability("not_applicable")}
+        >
+          Doesn’t apply this cycle?
+        </button>
+      ) : null}
     </div>
+  );
+}
+
+function RequirementPicker({
+  credential,
+}: {
+  credential: Credential | null;
+}) {
+  const selectable =
+    credential?.requirements.filter(
+      (requirement) =>
+        requirementStatus(requirement) === "applies" &&
+        requirement.isActive !== false,
+    ) ?? [];
+  const unresolved =
+    credential?.requirements.filter(
+      (requirement) =>
+        requirementStatus(requirement) === "needs_confirmation",
+    ).length ?? 0;
+
+  return (
+    <fieldset className="requirement-picker">
+      <legend>
+        Requirements this activity satisfies <em>Optional</em>
+      </legend>
+      {selectable.length ? (
+        <div className="requirement-choice-list">
+          {selectable.map((requirement) => (
+            <label
+              className={
+                requirement.relation === "nested"
+                  ? "requirement-choice nested"
+                  : "requirement-choice"
+              }
+              key={requirement.id}
+            >
+              <input
+                type="checkbox"
+                name="requirementIds"
+                value={requirement.id}
+              />
+              <span className="requirement-check" aria-hidden="true">
+                ✓
+              </span>
+              <span>
+                <strong>{requirement.name}</strong>
+                <small>
+                  {requirementKind(requirement) === "maximum" &&
+                  requirement.relation === "nested"
+                    ? `Counts up to ${compactNumber(
+                        requirement.requiredUnits,
+                      )} ${credential?.unitLabel ?? "units"} and rolls up to its parent cap; select any other subject tags too`
+                    : requirementKind(requirement) === "maximum"
+                    ? `Counts up to ${compactNumber(
+                        requirement.requiredUnits,
+                      )} ${credential?.unitLabel ?? "units"}`
+                    : requirement.relation === "nested"
+                      ? "Also rolls up to its parent requirement"
+                      : requirement.relation === "overlapping"
+                        ? "May overlap another selected requirement"
+                        : "Counts within the overall total"}
+                </small>
+              </span>
+            </label>
+          ))}
+        </div>
+      ) : (
+        <p className="requirement-picker-empty">
+          Save without a tag and it will count toward the overall total.
+        </p>
+      )}
+      <small className="requirement-picker-hint">
+        Select every rule this learning genuinely satisfies. Overall credits
+        are still counted only once.
+        {unresolved
+          ? ` Confirm ${unresolved} conditional ${
+              unresolved === 1 ? "rule" : "rules"
+            } in the credential plan before tagging them.`
+          : ""}
+      </small>
+    </fieldset>
   );
 }
 

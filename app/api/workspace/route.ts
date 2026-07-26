@@ -8,6 +8,34 @@ import { ensureUser, initializeDatabase } from "@/db/runtime";
 export const dynamic = "force-dynamic";
 
 type JsonRecord = Record<string, unknown>;
+type RequirementKind = "minimum" | "maximum" | "informational";
+type RequirementRelation = "independent" | "nested" | "overlapping";
+type RequirementApplicability = "always" | "conditional" | "optional";
+type ApplicabilityStatus =
+  | "applies"
+  | "not_applicable"
+  | "needs_confirmation";
+
+const REQUIREMENT_KINDS = new Set<RequirementKind>([
+  "minimum",
+  "maximum",
+  "informational",
+]);
+const REQUIREMENT_RELATIONS = new Set<RequirementRelation>([
+  "independent",
+  "nested",
+  "overlapping",
+]);
+const REQUIREMENT_APPLICABILITIES = new Set<RequirementApplicability>([
+  "always",
+  "conditional",
+  "optional",
+]);
+const APPLICABILITY_STATUSES = new Set<ApplicabilityStatus>([
+  "applies",
+  "not_applicable",
+  "needs_confirmation",
+]);
 
 class RequestError extends Error {
   constructor(
@@ -77,6 +105,100 @@ function positiveNumber(
   const max = options.max ?? 10000;
   if (raw > max) throw new RequestError(`${key} must not exceed ${max}`);
   return Math.round(raw * 100) / 100;
+}
+
+function nonNegativeNumber(
+  payload: JsonRecord,
+  key: string,
+  options: { required?: boolean; max?: number } = {},
+) {
+  const raw = payload[key];
+  if (raw === undefined || raw === null || raw === "") {
+    if (options.required) throw new RequestError(`${key} is required`);
+    return null;
+  }
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) {
+    throw new RequestError(`${key} must be a non-negative number`);
+  }
+  const max = options.max ?? 10000;
+  if (raw > max) throw new RequestError(`${key} must not exceed ${max}`);
+  return Math.round(raw * 100) / 100;
+}
+
+function enumField<T extends string>(
+  payload: JsonRecord,
+  key: string,
+  allowed: ReadonlySet<T>,
+  fallback: T,
+) {
+  const value = textField(payload, key, { max: 40 });
+  if (!value) return fallback;
+  if (!allowed.has(value as T)) {
+    throw new RequestError(
+      `${key} must be one of ${[...allowed].join(", ")}`,
+    );
+  }
+  return value as T;
+}
+
+function defaultApplicabilityStatus(
+  applicability: RequirementApplicability,
+): ApplicabilityStatus {
+  return applicability === "conditional" ? "needs_confirmation" : "applies";
+}
+
+function normalizedApplicabilityStatus(
+  applicability: RequirementApplicability,
+  requested: unknown,
+  fieldName: string,
+) {
+  const status =
+    requested === undefined || requested === null || requested === ""
+      ? defaultApplicabilityStatus(applicability)
+      : requested;
+  if (
+    typeof status !== "string" ||
+    !APPLICABILITY_STATUSES.has(status as ApplicabilityStatus)
+  ) {
+    throw new RequestError(
+      `${fieldName} must be applies, not_applicable, or needs_confirmation`,
+    );
+  }
+  if (applicability !== "conditional" && status !== "applies") {
+    throw new RequestError(
+      `${fieldName} must be applies for an always or optional rule`,
+    );
+  }
+  return status as ApplicabilityStatus;
+}
+
+function requirementIdsField(payload: JsonRecord) {
+  const raw = payload.requirementIds;
+  if (raw === undefined) {
+    const legacy = textField(payload, "requirementId", { max: 160 });
+    return legacy ? [legacy] : [];
+  }
+  if (!Array.isArray(raw) || raw.length > 30) {
+    throw new RequestError(
+      "requirementIds must be an array of up to 30 requirement IDs",
+    );
+  }
+  const ids = raw.map((value, index) => {
+    if (typeof value !== "string") {
+      throw new RequestError(`requirementIds[${index}] must be a string`);
+    }
+    const id = value.trim();
+    if (!id || id.length > 160) {
+      throw new RequestError(
+        `requirementIds[${index}] must be 1 to 160 characters`,
+      );
+    }
+    return id;
+  });
+  if (new Set(ids).size !== ids.length) {
+    throw new RequestError("requirementIds cannot contain duplicates");
+  }
+  return ids;
 }
 
 function isoDateField(payload: JsonRecord, key: string, required = true) {
@@ -412,6 +534,59 @@ function estimatedCycleMonths(cycleStart: string, deadline: string) {
   return Math.max(1, Math.round((end - start) / averageMonthMs));
 }
 
+async function validateRequirementTags(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+  requirementIds: string[],
+) {
+  if (requirementIds.length === 0) return [];
+  type RequirementTagRow = {
+    id: string;
+    name: string;
+    isActive: number;
+    applicabilityStatus: string;
+  };
+  const placeholders = requirementIds.map(() => "?").join(", ");
+  const result = await query(
+    database,
+    `SELECT
+      requirement.id,
+      requirement.name,
+      requirement.is_active AS isActive,
+      requirement.applicability_status AS applicabilityStatus
+    FROM credential_requirements requirement
+    JOIN credentials credential
+      ON credential.id = requirement.credential_id
+    WHERE requirement.credential_id = ?
+      AND credential.user_id = ?
+      AND requirement.id IN (${placeholders})`,
+    [credentialId, identity.userId, ...requirementIds],
+  ).all<RequirementTagRow>();
+  const byId = new Map(result.results.map((requirement) => [requirement.id, requirement]));
+  for (const requirementId of requirementIds) {
+    const requirement = byId.get(requirementId);
+    if (!requirement) {
+      throw new RequestError(
+        "Requirement not found for this credential.",
+        404,
+        "requirement_not_found",
+      );
+    }
+    if (
+      !Boolean(requirement.isActive) ||
+      requirement.applicabilityStatus !== "applies"
+    ) {
+      throw new RequestError(
+        `${requirement.name} is not active for this renewal cycle.`,
+        409,
+        "requirement_inactive",
+      );
+    }
+  }
+  return requirementIds.map((requirementId) => byId.get(requirementId)!);
+}
+
 async function getWorkspace(
   database: D1Database,
   identity: RequestIdentity,
@@ -437,6 +612,11 @@ async function getWorkspace(
     ruleSetId: string;
     name: string;
     requiredUnits: number;
+    kind: RequirementKind;
+    relation: RequirementRelation;
+    parentCategoryId: string | null;
+    applicability: RequirementApplicability;
+    conditionNote: string | null;
   };
   type CredentialRow = {
     id: string;
@@ -467,7 +647,26 @@ async function getWorkspace(
     credentialId: string;
     name: string;
     requiredUnits: number;
+    kind: RequirementKind;
+    relation: RequirementRelation;
+    parentRequirementId: string | null;
+    applicability: RequirementApplicability;
+    applicabilityStatus: ApplicabilityStatus;
+    conditionNote: string | null;
+    isActive: number;
+    rawEarned: number;
+  };
+  type RequirementProgress = Omit<
+    RequirementRow,
+    "isActive" | "rawEarned"
+  > & {
+    isActive: boolean;
+    rawEarned: number;
+    countableEarned: number;
+    excessUnits: number;
     earnedUnits: number;
+    remainingUnits: number | null;
+    progressPercent: number | null;
   };
   type TaskRow = {
     id: string;
@@ -493,6 +692,15 @@ async function getWorkspace(
     categoryName: string | null;
     allocatedUnits: number;
   };
+  type ActivityMatchRow = {
+    id: string;
+    activityId: string;
+    allocationId: string;
+    credentialId: string;
+    requirementId: string;
+    categoryName: string;
+    matchedUnits: number;
+  };
   type BadgeRow = {
     id: string;
     name: string;
@@ -508,6 +716,7 @@ async function getWorkspace(
     requirementResult,
     taskResult,
     activityResult,
+    activityMatchResult,
     profile,
     badgeResult,
   ] = await Promise.all([
@@ -538,7 +747,12 @@ async function getWorkspace(
         id,
         rule_set_id AS ruleSetId,
         name,
-        required_units AS requiredUnits
+        required_units AS requiredUnits,
+        kind,
+        relation,
+        parent_category_id AS parentCategoryId,
+        applicability,
+        condition_note AS conditionNote
       FROM rule_categories
       ORDER BY rule_set_id, sort_order, name`,
     ).all<CategoryRow>(),
@@ -591,10 +805,37 @@ async function getWorkspace(
         req.credential_id AS credentialId,
         req.name,
         req.required_units AS requiredUnits,
-        COALESCE(SUM(alloc.allocated_units), 0) AS earnedUnits
+        req.kind,
+        req.relation,
+        req.parent_requirement_id AS parentRequirementId,
+        req.applicability,
+        req.applicability_status AS applicabilityStatus,
+        req.condition_note AS conditionNote,
+        req.is_active AS isActive,
+        COALESCE(
+          SUM(
+            CASE
+              WHEN activity.id IS NULL THEN 0
+              ELSE MIN(
+                match.matched_units,
+                alloc.allocated_units,
+                activity.total_units
+              )
+            END
+          ),
+          0
+        ) AS rawEarned
       FROM credential_requirements req
       JOIN credentials c ON c.id = req.credential_id
-      LEFT JOIN activity_allocations alloc ON alloc.requirement_id = req.id
+      LEFT JOIN activity_requirement_matches match
+        ON match.requirement_id = req.id
+        AND match.user_id = c.user_id
+      LEFT JOIN activity_allocations alloc
+        ON alloc.id = match.allocation_id
+        AND alloc.credential_id = req.credential_id
+      LEFT JOIN activities activity
+        ON activity.id = alloc.activity_id
+        AND activity.user_id = c.user_id
       WHERE c.user_id = ?
       GROUP BY req.id
       ORDER BY req.credential_id, req.sort_order, req.name`,
@@ -653,6 +894,36 @@ async function getWorkspace(
     query(
       database,
       `SELECT
+        match.id,
+        allocation.activity_id AS activityId,
+        match.allocation_id AS allocationId,
+        allocation.credential_id AS credentialId,
+        match.requirement_id AS requirementId,
+        requirement.name AS categoryName,
+        MIN(
+          match.matched_units,
+          allocation.allocated_units,
+          activity.total_units
+        ) AS matchedUnits
+      FROM activity_requirement_matches match
+      JOIN activity_allocations allocation
+        ON allocation.id = match.allocation_id
+      JOIN activities activity
+        ON activity.id = allocation.activity_id
+        AND activity.user_id = match.user_id
+      JOIN credentials credential
+        ON credential.id = allocation.credential_id
+        AND credential.user_id = match.user_id
+      JOIN credential_requirements requirement
+        ON requirement.id = match.requirement_id
+        AND requirement.credential_id = allocation.credential_id
+      WHERE match.user_id = ?
+      ORDER BY allocation.id, requirement.sort_order, requirement.name`,
+      [identity.userId],
+    ).all<ActivityMatchRow>(),
+    query(
+      database,
+      `SELECT
         p.weekly_goal AS weeklyGoal,
         COALESCE(
           (SELECT SUM(points) FROM xp_events WHERE user_id = p.user_id),
@@ -697,16 +968,140 @@ async function getWorkspace(
     categoriesByRule.set(category.ruleSetId, existing);
   }
 
-  const requirementsByCredential = new Map<string, RequirementRow[]>();
+  const requirementMetadataById = new Map(
+    requirementResult.results.map((requirement) => [
+      requirement.id,
+      requirement,
+    ]),
+  );
+  const unitsByRequirementAllocation = new Map<
+    string,
+    Map<string, number>
+  >();
+  const addMatchedUnits = (
+    requirementId: string,
+    allocationId: string,
+    matchedUnits: number,
+  ) => {
+    const byAllocation =
+      unitsByRequirementAllocation.get(requirementId) ?? new Map<string, number>();
+    byAllocation.set(
+      allocationId,
+      Math.max(byAllocation.get(allocationId) ?? 0, matchedUnits),
+    );
+    unitsByRequirementAllocation.set(requirementId, byAllocation);
+  };
+  for (const match of activityMatchResult.results) {
+    const directRequirement = requirementMetadataById.get(match.requirementId);
+    if (
+      !directRequirement ||
+      directRequirement.credentialId !== match.credentialId
+    ) {
+      continue;
+    }
+    const matchedUnits = Number(match.matchedUnits);
+    addMatchedUnits(directRequirement.id, match.allocationId, matchedUnits);
+    let current = directRequirement;
+    const visited = new Set<string>();
+    while (
+      current.relation === "nested" &&
+      current.parentRequirementId &&
+      !visited.has(current.id)
+    ) {
+      visited.add(current.id);
+      const parent = requirementMetadataById.get(current.parentRequirementId);
+      if (!parent || parent.credentialId !== current.credentialId) break;
+      addMatchedUnits(parent.id, match.allocationId, matchedUnits);
+      current = parent;
+    }
+  }
+
+  const requirementsByCredential = new Map<string, RequirementProgress[]>();
   for (const requirement of requirementResult.results) {
     const existing =
       requirementsByCredential.get(requirement.credentialId) ?? [];
+    const requiredUnits = Number(requirement.requiredUnits);
+    const rolledUpAllocations = unitsByRequirementAllocation.get(
+      requirement.id,
+    );
+    const rawEarned = rolledUpAllocations
+      ? [...rolledUpAllocations.values()].reduce(
+          (sum, matchedUnits) => sum + matchedUnits,
+          0,
+        )
+      : Number(requirement.rawEarned);
+    const isActive =
+      Boolean(requirement.isActive) &&
+      requirement.applicabilityStatus === "applies";
+    const countableEarned = !isActive
+      ? 0
+      : requirement.kind === "maximum"
+        ? Math.min(rawEarned, requiredUnits)
+        : rawEarned;
+    const excessUnits =
+      isActive && requirement.kind === "maximum"
+        ? Math.max(0, rawEarned - requiredUnits)
+        : 0;
+    const remainingUnits =
+      isActive && requirement.kind === "minimum"
+        ? Math.max(0, requiredUnits - countableEarned)
+        : null;
+    const progressPercent =
+      isActive &&
+      requirement.kind !== "informational" &&
+      requiredUnits > 0
+        ? Math.min(100, Math.round((countableEarned / requiredUnits) * 100))
+        : null;
     existing.push({
       ...requirement,
-      requiredUnits: Number(requirement.requiredUnits),
-      earnedUnits: Number(requirement.earnedUnits),
+      requiredUnits,
+      isActive,
+      rawEarned,
+      countableEarned,
+      excessUnits,
+      earnedUnits: countableEarned,
+      remainingUnits,
+      progressPercent,
     });
     requirementsByCredential.set(requirement.credentialId, existing);
+  }
+
+  const maximumExcessByCredential = new Map<string, number>();
+  for (const [credentialId, requirements] of requirementsByCredential) {
+    const byId = new Map(
+      requirements.map((requirement) => [requirement.id, requirement]),
+    );
+    const excessByGraph = new Map<string, number>();
+    for (const requirement of requirements) {
+      if (
+        !requirement.isActive ||
+        requirement.kind !== "maximum" ||
+        requirement.excessUnits <= 0
+      ) {
+        continue;
+      }
+      let graphRoot = requirement.id;
+      let current: RequirementProgress | undefined = requirement;
+      const visited = new Set<string>();
+      while (
+        current &&
+        current.parentRequirementId &&
+        current.relation !== "independent" &&
+        !visited.has(current.id)
+      ) {
+        visited.add(current.id);
+        graphRoot = current.parentRequirementId;
+        current = byId.get(current.parentRequirementId);
+      }
+      excessByGraph.set(
+        graphRoot,
+        Math.max(excessByGraph.get(graphRoot) ?? 0, requirement.excessUnits),
+      );
+    }
+    maximumExcessByCredential.set(
+      credentialId,
+      [...excessByGraph.values()].reduce((sum, excess) => sum + excess, 0),
+    );
   }
 
   const tasksByCredential = new Map<string, TaskRow[]>();
@@ -714,6 +1109,16 @@ async function getWorkspace(
     const existing = tasksByCredential.get(task.credentialId) ?? [];
     existing.push(task);
     tasksByCredential.set(task.credentialId, existing);
+  }
+
+  const matchesByAllocation = new Map<string, ActivityMatchRow[]>();
+  for (const match of activityMatchResult.results) {
+    const existing = matchesByAllocation.get(match.allocationId) ?? [];
+    existing.push({
+      ...match,
+      matchedUnits: Number(match.matchedUnits),
+    });
+    matchesByAllocation.set(match.allocationId, existing);
   }
 
   const activitiesById = new Map<
@@ -725,6 +1130,14 @@ async function getWorkspace(
         credentialName: string;
         requirementId: string | null;
         categoryName: string | null;
+        requirementIds: string[];
+        categoryNames: string[];
+        requirementMatches: Array<{
+          id: string;
+          requirementId: string;
+          categoryName: string;
+          matchedUnits: number;
+        }>;
         allocatedUnits: number;
       }>;
     }
@@ -747,12 +1160,30 @@ async function getWorkspace(
       activity.credentialId &&
       activity.credentialName
     ) {
+      const matches = matchesByAllocation.get(allocationId) ?? [];
+      const firstMatch = matches[0];
       grouped.allocations.push({
         id: allocationId,
         credentialId: activity.credentialId,
         credentialName: activity.credentialName,
-        requirementId: activity.requirementId,
-        categoryName: activity.categoryName,
+        requirementId: firstMatch?.requirementId ?? activity.requirementId,
+        categoryName: firstMatch?.categoryName ?? activity.categoryName,
+        requirementIds: matches.length
+          ? matches.map((match) => match.requirementId)
+          : activity.requirementId
+            ? [activity.requirementId]
+            : [],
+        categoryNames: matches.length
+          ? matches.map((match) => match.categoryName)
+          : activity.categoryName
+            ? [activity.categoryName]
+            : [],
+        requirementMatches: matches.map((match) => ({
+          id: match.id,
+          requirementId: match.requirementId,
+          categoryName: match.categoryName,
+          matchedUnits: match.matchedUnits,
+        })),
         allocatedUnits: Number(activity.allocatedUnits),
       });
     }
@@ -779,14 +1210,30 @@ async function getWorkspace(
       version: Number(rule.version),
       categories: categoriesByRule.get(rule.id) ?? [],
     })),
-    credentials: credentialResult.results.map((credential) => ({
-      ...credential,
-      totalRequired: Number(credential.totalRequired),
-      totalEarned: Number(credential.totalEarned),
-      cycleMonths: Number(credential.cycleMonths),
-      requirements: requirementsByCredential.get(credential.id) ?? [],
-      tasks: tasksByCredential.get(credential.id) ?? [],
-    })),
+    credentials: credentialResult.results.map((credential) => {
+      const totalRequired = Number(credential.totalRequired);
+      const totalRawEarned = Number(credential.totalEarned);
+      const totalExcessUnits = Math.min(
+        totalRawEarned,
+        maximumExcessByCredential.get(credential.id) ?? 0,
+      );
+      const totalEarned = Math.max(0, totalRawEarned - totalExcessUnits);
+      return {
+        ...credential,
+        totalRequired,
+        totalRawEarned,
+        totalExcessUnits,
+        totalEarned,
+        totalRemaining: Math.max(0, totalRequired - totalEarned),
+        totalProgressPercent:
+          totalRequired > 0
+            ? Math.min(100, Math.round((totalEarned / totalRequired) * 100))
+            : 100,
+        cycleMonths: Number(credential.cycleMonths),
+        requirements: requirementsByCredential.get(credential.id) ?? [],
+        tasks: tasksByCredential.get(credential.id) ?? [],
+      };
+    }),
     activities: [...activitiesById.values()],
     reminderPreferences: reminderData.reminderPreferences,
     reminders: reminderData.reminders,
@@ -808,7 +1255,108 @@ type CatalogCategory = {
   id: string;
   name: string;
   requiredUnits: number;
+  kind: RequirementKind;
+  relation: RequirementRelation;
+  parentCategoryId: string | null;
+  applicability: RequirementApplicability;
+  conditionNote: string | null;
 };
+
+type CredentialCategoryDraft = {
+  key: string;
+  ruleCategoryId: string | null;
+  name: string;
+  requiredUnits: number;
+  kind: RequirementKind;
+  relation: RequirementRelation;
+  parentKey: string | null;
+  applicability: RequirementApplicability;
+  applicabilityStatus: ApplicabilityStatus;
+  conditionNote: string | null;
+  isActive: boolean;
+  sortOrder: number;
+};
+
+function applicabilityChoicesField(payload: JsonRecord) {
+  const raw = payload.applicabilityChoices;
+  if (raw === undefined) return new Map<string, ApplicabilityStatus>();
+  if (!Array.isArray(raw) || raw.length > 50) {
+    throw new RequestError(
+      "applicabilityChoices must be an array of up to 50 choices",
+    );
+  }
+  const choices = new Map<string, ApplicabilityStatus>();
+  raw.forEach((value, index) => {
+    if (!isRecord(value)) {
+      throw new RequestError(
+        `applicabilityChoices[${index}] must be an object`,
+      );
+    }
+    const ruleCategoryId = textField(value, "ruleCategoryId", {
+      required: true,
+      max: 160,
+    })!;
+    const status = enumField(
+      value,
+      "status",
+      APPLICABILITY_STATUSES,
+      "needs_confirmation",
+    );
+    if (choices.has(ruleCategoryId)) {
+      throw new RequestError(
+        "applicabilityChoices cannot contain duplicate ruleCategoryId values",
+      );
+    }
+    choices.set(ruleCategoryId, status);
+  });
+  return choices;
+}
+
+function orderedCategoryDrafts(categories: CredentialCategoryDraft[]) {
+  const byKey = new Map(categories.map((category) => [category.key, category]));
+  const ordered: CredentialCategoryDraft[] = [];
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (category: CredentialCategoryDraft) => {
+    if (visited.has(category.key)) return;
+    if (visiting.has(category.key)) {
+      throw new RequestError("Requirement parent relationships cannot cycle");
+    }
+    visiting.add(category.key);
+    if (category.parentKey) {
+      const parent = byKey.get(category.parentKey);
+      if (!parent) {
+        throw new RequestError(
+          `${category.name} references an unknown parent requirement`,
+        );
+      }
+      visit(parent);
+    }
+    visiting.delete(category.key);
+    visited.add(category.key);
+    ordered.push(category);
+  };
+  categories.forEach(visit);
+  return ordered;
+}
+
+function validateActiveCategoryParents(categories: CredentialCategoryDraft[]) {
+  const byKey = new Map(categories.map((category) => [category.key, category]));
+  for (const category of categories) {
+    if (
+      category.isActive &&
+      category.relation === "nested" &&
+      category.parentKey &&
+      !byKey.get(category.parentKey)?.isActive
+    ) {
+      throw new RequestError(
+        `${category.name} cannot apply while its parent requirement is inactive.`,
+        409,
+        "inactive_parent_requirement",
+      );
+    }
+  }
+}
 
 async function createCredential(
   database: D1Database,
@@ -829,13 +1377,10 @@ async function createCredential(
   let totalRequired: number;
   let unitLabel: string;
   let cycleMonths: number;
-  let categories: Array<{
-    ruleCategoryId: string | null;
-    name: string;
-    requiredUnits: number;
-  }>;
+  let categories: CredentialCategoryDraft[];
 
   if (ruleSetId) {
+    const applicabilityChoices = applicabilityChoicesField(payload);
     const rule = await query(
       database,
       `SELECT
@@ -860,7 +1405,15 @@ async function createCredential(
     }
     const ruleCategories = await query(
       database,
-      `SELECT id, name, required_units AS requiredUnits
+      `SELECT
+        id,
+        name,
+        required_units AS requiredUnits,
+        kind,
+        relation,
+        parent_category_id AS parentCategoryId,
+        applicability,
+        condition_note AS conditionNote
        FROM rule_categories
        WHERE rule_set_id = ?
        ORDER BY sort_order, name`,
@@ -873,11 +1426,40 @@ async function createCredential(
     totalRequired = Number(rule.totalUnits);
     unitLabel = rule.unitLabel;
     cycleMonths = Number(rule.cycleMonths);
-    categories = ruleCategories.results.map((category) => ({
-      ruleCategoryId: category.id,
-      name: category.name,
-      requiredUnits: Number(category.requiredUnits),
-    }));
+    const knownCategoryIds = new Set(
+      ruleCategories.results.map((category) => category.id),
+    );
+    for (const categoryId of applicabilityChoices.keys()) {
+      if (!knownCategoryIds.has(categoryId)) {
+        throw new RequestError(
+          "An applicability choice does not belong to the selected rule set.",
+          404,
+          "rule_category_not_found",
+        );
+      }
+    }
+    categories = ruleCategories.results.map((category, index) => {
+      const applicability = category.applicability;
+      const applicabilityStatus = normalizedApplicabilityStatus(
+        applicability,
+        applicabilityChoices.get(category.id),
+        `applicabilityChoices for ${category.name}`,
+      );
+      return {
+        key: category.id,
+        ruleCategoryId: category.id,
+        name: category.name,
+        requiredUnits: Number(category.requiredUnits),
+        kind: category.kind,
+        relation: category.relation,
+        parentKey: category.parentCategoryId,
+        applicability,
+        applicabilityStatus,
+        conditionNote: category.conditionNote,
+        isActive: applicabilityStatus === "applies",
+        sortOrder: index,
+      };
+    });
   } else {
     credentialName = textField(payload, "credentialName", {
       required: true,
@@ -913,25 +1495,86 @@ async function createCredential(
       if (!isRecord(item)) {
         throw new RequestError(`categories[${index}] must be an object`);
       }
+      const kind = enumField(
+        item,
+        "kind",
+        REQUIREMENT_KINDS,
+        "minimum",
+      );
+      const relation = enumField(
+        item,
+        "relation",
+        REQUIREMENT_RELATIONS,
+        "independent",
+      );
+      const applicability = enumField(
+        item,
+        "applicability",
+        REQUIREMENT_APPLICABILITIES,
+        "always",
+      );
+      const applicabilityStatus = normalizedApplicabilityStatus(
+        applicability,
+        item.applicabilityStatus,
+        `categories[${index}].applicabilityStatus`,
+      );
+      const conditionNote = textField(item, "conditionNote", { max: 500 });
+      if (applicability === "conditional" && !conditionNote) {
+        throw new RequestError(
+          `categories[${index}].conditionNote is required for a conditional rule`,
+        );
+      }
+      const requiredUnits =
+        kind === "informational"
+          ? (nonNegativeNumber(item, "requiredUnits") ?? 0)
+          : positiveNumber(item, "requiredUnits", { required: true })!;
       return {
+        key:
+          textField(item, "key", { max: 160 }) ??
+          `custom-category-${index}`,
         ruleCategoryId: null,
         name: textField(item, "name", { required: true, max: 100 })!,
-        requiredUnits: positiveNumber(item, "requiredUnits", {
-          required: true,
-        })!,
+        requiredUnits,
+        kind,
+        relation,
+        parentKey: textField(item, "parentKey", { max: 160 }),
+        applicability,
+        applicabilityStatus,
+        conditionNote,
+        isActive: applicabilityStatus === "applies",
+        sortOrder: index,
       };
     });
     if (categories.length === 0) {
       categories = [
         {
+          key: "general",
           ruleCategoryId: null,
           name: "General",
           requiredUnits: totalRequired,
+          kind: "minimum",
+          relation: "independent",
+          parentKey: null,
+          applicability: "always",
+          applicabilityStatus: "applies",
+          conditionNote: null,
+          isActive: true,
+          sortOrder: 0,
         },
       ];
     }
+    if (new Set(categories.map((category) => category.key)).size !== categories.length) {
+      throw new RequestError("Custom category keys must be unique");
+    }
+    orderedCategoryDrafts(categories);
     const categoryTotal = categories.reduce(
-      (sum, category) => sum + category.requiredUnits,
+      (sum, category) =>
+        category.isActive &&
+        category.kind === "minimum" &&
+        category.relation === "independent" &&
+        !category.parentKey
+          ? sum + category.requiredUnits
+          : sum,
       0,
     );
     if (categoryTotal > totalRequired + 0.001) {
@@ -941,6 +1584,11 @@ async function createCredential(
     }
   }
 
+  const orderedCategories = orderedCategoryDrafts(categories);
+  validateActiveCategoryParents(categories);
+  const requirementIdByKey = new Map(
+    categories.map((category) => [category.key, crypto.randomUUID()]),
+  );
   const credentialId = crypto.randomUUID();
   const statements: D1PreparedStatement[] = [
     query(
@@ -979,20 +1627,31 @@ async function createCredential(
     ),
   ];
 
-  categories.forEach((category, index) => {
+  orderedCategories.forEach((category) => {
     statements.push(
       query(
         database,
         `INSERT INTO credential_requirements (
-          id, credential_id, rule_category_id, name, required_units, sort_order
-        ) VALUES (?, ?, ?, ?, ?, ?)`,
+          id, credential_id, rule_category_id, name, required_units, kind,
+          relation, parent_requirement_id, applicability,
+          applicability_status, condition_note, is_active, sort_order
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          crypto.randomUUID(),
+          requirementIdByKey.get(category.key),
           credentialId,
           category.ruleCategoryId,
           category.name,
           category.requiredUnits,
-          index,
+          category.kind,
+          category.relation,
+          category.parentKey
+            ? requirementIdByKey.get(category.parentKey)
+            : null,
+          category.applicability,
+          category.applicabilityStatus,
+          category.conditionNote,
+          category.isActive ? 1 : 0,
+          category.sortOrder,
         ],
       ),
     );
@@ -1094,7 +1753,8 @@ async function addActivity(
     required: true,
     max: 160,
   })!;
-  const requirementId = textField(payload, "requirementId", { max: 160 });
+  const requirementIds = requirementIdsField(payload);
+  const requirementId = requirementIds[0] ?? null;
   const evidenceStatus = normalizedEvidenceStatus(payload);
   const evidenceReference = textField(payload, "evidenceReference", {
     max: 500,
@@ -1141,25 +1801,15 @@ async function addActivity(
     );
   }
 
-  if (requirementId) {
-    const requirement = await query(
-      database,
-      `SELECT req.id
-       FROM credential_requirements req
-       JOIN credentials c ON c.id = req.credential_id
-       WHERE req.id = ? AND req.credential_id = ? AND c.user_id = ?`,
-      [requirementId, credentialId, identity.userId],
-    ).first<{ id: string }>();
-    if (!requirement) {
-      throw new RequestError(
-        "Requirement not found for this credential.",
-        404,
-        "requirement_not_found",
-      );
-    }
-  }
+  await validateRequirementTags(
+    database,
+    identity,
+    credentialId,
+    requirementIds,
+  );
 
   const activityId = crypto.randomUUID();
+  const allocationId = crypto.randomUUID();
   const statements: D1PreparedStatement[] = [
     query(
       database,
@@ -1184,7 +1834,7 @@ async function addActivity(
         id, activity_id, credential_id, requirement_id, allocated_units
       ) VALUES (?, ?, ?, ?, ?)`,
       [
-        crypto.randomUUID(),
+        allocationId,
         activityId,
         credentialId,
         requirementId,
@@ -1216,6 +1866,23 @@ async function addActivity(
       ],
     ),
   ];
+  for (const matchedRequirementId of requirementIds) {
+    statements.push(
+      query(
+        database,
+        `INSERT INTO activity_requirement_matches (
+          id, user_id, allocation_id, requirement_id, matched_units
+        ) VALUES (?, ?, ?, ?, ?)`,
+        [
+          crypto.randomUUID(),
+          identity.userId,
+          allocationId,
+          matchedRequirementId,
+          allocatedUnits,
+        ],
+      ),
+    );
+  }
   if (evidenceStatus === "attached") {
     statements.push(
       query(
@@ -1429,7 +2096,8 @@ async function addActivityAllocation(
     required: true,
     max: 160,
   })!;
-  const requirementId = textField(payload, "requirementId", { max: 160 });
+  const requirementIds = requirementIdsField(payload);
+  const requirementId = requirementIds[0] ?? null;
   const allocatedUnits = positiveNumber(payload, "allocatedUnits", {
     required: true,
   })!;
@@ -1510,30 +2178,16 @@ async function addActivityAllocation(
     );
   }
 
-  if (requirementId) {
-    const requirement = await query(
-      database,
-      `SELECT requirement.id
-       FROM credential_requirements requirement
-       JOIN credentials credential
-         ON credential.id = requirement.credential_id
-       WHERE requirement.id = ?
-         AND requirement.credential_id = ?
-         AND credential.user_id = ?`,
-      [requirementId, credentialId, identity.userId],
-    ).first<{ id: string }>();
-    if (!requirement) {
-      throw new RequestError(
-        "Requirement not found for this credential.",
-        404,
-        "requirement_not_found",
-      );
-    }
-  }
+  await validateRequirementTags(
+    database,
+    identity,
+    credentialId,
+    requirementIds,
+  );
 
   const allocationId = crypto.randomUUID();
-  try {
-    await query(
+  const statements: D1PreparedStatement[] = [
+    query(
       database,
       `INSERT INTO activity_allocations (
         id, activity_id, credential_id, requirement_id, allocated_units
@@ -1545,7 +2199,27 @@ async function addActivityAllocation(
         requirementId,
         allocatedUnits,
       ],
-    ).run();
+    ),
+  ];
+  for (const matchedRequirementId of requirementIds) {
+    statements.push(
+      query(
+        database,
+        `INSERT INTO activity_requirement_matches (
+          id, user_id, allocation_id, requirement_id, matched_units
+        ) VALUES (?, ?, ?, ?, ?)`,
+        [
+          crypto.randomUUID(),
+          identity.userId,
+          allocationId,
+          matchedRequirementId,
+          allocatedUnits,
+        ],
+      ),
+    );
+  }
+  try {
+    await database.batch(statements);
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
     if (message.includes("UNIQUE constraint")) {
@@ -1600,9 +2274,15 @@ async function markRenewalAccepted(
     cycleMonths: number;
   };
   type RequirementSnapshot = {
+    id: string;
     ruleCategoryId: string | null;
     name: string;
     requiredUnits: number;
+    kind: RequirementKind;
+    relation: RequirementRelation;
+    parentRequirementId: string | null;
+    applicability: RequirementApplicability;
+    conditionNote: string | null;
     sortOrder: number;
   };
   const [credential, submission, requirements] = await Promise.all([
@@ -1638,9 +2318,15 @@ async function markRenewalAccepted(
     query(
       database,
       `SELECT
+        requirement.id,
         requirement.rule_category_id AS ruleCategoryId,
         requirement.name,
         requirement.required_units AS requiredUnits,
+        requirement.kind,
+        requirement.relation,
+        requirement.parent_requirement_id AS parentRequirementId,
+        requirement.applicability,
+        requirement.condition_note AS conditionNote,
         requirement.sort_order AS sortOrder
       FROM credential_requirements requirement
       JOIN credentials credential
@@ -1727,19 +2413,58 @@ async function markRenewalAccepted(
     ),
   ];
 
-  for (const requirement of requirements.results) {
+  const rolloverDrafts: CredentialCategoryDraft[] = requirements.results.map(
+    (requirement) => {
+      const applicabilityStatus = defaultApplicabilityStatus(
+        requirement.applicability,
+      );
+      return {
+        key: requirement.id,
+        ruleCategoryId: requirement.ruleCategoryId,
+        name: requirement.name,
+        requiredUnits: Number(requirement.requiredUnits),
+        kind: requirement.kind,
+        relation: requirement.relation,
+        parentKey: requirement.parentRequirementId,
+        applicability: requirement.applicability,
+        applicabilityStatus,
+        conditionNote: requirement.conditionNote,
+        isActive: applicabilityStatus === "applies",
+        sortOrder: Number(requirement.sortOrder),
+      };
+    },
+  );
+  const nextRequirementIdByPriorId = new Map(
+    rolloverDrafts.map((requirement) => [
+      requirement.key,
+      crypto.randomUUID(),
+    ]),
+  );
+  validateActiveCategoryParents(rolloverDrafts);
+  for (const requirement of orderedCategoryDrafts(rolloverDrafts)) {
     statements.push(
       query(
         database,
         `INSERT INTO credential_requirements (
-          id, credential_id, rule_category_id, name, required_units, sort_order
-        ) VALUES (?, ?, ?, ?, ?, ?)`,
+          id, credential_id, rule_category_id, name, required_units, kind,
+          relation, parent_requirement_id, applicability,
+          applicability_status, condition_note, is_active, sort_order
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          crypto.randomUUID(),
+          nextRequirementIdByPriorId.get(requirement.key),
           nextCredentialId,
           requirement.ruleCategoryId,
           requirement.name,
           Number(requirement.requiredUnits),
+          requirement.kind,
+          requirement.relation,
+          requirement.parentKey
+            ? nextRequirementIdByPriorId.get(requirement.parentKey)
+            : null,
+          requirement.applicability,
+          requirement.applicabilityStatus,
+          requirement.conditionNote,
+          requirement.isActive ? 1 : 0,
           Number(requirement.sortOrder),
         ],
       ),
@@ -1836,6 +2561,165 @@ async function markRenewalAccepted(
     throw error;
   }
   return nextCredentialId;
+}
+
+async function updateRequirementApplicability(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  const credentialId = textField(payload, "credentialId", {
+    required: true,
+    max: 160,
+  })!;
+  const rawChoices = payload.choices;
+  if (
+    !Array.isArray(rawChoices) ||
+    rawChoices.length === 0 ||
+    rawChoices.length > 50
+  ) {
+    throw new RequestError("choices must be an array of 1 to 50 items");
+  }
+  const choices = new Map<string, ApplicabilityStatus>();
+  rawChoices.forEach((value, index) => {
+    if (!isRecord(value)) {
+      throw new RequestError(`choices[${index}] must be an object`);
+    }
+    const requirementId = textField(value, "requirementId", {
+      required: true,
+      max: 160,
+    })!;
+    const status = enumField(
+      value,
+      "status",
+      APPLICABILITY_STATUSES,
+      "needs_confirmation",
+    );
+    if (choices.has(requirementId)) {
+      throw new RequestError(
+        "choices cannot contain duplicate requirementId values",
+      );
+    }
+    choices.set(requirementId, status);
+  });
+
+  type ApplicabilityRequirementRow = {
+    id: string;
+    name: string;
+    relation: RequirementRelation;
+    parentRequirementId: string | null;
+    applicability: RequirementApplicability;
+    applicabilityStatus: ApplicabilityStatus;
+  };
+  const [credential, requirementResult] = await Promise.all([
+    query(
+      database,
+      `SELECT id, status
+       FROM credentials
+       WHERE id = ? AND user_id = ?`,
+      [credentialId, identity.userId],
+    ).first<{ id: string; status: string }>(),
+    query(
+      database,
+      `SELECT
+        requirement.id,
+        requirement.name,
+        requirement.relation,
+        requirement.parent_requirement_id AS parentRequirementId,
+        requirement.applicability,
+        requirement.applicability_status AS applicabilityStatus
+      FROM credential_requirements requirement
+      JOIN credentials credential
+        ON credential.id = requirement.credential_id
+      WHERE requirement.credential_id = ?
+        AND credential.user_id = ?`,
+      [credentialId, identity.userId],
+    ).all<ApplicabilityRequirementRow>(),
+  ]);
+  if (!credential) {
+    throw new RequestError(
+      "Credential not found.",
+      404,
+      "credential_not_found",
+    );
+  }
+  if (credential.status === "renewed") {
+    throw new RequestError(
+      "This renewal cycle is closed and its requirements are frozen.",
+      409,
+      "cycle_closed",
+    );
+  }
+
+  const requirementsById = new Map(
+    requirementResult.results.map((requirement) => [
+      requirement.id,
+      requirement,
+    ]),
+  );
+  const normalizedChoices = new Map<string, ApplicabilityStatus>();
+  for (const [requirementId, requestedStatus] of choices) {
+    const requirement = requirementsById.get(requirementId);
+    if (!requirement) {
+      throw new RequestError(
+        "Requirement not found for this credential.",
+        404,
+        "requirement_not_found",
+      );
+    }
+    normalizedChoices.set(
+      requirementId,
+      normalizedApplicabilityStatus(
+        requirement.applicability,
+        requestedStatus,
+        `status for ${requirement.name}`,
+      ),
+    );
+  }
+
+  const effectiveStatus = (requirementId: string) =>
+    normalizedChoices.get(requirementId) ??
+    requirementsById.get(requirementId)?.applicabilityStatus;
+  for (const requirement of requirementsById.values()) {
+    if (
+      effectiveStatus(requirement.id) === "applies" &&
+      requirement.relation === "nested" &&
+      requirement.parentRequirementId &&
+      effectiveStatus(requirement.parentRequirementId) !== "applies"
+    ) {
+      throw new RequestError(
+        `${requirement.name} cannot apply while its parent requirement is inactive.`,
+        409,
+        "inactive_parent_requirement",
+      );
+    }
+  }
+
+  await database.batch(
+    [...normalizedChoices].map(([requirementId, status]) =>
+      query(
+        database,
+        `UPDATE credential_requirements
+         SET applicability_status = ?, is_active = ?
+         WHERE id = ?
+           AND credential_id = ?
+           AND EXISTS (
+             SELECT 1
+             FROM credentials credential
+             WHERE credential.id = credential_requirements.credential_id
+               AND credential.user_id = ?
+           )`,
+        [
+          status,
+          status === "applies" ? 1 : 0,
+          requirementId,
+          credentialId,
+          identity.userId,
+        ],
+      ),
+    ),
+  );
+  return credentialId;
 }
 
 async function updateReminderPreferences(
@@ -2068,6 +2952,13 @@ export async function POST(request: Request) {
         break;
       case "markRenewalAccepted":
         id = await markRenewalAccepted(database, identity, body.payload);
+        break;
+      case "updateRequirementApplicability":
+        id = await updateRequirementApplicability(
+          database,
+          identity,
+          body.payload,
+        );
         break;
       case "updateReminderPreferences":
         id = await updateReminderPreferences(

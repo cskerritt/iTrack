@@ -45,8 +45,14 @@ const TABLE_STATEMENTS = [
     rule_set_id TEXT NOT NULL,
     name TEXT NOT NULL,
     required_units REAL NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'minimum',
+    relation TEXT NOT NULL DEFAULT 'independent',
+    parent_category_id TEXT,
+    applicability TEXT NOT NULL DEFAULT 'always',
+    condition_note TEXT,
     sort_order INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (rule_set_id) REFERENCES rule_sets(id) ON DELETE CASCADE
+    FOREIGN KEY (rule_set_id) REFERENCES rule_sets(id) ON DELETE CASCADE,
+    FOREIGN KEY (parent_category_id) REFERENCES rule_categories(id) ON DELETE SET NULL
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS rule_categories_rule_name_unique
     ON rule_categories (rule_set_id, name)`,
@@ -80,9 +86,17 @@ const TABLE_STATEMENTS = [
     rule_category_id TEXT,
     name TEXT NOT NULL,
     required_units REAL NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'minimum',
+    relation TEXT NOT NULL DEFAULT 'independent',
+    parent_requirement_id TEXT,
+    applicability TEXT NOT NULL DEFAULT 'always',
+    applicability_status TEXT NOT NULL DEFAULT 'applies',
+    condition_note TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
     sort_order INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (credential_id) REFERENCES credentials(id) ON DELETE CASCADE,
-    FOREIGN KEY (rule_category_id) REFERENCES rule_categories(id) ON DELETE SET NULL
+    FOREIGN KEY (rule_category_id) REFERENCES rule_categories(id) ON DELETE SET NULL,
+    FOREIGN KEY (parent_requirement_id) REFERENCES credential_requirements(id) ON DELETE SET NULL
   )`,
   `CREATE INDEX IF NOT EXISTS credential_requirements_credential_idx
     ON credential_requirements (credential_id, sort_order)`,
@@ -142,6 +156,23 @@ const TABLE_STATEMENTS = [
     ON activity_allocations (credential_id)`,
   `CREATE INDEX IF NOT EXISTS activity_allocations_requirement_idx
     ON activity_allocations (requirement_id)`,
+  `CREATE TABLE IF NOT EXISTS activity_requirement_matches (
+    id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT NOT NULL,
+    allocation_id TEXT NOT NULL,
+    requirement_id TEXT NOT NULL,
+    matched_units REAL NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (allocation_id) REFERENCES activity_allocations(id) ON DELETE CASCADE,
+    FOREIGN KEY (requirement_id) REFERENCES credential_requirements(id) ON DELETE CASCADE
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS activity_requirement_matches_allocation_requirement_unique
+    ON activity_requirement_matches (allocation_id, requirement_id)`,
+  `CREATE INDEX IF NOT EXISTS activity_requirement_matches_user_idx
+    ON activity_requirement_matches (user_id)`,
+  `CREATE INDEX IF NOT EXISTS activity_requirement_matches_requirement_idx
+    ON activity_requirement_matches (requirement_id)`,
   `CREATE TABLE IF NOT EXISTS checklist_tasks (
     id TEXT PRIMARY KEY NOT NULL,
     user_id TEXT NOT NULL,
@@ -280,10 +311,526 @@ const TABLE_STATEMENTS = [
     ON badge_events (user_id, created_at)`,
 ] as const;
 
+const RICH_RULE_COLUMNS = [
+  {
+    table: "rule_categories",
+    name: "kind",
+    definition: "kind TEXT NOT NULL DEFAULT 'minimum'",
+  },
+  {
+    table: "rule_categories",
+    name: "relation",
+    definition: "relation TEXT NOT NULL DEFAULT 'independent'",
+  },
+  {
+    table: "rule_categories",
+    name: "parent_category_id",
+    definition:
+      "parent_category_id TEXT REFERENCES rule_categories(id) ON DELETE SET NULL",
+  },
+  {
+    table: "rule_categories",
+    name: "applicability",
+    definition: "applicability TEXT NOT NULL DEFAULT 'always'",
+  },
+  {
+    table: "rule_categories",
+    name: "condition_note",
+    definition: "condition_note TEXT",
+  },
+  {
+    table: "credential_requirements",
+    name: "kind",
+    definition: "kind TEXT NOT NULL DEFAULT 'minimum'",
+  },
+  {
+    table: "credential_requirements",
+    name: "relation",
+    definition: "relation TEXT NOT NULL DEFAULT 'independent'",
+  },
+  {
+    table: "credential_requirements",
+    name: "parent_requirement_id",
+    definition:
+      "parent_requirement_id TEXT REFERENCES credential_requirements(id) ON DELETE SET NULL",
+  },
+  {
+    table: "credential_requirements",
+    name: "applicability",
+    definition: "applicability TEXT NOT NULL DEFAULT 'always'",
+  },
+  {
+    table: "credential_requirements",
+    name: "applicability_status",
+    definition: "applicability_status TEXT NOT NULL DEFAULT 'applies'",
+  },
+  {
+    table: "credential_requirements",
+    name: "condition_note",
+    definition: "condition_note TEXT",
+  },
+  {
+    table: "credential_requirements",
+    name: "is_active",
+    definition: "is_active INTEGER NOT NULL DEFAULT 1",
+  },
+] as const;
+
+const RICH_RULE_INDEX_STATEMENTS = [
+  `CREATE INDEX IF NOT EXISTS rule_categories_parent_idx
+    ON rule_categories (parent_category_id)`,
+  `CREATE INDEX IF NOT EXISTS credential_requirements_parent_idx
+    ON credential_requirements (parent_requirement_id)`,
+] as const;
+
 const RULE_SET_ID = "nj-lcsw-sample-v1";
 const RULE_GENERAL_ID = "nj-lcsw-sample-v1-general";
 const RULE_ETHICS_ID = "nj-lcsw-sample-v1-ethics";
 const RULE_CULTURAL_ID = "nj-lcsw-sample-v1-cultural";
+
+const RICH_RULE_CATEGORY_INSERT_SQL = `INSERT OR IGNORE INTO rule_categories (
+  id, rule_set_id, name, required_units, kind, relation, parent_category_id,
+  applicability, condition_note, sort_order
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+const RICH_RULE_CATEGORY_UPDATE_SQL = `UPDATE rule_categories
+SET kind = ?, relation = ?, parent_category_id = ?, applicability = ?,
+    condition_note = ?
+WHERE id = ?`;
+
+const RICH_RULE_CATEGORY_SEED_BINDINGS = [
+  [
+    "ca-rn-2026-implicit-bias",
+    "ca-rn-2026-v1",
+    "Implicit Bias",
+    1,
+    "minimum",
+    "independent",
+    null,
+    "conditional",
+    "One hour of direct participation within the first two years after initial licensure; still applies when the examination-based first-renewal 30-hour requirement is waived.",
+    0,
+  ],
+  [
+    "ca-rn-2026-gerontology",
+    "ca-rn-2026-v1",
+    "Gerontology and Care of Older Patients",
+    6,
+    "minimum",
+    "independent",
+    null,
+    "conditional",
+    "Applies to nurse practitioners providing primary care when more than 25% of the patient population is age 65 or older; 6 of the 30 hours.",
+    1,
+  ],
+  [
+    "tx-rn-2026-jurisprudence-ethics",
+    "tx-rn-2026-v1",
+    "Nursing Jurisprudence and Nursing Ethics",
+    2,
+    "minimum",
+    "independent",
+    null,
+    "conditional",
+    "Applies before the end of every third two-year licensing period; certification cannot satisfy this targeted requirement.",
+    0,
+  ],
+  [
+    "tx-rn-2026-older-adult-geriatric",
+    "tx-rn-2026-v1",
+    "Older Adult or Geriatric Care",
+    2,
+    "minimum",
+    "independent",
+    null,
+    "conditional",
+    "Applies each licensing period when practice includes older adult or geriatric populations; a qualifying Board-approved certification may satisfy it.",
+    1,
+  ],
+  [
+    "tx-rn-2026-forensic-evidence",
+    "tx-rn-2026-v1",
+    "Forensic Evidence Collection",
+    2,
+    "minimum",
+    "independent",
+    null,
+    "conditional",
+    "One-time within two years after initial emergency-room employment for a nurse who works or may float to an ER; a qualifying certification may satisfy it.",
+    2,
+  ],
+  [
+    "fl-rn-2026-workplace-impairment",
+    "fl-rn-2026-v1",
+    "Recognizing Impairment in the Workplace",
+    2,
+    "minimum",
+    "independent",
+    null,
+    "conditional",
+    "Required every other renewal.",
+    3,
+  ],
+  [
+    "fl-rn-2026-hiv-aids",
+    "fl-rn-2026-v1",
+    "HIV/AIDS",
+    1,
+    "minimum",
+    "independent",
+    null,
+    "conditional",
+    "One-time requirement before the first renewal; first-cycle total and proration rules must also be applied.",
+    4,
+  ],
+  [
+    "ca-attorney-active-2026-participatory",
+    "ca-attorney-active-2026-v1",
+    "Participatory Credit",
+    12.5,
+    "minimum",
+    "overlapping",
+    null,
+    "always",
+    "At least 12.5 of the 25 hours must be participatory; this delivery facet overlaps subject categories.",
+    5,
+  ],
+  [
+    "ca-attorney-active-2026-implicit-bias",
+    "ca-attorney-active-2026-v1",
+    "Implicit Bias and Bias-Reducing Strategies",
+    1,
+    "minimum",
+    "nested",
+    "ca-attorney-active-2026-elimination-bias",
+    "always",
+    "At least 1 of the 2 Elimination of Bias hours must address implicit bias and bias-reducing strategies.",
+    6,
+  ],
+  [
+    "ca-attorney-active-2026-prevention-detection",
+    "ca-attorney-active-2026-v1",
+    "Prevention and Detection",
+    1,
+    "minimum",
+    "nested",
+    "ca-attorney-active-2026-competence",
+    "always",
+    "At least 1 of the 2 Competence hours must address prevention and detection.",
+    7,
+  ],
+  [
+    "tx-attorney-active-2026-accredited",
+    "tx-attorney-active-2026-v1",
+    "Accredited CLE",
+    12,
+    "minimum",
+    "overlapping",
+    null,
+    "always",
+    "At least 12 of the 15 hours must be accredited CLE; this delivery facet overlaps subject categories.",
+    1,
+  ],
+  [
+    "tx-attorney-active-2026-self-study",
+    "tx-attorney-active-2026-v1",
+    "Self-Study CLE",
+    3,
+    "maximum",
+    "overlapping",
+    null,
+    "optional",
+    "No more than 3 of the 15 credited hours may be self-study.",
+    2,
+  ],
+  [
+    "tx-attorney-active-2026-accredited-ethics",
+    "tx-attorney-active-2026-v1",
+    "Accredited Ethics",
+    2,
+    "minimum",
+    "nested",
+    "tx-attorney-active-2026-ethics",
+    "always",
+    "At least 2 of the 3 ethics hours must be accredited and also count within Accredited CLE.",
+    3,
+  ],
+  [
+    "tx-attorney-active-2026-self-study-ethics",
+    "tx-attorney-active-2026-v1",
+    "Self-Study Ethics",
+    1,
+    "maximum",
+    "nested",
+    "tx-attorney-active-2026-self-study",
+    "optional",
+    "No more than 1 ethics hour may be self-study; it is nested within the overall self-study cap and should also be tagged as Ethics.",
+    4,
+  ],
+  [
+    "ca-cpa-2026-technical",
+    "ca-cpa-2026-v1",
+    "Technical Subject Matter",
+    40,
+    "minimum",
+    "overlapping",
+    null,
+    "always",
+    "At least 40 of 80 hours in a standard renewal must be technical; first-renewal totals are prorated and remain one-half technical.",
+    1,
+  ],
+  [
+    "ca-cpa-2026-government-auditing",
+    "ca-cpa-2026-v1",
+    "Government Auditing",
+    24,
+    "minimum",
+    "nested",
+    "ca-cpa-2026-technical",
+    "conditional",
+    "Applies to licensees performing qualifying government audit work; these hours also satisfy the A&A minimum when both apply.",
+    2,
+  ],
+  [
+    "ca-cpa-2026-accounting-auditing",
+    "ca-cpa-2026-v1",
+    "Accounting and Auditing",
+    24,
+    "minimum",
+    "nested",
+    "ca-cpa-2026-technical",
+    "conditional",
+    "Applies when performing audit, review, compilation, or other qualifying attestation work.",
+    3,
+  ],
+  [
+    "ca-cpa-2026-preparation-engagements",
+    "ca-cpa-2026-v1",
+    "Preparation Engagements",
+    8,
+    "minimum",
+    "nested",
+    "ca-cpa-2026-technical",
+    "conditional",
+    "Applies when preparation engagements are the highest applicable accounting service.",
+    4,
+  ],
+  [
+    "ca-cpa-2026-fraud",
+    "ca-cpa-2026-v1",
+    "Fraud",
+    4,
+    "minimum",
+    "nested",
+    "ca-cpa-2026-technical",
+    "conditional",
+    "Applies when any government auditing, A&A, or preparation-engagement requirement applies; nested within Technical Subject Matter but not within the related 24- or 8-hour minimum.",
+    5,
+  ],
+  [
+    "nj-cpa-2026-technical",
+    "nj-cpa-2026-v1",
+    "Technical Subjects",
+    60,
+    "minimum",
+    "overlapping",
+    null,
+    "always",
+    "At least 60 of 120 credits in a standard, non-initial triennial renewal must be technical.",
+    1,
+  ],
+  [
+    "nj-cpa-2026-accounting-auditing",
+    "nj-cpa-2026-v1",
+    "Accounting and Auditing",
+    24,
+    "minimum",
+    "nested",
+    "nj-cpa-2026-technical",
+    "conditional",
+    "Applies when the licensee is engaged in public accountancy; may include review and compilation.",
+    2,
+  ],
+  [
+    "pmi-pmp-2026-education",
+    "pmi-pmp-2026-v1",
+    "Education",
+    35,
+    "minimum",
+    "independent",
+    null,
+    "always",
+    "At least 35 of the 60 PDUs must be Education PDUs.",
+    0,
+  ],
+  [
+    "pmi-pmp-2026-ways-of-working",
+    "pmi-pmp-2026-v1",
+    "Ways of Working",
+    8,
+    "minimum",
+    "nested",
+    "pmi-pmp-2026-education",
+    "always",
+    "Nested within Education; at least 8 PDUs are required.",
+    1,
+  ],
+  [
+    "pmi-pmp-2026-power-skills",
+    "pmi-pmp-2026-v1",
+    "Power Skills",
+    8,
+    "minimum",
+    "nested",
+    "pmi-pmp-2026-education",
+    "always",
+    "Nested within Education; at least 8 PDUs are required.",
+    2,
+  ],
+  [
+    "pmi-pmp-2026-business-acumen",
+    "pmi-pmp-2026-v1",
+    "Business Acumen",
+    8,
+    "minimum",
+    "nested",
+    "pmi-pmp-2026-education",
+    "always",
+    "Nested within Education; at least 8 PDUs are required.",
+    3,
+  ],
+  [
+    "pmi-pmp-2026-giving-back",
+    "pmi-pmp-2026-v1",
+    "Giving Back to the Profession",
+    25,
+    "maximum",
+    "independent",
+    null,
+    "optional",
+    "Optional; at most 25 PDUs may be credited in this category.",
+    4,
+  ],
+  [
+    "pmi-pmp-2026-working-professional",
+    "pmi-pmp-2026-v1",
+    "Working as a Professional",
+    8,
+    "maximum",
+    "nested",
+    "pmi-pmp-2026-giving-back",
+    "optional",
+    "Optional subset of Giving Back; at most 8 PDUs, claimable once per cycle, and these PDUs cannot carry over.",
+    5,
+  ],
+] as const;
+
+const RICH_RULE_CATEGORY_UPDATE_BINDINGS = [
+  [
+    "minimum",
+    "independent",
+    null,
+    "always",
+    "Required every renewal and must be Board approved.",
+    "fl-rn-2026-medical-errors",
+  ],
+  [
+    "minimum",
+    "independent",
+    null,
+    "always",
+    "Required every renewal and must be Board approved.",
+    "fl-rn-2026-laws-rules",
+  ],
+  [
+    "minimum",
+    "independent",
+    null,
+    "always",
+    "Required every renewal; the specialty-certification CE exemption does not waive this requirement.",
+    "fl-rn-2026-human-trafficking",
+  ],
+  [
+    "minimum",
+    "independent",
+    null,
+    "always",
+    null,
+    "ca-attorney-active-2026-legal-ethics",
+  ],
+  [
+    "minimum",
+    "independent",
+    null,
+    "always",
+    "Includes a nested 1-hour implicit-bias and bias-reducing-strategies minimum.",
+    "ca-attorney-active-2026-elimination-bias",
+  ],
+  [
+    "minimum",
+    "independent",
+    null,
+    "always",
+    "Includes a nested 1-hour prevention-and-detection minimum.",
+    "ca-attorney-active-2026-competence",
+  ],
+  [
+    "minimum",
+    "independent",
+    null,
+    "always",
+    null,
+    "ca-attorney-active-2026-technology",
+  ],
+  [
+    "minimum",
+    "independent",
+    null,
+    "always",
+    null,
+    "ca-attorney-active-2026-civility",
+  ],
+  [
+    "minimum",
+    "independent",
+    null,
+    "always",
+    "At least 2 of the 3 hours must be accredited; no more than 1 may be self-study.",
+    "tx-attorney-active-2026-ethics",
+  ],
+  [
+    "minimum",
+    "nested",
+    "ca-cpa-2026-technical",
+    "conditional",
+    "Not required on a first renewal unless the license has been held for a full two years and 80 CE hours are required; ethics is technical subject matter.",
+    "ca-cpa-2026-ethics",
+  ],
+  [
+    "minimum",
+    "nested",
+    "ca-cpa-2026-technical",
+    "conditional",
+    "Applies when any government auditing, A&A, or preparation-engagement requirement applies; nested within Technical Subject Matter but not within the related 24- or 8-hour minimum.",
+    "ca-cpa-2026-fraud",
+  ],
+  [
+    "maximum",
+    "nested",
+    "tx-attorney-active-2026-self-study",
+    "optional",
+    "No more than 1 ethics hour may be self-study; it is nested within the overall self-study cap and should also be tagged as Ethics.",
+    "tx-attorney-active-2026-self-study-ethics",
+  ],
+  [
+    "minimum",
+    "independent",
+    null,
+    "always",
+    "New licensees complete the Board-approved orientation course within six months; the course is required again in each later triennial period.",
+    "nj-cpa-2026-law-ethics",
+  ],
+] as const;
 
 const GLOBAL_SEED_STATEMENTS = [
   {
@@ -913,6 +1460,31 @@ const GLOBAL_SEED_STATEMENTS = [
     ],
   },
   {
+    sql: `INSERT OR IGNORE INTO rule_sets (
+      id, stable_key, version, profession, credential_name, jurisdiction,
+      issuer, total_units, unit_label, cycle_months, source_url, source_title,
+      effective_date, last_verified_at, review_status, is_current
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    bindings: [
+      "pmi-pmp-2026-v1",
+      "pmi-pmp",
+      1,
+      "Project Management",
+      "Project Management Professional (PMP)",
+      "Global",
+      "Project Management Institute",
+      60,
+      "PDUs",
+      36,
+      "https://www.pmi.org/-/media/pmi/documents/public/pdf/certifications/ccr-certification-requirements-handbook.pdf",
+      "PMI CCR Handbook, April 2026; up to 20 excess PDUs earned in the final 12 months may carry to the next cycle, except Working as a Professional",
+      null,
+      "2026-07-25",
+      "verified",
+      1,
+    ],
+  },
+  {
     sql: `INSERT OR IGNORE INTO badge_definitions
       (id, name, description, icon) VALUES (?, ?, ?, ?)`,
     bindings: [
@@ -954,15 +1526,44 @@ function statement(
   return database.prepare(sql).bind(...bindings);
 }
 
+async function ensureRichRuleColumns(database: D1Database) {
+  for (const table of ["rule_categories", "credential_requirements"] as const) {
+    const result = await database
+      .prepare(`PRAGMA table_info(${table})`)
+      .all<{ name: string }>();
+    const existing = new Set(result.results.map((column) => column.name));
+    for (const column of RICH_RULE_COLUMNS) {
+      if (column.table !== table || existing.has(column.name)) continue;
+      await database
+        .prepare(`ALTER TABLE ${table} ADD COLUMN ${column.definition}`)
+        .run();
+    }
+  }
+}
+
 export async function initializeDatabase(database: D1Database): Promise<void> {
   if (!initializationPromise) {
     initializationPromise = (async () => {
       await database.batch(
         TABLE_STATEMENTS.map((sql) => database.prepare(sql)),
       );
+      await ensureRichRuleColumns(database);
+      await database.batch(
+        RICH_RULE_INDEX_STATEMENTS.map((sql) => database.prepare(sql)),
+      );
       await database.batch(
         GLOBAL_SEED_STATEMENTS.map((seed) =>
           statement(database, seed.sql, seed.bindings),
+        ),
+      );
+      await database.batch(
+        RICH_RULE_CATEGORY_SEED_BINDINGS.map((bindings) =>
+          statement(database, RICH_RULE_CATEGORY_INSERT_SQL, bindings),
+        ),
+      );
+      await database.batch(
+        RICH_RULE_CATEGORY_UPDATE_BINDINGS.map((bindings) =>
+          statement(database, RICH_RULE_CATEGORY_UPDATE_SQL, bindings),
         ),
       );
     })().catch((error) => {
@@ -1026,6 +1627,30 @@ export async function ensureUser(
     FROM credentials c
     LEFT JOIN rule_sets rules ON rules.id = c.rule_set_id
     WHERE c.user_id = ?`,
+    [identity.userId],
+  ).run();
+
+  await statement(
+    database,
+    `INSERT OR IGNORE INTO activity_requirement_matches (
+      id, user_id, allocation_id, requirement_id, matched_units
+    )
+    SELECT
+      'legacy-match-' || allocation.id,
+      activity.user_id,
+      allocation.id,
+      requirement.id,
+      allocation.allocated_units
+    FROM activity_allocations allocation
+    JOIN activities activity ON activity.id = allocation.activity_id
+    JOIN credentials credential
+      ON credential.id = allocation.credential_id
+      AND credential.user_id = activity.user_id
+    JOIN credential_requirements requirement
+      ON requirement.id = allocation.requirement_id
+      AND requirement.credential_id = allocation.credential_id
+    WHERE activity.user_id = ?
+      AND allocation.requirement_id IS NOT NULL`,
     [identity.userId],
   ).run();
 }

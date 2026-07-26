@@ -8,11 +8,13 @@ rewards meaningful record-keeping without punitive daily streaks.
 ## What works today
 
 - source-linked or custom credential setup
-- cycle dates, renewal deadlines, total-credit and category minimums
+- cycle dates, renewal deadlines, total-credit requirements, minimums, and caps
+- explicit conditional-rule answers with nested and overlapping requirements
 - fast course, conference, and activity entry
 - durable per-user records in Cloudflare D1
 - private certificate/photo/PDF evidence in Cloudflare R2
 - one learning activity reusable across eligible credentials
+- multiple requirement tags without double-counting overall credit
 - renewal checklist with reversible completion
 - submission date and confirmation tracking
 - regulator acceptance, read-only cycle history, and clean next-cycle rollover
@@ -22,11 +24,13 @@ rewards meaningful record-keeping without punitive daily streaks.
 - responsive dashboard and installable web-app manifest
 - server-derived ownership from authenticated workspace identity
 
-The starter catalog contains 14 current, source-linked templates spanning
-nursing, legal, accounting, engineering, psychology, and social work
-credentials. Templates with conditions are labeled accordingly. Users can
-search the catalog or create a custom credential, and the product reminds them
-to confirm requirements with the issuing authority.
+The starter catalog contains 15 current, source-linked templates spanning
+nursing, legal, accounting, engineering, project management, psychology, and
+social work credentials. Templates model applicable minimums, nested
+subrequirements, overlapping facets, and reporting caps where the source can
+be represented safely. Conditional rules require an explicit answer for each
+cycle. Users can search the catalog or create a custom credential, and the
+product reminds them to confirm requirements with the issuing authority.
 
 ## Product boundary
 

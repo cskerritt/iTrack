@@ -13,7 +13,7 @@ type ExportRow = {
   evidenceReference: string | null;
   credentialName: string | null;
   jurisdiction: string | null;
-  requirementName: string | null;
+  requirementNames: string | null;
   allocatedUnits: number;
 };
 
@@ -50,7 +50,21 @@ export async function GET(request: Request) {
           a.evidence_reference AS evidenceReference,
           c.credential_name AS credentialName,
           c.jurisdiction,
-          req.name AS requirementName,
+          COALESCE(
+            (
+              SELECT GROUP_CONCAT(tagged.name, ' | ')
+              FROM (
+                SELECT DISTINCT matched_requirement.name
+                FROM activity_requirement_matches match
+                JOIN credential_requirements matched_requirement
+                  ON matched_requirement.id = match.requirement_id
+                  AND matched_requirement.credential_id = alloc.credential_id
+                WHERE match.allocation_id = alloc.id
+                ORDER BY matched_requirement.sort_order, matched_requirement.name
+              ) tagged
+            ),
+            req.name
+          ) AS requirementNames,
           CASE
             WHEN c.id IS NULL THEN 0
             ELSE COALESCE(alloc.allocated_units, 0)
@@ -76,7 +90,7 @@ export async function GET(request: Request) {
       "Evidence reference",
       "Credential",
       "Jurisdiction",
-      "Requirement category",
+      "Requirement tags",
       "Allocated units",
     ];
     const rows = result.results.map((row) => [
@@ -88,7 +102,7 @@ export async function GET(request: Request) {
       row.evidenceReference,
       row.credentialName,
       row.jurisdiction,
-      row.requirementName,
+      row.requirementNames,
       Number(row.allocatedUnits),
     ]);
     const csv = `\uFEFF${[header, ...rows]
