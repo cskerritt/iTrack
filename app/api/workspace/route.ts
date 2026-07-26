@@ -51,6 +51,14 @@ const CFP_2027_ACTIVITY_TYPE_CATEGORY_IDS = new Set([
 ]);
 const NJ_LCSW_RULE_SET_ID = "nj-lcsw-sample-v1";
 const NJ_LCSW_CREDIT_CATEGORY_GROUP = "New Jersey LCSW credit category";
+const ISC2_AUTOMATIC_RENEWAL_RULE_SET_IDS = new Set([
+  "isc2-cc-2026-v1",
+  "isc2-cissp-2026-v1",
+  "isc2-ccsp-2026-v1",
+  "isc2-sscp-2026-v1",
+  "isc2-csslp-2026-v1",
+  "isc2-cgrc-2026-v1",
+]);
 const CARRYOVER_REVIEW_TASK_TITLES = new Map([
   [
     CFP_2027_RULE_SET_ID,
@@ -290,6 +298,51 @@ function daysBefore(isoDate: string, days: number) {
 
 function daysAfter(isoDate: string, days: number) {
   return daysBefore(isoDate, -days);
+}
+
+function renewalTaskSpecs(
+  ruleSetId: string | null,
+  deadline: string,
+  reviewTitle?: string | null,
+) {
+  if (ruleSetId && ISC2_AUTOMATIC_RENEWAL_RULE_SET_IDS.has(ruleSetId)) {
+    return [
+      {
+        title:
+          reviewTitle ??
+          "Confirm ISC2 dashboard dates, eligible Group A rollover, and annual maintenance fee",
+        kind: "review",
+        dueDate: daysBefore(deadline, 120),
+      },
+      {
+        title: "Complete and submit required ISC2 CPEs and pay the final AMF",
+        kind: "progress",
+        dueDate: daysBefore(deadline, 30),
+      },
+      {
+        title: "Verify automatic ISC2 renewal and save dashboard proof",
+        kind: "submission",
+        dueDate: deadline,
+      },
+    ];
+  }
+  return [
+    {
+      title: reviewTitle ?? "Review the renewal requirements",
+      kind: "review",
+      dueDate: daysBefore(deadline, 120),
+    },
+    {
+      title: "Complete and document required education",
+      kind: "progress",
+      dueDate: daysBefore(deadline, 30),
+    },
+    {
+      title: "Submit renewal and save confirmation",
+      kind: "submission",
+      dueDate: deadline,
+    },
+  ];
 }
 
 const DEFAULT_LEAD_DAYS = [90, 30, 7, 1] as const;
@@ -1861,7 +1914,7 @@ async function getWorkspace(
     const credential = credentialById.get(requirement.credentialId);
     if (
       !credential ||
-      !["active", "submitted", "renewed"].includes(credential.status) ||
+      !["active", "submitted"].includes(credential.status) ||
       requirement.kind !== "maximum" ||
       !requirement.exclusiveGroup ||
       !Boolean(requirement.isActive) ||
@@ -1884,7 +1937,7 @@ async function getWorkspace(
   }
   for (const credential of credentialResult.results) {
     if (
-      !["active", "submitted", "renewed"].includes(credential.status) ||
+      !["active", "submitted"].includes(credential.status) ||
       credential.ruleSetId !== NJ_LCSW_RULE_SET_ID
     ) {
       continue;
@@ -1912,7 +1965,7 @@ async function getWorkspace(
       !activity.allocationId ||
       !activity.credentialId ||
       !credential ||
-      !["active", "submitted", "renewed"].includes(credential.status) ||
+      !["active", "submitted"].includes(credential.status) ||
       classificationIssueByAllocation.has(activity.allocationId)
     ) {
       continue;
@@ -2709,23 +2762,7 @@ async function createCredential(
     );
   });
 
-  const taskSpecs = [
-    {
-      title: "Review the renewal requirements",
-      kind: "review",
-      dueDate: daysBefore(deadline, 120),
-    },
-    {
-      title: "Complete and document required education",
-      kind: "progress",
-      dueDate: daysBefore(deadline, 30),
-    },
-    {
-      title: "Submit renewal and save confirmation",
-      kind: "submission",
-      dueDate: deadline,
-    },
-  ];
+  const taskSpecs = renewalTaskSpecs(ruleSetId, deadline);
   taskSpecs.forEach((task, index) => {
     statements.push(
       query(
@@ -4156,23 +4193,11 @@ async function markRenewalAccepted(
       ),
     );
   }
-  const taskSpecs = [
-    {
-      title: carryoverReviewTaskTitle ?? "Review the renewal requirements",
-      kind: "review",
-      dueDate: daysBefore(nextDeadline, 120),
-    },
-    {
-      title: "Complete and document required education",
-      kind: "progress",
-      dueDate: daysBefore(nextDeadline, 30),
-    },
-    {
-      title: "Submit renewal and save confirmation",
-      kind: "submission",
-      dueDate: nextDeadline,
-    },
-  ];
+  const taskSpecs = renewalTaskSpecs(
+    nextRuleSetId,
+    nextDeadline,
+    carryoverReviewTaskTitle,
+  );
   taskSpecs.forEach((task, index) => {
     statements.push(
       query(

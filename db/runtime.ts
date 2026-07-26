@@ -1,4 +1,17 @@
 import type { RequestIdentity } from "./identity";
+import {
+  COMPTIA_CATEGORY_SEED_BINDINGS,
+  COMPTIA_RULE_SET_IDS,
+  COMPTIA_RULE_SET_SEED_BINDINGS,
+} from "./catalog/comptia";
+import {
+  ISC2_CATEGORY_SEED_BINDINGS,
+  ISC2_RULE_SET_SEED_BINDINGS,
+} from "./catalog/isc2";
+import {
+  INSURANCE_CATEGORY_SEED_BINDINGS,
+  INSURANCE_RULE_SET_SEED_BINDINGS,
+} from "./catalog/insurance";
 
 const TABLE_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS users (
@@ -3281,6 +3294,9 @@ const CATALOG_2026_RULE_SET_SEED_BINDINGS = [
     "source_linked_check_conditions",
     1,
   ],
+  ...ISC2_RULE_SET_SEED_BINDINGS,
+  ...COMPTIA_RULE_SET_SEED_BINDINGS,
+  ...INSURANCE_RULE_SET_SEED_BINDINGS,
 ] as const;
 
 const CATALOG_2026_CATEGORY_INSERT_SQL = `INSERT OR IGNORE INTO rule_categories (
@@ -4069,6 +4085,9 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
     "SHRM PDC category",
     3,
   ],
+  ...ISC2_CATEGORY_SEED_BINDINGS,
+  ...COMPTIA_CATEGORY_SEED_BINDINGS,
+  ...INSURANCE_CATEGORY_SEED_BINDINGS,
 ] as const;
 
 const MAXIMUM_CLASSIFICATION_CATEGORY_REFRESH_SQL = `UPDATE rule_categories SET
@@ -4153,6 +4172,12 @@ const MAXIMUM_CLASSIFICATION_RULE_SET_IDS = [
   "hrci-sphr-2026-v1",
   "shrm-cp-2026-v1",
   "shrm-scp-2026-v1",
+  "isc2-cissp-2026-v1",
+  "isc2-ccsp-2026-v1",
+  "isc2-sscp-2026-v1",
+  "isc2-csslp-2026-v1",
+  "isc2-cgrc-2026-v1",
+  ...COMPTIA_RULE_SET_IDS,
 ] as const;
 
 const MAXIMUM_CLASSIFICATION_RULE_SET_PLACEHOLDERS =

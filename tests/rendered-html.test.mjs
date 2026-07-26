@@ -377,14 +377,73 @@ function flattenedStatements(database) {
   return database.batches.flat();
 }
 
+const runtimeCatalogModules = [
+  {
+    moduleName: "comptia",
+    sourceUrl: new URL("../db/catalog/comptia.ts", import.meta.url),
+    exports: [
+      "COMPTIA_CATEGORY_SEED_BINDINGS",
+      "COMPTIA_RULE_SET_IDS",
+      "COMPTIA_RULE_SET_SEED_BINDINGS",
+    ],
+  },
+  {
+    moduleName: "isc2",
+    sourceUrl: new URL("../db/catalog/isc2.ts", import.meta.url),
+    exports: [
+      "ISC2_CATEGORY_SEED_BINDINGS",
+      "ISC2_RULE_SET_SEED_BINDINGS",
+    ],
+  },
+  {
+    moduleName: "insurance",
+    sourceUrl: new URL("../db/catalog/insurance.ts", import.meta.url),
+    exports: [
+      "INSURANCE_CATEGORY_SEED_BINDINGS",
+      "INSURANCE_RULE_SET_SEED_BINDINGS",
+    ],
+  },
+];
+
 async function importTypeScriptModule(source) {
   const typescript = await import("typescript");
-  const compiled = typescript.default.transpileModule(source, {
+  let expandedSource = source;
+  const injectedBindings = [];
+  for (const catalogModule of runtimeCatalogModules) {
+    const namesPattern = catalogModule.exports.join("\\s*,\\s*");
+    const importPattern = new RegExp(
+      `import\\s*\\{\\s*${namesPattern}\\s*,?\\s*\\}\\s*from\\s*["']\\.\\/catalog\\/${catalogModule.moduleName}["'];?`,
+    );
+    if (!importPattern.test(expandedSource)) continue;
+    const catalogSource = await readFile(catalogModule.sourceUrl, "utf8");
+    const catalogCompiled = typescript.default.transpileModule(
+      catalogSource,
+      {
+        compilerOptions: {
+          module: typescript.default.ModuleKind.ES2022,
+          target: typescript.default.ScriptTarget.ES2022,
+        },
+      },
+    ).outputText;
+    const loadedCatalog = await import(
+      `data:text/javascript;base64,${Buffer.from(catalogCompiled).toString("base64")}`
+    );
+    for (const exportName of catalogModule.exports) {
+      injectedBindings.push(
+        `const ${exportName} = ${JSON.stringify(loadedCatalog[exportName])};`,
+      );
+    }
+    expandedSource = expandedSource.replace(importPattern, "");
+  }
+  const compiled = typescript.default.transpileModule(
+    `${injectedBindings.join("\n")}\n${expandedSource}`,
+    {
     compilerOptions: {
       module: typescript.default.ModuleKind.ES2022,
       target: typescript.default.ScriptTarget.ES2022,
     },
-  }).outputText;
+    },
+  ).outputText;
   return import(
     `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`
   );
@@ -3629,6 +3688,332 @@ test("License Lantern product contract", async (t) => {
         workspaceRouteSource,
         /CARRYOVER_REVIEW_TASK_TITLES[\s\S]*?shrm-cp-2026-v1[\s\S]*?Advance Your Education PDCs[\s\S]*?shrm-scp-2026-v1[\s\S]*?Advance Your Education PDCs/i,
       );
+    },
+  );
+
+  await t.test(
+    "seeds current ISC2, CompTIA, and state insurance templates with bounded rule graphs",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const [runtimeSource, workspaceRouteSource, clientSource] =
+        await Promise.all([
+          readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
+          readFile(
+            new URL("../app/api/workspace/route.ts", import.meta.url),
+            "utf8",
+          ),
+          readFile(
+            new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+            "utf8",
+          ),
+        ]);
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __expandedCatalogTestNonce = "expanded";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      const raw = database.raw;
+      const rows = (sql) =>
+        raw
+          .prepare(sql)
+          .all()
+          .map((row) => ({ ...row }));
+
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(*) AS totalRules,
+                 SUM(CASE WHEN is_current = 1 THEN 1 ELSE 0 END) AS currentRules
+               FROM rule_sets`,
+            )
+            .get(),
+        },
+        { totalRules: 76, currentRules: 75 },
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT is_current AS isCurrent
+             FROM rule_sets
+             WHERE id = 'cfp-professional-2027-v1'`,
+          )
+          .get().isCurrent,
+        0,
+      );
+
+      assert.deepEqual(
+        rows(
+          `SELECT id, total_units AS totalUnits
+           FROM rule_sets
+           WHERE id LIKE 'isc2-%'
+           ORDER BY id`,
+        ),
+        [
+          { id: "isc2-cc-2026-v1", totalUnits: 45 },
+          { id: "isc2-ccsp-2026-v1", totalUnits: 90 },
+          { id: "isc2-cgrc-2026-v1", totalUnits: 60 },
+          { id: "isc2-cissp-2026-v1", totalUnits: 120 },
+          { id: "isc2-csslp-2026-v1", totalUnits: 90 },
+          { id: "isc2-sscp-2026-v1", totalUnits: 60 },
+        ],
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT rule_set_id AS ruleSetId, required_units AS requiredUnits
+           FROM rule_categories
+           WHERE rule_set_id LIKE 'isc2-%' AND kind = 'maximum'
+           ORDER BY rule_set_id`,
+        ),
+        [
+          { ruleSetId: "isc2-ccsp-2026-v1", requiredUnits: 30 },
+          { ruleSetId: "isc2-cgrc-2026-v1", requiredUnits: 15 },
+          { ruleSetId: "isc2-cissp-2026-v1", requiredUnits: 30 },
+          { ruleSetId: "isc2-csslp-2026-v1", requiredUnits: 30 },
+          { ruleSetId: "isc2-sscp-2026-v1", requiredUnits: 15 },
+        ],
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 required_units AS requiredUnits,
+                 kind,
+                 exclusive_group AS exclusiveGroup
+               FROM rule_categories
+               WHERE id = 'isc2-cc-2026-group-a'`,
+            )
+            .get(),
+        },
+        {
+          requiredUnits: 45,
+          kind: "minimum",
+          exclusiveGroup: null,
+        },
+      );
+
+      assert.deepEqual(
+        rows(
+          `SELECT total_units AS totalUnits, COUNT(*) AS count
+           FROM rule_sets
+           WHERE id LIKE 'comptia-%'
+           GROUP BY total_units
+           ORDER BY total_units`,
+        ),
+        [
+          { totalUnits: 15, count: 2 },
+          { totalUnits: 20, count: 2 },
+          { totalUnits: 30, count: 4 },
+          { totalUnits: 50, count: 3 },
+          { totalUnits: 60, count: 2 },
+          { totalUnits: 75, count: 3 },
+        ],
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 COUNT(*) AS categoryCount,
+                 COUNT(DISTINCT rule_set_id) AS ruleCount,
+                 MIN(per_rule_count) AS minimumPerRule,
+                 MAX(per_rule_count) AS maximumPerRule
+               FROM (
+                 SELECT
+                   rule_set_id,
+                   COUNT(*) AS per_rule_count
+                 FROM rule_categories
+                 WHERE rule_set_id LIKE 'comptia-%'
+                 GROUP BY rule_set_id
+               )`,
+            )
+            .get(),
+        },
+        {
+          categoryCount: 16,
+          ruleCount: 16,
+          minimumPerRule: 9,
+          maximumPerRule: 9,
+        },
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_categories
+             WHERE rule_set_id LIKE 'comptia-%'`,
+          )
+          .get().count,
+        144,
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT rule_set_id AS ruleSetId
+           FROM rule_categories
+           WHERE id LIKE 'comptia-%-work-experience'
+             AND applicability = 'conditional'
+           ORDER BY rule_set_id`,
+        ),
+        [
+          { ruleSetId: "comptia-cloudnetx-2026-v1" },
+          { ruleSetId: "comptia-dataai-2026-v1" },
+          { ruleSetId: "comptia-datasys-plus-2026-v1" },
+        ],
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT name, required_units AS requiredUnits, kind
+           FROM rule_categories
+           WHERE rule_set_id = 'comptia-security-plus-2026-v1'
+           ORDER BY sort_order`,
+        ),
+        [
+          {
+            name: "Other Eligible Training, Higher Education, ACE, SME, or Officially Mapped Certification Activity",
+            requiredUnits: 0,
+            kind: "informational",
+          },
+          { name: "Live Webinar", requiredUnits: 10, kind: "maximum" },
+          { name: "Conference Session", requiredUnits: 10, kind: "maximum" },
+          {
+            name: "Related Work Experience",
+            requiredUnits: 9,
+            kind: "maximum",
+          },
+          {
+            name: "Teaching or Mentoring",
+            requiredUnits: 20,
+            kind: "maximum",
+          },
+          {
+            name: "Create Instructional Materials",
+            requiredUnits: 20,
+            kind: "maximum",
+          },
+          {
+            name: "Published Article or White Paper",
+            requiredUnits: 16,
+            kind: "maximum",
+          },
+          {
+            name: "Published Blog Post",
+            requiredUnits: 16,
+            kind: "maximum",
+          },
+          { name: "Published Book", requiredUnits: 40, kind: "maximum" },
+        ],
+      );
+
+      assert.deepEqual(
+        rows(
+          `SELECT jurisdiction, COUNT(*) AS count
+           FROM rule_sets
+           WHERE profession = 'Insurance'
+           GROUP BY jurisdiction
+           ORDER BY jurisdiction`,
+        ),
+        [
+          { jurisdiction: "California", count: 1 },
+          { jurisdiction: "Florida", count: 12 },
+          { jurisdiction: "New Jersey", count: 1 },
+          { jurisdiction: "New York", count: 2 },
+          { jurisdiction: "Texas", count: 1 },
+        ],
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT total_units AS totalUnits, COUNT(*) AS count
+           FROM rule_sets
+           WHERE profession = 'Insurance'
+           GROUP BY total_units
+           ORDER BY total_units`,
+        ),
+        [
+          { totalUnits: 10, count: 4 },
+          { totalUnits: 15, count: 2 },
+          { totalUnits: 20, count: 4 },
+          { totalUnits: 24, count: 7 },
+        ],
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_categories
+             WHERE rule_set_id IN (
+               SELECT id FROM rule_sets WHERE profession = 'Insurance'
+             )`,
+          )
+          .get().count,
+        26,
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT id, parent_category_id AS parentCategoryId
+           FROM rule_categories
+           WHERE rule_set_id IN (
+             SELECT id FROM rule_sets WHERE profession = 'Insurance'
+           )
+             AND relation = 'nested'
+           ORDER BY id`,
+        ),
+        [
+          {
+            id: "ca-insurance-producer-major-lines-2026-fraud",
+            parentCategoryId:
+              "ca-insurance-producer-major-lines-2026-ethics",
+          },
+          {
+            id: "nj-insurance-producer-major-lines-2026-fraud-option",
+            parentCategoryId:
+              "nj-insurance-producer-major-lines-2026-ethics",
+          },
+        ],
+      );
+      assert.deepEqual(
+        rows(
+          `SELECT id
+           FROM rule_categories
+           WHERE rule_set_id IN (
+             SELECT id FROM rule_sets WHERE profession = 'Insurance'
+           )
+             AND applicability = 'conditional'`,
+        ),
+        [
+          {
+            id: "ny-insurance-producer-property-casualty-2026-enhanced-nfip",
+          },
+        ],
+      );
+
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM rule_sets
+             WHERE (
+               id LIKE 'isc2-%'
+               OR id LIKE 'comptia-%'
+               OR profession = 'Insurance'
+             )
+               AND last_verified_at = '2026-07-26'
+               AND review_status = 'source_linked_check_conditions'
+               AND is_current = 1`,
+          )
+          .get().count,
+        39,
+      );
+      assert.match(
+        workspaceRouteSource,
+        /ISC2_AUTOMATIC_RENEWAL_RULE_SET_IDS[\s\S]*?isc2-cc-2026-v1[\s\S]*?isc2-cgrc-2026-v1[\s\S]*?renewalTaskSpecs[\s\S]*?Verify automatic ISC2 renewal and save dashboard proof/,
+      );
+      assert.match(
+        clientSource,
+        /isIsc2AutomaticRenewalCredential[\s\S]*?Record ISC2 compliance[\s\S]*?Mark requirements complete[\s\S]*?Confirm renewal & continue/,
+      );
+      database.close();
     },
   );
 
@@ -7741,7 +8126,7 @@ test("License Lantern product contract", async (t) => {
                 cycleMonths: 24,
                 seriesId: ptcbCredentialId,
                 previousCredentialId: null,
-                status: "renewed",
+                status: "submitted",
                 submittedAt: "2027-12-20T12:00:00.000Z",
                 confirmationNumber: "PTCB-SUBMITTED",
                 submissionProof: null,
@@ -7767,7 +8152,7 @@ test("License Lantern product contract", async (t) => {
                 cycleMonths: 24,
                 seriesId: njLcswCredentialId,
                 previousCredentialId: null,
-                status: "renewed",
+                status: "submitted",
                 submittedAt: "2027-08-20T12:00:00.000Z",
                 confirmationNumber: "NJ-LCSW-SUBMITTED",
                 submissionProof: null,
@@ -8899,17 +9284,9 @@ test("License Lantern product contract", async (t) => {
           {
             status: "renewed",
             totalLoggedUnits: 1.9,
-            unclassifiedUnits: 1.9,
-            totalEarned: 0,
-            classificationIssues: [
-              {
-                allocationId: "allocation-nasm-real",
-                activityId: "activity-nasm-real",
-                activityTitle: "NASM approved education",
-                unresolvedExclusiveGroups: ["NASM CEU activity type"],
-                allocatedUnits: 1.9,
-              },
-            ],
+            unclassifiedUnits: 0,
+            totalEarned: 1.9,
+            classificationIssues: [],
           },
         );
       } finally {

@@ -62,6 +62,7 @@ type RenewalTask = {
 
 type Credential = {
   id: string;
+  ruleSetId?: string | null;
   credentialName: string;
   profession: string;
   jurisdiction: string;
@@ -473,6 +474,12 @@ function readinessScore(credential: Credential) {
     : score;
 }
 
+function isIsc2AutomaticRenewalCredential(
+  credential: Credential | null | undefined,
+) {
+  return credential?.ruleSetId?.startsWith("isc2-") ?? false;
+}
+
 type GuidedAction = {
   kind:
     | "acceptance"
@@ -500,6 +507,14 @@ function bestNextAction(
     };
   }
   if (credential.status === "submitted") {
+    if (isIsc2AutomaticRenewalCredential(credential)) {
+      return {
+        kind: "acceptance",
+        title: "Confirm the renewed cycle shown in your ISC2 dashboard",
+        body: "Keep this cycle open until ISC2 displays the new certification dates.",
+        buttonLabel: "Confirm renewed cycle",
+      };
+    }
     return {
       kind: "acceptance",
       title: "Record acceptance when your renewal is approved",
@@ -613,8 +628,18 @@ function bestNextAction(
     return {
       kind: "checklist",
       title: openTask.title,
-      body: "Credits are covered. Finish this packet step before submitting.",
+      body: isIsc2AutomaticRenewalCredential(credential)
+        ? "Credits are covered. Finish this dashboard step before confirming renewal."
+        : "Credits are covered. Finish this packet step before submitting.",
       buttonLabel: "Open checklist",
+    };
+  }
+  if (isIsc2AutomaticRenewalCredential(credential)) {
+    return {
+      kind: "submission",
+      title: "Verify your ISC2 CPE and fee requirements are complete",
+      body: "Save the dashboard milestone before ISC2 opens the renewed cycle.",
+      buttonLabel: "Record compliance",
     };
   }
   return {
@@ -1655,7 +1680,9 @@ export function LicenseLanternApp() {
         submissionDate: String(form.get("submissionDate") ?? ""),
         confirmationNumber: String(form.get("confirmationNumber") ?? ""),
       },
-      "Submission logged. Keep the confirmation until your renewal is accepted.",
+      isIsc2AutomaticRenewalCredential(selectedCredential)
+        ? "ISC2 compliance milestone saved. Confirm the new cycle after it appears in your dashboard."
+        : "Submission logged. Keep the confirmation until your renewal is accepted.",
     );
     if (success) setSubmissionOpen(false);
   }
@@ -2654,8 +2681,16 @@ export function LicenseLanternApp() {
 
       {submissionOpen && selectedCredential ? (
         <Modal
-          title="Log your submission"
-          eyebrow="Renewal milestone"
+          title={
+            isIsc2AutomaticRenewalCredential(selectedCredential)
+              ? "Record ISC2 compliance"
+              : "Log your submission"
+          }
+          eyebrow={
+            isIsc2AutomaticRenewalCredential(selectedCredential)
+              ? "Automatic-renewal milestone"
+              : "Renewal milestone"
+          }
           onClose={() => setSubmissionOpen(false)}
         >
           <form className="form-stack" onSubmit={handleSubmission}>
@@ -2664,15 +2699,24 @@ export function LicenseLanternApp() {
                 ✓
               </span>
               <div>
-                <strong>One last record for your future self</strong>
+                <strong>
+                  {isIsc2AutomaticRenewalCredential(selectedCredential)
+                    ? "Save the dashboard milestone"
+                    : "One last record for your future self"}
+                </strong>
                 <p>
-                  Logging the date and confirmation keeps “credits earned”
-                  separate from “renewal submitted.”
+                  {isIsc2AutomaticRenewalCredential(selectedCredential)
+                    ? "Record when required CPEs are reflected and the final annual maintenance fee is paid."
+                    : "Logging the date and confirmation keeps “credits earned” separate from “renewal submitted.”"}
                 </p>
               </div>
             </div>
             <label className="field">
-              <span>Submission date</span>
+              <span>
+                {isIsc2AutomaticRenewalCredential(selectedCredential)
+                  ? "Compliance completed"
+                  : "Submission date"}
+              </span>
               <input
                 autoFocus
                 name="submissionDate"
@@ -2682,17 +2726,27 @@ export function LicenseLanternApp() {
               />
             </label>
             <label className="field">
-              <span>Confirmation or receipt number <em>Optional</em></span>
+              <span>
+                {isIsc2AutomaticRenewalCredential(selectedCredential)
+                  ? "Dashboard or payment reference"
+                  : "Confirmation or receipt number"}{" "}
+                <em>Optional</em>
+              </span>
               <input
                 name="confirmationNumber"
-                placeholder="e.g., RNL-2048-194"
+                placeholder={
+                  isIsc2AutomaticRenewalCredential(selectedCredential)
+                    ? "e.g., dashboard receipt ID"
+                    : "e.g., RNL-2048-194"
+                }
               />
             </label>
             <div className="advisory-note">
               <span aria-hidden="true">i</span>
               <p>
-                This records what you submitted. Mark the cycle renewed only
-                after the issuing organization confirms acceptance.
+                {isIsc2AutomaticRenewalCredential(selectedCredential)
+                  ? "ISC2 renewal is automatic after its CPE and fee requirements are satisfied. Close this cycle only after the dashboard displays the renewed certification dates."
+                  : "This records what you submitted. Mark the cycle renewed only after the issuing organization confirms acceptance."}
               </p>
             </div>
             <div className="form-actions">
@@ -2708,7 +2762,11 @@ export function LicenseLanternApp() {
                 type="submit"
                 disabled={pending}
               >
-                {pending ? "Saving…" : "Mark submitted"}
+                {pending
+                  ? "Saving…"
+                  : isIsc2AutomaticRenewalCredential(selectedCredential)
+                    ? "Mark requirements complete"
+                    : "Mark submitted"}
               </button>
             </div>
           </form>
@@ -2718,8 +2776,16 @@ export function LicenseLanternApp() {
       {acceptanceOpen &&
       selectedCredential?.status === "submitted" ? (
         <Modal
-          title="Close this renewal cycle"
-          eyebrow="Acceptance received"
+          title={
+            isIsc2AutomaticRenewalCredential(selectedCredential)
+              ? "Confirm the renewed ISC2 cycle"
+              : "Close this renewal cycle"
+          }
+          eyebrow={
+            isIsc2AutomaticRenewalCredential(selectedCredential)
+              ? "Dashboard renewed"
+              : "Acceptance received"
+          }
           onClose={() => setAcceptanceOpen(false)}
         >
           <form className="form-stack" onSubmit={handleAcceptance}>
@@ -2728,7 +2794,11 @@ export function LicenseLanternApp() {
                 ✓
               </span>
               <div>
-                <strong>Your renewed license starts a clean cycle</strong>
+                <strong>
+                  {isIsc2AutomaticRenewalCredential(selectedCredential)
+                    ? "Your renewed certification starts a clean cycle"
+                    : "Your renewed license starts a clean cycle"}
+                </strong>
                 <p>
                   The completed cycle stays in history. Credits, checked tasks,
                   and submission records will not be copied forward.
@@ -2799,7 +2869,11 @@ export function LicenseLanternApp() {
                 type="submit"
                 disabled={pending}
               >
-                {pending ? "Creating next cycle…" : "Mark accepted & continue"}
+                {pending
+                  ? "Creating next cycle…"
+                  : isIsc2AutomaticRenewalCredential(selectedCredential)
+                    ? "Confirm renewal & continue"
+                    : "Mark accepted & continue"}
               </button>
             </div>
           </form>
@@ -3858,18 +3932,26 @@ function TodayView({
           </div>
           {credential.status === "active" ? (
             <button className="card-link" type="button" onClick={onSubmit}>
-              Log renewal submission <span aria-hidden="true">→</span>
+              {isIsc2AutomaticRenewalCredential(credential)
+                ? "Record ISC2 compliance"
+                : "Log renewal submission"}{" "}
+              <span aria-hidden="true">→</span>
             </button>
           ) : credential.status === "submitted" ? (
             <div className="submitted-note submitted-note-action">
               <span>
-                Submitted {formatDate(credential.submittedAt)}
+                {isIsc2AutomaticRenewalCredential(credential)
+                  ? "Requirements completed"
+                  : "Submitted"}{" "}
+                {formatDate(credential.submittedAt)}
                 {credential.confirmationNumber
                   ? ` · ${credential.confirmationNumber}`
                   : ""}
               </span>
               <button type="button" onClick={onAccept}>
-                Record acceptance →
+                {isIsc2AutomaticRenewalCredential(credential)
+                  ? "Confirm renewed cycle →"
+                  : "Record acceptance →"}
               </button>
             </div>
           ) : (
@@ -4159,21 +4241,36 @@ function CredentialsView({
             {selected.status === "active" ? (
               <div className="detail-footer">
                 <div>
-                  <strong>Finished your board submission?</strong>
-                  <p>Log it separately from completed learning.</p>
+                  <strong>
+                    {isIsc2AutomaticRenewalCredential(selected)
+                      ? "Are the CPE and final fee requirements complete?"
+                      : "Finished your board submission?"}
+                  </strong>
+                  <p>
+                    {isIsc2AutomaticRenewalCredential(selected)
+                      ? "Save this milestone separately from completed learning."
+                      : "Log it separately from completed learning."}
+                  </p>
                 </div>
                 <button
                   className="button button-primary"
                   type="button"
                   onClick={onSubmit}
                 >
-                  Log submission
+                  {isIsc2AutomaticRenewalCredential(selected)
+                    ? "Record compliance"
+                    : "Log submission"}
                 </button>
               </div>
             ) : selected.status === "submitted" ? (
               <div className="detail-footer submitted-footer">
                 <div>
-                  <strong>Renewal submitted {formatDate(selected.submittedAt)}</strong>
+                  <strong>
+                    {isIsc2AutomaticRenewalCredential(selected)
+                      ? "Requirements completed"
+                      : "Renewal submitted"}{" "}
+                    {formatDate(selected.submittedAt)}
+                  </strong>
                   <p>
                     {selected.confirmationNumber
                       ? `Confirmation: ${selected.confirmationNumber}`
@@ -4185,7 +4282,9 @@ function CredentialsView({
                   type="button"
                   onClick={onAccept}
                 >
-                  Record acceptance
+                  {isIsc2AutomaticRenewalCredential(selected)
+                    ? "Confirm renewed cycle"
+                    : "Record acceptance"}
                 </button>
               </div>
             ) : (
