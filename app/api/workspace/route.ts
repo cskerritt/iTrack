@@ -885,6 +885,7 @@ async function getReminderData(
     title: string;
     body: string;
     scheduledFor: string;
+    eventDate: string;
     urgency: "overdue" | "today" | "soon";
   }> = [];
 
@@ -903,6 +904,7 @@ async function getReminderData(
       title: task.title,
       body: `${task.credentialName} · due ${reminderDateLabel(task.dueDate)}.`,
       scheduledFor,
+      eventDate: task.dueDate,
       urgency: reminderUrgency(task.dueDate, today),
     });
   }
@@ -923,6 +925,7 @@ async function getReminderData(
         title: `${cycle.credentialName} renewal deadline`,
         body: `Renewal is due ${reminderDateLabel(cycle.deadline)}.`,
         scheduledFor,
+        eventDate: cycle.deadline,
         urgency: reminderUrgency(cycle.deadline, today),
       });
       continue;
@@ -944,6 +947,7 @@ async function getReminderData(
           cycle.submittedAt.slice(0, 10),
         )}. Record acceptance when the issuer confirms it.`,
         scheduledFor,
+        eventDate: scheduledFor,
         urgency: reminderUrgency(scheduledFor, today),
       });
     }
@@ -994,6 +998,7 @@ async function validateRequirementTags(
     name: string;
     isActive: number;
     applicabilityStatus: string;
+    exclusiveGroup: string | null;
   };
   const placeholders = requirementIds.map(() => "?").join(", ");
   const result = await query(
@@ -1002,7 +1007,8 @@ async function validateRequirementTags(
       requirement.id,
       requirement.name,
       requirement.is_active AS isActive,
-      requirement.applicability_status AS applicabilityStatus
+      requirement.applicability_status AS applicabilityStatus,
+      requirement.exclusive_group AS exclusiveGroup
     FROM credential_requirements requirement
     JOIN credentials credential
       ON credential.id = requirement.credential_id
@@ -1031,6 +1037,23 @@ async function validateRequirementTags(
         "requirement_inactive",
       );
     }
+  }
+  const selectedExclusiveGroups = new Map<string, string>();
+  for (const requirementId of requirementIds) {
+    const requirement = byId.get(requirementId)!;
+    if (!requirement.exclusiveGroup) continue;
+    const existingName = selectedExclusiveGroups.get(requirement.exclusiveGroup);
+    if (existingName) {
+      throw new RequestError(
+        `${existingName} and ${requirement.name} are alternative activity types. Choose only one for this activity.`,
+        409,
+        "exclusive_requirement_conflict",
+      );
+    }
+    selectedExclusiveGroups.set(
+      requirement.exclusiveGroup,
+      requirement.name,
+    );
   }
   return requirementIds.map((requirementId) => byId.get(requirementId)!);
 }
@@ -1065,6 +1088,7 @@ async function getWorkspace(
     parentCategoryId: string | null;
     applicability: RequirementApplicability;
     conditionNote: string | null;
+    exclusiveGroup: string | null;
   };
   type CredentialRow = {
     id: string;
@@ -1087,6 +1111,7 @@ async function getWorkspace(
     acceptanceReference: string | null;
     nextCredentialId: string | null;
     sourceUrl: string | null;
+    sourceTitle: string | null;
     ruleReviewStatus: string;
     totalEarned: number;
   };
@@ -1101,6 +1126,7 @@ async function getWorkspace(
     applicability: RequirementApplicability;
     applicabilityStatus: ApplicabilityStatus;
     conditionNote: string | null;
+    exclusiveGroup: string | null;
     isActive: number;
     rawEarned: number;
   };
@@ -1200,7 +1226,8 @@ async function getWorkspace(
         relation,
         parent_category_id AS parentCategoryId,
         applicability,
-        condition_note AS conditionNote
+        condition_note AS conditionNote,
+        exclusive_group AS exclusiveGroup
       FROM rule_categories
       ORDER BY rule_set_id, sort_order, name`,
     ).all<CategoryRow>(),
@@ -1221,6 +1248,7 @@ async function getWorkspace(
         cycle.previous_credential_id AS previousCredentialId,
         c.status,
         rs.source_url AS sourceUrl,
+        rs.source_title AS sourceTitle,
         COALESCE(rs.review_status, 'custom') AS ruleReviewStatus,
         sub.submitted_at AS submittedAt,
         sub.confirmation_number AS confirmationNumber,
@@ -1259,6 +1287,7 @@ async function getWorkspace(
         req.applicability,
         req.applicability_status AS applicabilityStatus,
         req.condition_note AS conditionNote,
+        req.exclusive_group AS exclusiveGroup,
         req.is_active AS isActive,
         COALESCE(
           SUM(
@@ -1693,6 +1722,7 @@ type CatalogCategory = {
   parentCategoryId: string | null;
   applicability: RequirementApplicability;
   conditionNote: string | null;
+  exclusiveGroup: string | null;
 };
 
 type CredentialCategoryDraft = {
@@ -1706,6 +1736,7 @@ type CredentialCategoryDraft = {
   applicability: RequirementApplicability;
   applicabilityStatus: ApplicabilityStatus;
   conditionNote: string | null;
+  exclusiveGroup: string | null;
   isActive: boolean;
   sortOrder: number;
 };
@@ -1836,6 +1867,16 @@ async function createCredential(
         "rule_set_not_found",
       );
     }
+    if (
+      ruleSetId === "cfp-professional-pre-2027-v1" &&
+      cycleStart >= "2027-01-01"
+    ) {
+      throw new RequestError(
+        "This CFP template is only for certification periods beginning before Q1 2027. Enter the newer 40-hour requirement as a custom plan while its carryover eligibility is confirmed.",
+        409,
+        "rule_transition_outside_template",
+      );
+    }
     const ruleCategories = await query(
       database,
       `SELECT
@@ -1846,7 +1887,8 @@ async function createCredential(
         relation,
         parent_category_id AS parentCategoryId,
         applicability,
-        condition_note AS conditionNote
+        condition_note AS conditionNote,
+        exclusive_group AS exclusiveGroup
        FROM rule_categories
        WHERE rule_set_id = ?
        ORDER BY sort_order, name`,
@@ -1889,6 +1931,7 @@ async function createCredential(
         applicability,
         applicabilityStatus,
         conditionNote: category.conditionNote,
+        exclusiveGroup: category.exclusiveGroup,
         isActive: applicabilityStatus === "applies",
         sortOrder: index,
       };
@@ -1952,6 +1995,7 @@ async function createCredential(
         `categories[${index}].applicabilityStatus`,
       );
       const conditionNote = textField(item, "conditionNote", { max: 500 });
+      const exclusiveGroup = textField(item, "exclusiveGroup", { max: 80 });
       if (applicability === "conditional" && !conditionNote) {
         throw new RequestError(
           `categories[${index}].conditionNote is required for a conditional rule`,
@@ -1974,6 +2018,7 @@ async function createCredential(
         applicability,
         applicabilityStatus,
         conditionNote,
+        exclusiveGroup,
         isActive: applicabilityStatus === "applies",
         sortOrder: index,
       };
@@ -1991,6 +2036,7 @@ async function createCredential(
           applicability: "always",
           applicabilityStatus: "applies",
           conditionNote: null,
+          exclusiveGroup: null,
           isActive: true,
           sortOrder: 0,
         },
@@ -2067,8 +2113,9 @@ async function createCredential(
         `INSERT INTO credential_requirements (
           id, credential_id, rule_category_id, name, required_units, kind,
           relation, parent_requirement_id, applicability,
-          applicability_status, condition_note, is_active, sort_order
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          applicability_status, condition_note, exclusive_group, is_active,
+          sort_order
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           requirementIdByKey.get(category.key),
           credentialId,
@@ -2083,6 +2130,7 @@ async function createCredential(
           category.applicability,
           category.applicabilityStatus,
           category.conditionNote,
+          category.exclusiveGroup,
           category.isActive ? 1 : 0,
           category.sortOrder,
         ],
@@ -2808,6 +2856,7 @@ async function markRenewalAccepted(
     parentRequirementId: string | null;
     applicability: RequirementApplicability;
     conditionNote: string | null;
+    exclusiveGroup: string | null;
     sortOrder: number;
   };
   const [credential, submission, requirements] = await Promise.all([
@@ -2852,6 +2901,7 @@ async function markRenewalAccepted(
         requirement.parent_requirement_id AS parentRequirementId,
         requirement.applicability,
         requirement.condition_note AS conditionNote,
+        requirement.exclusive_group AS exclusiveGroup,
         requirement.sort_order AS sortOrder
       FROM credential_requirements requirement
       JOIN credentials credential
@@ -2886,6 +2936,18 @@ async function markRenewalAccepted(
 
   const nextCredentialId = crypto.randomUUID();
   const acceptanceId = crypto.randomUUID();
+  const transitionsToFortyHourCfp =
+    credential.ruleSetId === "cfp-professional-pre-2027-v1" &&
+    nextCycleStart >= "2027-01-01";
+  const nextCredentialName = transitionsToFortyHourCfp
+    ? "CFP® Professional — cycle beginning Q1 2027 or later"
+    : credential.credentialName;
+  const nextRuleSetId = transitionsToFortyHourCfp
+    ? "cfp-professional-2027-v1"
+    : credential.ruleSetId;
+  const nextTotalRequired = transitionsToFortyHourCfp
+    ? 40
+    : Number(credential.totalRequired);
   const statements: D1PreparedStatement[] = [
     query(
       database,
@@ -2910,14 +2972,14 @@ async function markRenewalAccepted(
       [
         nextCredentialId,
         identity.userId,
-        credential.ruleSetId,
-        credential.credentialName,
+        nextRuleSetId,
+        nextCredentialName,
         credential.profession,
         credential.jurisdiction,
         credential.issuer,
         nextCycleStart,
         nextDeadline,
-        Number(credential.totalRequired),
+        nextTotalRequired,
         credential.unitLabel,
       ],
     ),
@@ -2945,15 +3007,28 @@ async function markRenewalAccepted(
       );
       return {
         key: requirement.id,
-        ruleCategoryId: requirement.ruleCategoryId,
+        ruleCategoryId:
+          transitionsToFortyHourCfp &&
+          requirement.ruleCategoryId === "cfp-professional-pre-2027-general"
+            ? "cfp-professional-2027-general"
+            : transitionsToFortyHourCfp &&
+                requirement.ruleCategoryId ===
+                  "cfp-professional-pre-2027-ethics"
+              ? "cfp-professional-2027-ethics"
+              : requirement.ruleCategoryId,
         name: requirement.name,
-        requiredUnits: Number(requirement.requiredUnits),
+        requiredUnits:
+          transitionsToFortyHourCfp &&
+          requirement.ruleCategoryId === "cfp-professional-pre-2027-general"
+            ? 38
+            : Number(requirement.requiredUnits),
         kind: requirement.kind,
         relation: requirement.relation,
         parentKey: requirement.parentRequirementId,
         applicability: requirement.applicability,
         applicabilityStatus,
         conditionNote: requirement.conditionNote,
+        exclusiveGroup: requirement.exclusiveGroup,
         isActive: applicabilityStatus === "applies",
         sortOrder: Number(requirement.sortOrder),
       };
@@ -2973,8 +3048,9 @@ async function markRenewalAccepted(
         `INSERT INTO credential_requirements (
           id, credential_id, rule_category_id, name, required_units, kind,
           relation, parent_requirement_id, applicability,
-          applicability_status, condition_note, is_active, sort_order
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          applicability_status, condition_note, exclusive_group, is_active,
+          sort_order
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           nextRequirementIdByPriorId.get(requirement.key),
           nextCredentialId,
@@ -2989,6 +3065,7 @@ async function markRenewalAccepted(
           requirement.applicability,
           requirement.applicabilityStatus,
           requirement.conditionNote,
+          requirement.exclusiveGroup,
           requirement.isActive ? 1 : 0,
           Number(requirement.sortOrder),
         ],
@@ -2997,7 +3074,9 @@ async function markRenewalAccepted(
   }
   const taskSpecs = [
     {
-      title: "Review the renewal requirements",
+      title: transitionsToFortyHourCfp
+        ? "Confirm CFP Board carryover eligibility for the 40-hour cycle"
+        : "Review the renewal requirements",
       kind: "review",
       dueDate: daysBefore(nextDeadline, 120),
     },

@@ -20,14 +20,19 @@ rewards meaningful record-keeping without punitive daily streaks.
 - submission date and confirmation tracking
 - regulator acceptance, read-only cycle history, and clean next-cycle rollover
 - configurable in-app due-date and acceptance check-ins with snooze/dismiss
+- one-tap calendar handoff for renewal dates and timely check-ins
 - activity CSV export
 - durable levels, weekly quests, gentle one-week-grace momentum, XP, and badges
-- responsive dashboard and installable web-app manifest
+- installable phone companion with a privacy-safe offline fallback
+- account-scoped, text-only activity drafts that recover on the same device
+- responsive dashboard with home-screen and standalone-app support
 - server-derived ownership from authenticated workspace identity
 
-The starter catalog contains 20 current, source-linked templates spanning
-nursing, medicine, legal, accounting, engineering, project management,
-psychology, and social work credentials. Templates model applicable minimums, nested
+The starter catalog contains 31 current, source-linked templates spanning
+nursing, medicine, law, accounting, architecture, engineering, financial
+planning, information technology, pharmacy, radiologic technology, real estate,
+project management, psychology, speech and hearing, and social work credentials.
+Templates model applicable minimums, nested
 subrequirements, overlapping facets, and reporting caps where the source can
 be represented safely. Conditional rules require an explicit answer for each
 cycle. Users can search the catalog or create a custom credential, and the
@@ -83,4 +88,4 @@ Node.js `>=22.13.0` is required.
 - opt-in email and push reminder delivery
 - broader effective-dated profession/state rule research
 - packet-style PDF export and richer archive browsing
-- offline capture, native mobile packaging, and regulator/provider integrations
+- richer offline capture, native mobile packaging, and regulator/provider integrations

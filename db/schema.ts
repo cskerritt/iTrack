@@ -80,6 +80,7 @@ export const ruleCategories = sqliteTable(
     ),
     applicability: text("applicability").notNull().default("always"),
     conditionNote: text("condition_note"),
+    exclusiveGroup: text("exclusive_group"),
     sortOrder: integer("sort_order").notNull().default(0),
   },
   (table) => [
@@ -144,6 +145,7 @@ export const credentialRequirements = sqliteTable(
       .notNull()
       .default("applies"),
     conditionNote: text("condition_note"),
+    exclusiveGroup: text("exclusive_group"),
     isActive: integer("is_active", { mode: "boolean" })
       .notNull()
       .default(true),

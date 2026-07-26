@@ -13,6 +13,16 @@ import {
   CertificateFieldSuggestions,
   scanCertificateImage,
 } from "./lib/certificateOcr";
+import {
+  activityDraftStorageKey,
+  hasMeaningfulActivityDraft,
+  parseActivityDraft,
+  serializeActivityDraft,
+} from "./lib/activityDraft";
+import {
+  CalendarInviteEvent,
+  offerCalendarInvite,
+} from "./lib/calendarInvite";
 
 type Requirement = {
   id: string;
@@ -29,6 +39,7 @@ type Requirement = {
   applicabilityStatus?: "applies" | "not_applicable" | "needs_confirmation";
   isActive?: boolean;
   conditionNote?: string | null;
+  exclusiveGroup?: string | null;
 };
 
 type RenewalTask = {
@@ -77,6 +88,7 @@ type CatalogCategory = {
   parentCategoryId?: string | null;
   applicability?: "always" | "conditional" | "optional";
   conditionNote?: string | null;
+  exclusiveGroup?: string | null;
 };
 
 type CatalogRule = {
@@ -214,6 +226,7 @@ type Reminder = {
   title: string;
   body: string;
   scheduledFor: string;
+  eventDate: string;
   urgency: "overdue" | "today" | "soon";
 };
 
@@ -235,6 +248,11 @@ type ActivityScanState = {
   label: string;
   progress: number;
   suggestions: CertificateFieldSuggestions;
+};
+
+type InstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
 };
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
@@ -351,6 +369,34 @@ function catalogCategorySummary(category: CatalogCategory) {
   const qualifier =
     category.applicability === "conditional" ? " if applicable" : "";
   return `${prefix} ${category.name}${qualifier}`;
+}
+
+function ruleReviewLabel(reviewStatus?: string | null) {
+  switch (reviewStatus) {
+    case "verified":
+      return "Official source verified";
+    case "transition_rule_check_assigned_cycle":
+      return "Transition rule · check assigned cycle";
+    case "needs_review":
+      return "Needs official review";
+    case "source_linked_check_conditions":
+      return "Source-linked · confirm conditions";
+    default:
+      return "Source-linked · review details";
+  }
+}
+
+function ruleReviewClass(reviewStatus?: string | null) {
+  switch (reviewStatus) {
+    case "verified":
+      return "verified";
+    case "transition_rule_check_assigned_cycle":
+      return "transition";
+    case "needs_review":
+      return "needs-review";
+    default:
+      return "conditional";
+  }
 }
 
 function compactNumber(value: number) {
@@ -572,7 +618,27 @@ export function LicenseLanternApp() {
     progress: 0,
     suggestions: {},
   });
+  const [activityDraftRestored, setActivityDraftRestored] = useState(false);
+  const [activityDraftCredentialWarning, setActivityDraftCredentialWarning] =
+    useState("");
+  const [isOnline, setIsOnline] = useState(true);
+  const [workspaceLoadFailed, setWorkspaceLoadFailed] = useState(false);
+  const [workspaceLoadFailureStatus, setWorkspaceLoadFailureStatus] = useState<
+    number | null
+  >(null);
+  const [installPrompt, setInstallPrompt] =
+    useState<InstallPromptEvent | null>(null);
+  const [isStandalone, setIsStandalone] = useState(false);
   const activityScanSequence = useRef(0);
+  const activityDraftPersistenceEnabled = useRef(false);
+  const activityDraftPersistenceGeneration = useRef(0);
+  const draftStorageKey = useMemo(
+    () =>
+      workspace?.user.email
+        ? activityDraftStorageKey(workspace.user.email)
+        : null,
+    [workspace?.user.email],
+  );
 
   const resetActivityEntry = useCallback(() => {
     activityScanSequence.current += 1;
@@ -589,29 +655,103 @@ export function LicenseLanternApp() {
       progress: 0,
       suggestions: {},
     });
+    setActivityDraftRestored(false);
+    setActivityDraftCredentialWarning("");
   }, []);
 
+  const persistActivityDraftNow = useCallback(() => {
+    if (!activityDraftPersistenceEnabled.current || !draftStorageKey) return;
+    try {
+      if (!hasMeaningfulActivityDraft(activityDraft)) {
+        window.localStorage.removeItem(draftStorageKey);
+        return;
+      }
+      window.localStorage.setItem(
+        draftStorageKey,
+        serializeActivityDraft({
+          credentialId: selectedCredentialId,
+          ...activityDraft,
+        }),
+      );
+    } catch {
+      // The form remains usable when device-local storage is unavailable.
+    }
+  }, [activityDraft, draftStorageKey, selectedCredentialId]);
+
   const openActivityEntry = useCallback(() => {
-    resetActivityEntry();
+    activityDraftPersistenceGeneration.current += 1;
+    activityDraftPersistenceEnabled.current = true;
+    let restored = false;
+    if (draftStorageKey && workspace) {
+      try {
+        const serialized = window.localStorage.getItem(draftStorageKey);
+        const saved = parseActivityDraft(serialized);
+        const credential = workspace.credentials.find(
+          (candidate) =>
+            candidate.id === saved?.credentialId &&
+            candidate.status !== "renewed",
+        );
+        if (saved) {
+          setActivityDraft({
+            title: saved.title,
+            completionDate: saved.completionDate,
+            totalUnits: saved.totalUnits,
+            provider: saved.provider,
+          });
+          if (credential) {
+            setSelectedCredentialId(credential.id);
+            setActivityDraftCredentialWarning("");
+          } else {
+            setSelectedCredentialId("");
+            setActivityDraftCredentialWarning(
+              "The credential originally linked to this draft is no longer active. Choose an active credential before saving.",
+            );
+          }
+          setActivityEvidenceFile(null);
+          setActivityScan({
+            phase: "idle",
+            label: "",
+            progress: 0,
+            suggestions: {},
+          });
+          setActivityDraftRestored(true);
+          restored = true;
+        } else if (serialized) {
+          window.localStorage.removeItem(draftStorageKey);
+        }
+      } catch {
+        // Draft recovery is a convenience; storage restrictions must not block entry.
+      }
+    }
+    if (!restored) resetActivityEntry();
     setActivityOpen(true);
-  }, [resetActivityEntry]);
+  }, [draftStorageKey, resetActivityEntry, workspace]);
 
   const closeActivityEntry = useCallback(() => {
+    persistActivityDraftNow();
+    activityDraftPersistenceEnabled.current = false;
+    activityDraftPersistenceGeneration.current += 1;
     setActivityOpen(false);
     resetActivityEntry();
-  }, [resetActivityEntry]);
+  }, [persistActivityDraftNow, resetActivityEntry]);
 
   const loadWorkspace = useCallback(async () => {
+    setWorkspaceLoadFailed(false);
+    setWorkspaceLoadFailureStatus(null);
+    let responseStatus: number | null = null;
     try {
       const response = await fetch("/api/workspace", {
         headers: { accept: "application/json" },
         cache: "no-store",
       });
+      responseStatus = response.status;
       const data = (await response.json()) as Workspace & { error?: string };
       if (!response.ok) {
         throw new Error(data.error || "We couldn’t load your renewal workspace.");
       }
       setWorkspace(data);
+      setWorkspaceLoadFailed(false);
+      setWorkspaceLoadFailureStatus(null);
       setError("");
       setSelectedCredentialId((current) => {
         if (
@@ -626,6 +766,8 @@ export function LicenseLanternApp() {
         )[0]?.id ?? "";
       });
     } catch (loadError) {
+      setWorkspaceLoadFailed(true);
+      setWorkspaceLoadFailureStatus(responseStatus);
       setError(
         loadError instanceof Error
           ? loadError.message
@@ -640,6 +782,83 @@ export function LicenseLanternApp() {
     }, 0);
     return () => window.clearTimeout(timeout);
   }, [loadWorkspace]);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      void loadWorkspace();
+    };
+    const handleOffline = () => setIsOnline(false);
+    const statusTimeout = window.setTimeout(
+      () => setIsOnline(window.navigator.onLine),
+      0,
+    );
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.clearTimeout(statusTimeout);
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, [loadWorkspace]);
+
+  useEffect(() => {
+    if (
+      "serviceWorker" in navigator &&
+      window.location.protocol === "https:"
+    ) {
+      void navigator.serviceWorker
+        .register("/sw.js", {
+          scope: "/",
+          updateViaCache: "none",
+        })
+        .catch(() => undefined);
+    }
+  }, []);
+
+  useEffect(() => {
+    const standalone =
+      window.matchMedia("(display-mode: standalone)").matches ||
+      Boolean(
+        (window.navigator as Navigator & { standalone?: boolean }).standalone,
+      );
+    const standaloneTimeout = window.setTimeout(
+      () => setIsStandalone(standalone),
+      0,
+    );
+    const handleInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as InstallPromptEvent);
+    };
+    const handleInstalled = () => {
+      setIsStandalone(true);
+      setInstallPrompt(null);
+    };
+    window.addEventListener("beforeinstallprompt", handleInstallPrompt);
+    window.addEventListener("appinstalled", handleInstalled);
+    return () => {
+      window.clearTimeout(standaloneTimeout);
+      window.removeEventListener("beforeinstallprompt", handleInstallPrompt);
+      window.removeEventListener("appinstalled", handleInstalled);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activityOpen || !draftStorageKey) return;
+    const generation = activityDraftPersistenceGeneration.current;
+    const timeout = window.setTimeout(() => {
+      if (generation !== activityDraftPersistenceGeneration.current) return;
+      persistActivityDraftNow();
+    }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [activityOpen, draftStorageKey, persistActivityDraftNow]);
+
+  useEffect(() => {
+    if (!activityOpen) return;
+    const flushActivityDraft = () => persistActivityDraftNow();
+    window.addEventListener("pagehide", flushActivityDraft);
+    return () => window.removeEventListener("pagehide", flushActivityDraft);
+  }, [activityOpen, persistActivityDraftNow]);
 
   useEffect(() => {
     if (!toast) return;
@@ -696,6 +915,19 @@ export function LicenseLanternApp() {
     );
   }, [catalogQuery, workspace]);
 
+  const catalogGroups = useMemo(() => {
+    const groups = new Map<string, CatalogRule[]>();
+    for (const rule of catalogMatches) {
+      const rules = groups.get(rule.profession) ?? [];
+      rules.push(rule);
+      groups.set(rule.profession, rules);
+    }
+    return [...groups.entries()].map(([profession, rules]) => ({
+      profession,
+      rules,
+    }));
+  }, [catalogMatches]);
+
   const eligibleAllocationCredentials = useMemo(() => {
     if (!workspace || !allocationActivity) return [];
     const existingIds = new Set(
@@ -726,9 +958,7 @@ export function LicenseLanternApp() {
   const activityCredential =
     activityCredentials.find(
       (credential) => credential.id === selectedCredentialId,
-    ) ??
-    activityCredentials[0] ??
-    null;
+    ) ?? null;
   const scanningActivityEvidence = activityScan.phase === "scanning";
 
   async function runAction(
@@ -736,6 +966,13 @@ export function LicenseLanternApp() {
     payload: Record<string, unknown>,
     successMessage: string,
   ) {
+    if (!window.navigator.onLine) {
+      setIsOnline(false);
+      setError(
+        "You’re offline. Your course draft stays on this device; reconnect before saving changes.",
+      );
+      return null;
+    }
     setPending(true);
     setError("");
     try {
@@ -765,6 +1002,130 @@ export function LicenseLanternApp() {
     } finally {
       setPending(false);
     }
+  }
+
+  function clearSavedActivityDraft() {
+    if (!draftStorageKey) return;
+    try {
+      window.localStorage.removeItem(draftStorageKey);
+    } catch {
+      // Storage restrictions should not affect the cloud record.
+    }
+  }
+
+  function discardActivityDraft() {
+    activityDraftPersistenceGeneration.current += 1;
+    clearSavedActivityDraft();
+    resetActivityEntry();
+    setToast({ message: "The device-only course draft was cleared." });
+  }
+
+  function finishSavedActivityEntry() {
+    activityDraftPersistenceEnabled.current = false;
+    activityDraftPersistenceGeneration.current += 1;
+    clearSavedActivityDraft();
+    setActivityOpen(false);
+    resetActivityEntry();
+  }
+
+  async function handleInstallApp() {
+    if (!installPrompt) {
+      setToast({
+        message:
+          "Use your browser’s Add to Home Screen or Install app option.",
+      });
+      return;
+    }
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    setInstallPrompt(null);
+    if (choice.outcome === "accepted") {
+      setIsStandalone(true);
+      setToast({ message: "License Lantern was added to this device." });
+    }
+  }
+
+  function preferredCalendarLeadDays() {
+    const leadDays =
+      workspace?.reminderPreferences.leadDays.filter(
+        (day) => day > 0 && day <= 365,
+      ) ?? [];
+    return leadDays.length ? Math.min(30, Math.max(...leadDays)) : 30;
+  }
+
+  function credentialCalendarEvent(
+    credential: Credential,
+  ): CalendarInviteEvent {
+    return {
+      uid: `credential-${credential.id}-${credential.deadline}`,
+      title: `${credential.credentialName} renewal deadline`,
+      description: [
+        `${credential.credentialName} renewal deadline in ${credential.jurisdiction}.`,
+        "Confirm current requirements with the licensing authority before submitting.",
+      ].join(" "),
+      date: credential.deadline,
+      reminderDaysBefore: preferredCalendarLeadDays(),
+      url: credential.sourceUrl,
+    };
+  }
+
+  async function deliverCalendarInvite(
+    events: CalendarInviteEvent[],
+    fileName: string,
+    successMessage: string,
+  ) {
+    try {
+      const delivery = await offerCalendarInvite(events, fileName);
+      if (delivery !== "cancelled") {
+        setToast({ message: successMessage });
+      }
+    } catch {
+      setError(
+        "The calendar file could not be opened on this device. Try again from your browser.",
+      );
+    }
+  }
+
+  async function addCredentialToCalendar(credential: Credential) {
+    await deliverCalendarInvite(
+      [credentialCalendarEvent(credential)],
+      `${credential.credentialName}-${credential.deadline}`,
+      "Renewal date handed off to your calendar.",
+    );
+  }
+
+  async function addReminderToCalendar(reminder: Reminder) {
+    await deliverCalendarInvite(
+      [
+        {
+          uid: reminder.key,
+          title: reminder.title,
+          description: `${reminder.body} Added from License Lantern.`,
+          date: reminder.eventDate,
+          reminderDaysBefore: reminder.kind === "acceptance" ? 0 : 7,
+        },
+      ],
+      `${reminder.credentialName}-${reminder.eventDate}`,
+      "Check-in handed off to your calendar.",
+    );
+  }
+
+  async function addAllRenewalsToCalendar() {
+    const credentials =
+      workspace?.credentials.filter(
+        (credential) => credential.status === "active",
+      ) ?? [];
+    if (!credentials.length) {
+      setToast({ message: "There are no active renewal dates to add yet." });
+      return;
+    }
+    await deliverCalendarInvite(
+      credentials.map(credentialCalendarEvent),
+      "license-lantern-renewals",
+      `${credentials.length} ${
+        credentials.length === 1 ? "renewal date" : "renewal dates"
+      } handed off to your calendar.`,
+    );
   }
 
   async function handleActivityEvidenceSelection(file?: File) {
@@ -958,7 +1319,7 @@ export function LicenseLanternApp() {
     if (result?.id && hasEvidenceFile && evidenceFile) {
       const uploaded = await uploadEvidence(result.id, evidenceFile);
       if (!uploaded) {
-        closeActivityEntry();
+        finishSavedActivityEntry();
         formElement.reset();
         setToast({
           message:
@@ -973,7 +1334,7 @@ export function LicenseLanternApp() {
       });
     }
     if (result) {
-      closeActivityEntry();
+      finishSavedActivityEntry();
       formElement.reset();
     }
   }
@@ -1337,7 +1698,20 @@ export function LicenseLanternApp() {
         </header>
 
         <main id="main-content" className="main-content">
-          {error ? (
+          {!isOnline ? (
+            <div className="offline-banner" role="status">
+              <span aria-hidden="true">⌁</span>
+              <div>
+                <strong>Offline — your cloud record is protected</strong>
+                <small>
+                  Course text can stay in a device-only draft. Reconnect to
+                  save changes or upload proof.
+                </small>
+              </div>
+            </div>
+          ) : null}
+
+          {error && workspace ? (
             <div className="error-banner" role="alert">
               <div>
                 <strong>Something needs attention</strong>
@@ -1350,7 +1724,17 @@ export function LicenseLanternApp() {
           ) : null}
 
           {!workspace ? (
-            <LoadingDashboard />
+            !isOnline ? (
+              <OfflineWorkspace />
+            ) : workspaceLoadFailed ? (
+              <WorkspaceLoadFailure
+                status={workspaceLoadFailureStatus}
+                message={error}
+                onRetry={() => void loadWorkspace()}
+              />
+            ) : (
+              <LoadingDashboard />
+            )
           ) : view === "today" ? (
             <TodayView
               workspace={workspace}
@@ -1364,6 +1748,9 @@ export function LicenseLanternApp() {
               onReminders={() => setRemindersOpen(true)}
               onReminderState={(reminder, status) =>
                 void setReminderState(reminder, status)
+              }
+              onAddReminderToCalendar={(reminder) =>
+                void addReminderToCalendar(reminder)
               }
               onToggleTask={toggleTask}
               onClaimQuest={(quest) => void claimWeeklyQuest(quest)}
@@ -1387,6 +1774,9 @@ export function LicenseLanternApp() {
               onSubmit={() => setSubmissionOpen(true)}
               onAccept={() => setAcceptanceOpen(true)}
               onReminders={() => setRemindersOpen(true)}
+              onAddToCalendar={(credential) =>
+                void addCredentialToCalendar(credential)
+              }
               onRequirementApplicability={(
                 credentialId,
                 requirement,
@@ -1424,6 +1814,10 @@ export function LicenseLanternApp() {
             <AccountView
               workspace={workspace}
               onReminders={() => setRemindersOpen(true)}
+              isStandalone={isStandalone}
+              installAvailable={Boolean(installPrompt)}
+              onInstall={() => void handleInstallApp()}
+              onAddAllRenewals={() => void addAllRenewalsToCalendar()}
             />
           )}
         </main>
@@ -1505,6 +1899,37 @@ export function LicenseLanternApp() {
                   Lantern, and the certificate stays on this device until you
                   tap Save activity.
                 </p>
+                {activityDraftRestored ||
+                hasMeaningfulActivityDraft(activityDraft) ? (
+                  <div
+                    className={`draft-safety-note ${
+                      activityDraftRestored ? "restored" : ""
+                    }`}
+                    role={activityDraftRestored ? "status" : undefined}
+                  >
+                    <span aria-hidden="true">
+                      {activityDraftRestored ? "↺" : "▣"}
+                    </span>
+                    <div>
+                      <strong>
+                        {activityDraftRestored
+                          ? "Recovered on this device"
+                          : "Draft protected on this device"}
+                      </strong>
+                      <small>
+                        Text fields are kept for up to 30 days. Proof files and
+                        scan results are never stored in the browser.
+                      </small>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={discardActivityDraft}
+                      disabled={pending}
+                    >
+                      Discard draft
+                    </button>
+                  </div>
+                ) : null}
                 {activityEvidenceFile ? (
                   <div className="capture-file">
                     <div>
@@ -1654,16 +2079,37 @@ export function LicenseLanternApp() {
                   name="credentialId"
                   value={activityCredential?.id ?? ""}
                   required
-                  onChange={(event) =>
-                    setSelectedCredentialId(event.currentTarget.value)
+                  aria-invalid={Boolean(activityDraftCredentialWarning)}
+                  aria-describedby={
+                    activityDraftCredentialWarning
+                      ? "activity-credential-warning"
+                      : undefined
                   }
+                  onChange={(event) => {
+                    setSelectedCredentialId(event.currentTarget.value);
+                    setActivityDraftCredentialWarning("");
+                  }}
                 >
+                  {!activityCredential ? (
+                    <option value="" disabled>
+                      Choose an active credential
+                    </option>
+                  ) : null}
                   {activityCredentials.map((credential) => (
                     <option key={credential.id} value={credential.id}>
                       {credential.credentialName} · {credential.jurisdiction}
                     </option>
                   ))}
                 </select>
+                {activityDraftCredentialWarning ? (
+                  <small
+                    className="field-warning"
+                    id="activity-credential-warning"
+                    role="alert"
+                  >
+                    {activityDraftCredentialWarning}
+                  </small>
+                ) : null}
               </label>
               <RequirementPicker
                 key={activityCredential?.id}
@@ -1717,20 +2163,22 @@ export function LicenseLanternApp() {
                 <button
                   className="button button-ghost"
                   type="button"
-                  onClick={closeActivityEntry}
+                  onClick={() => closeActivityEntry()}
                 >
                   Cancel
                 </button>
                 <button
                   className="button button-primary"
                   type="submit"
-                  disabled={pending || scanningActivityEvidence}
+                  disabled={pending || scanningActivityEvidence || !isOnline}
                 >
                   {pending
                     ? "Saving…"
                     : scanningActivityEvidence
                       ? "Reading certificate…"
-                      : "Save activity"}
+                      : !isOnline
+                        ? "Reconnect to save"
+                        : "Save activity"}
                 </button>
               </div>
             </form>
@@ -1830,9 +2278,10 @@ export function LicenseLanternApp() {
                     autoFocus
                     type="search"
                     value={catalogQuery}
-                    onChange={(event) =>
-                      setCatalogQuery(event.currentTarget.value)
-                    }
+                    onChange={(event) => {
+                      setCatalogQuery(event.currentTarget.value);
+                      setSelectedRuleId("");
+                    }}
                     placeholder="Search profession, license, or state"
                   />
                   <small>
@@ -1852,32 +2301,54 @@ export function LicenseLanternApp() {
                     required
                   >
                     <option value="">Choose a rule template</option>
-                    {catalogMatches.map((rule) => (
-                      <option key={rule.id} value={rule.id}>
-                        {rule.credentialName} · {rule.jurisdiction}
-                      </option>
+                    {catalogGroups.map((group) => (
+                      <optgroup key={group.profession} label={group.profession}>
+                        {group.rules.map((rule) => (
+                          <option key={rule.id} value={rule.id}>
+                            {rule.credentialName} · {rule.jurisdiction}
+                          </option>
+                        ))}
+                      </optgroup>
                     ))}
-                    {catalogMatches.length === 0 ? (
-                      <option value="" disabled>
-                        No matching template — enter your own
-                      </option>
-                    ) : null}
                   </select>
+                  <small aria-live="polite">
+                    {catalogMatches.length}{" "}
+                    {catalogMatches.length === 1 ? "match" : "matches"}
+                  </small>
                 </label>
+                {catalogMatches.length === 0 ? (
+                  <button
+                    className="button button-outline catalog-custom-button"
+                    type="button"
+                    onClick={() => {
+                      setSelectedRuleId("");
+                      setCatalogQuery("");
+                      setCustomCredential(true);
+                    }}
+                  >
+                    No exact match — enter my own requirements
+                  </button>
+                ) : null}
                 {selectedRule ? (
                   <div className="source-card">
                     <div className="source-card-top">
-                      <span className="verified-chip">
-                        {selectedRule.reviewStatus === "verified"
-                          ? "Source-linked"
-                          : "Source-linked · check conditions"}
+                      <span
+                        className={`verified-chip ${ruleReviewClass(
+                          selectedRule.reviewStatus,
+                        )}`}
+                      >
+                        {ruleReviewLabel(selectedRule.reviewStatus)}
                       </span>
                       <span>
-                        Reviewed{" "}
-                        {formatDate(selectedRule.lastVerifiedAt, {
-                          month: "short",
-                          year: "numeric",
-                        })}
+                        {selectedRule.lastVerifiedAt
+                          ? `Reviewed ${formatDate(
+                              selectedRule.lastVerifiedAt,
+                              {
+                                month: "short",
+                                year: "numeric",
+                              },
+                            )}`
+                          : "Review date not set"}
                       </span>
                     </div>
                     <strong>
@@ -2581,6 +3052,7 @@ function TodayView({
   onAccept,
   onReminders,
   onReminderState,
+  onAddReminderToCalendar,
   onToggleTask,
   onClaimQuest,
   progressionPending,
@@ -2599,6 +3071,7 @@ function TodayView({
     reminder: Reminder,
     status: "dismissed" | "snoozed",
   ) => void;
+  onAddReminderToCalendar: (reminder: Reminder) => void;
   onToggleTask: (task: RenewalTask) => void;
   onClaimQuest: (quest: WeeklyQuest) => void;
   progressionPending: boolean;
@@ -2834,6 +3307,13 @@ function TodayView({
                   <p>{reminder.body}</p>
                 </div>
                 <div>
+                  <button
+                    className="calendar-action"
+                    type="button"
+                    onClick={() => onAddReminderToCalendar(reminder)}
+                  >
+                    Add to calendar
+                  </button>
                   <button
                     type="button"
                     onClick={() => onReminderState(reminder, "snoozed")}
@@ -3223,6 +3703,7 @@ function CredentialsView({
   onSubmit,
   onAccept,
   onReminders,
+  onAddToCalendar,
   onRequirementApplicability,
 }: {
   credentials: Credential[];
@@ -3232,6 +3713,7 @@ function CredentialsView({
   onSubmit: () => void;
   onAccept: () => void;
   onReminders: () => void;
+  onAddToCalendar: (credential: Credential) => void;
   onRequirementApplicability: (
     credentialId: string,
     requirement: Requirement,
@@ -3298,13 +3780,22 @@ function CredentialsView({
               </div>
             </div>
             {selected.status !== "renewed" ? (
-              <button
-                className="reminder-setting-link"
-                type="button"
-                onClick={onReminders}
-              >
-                ◷ Configure renewal check-ins
-              </button>
+              <div className="credential-utility-actions">
+                <button
+                  className="reminder-setting-link"
+                  type="button"
+                  onClick={onReminders}
+                >
+                  ◷ Configure renewal check-ins
+                </button>
+                <button
+                  className="reminder-setting-link"
+                  type="button"
+                  onClick={() => onAddToCalendar(selected)}
+                >
+                  ＋ Add renewal date to calendar
+                </button>
+              </div>
             ) : null}
             <div className="detail-stats">
               <div>
@@ -3383,9 +3874,18 @@ function CredentialsView({
                   ? "Custom requirements"
                   : "Source-linked template"}
               </h3>
+              {selected.ruleReviewStatus !== "custom" ? (
+                <span
+                  className={`verified-chip ${ruleReviewClass(
+                    selected.ruleReviewStatus,
+                  )}`}
+                >
+                  {ruleReviewLabel(selected.ruleReviewStatus)}
+                </span>
+              ) : null}
               <p>
-                Confirm requirements and dates with the issuing organization,
-                especially when rules or your license status change.
+                {selected.sourceTitle ??
+                  "Confirm requirements and dates with the issuing organization, especially when rules or your license status change."}
               </p>
               {selected.sourceUrl ? (
                 <a
@@ -3632,9 +4132,17 @@ function RecordsView({
 function AccountView({
   workspace,
   onReminders,
+  isStandalone,
+  installAvailable,
+  onInstall,
+  onAddAllRenewals,
 }: {
   workspace: Workspace;
   onReminders: () => void;
+  isStandalone: boolean;
+  installAvailable: boolean;
+  onInstall: () => void;
+  onAddAllRenewals: () => void;
 }) {
   return (
     <div className="view-stack">
@@ -3733,13 +4241,48 @@ function AccountView({
                 )} days before due dates.`
               : "Choose when upcoming due dates should appear on Today."}
           </p>
-          <button
-            className="button button-outline"
-            type="button"
-            onClick={onReminders}
-          >
-            Manage reminders
-          </button>
+          <div className="account-card-actions">
+            <button
+              className="button button-outline"
+              type="button"
+              onClick={onReminders}
+            >
+              Manage reminders
+            </button>
+            <button
+              className="button button-outline"
+              type="button"
+              onClick={onAddAllRenewals}
+            >
+              Add renewal dates to calendar
+            </button>
+          </div>
+        </section>
+        <section className="card phone-companion-card">
+          <span className="section-kicker">Phone companion</span>
+          <h2>
+            {isStandalone
+              ? "Installed and ready from your home screen."
+              : "Keep License Lantern one tap away."}
+          </h2>
+          <p>
+            {isStandalone
+              ? "The installed app uses a protected offline fallback and reconnects to your cloud record when online."
+              : installAvailable
+                ? "Install the app for a focused, full-screen renewal workspace."
+                : "Use your browser’s Install app or Add to Home Screen option for a focused, full-screen workspace."}
+          </p>
+          {!isStandalone ? (
+            <button
+              className="button button-primary"
+              type="button"
+              onClick={onInstall}
+            >
+              {installAvailable ? "Install on this device" : "How to install"}
+            </button>
+          ) : (
+            <span className="installed-pill">✓ Installed on this device</span>
+          )}
         </section>
         <section className="card compliance-card">
           <span className="section-kicker">A careful boundary</span>
@@ -3911,6 +4454,9 @@ function RequirementPicker({
 }: {
   credential: Credential | null;
 }) {
+  const [selectedRequirementIds, setSelectedRequirementIds] = useState<
+    string[]
+  >([]);
   const selectable =
     credential?.requirements.filter(
       (requirement) =>
@@ -3922,6 +4468,24 @@ function RequirementPicker({
       (requirement) =>
         requirementStatus(requirement) === "needs_confirmation",
     ).length ?? 0;
+
+  const toggleRequirement = (requirement: Requirement, checked: boolean) => {
+    setSelectedRequirementIds((current) => {
+      if (!checked) {
+        return current.filter((id) => id !== requirement.id);
+      }
+      const withoutRequirement = current.filter(
+        (id) => id !== requirement.id,
+      );
+      const withoutAlternative = requirement.exclusiveGroup
+        ? withoutRequirement.filter((id) => {
+            const selected = selectable.find((item) => item.id === id);
+            return selected?.exclusiveGroup !== requirement.exclusiveGroup;
+          })
+        : withoutRequirement;
+      return [...withoutAlternative, requirement.id];
+    });
+  };
 
   return (
     <fieldset className="requirement-picker">
@@ -3943,6 +4507,10 @@ function RequirementPicker({
                 type="checkbox"
                 name="requirementIds"
                 value={requirement.id}
+                checked={selectedRequirementIds.includes(requirement.id)}
+                onChange={(event) =>
+                  toggleRequirement(requirement, event.currentTarget.checked)
+                }
               />
               <span className="requirement-check" aria-hidden="true">
                 ✓
@@ -3963,7 +4531,9 @@ function RequirementPicker({
                       ? "Also rolls up to its parent requirement"
                       : requirement.relation === "overlapping"
                         ? "May overlap another selected requirement"
-                        : "Counts within the overall total"}
+                        : requirement.exclusiveGroup
+                          ? "Choose only one activity type from this group"
+                          : "Counts within the overall total"}
                 </small>
               </span>
             </label>
@@ -4021,10 +4591,117 @@ function Modal({
   children: ReactNode;
   onClose: () => void;
 }) {
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const backdrop = backdropRef.current;
+    const dialog = dialogRef.current;
+    if (!backdrop || !dialog) return;
+
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const surroundingElements = backdrop.parentElement
+      ? Array.from(backdrop.parentElement.children).filter(
+          (element): element is HTMLElement =>
+            element instanceof HTMLElement && element !== backdrop,
+        )
+      : [];
+    const priorSurroundingState = surroundingElements.map((element) => ({
+      element,
+      inert: element.inert,
+      ariaHidden: element.getAttribute("aria-hidden"),
+    }));
+    const priorBodyOverflow = document.body.style.overflow;
+
+    for (const element of surroundingElements) {
+      element.inert = true;
+      element.setAttribute("aria-hidden", "true");
+    }
+    document.body.style.overflow = "hidden";
+
+    const focusableSelector = [
+      "a[href]",
+      "button:not([disabled])",
+      "input:not([disabled]):not([type='hidden'])",
+      "select:not([disabled])",
+      "textarea:not([disabled])",
+      "[tabindex]:not([tabindex='-1'])",
+    ].join(",");
+    const getFocusableElements = () =>
+      Array.from(
+        dialog.querySelectorAll<HTMLElement>(focusableSelector),
+      ).filter(
+        (element) =>
+          !element.hasAttribute("hidden") &&
+          element.getAttribute("aria-hidden") !== "true",
+      );
+    const requestedInitialFocus =
+      dialog.querySelector<HTMLElement>("[autofocus]");
+    (requestedInitialFocus ?? dialog).focus({ preventScroll: true });
+
+    const keepFocusInside = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const focusableElements = getFocusableElements();
+      if (focusableElements.length === 0) {
+        event.preventDefault();
+        dialog.focus({ preventScroll: true });
+        return;
+      }
+      const first = focusableElements[0];
+      const last = focusableElements[focusableElements.length - 1];
+      const activeElement =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+
+      if (
+        event.shiftKey &&
+        (activeElement === first ||
+          activeElement === dialog ||
+          !activeElement ||
+          !dialog.contains(activeElement))
+      ) {
+        event.preventDefault();
+        last.focus();
+      } else if (
+        !event.shiftKey &&
+        (activeElement === last ||
+          activeElement === dialog ||
+          !activeElement ||
+          !dialog.contains(activeElement))
+      ) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    dialog.addEventListener("keydown", keepFocusInside);
+    return () => {
+      dialog.removeEventListener("keydown", keepFocusInside);
+      document.body.style.overflow = priorBodyOverflow;
+      for (const state of priorSurroundingState) {
+        state.element.inert = state.inert;
+        if (state.ariaHidden === null) {
+          state.element.removeAttribute("aria-hidden");
+        } else {
+          state.element.setAttribute("aria-hidden", state.ariaHidden);
+        }
+      }
+      if (previouslyFocused?.isConnected) {
+        previouslyFocused.focus({ preventScroll: true });
+      }
+    };
+  }, []);
+
   return (
-    <div className="modal-backdrop">
+    <div className="modal-backdrop" ref={backdropRef}>
       <section
         className="modal-card"
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-title"
@@ -4146,6 +4823,74 @@ function LoadingDashboard() {
         Loading your renewal workspace
       </p>
     </div>
+  );
+}
+
+function OfflineWorkspace() {
+  return (
+    <section className="offline-workspace" role="status">
+      <span className="offline-workspace-mark" aria-hidden="true">
+        ⌁
+      </span>
+      <span className="section-kicker">Connection paused</span>
+      <h1>Your cloud record is still protected.</h1>
+      <p>
+        License Lantern could not load this device’s signed-in workspace while
+        offline. Reconnect and it will retry automatically; no credential,
+        certificate, or account data was cached here.
+      </p>
+    </section>
+  );
+}
+
+function WorkspaceLoadFailure({
+  status,
+  message,
+  onRetry,
+}: {
+  status: number | null;
+  message: string;
+  onRetry: () => void;
+}) {
+  const authenticationFailure = status === 401 || status === 403;
+  const serviceFailure = status !== null && status >= 500;
+  const title = authenticationFailure
+    ? "Your sign-in needs to be refreshed."
+    : serviceFailure
+      ? "License Lantern is temporarily unavailable."
+      : "We couldn’t reach your workspace.";
+  const body = authenticationFailure
+    ? "Reload to continue through the protected sign-in flow. Your private renewal record remains in the cloud."
+    : serviceFailure
+      ? "The cloud service could not load your renewal record. Try again in a moment; no private data was cached here."
+      : message ||
+        "Your signed-in cloud record did not load. Check the connection and try again; no private data was cached here.";
+
+  return (
+    <section
+      className="offline-workspace workspace-load-failure"
+      role="alert"
+    >
+      <span className="offline-workspace-mark" aria-hidden="true">
+        !
+      </span>
+      <span className="section-kicker">
+        {authenticationFailure ? "Protected workspace" : "Connection interrupted"}
+      </span>
+      <h1>{title}</h1>
+      <p>{body}</p>
+      <button
+        className="button button-primary"
+        type="button"
+        onClick={
+          authenticationFailure
+            ? () => window.location.reload()
+            : onRetry
+        }
+      >
+        {authenticationFailure ? "Reload and sign in" : "Try again"}
+      </button>
+    </section>
   );
 }
 

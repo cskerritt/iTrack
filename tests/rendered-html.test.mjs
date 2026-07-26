@@ -49,7 +49,7 @@ function isOwnedActivityCycleLookup(sql) {
 }
 
 function isRequirementTagLookup(sql) {
-  return /SELECT requirement\.id, requirement\.name, requirement\.is_active AS isActive, requirement\.applicability_status AS applicabilityStatus FROM credential_requirements requirement JOIN credentials credential[\s\S]*?requirement\.id IN \(/i.test(
+  return /SELECT requirement\.id, requirement\.name,[\s\S]*?requirement\.is_active AS isActive,[\s\S]*?requirement\.applicability_status AS applicabilityStatus,[\s\S]*?requirement\.exclusive_group AS exclusiveGroup FROM credential_requirements requirement JOIN credentials credential[\s\S]*?requirement\.id IN \(/i.test(
     sql,
   );
 }
@@ -291,6 +291,42 @@ function flattenedStatements(database) {
   return database.batches.flat();
 }
 
+async function importTypeScriptModule(source) {
+  const typescript = await import("typescript");
+  const compiled = typescript.default.transpileModule(source, {
+    compilerOptions: {
+      module: typescript.default.ModuleKind.ES2022,
+      target: typescript.default.ScriptTarget.ES2022,
+    },
+  }).outputText;
+  return import(
+    `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`
+  );
+}
+
+async function readBuiltClientAppSource() {
+  const assets = await readdir(
+    new URL("../dist/client/assets/", import.meta.url),
+  );
+  const appAsset = assets.find(
+    (name) =>
+      name.startsWith("LicenseLanternApp-") && name.endsWith(".js"),
+  );
+  assert.ok(appAsset, "missing built LicenseLanternApp client asset");
+  return readFile(
+    new URL(`../dist/client/assets/${appAsset}`, import.meta.url),
+    "utf8",
+  );
+}
+
+function pngDimensions(contents) {
+  assert.equal(contents.subarray(1, 4).toString("ascii"), "PNG");
+  return {
+    width: contents.readUInt32BE(16),
+    height: contents.readUInt32BE(20),
+  };
+}
+
 test("License Lantern product contract", async (t) => {
   await t.test("server-renders the product shell and metadata", async () => {
     const response = await fetchWorker("http://localhost/", {
@@ -478,6 +514,461 @@ test("License Lantern product contract", async (t) => {
     },
   );
 
+  await t.test(
+    "round-trips owner-scoped device drafts without private fields and expires them",
+    async () => {
+      const draftSource = await readFile(
+        new URL("../app/lib/activityDraft.ts", import.meta.url),
+        "utf8",
+      );
+      const draftModule = await importTypeScriptModule(draftSource);
+      const savedAt = new Date("2026-06-01T12:30:00.000Z");
+      const input = {
+        credentialId: "credential-phone",
+        title: "Trauma-informed practice",
+        completionDate: "2026-05-30",
+        totalUnits: "3.5",
+        provider: "State Medical Society",
+      };
+
+      const serialized = draftModule.serializeActivityDraft(input, savedAt);
+      assert.deepEqual(
+        draftModule.parseActivityDraft(
+          serialized,
+          new Date("2026-06-15T12:30:00.000Z"),
+        ),
+        {
+          version: 1,
+          savedAt: "2026-06-01T12:30:00.000Z",
+          ...input,
+        },
+      );
+
+      const ownerKey = draftModule.activityDraftStorageKey(
+        " Owner@Example.com ",
+      );
+      assert.equal(
+        ownerKey,
+        draftModule.activityDraftStorageKey("owner@example.com"),
+      );
+      assert.notEqual(
+        ownerKey,
+        draftModule.activityDraftStorageKey("other@example.com"),
+      );
+      assert.match(
+        ownerKey,
+        /^license-lantern:activity-draft:v1:[0-9a-f]{8}$/,
+      );
+      assert.doesNotMatch(ownerKey, /owner|example|@/i);
+
+      const boundaryDraft = draftModule.serializeActivityDraft(
+        input,
+        new Date("2026-01-01T00:00:00.000Z"),
+      );
+      assert.ok(
+        draftModule.parseActivityDraft(
+          boundaryDraft,
+          new Date("2026-01-31T00:00:00.000Z"),
+        ),
+        "a draft remains valid at the 30-day boundary",
+      );
+      assert.equal(
+        draftModule.parseActivityDraft(
+          boundaryDraft,
+          new Date("2026-01-31T00:00:00.001Z"),
+        ),
+        null,
+      );
+
+      const futureDraft = draftModule.serializeActivityDraft(
+        input,
+        new Date("2026-06-01T12:35:00.001Z"),
+      );
+      assert.equal(
+        draftModule.parseActivityDraft(futureDraft, savedAt),
+        null,
+      );
+
+      const serializedWithPrivateExtras =
+        draftModule.serializeActivityDraft(
+          {
+            ...input,
+            ownerEmail: "owner@example.com",
+            evidenceFile: { name: "private-certificate.pdf" },
+            certificateBytes: "private-binary-data",
+            scanText: "private OCR output",
+            scanSuggestions: { title: "private scan suggestion" },
+            requirementIds: ["private-requirement-id"],
+          },
+          savedAt,
+        );
+      const persisted = JSON.parse(serializedWithPrivateExtras);
+      assert.deepEqual(Object.keys(persisted), [
+        "version",
+        "savedAt",
+        "credentialId",
+        "title",
+        "completionDate",
+        "totalUnits",
+        "provider",
+      ]);
+      assert.doesNotMatch(
+        serializedWithPrivateExtras,
+        /owner@example|private-certificate|private-binary|private OCR|private-requirement/i,
+      );
+    },
+  );
+
+  await t.test(
+    "builds safe all-day calendar files with escaping and Unicode-aware folding",
+    async () => {
+      const calendarSource = await readFile(
+        new URL("../app/lib/calendarInvite.ts", import.meta.url),
+        "utf8",
+      );
+      const calendarModule = await importTypeScriptModule(calendarSource);
+      const generatedAt = new Date("2026-07-26T14:05:06.000Z");
+      const baseEvent = {
+        uid: "credential:one/renewal",
+        title: "License renewal",
+        description: "Confirm requirements before filing.",
+        date: "2028-02-28",
+        reminderDaysBefore: 30,
+      };
+
+      const allDayInvite = calendarModule.buildCalendarInvite(
+        [baseEvent],
+        generatedAt,
+      );
+      assert.match(allDayInvite, /\r\n$/);
+      assert.match(allDayInvite, /\r\nDTSTAMP:20260726T140506Z\r\n/);
+      assert.match(
+        allDayInvite,
+        /\r\nDTSTART;VALUE=DATE:20280228\r\n/,
+      );
+      assert.match(allDayInvite, /\r\nDTEND;VALUE=DATE:20280229\r\n/);
+      assert.match(allDayInvite, /\r\nTRIGGER:-P30D\r\n/);
+      assert.doesNotMatch(
+        allDayInvite,
+        /DTSTART(?:;[^:]*)?:\d{8}T\d{6}/,
+      );
+
+      const escapedInvite = calendarModule.buildCalendarInvite(
+        [
+          {
+            ...baseEvent,
+            title: "Ethics, law; \\ practice\nNext",
+            description: "First, verify; then \\ file\r\nKeep proof",
+          },
+        ],
+        generatedAt,
+      );
+      assert.ok(
+        escapedInvite.includes(
+          "SUMMARY:Ethics\\, law\\; \\\\ practice\\nNext",
+        ),
+      );
+      assert.ok(
+        escapedInvite.includes(
+          "DESCRIPTION:First\\, verify\\; then \\\\ file\\nKeep proof",
+        ),
+      );
+
+      const injectedInvite = calendarModule.buildCalendarInvite(
+        [
+          {
+            ...baseEvent,
+            uid: "safe\r\nX-OWNER:attacker",
+            title: "Safe\r\nEND:VEVENT\r\nBEGIN:VEVENT",
+            description: "Details\r\nX-PRIVATE:secret",
+            url: "https://example.com/\r\nX-EVIL:injected",
+          },
+        ],
+        generatedAt,
+      );
+      const injectionLines = injectedInvite.split("\r\n");
+      assert.equal(
+        injectionLines.filter((line) => line === "BEGIN:VEVENT").length,
+        1,
+      );
+      assert.equal(
+        injectionLines.filter((line) => line === "END:VEVENT").length,
+        1,
+      );
+      assert.ok(
+        injectionLines.some((line) =>
+          line.includes("Safe\\nEND:VEVENT\\nBEGIN:VEVENT"),
+        ),
+      );
+      assert.ok(
+        injectionLines.some((line) =>
+          line.includes("Details\\nX-PRIVATE:secret"),
+        ),
+      );
+      assert.doesNotMatch(injectedInvite, /\r\n(?:X-OWNER|X-PRIVATE|X-EVIL):/);
+      assert.doesNotMatch(injectedInvite, /\r\nURL:/);
+
+      const unicodeTitle =
+        "Éthique ⚖️ · 資料保護 · renovación · renewal ".repeat(8).trim();
+      const unicodeInvite = calendarModule.buildCalendarInvite(
+        [{ ...baseEvent, title: unicodeTitle }],
+        generatedAt,
+      );
+      assert.match(unicodeInvite, /\r\n /);
+      for (const line of unicodeInvite.split("\r\n")) {
+        assert.ok(
+          Buffer.byteLength(line, "utf8") <= 75,
+          `calendar line exceeds 75 UTF-8 octets: ${line}`,
+        );
+      }
+      assert.ok(
+        unicodeInvite
+          .replaceAll("\r\n ", "")
+          .includes(`SUMMARY:${unicodeTitle}`),
+      );
+      assert.doesNotMatch(unicodeInvite, /\uFFFD/);
+
+      for (const invalidDate of [
+        "2026-02-29",
+        "2026-04-31",
+        "2026-13-01",
+        "2026-7-01",
+        "2026-07-01\r\nX-EVIL:1",
+      ]) {
+        assert.throws(
+          () =>
+            calendarModule.buildCalendarInvite(
+              [{ ...baseEvent, date: invalidDate }],
+              generatedAt,
+            ),
+          /calendar event has an invalid date/i,
+        );
+      }
+      assert.throws(
+        () => calendarModule.buildCalendarInvite([], generatedAt),
+        /at least one calendar event is required/i,
+      );
+      assert.throws(
+        () =>
+          calendarModule.buildCalendarInvite(
+            [baseEvent],
+            new Date("not-a-date"),
+          ),
+        /calendar generation time is invalid/i,
+      );
+    },
+  );
+
+  await t.test(
+    "ships the installable phone companion without caching private data",
+    async () => {
+      const [
+        manifestSource,
+        layoutSource,
+        clientSource,
+        builtClientSource,
+        workerSource,
+        builtWorkerSource,
+        offlineSource,
+        builtOfflineSource,
+        headersSource,
+        builtHeadersSource,
+        stylesSource,
+      ] = await Promise.all([
+        readFile(new URL("../app/manifest.ts", import.meta.url), "utf8"),
+        readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+        readFile(
+          new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+          "utf8",
+        ),
+        readBuiltClientAppSource(),
+        readFile(new URL("../public/sw.js", import.meta.url), "utf8"),
+        readFile(new URL("../dist/client/sw.js", import.meta.url), "utf8"),
+        readFile(new URL("../public/offline.html", import.meta.url), "utf8"),
+        readFile(
+          new URL("../dist/client/offline.html", import.meta.url),
+          "utf8",
+        ),
+        readFile(new URL("../public/_headers", import.meta.url), "utf8"),
+        readFile(new URL("../dist/client/_headers", import.meta.url), "utf8"),
+        readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+      ]);
+
+      const manifestResponse = await fetchWorker(
+        "http://localhost/manifest.webmanifest",
+        { headers: { accept: "application/manifest+json" } },
+      );
+      assert.equal(manifestResponse.status, 200);
+      assert.match(
+        manifestResponse.headers.get("content-type") ?? "",
+        /application\/manifest\+json|application\/json/i,
+      );
+      const manifest = await manifestResponse.json();
+      assert.equal(
+        manifest.name,
+        "License Lantern — CE & Renewal Tracker",
+      );
+      assert.equal(manifest.short_name, "Lantern");
+      assert.equal(manifest.start_url, "/");
+      assert.equal(manifest.scope, "/");
+      assert.equal(manifest.display, "standalone");
+      assert.equal(manifest.background_color, "#f6f4ee");
+      assert.equal(manifest.theme_color, "#163f36");
+      assert.ok(
+        manifest.icons.some(
+          (icon) =>
+            icon.src === "/icon-192.png" && icon.sizes === "192x192",
+        ),
+      );
+      assert.ok(
+        manifest.icons.some(
+          (icon) =>
+            icon.src === "/icon-512.png" && icon.sizes === "512x512",
+        ),
+      );
+      assert.match(manifestSource, /display:\s*"standalone"/);
+      assert.match(manifestSource, /start_url:\s*"\/"/);
+      assert.match(layoutSource, /manifest:\s*"\/manifest\.webmanifest"/);
+      assert.match(layoutSource, /appleWebApp:\s*\{/);
+      assert.match(layoutSource, /viewportFit:\s*"cover"/);
+
+      for (const [fileName, expectedDimensions] of [
+        ["icon-192.png", { width: 192, height: 192 }],
+        ["icon-512.png", { width: 512, height: 512 }],
+        ["apple-touch-icon.png", { width: 180, height: 180 }],
+      ]) {
+        const [sourceIcon, builtIcon] = await Promise.all([
+          readFile(new URL(`../public/${fileName}`, import.meta.url)),
+          readFile(new URL(`../dist/client/${fileName}`, import.meta.url)),
+        ]);
+        assert.ok(sourceIcon.length > 1_000, `${fileName} is unexpectedly small`);
+        assert.deepEqual(pngDimensions(sourceIcon), expectedDimensions);
+        assert.deepEqual(builtIcon, sourceIcon);
+      }
+
+      assert.equal(builtWorkerSource, workerSource);
+      assert.equal(builtOfflineSource, offlineSource);
+      assert.equal(builtHeadersSource, headersSource);
+      assert.match(
+        offlineSource,
+        /Account data,\s+APIs,\s+and certificates are never stored in this offline\s+page\./,
+      );
+      assert.doesNotMatch(
+        offlineSource,
+        /localStorage|indexedDB|\/api\/|certificate data/i,
+      );
+      assert.match(headersSource, /\/sw\.js[\s\S]*?no-cache, no-store/i);
+
+      assert.match(
+        workerSource,
+        /request\.method !== "GET" \|\| url\.origin !== self\.location\.origin/,
+      );
+      assert.match(workerSource, /request\.headers\.has\("authorization"\)/);
+      assert.match(workerSource, /request\.headers\.has\("range"\)/);
+      assert.match(
+        workerSource,
+        /isPathOrDescendant\(url\.pathname, "\/api"\)/,
+      );
+      assert.match(
+        workerSource,
+        /AUTH_PATHS\.some\(\(path\) => isPathOrDescendant\(url\.pathname, path\)\)/,
+      );
+      const navigationBranch = workerSource.match(
+        /if \(request\.mode === "navigate"\) \{[\s\S]*?\n  \}/,
+      )?.[0];
+      assert.ok(navigationBranch);
+      assert.match(
+        navigationBranch,
+        /fetch\(request\)\.catch\(async \(\) => \{/,
+      );
+      assert.match(navigationBranch, /caches\.open\(CACHE_NAME\)/);
+      assert.match(navigationBranch, /cache\.match\("\/offline\.html"\)/);
+      assert.match(navigationBranch, /"cache-control": "no-store"/);
+      assert.doesNotMatch(
+        navigationBranch,
+        /cache\.(?:put|add|addAll)\(/,
+      );
+      assert.match(
+        workerSource,
+        /responseUrl\.origin !== self\.location\.origin/,
+      );
+      assert.match(
+        workerSource,
+        /responseUrl\.pathname !== requestedUrl\.pathname/,
+      );
+      assert.match(workerSource, /\\bno-store\\b/);
+
+      for (const source of [clientSource, builtClientSource]) {
+        assert.match(source, /Recovered on this device/);
+        assert.match(source, /Offline — your cloud record is protected/);
+        assert.match(source, /Reconnect to save/);
+        assert.match(source, /Install on this device/);
+        assert.match(source, /Add renewal date to calendar/);
+        assert.match(source, /Add renewal dates to calendar/);
+      }
+      assert.match(
+        clientSource,
+        /parseActivityDraft\(serialized\)[\s\S]*?setActivityDraftRestored\(true\)/,
+      );
+      assert.match(
+        clientSource,
+        /navigator\.serviceWorker[\s\S]*?register\("\/sw\.js"/,
+      );
+      assert.match(clientSource, /window\.addEventListener\("offline"/);
+      assert.match(clientSource, /window\.addEventListener\("online"/);
+      assert.match(clientSource, /window\.addEventListener\("beforeinstallprompt"/);
+      assert.match(clientSource, /window\.addEventListener\("appinstalled"/);
+      assert.match(
+        clientSource,
+        /setSelectedCredentialId\(""\)[\s\S]*?credential originally linked to this draft is no longer active/,
+      );
+      assert.match(
+        clientSource,
+        /const activityCredential =[\s\S]*?selectedCredentialId,[\s\S]*?\?\? null/,
+      );
+      assert.match(
+        clientSource,
+        /workspaceLoadFailed[\s\S]*?<WorkspaceLoadFailure[\s\S]*?function WorkspaceLoadFailure/,
+      );
+      assert.match(clientSource, /element\.inert = true/);
+      assert.match(clientSource, /event\.key !== "Tab"/);
+      assert.match(clientSource, /previouslyFocused\.focus/);
+      assert.match(clientSource, /status === 401 \|\| status === 403/);
+      assert.match(clientSource, /Reload and sign in/);
+      const baseStyles = stylesSource.split(
+        "@media (max-width: 1040px)",
+      )[0];
+      assert.match(
+        baseStyles,
+        /\.desktop-sidebar[\s\S]*?safe-area-inset-top[\s\S]*?safe-area-inset-bottom[\s\S]*?safe-area-inset-left/,
+      );
+      assert.match(
+        baseStyles,
+        /\.main-content[\s\S]*?safe-area-inset-top[\s\S]*?safe-area-inset-right[\s\S]*?safe-area-inset-bottom[\s\S]*?safe-area-inset-left/,
+      );
+      assert.match(
+        baseStyles,
+        /\.modal-backdrop[\s\S]*?safe-area-inset-top[\s\S]*?safe-area-inset-right[\s\S]*?safe-area-inset-bottom[\s\S]*?safe-area-inset-left/,
+      );
+      assert.match(
+        stylesSource,
+        /mobile-header[\s\S]*?safe-area-inset-top[\s\S]*?safe-area-inset-right[\s\S]*?safe-area-inset-left/,
+      );
+      assert.match(
+        stylesSource,
+        /mobile-nav[\s\S]*?safe-area-inset-right[\s\S]*?safe-area-inset-bottom[\s\S]*?safe-area-inset-left/,
+      );
+      assert.match(
+        clientSource,
+        /date:\s*reminder\.eventDate/,
+      );
+      assert.match(
+        clientSource,
+        /date:\s*credential\.deadline/,
+      );
+    },
+  );
+
   await t.test("ships durable D1, R2, and migration bindings", async () => {
     const [
       hostingSource,
@@ -496,6 +987,9 @@ test("License Lantern product contract", async (t) => {
       migrationJournalSource,
       schemaSource,
       runtimeSource,
+      exclusiveGroupMigration,
+      builtExclusiveGroupMigration,
+      exclusiveGroupSnapshotSource,
     ] = await Promise.all([
         readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
         readFile(
@@ -570,6 +1064,21 @@ test("License Lantern product contract", async (t) => {
         ),
         readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
         readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
+        readFile(
+          new URL("../drizzle/0005_smooth_mach_iv.sql", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL(
+            "../dist/.openai/drizzle/0005_smooth_mach_iv.sql",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+        readFile(
+          new URL("../drizzle/meta/0005_snapshot.json", import.meta.url),
+          "utf8",
+        ),
       ]);
 
     const hosting = JSON.parse(hostingSource);
@@ -583,8 +1092,9 @@ test("License Lantern product contract", async (t) => {
     assert.equal(builtLifecycleMigration, lifecycleMigration);
     assert.equal(builtRichRuleMigration, richRuleMigration);
     assert.equal(builtProgressionMigration, progressionMigration);
+    assert.equal(builtExclusiveGroupMigration, exclusiveGroupMigration);
 
-    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}`;
+    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}`;
     const migratedTables = new Set(
       [...migration.matchAll(/CREATE TABLE `([^`]+)`/g)].map(
         (match) => match[1],
@@ -693,8 +1203,35 @@ test("License Lantern product contract", async (t) => {
     const migrationJournal = JSON.parse(migrationJournalSource);
     assert.equal(
       migrationJournal.entries.at(-1)?.tag,
-      "0004_nervous_mentallo",
+      "0005_smooth_mach_iv",
     );
+    assert.match(
+      exclusiveGroupMigration,
+      /ALTER TABLE `credential_requirements` ADD `exclusive_group` text/i,
+    );
+    assert.match(
+      exclusiveGroupMigration,
+      /ALTER TABLE `rule_categories` ADD `exclusive_group` text/i,
+    );
+    const exclusiveGroupSnapshot = JSON.parse(exclusiveGroupSnapshotSource);
+    const expectedExclusiveGroupColumn = {
+      name: "exclusive_group",
+      type: "text",
+      primaryKey: false,
+      notNull: false,
+      autoincrement: false,
+    };
+    assert.deepEqual(
+      exclusiveGroupSnapshot.tables.credential_requirements.columns
+        .exclusive_group,
+      expectedExclusiveGroupColumn,
+    );
+    assert.deepEqual(
+      exclusiveGroupSnapshot.tables.rule_categories.columns.exclusive_group,
+      expectedExclusiveGroupColumn,
+    );
+    assert.match(runtimeSource, /exclusive_group TEXT/i);
+    assert.match(schemaSource, /exclusiveGroup:\s*text\("exclusive_group"\)/i);
     for (const column of [
       "kind",
       "relation",
@@ -1565,6 +2102,1204 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
+    "keeps eight additional official templates bounded and internally coherent",
+    async () => {
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const ruleSource = runtimeSource.slice(
+        runtimeSource.indexOf("const CATALOG_2026_RULE_SET_SEED_BINDINGS"),
+        runtimeSource.indexOf("const CATALOG_2026_CATEGORY_INSERT_SQL"),
+      );
+      const globalSeedSource = runtimeSource.slice(
+        runtimeSource.indexOf("const GLOBAL_SEED_STATEMENTS"),
+        runtimeSource.indexOf("const CATALOG_2026_RULE_SET_INSERT_SQL"),
+      );
+      const categorySource = runtimeSource.slice(
+        runtimeSource.indexOf("const CATALOG_2026_CATEGORY_SEED_BINDINGS"),
+        runtimeSource.indexOf("let initializationPromise"),
+      );
+      const expectedRules = [
+        [
+          "cisco-ccna-2026-v1",
+          "cisco-ccna-ce",
+          "Information Technology",
+          "Cisco Certified Network Associate (CCNA) — Continuing Education path",
+          "Global",
+          "Cisco",
+          30,
+          "CE credits",
+          36,
+          "verified",
+          "www.cisco.com",
+        ],
+        [
+          "arrt-rt-standard-2026-v1",
+          "arrt-rt-standard",
+          "Radiologic Technology",
+          "Registered Technologist (R.T.) — standard non-Sonography CE",
+          "United States",
+          "American Registry of Radiologic Technologists",
+          24,
+          "Category A or A+ credits",
+          24,
+          "source_linked_check_conditions",
+          "www.arrt.org",
+        ],
+        [
+          "cfp-professional-pre-2027-v1",
+          "cfp-professional-pre-2027",
+          "Financial Planning",
+          "CFP® Professional — cycle beginning before Q1 2027",
+          "United States",
+          "CFP Board",
+          30,
+          "CE hours",
+          24,
+          "transition_rule_check_assigned_cycle",
+          "www.cfp.net",
+        ],
+        [
+          "tx-real-estate-2026-v1",
+          "tx-real-estate-standard-ce",
+          "Real Estate",
+          "Sales Agent or Broker — standard active CE renewal",
+          "Texas",
+          "Texas Real Estate Commission",
+          18,
+          "CE hours",
+          24,
+          "source_linked_check_conditions",
+          "www.trec.texas.gov",
+        ],
+        [
+          "ca-pharmacist-2026-v1",
+          "ca-pharmacist-standard",
+          "Pharmacy",
+          "Pharmacist — standard active renewal",
+          "California",
+          "California State Board of Pharmacy",
+          30,
+          "CE hours",
+          24,
+          "source_linked_check_conditions",
+          "www.pharmacy.ca.gov",
+        ],
+        [
+          "ny-architect-2026-v1",
+          "ny-architect",
+          "Architecture",
+          "Registered Architect — full registration period",
+          "New York",
+          "New York State Education Department",
+          36,
+          "contact hours",
+          36,
+          "source_linked_check_conditions",
+          "www.op.nysed.gov",
+        ],
+        [
+          "ptcb-cpht-2026-v1",
+          "ptcb-cpht",
+          "Pharmacy Technology",
+          "Certified Pharmacy Technician (CPhT) — standard renewal",
+          "United States",
+          "Pharmacy Technician Certification Board",
+          20,
+          "CE hours",
+          24,
+          "source_linked_check_conditions",
+          "ptcb.zendesk.com",
+        ],
+        [
+          "asha-ccc-2026-v1",
+          "asha-ccc",
+          "Audiology and Speech-Language Pathology",
+          "Certificate of Clinical Competence (CCC-A / CCC-SLP)",
+          "United States",
+          "American Speech-Language-Hearing Association",
+          30,
+          "PDHs",
+          36,
+          "source_linked_check_conditions",
+          "www.asha.org",
+        ],
+      ];
+      const expectedEffectiveDates = new Map([
+        ["cisco-ccna-2026-v1", null],
+        ["arrt-rt-standard-2026-v1", null],
+        ["cfp-professional-pre-2027-v1", null],
+        ["tx-real-estate-2026-v1", "2026-01-01"],
+        ["ca-pharmacist-2026-v1", null],
+        ["ny-architect-2026-v1", null],
+        ["ptcb-cpht-2026-v1", "2026-05-01"],
+        ["asha-ccc-2026-v1", "2026-01-01"],
+      ]);
+      assert.equal(
+        [...ruleSource.matchAll(/\n  \[\n    "/g)].length,
+        9,
+        "eight current rules plus one hidden CFP transition rule are expected",
+      );
+      assert.equal(
+        [...categorySource.matchAll(/\n  \[\n    "/g)].length,
+        22,
+        "twenty current categories plus two hidden CFP transition categories are expected",
+      );
+      assert.equal(
+        [...globalSeedSource.matchAll(/INSERT OR IGNORE INTO rule_sets/g)]
+          .length + expectedRules.length,
+        31,
+      );
+      for (const expected of expectedRules) {
+        const rule = sourceLiteralArrayAround(ruleSource, expected[0]);
+        assert.deepEqual(
+          [
+            rule[0],
+            rule[1],
+            rule[3],
+            rule[4],
+            rule[5],
+            rule[6],
+            rule[7],
+            rule[8],
+            rule[9],
+            rule[14],
+            new URL(rule[10]).hostname,
+          ],
+          expected,
+        );
+        assert.equal(rule[2], 1);
+        assert.equal(rule[12], expectedEffectiveDates.get(rule[0]));
+        assert.equal(rule[13], "2026-07-26");
+        assert.equal(rule[15], 1);
+        assert.ok(rule[11].length > 150, `${rule[0]} needs a precise caveat`);
+        assert.match(
+          rule[11],
+          /actual|assigned|beginning|exclude|exempt|only|separate|split|carry/i,
+        );
+      }
+      const futureCfp = sourceLiteralArrayAround(
+        ruleSource,
+        "cfp-professional-2027-v1",
+      );
+      assert.deepEqual(
+        [
+          futureCfp[0],
+          futureCfp[1],
+          futureCfp[7],
+          futureCfp[12],
+          futureCfp[14],
+          futureCfp[15],
+        ],
+        [
+          "cfp-professional-2027-v1",
+          "cfp-professional-2027",
+          40,
+          "2027-01-01",
+          "source_linked_check_conditions",
+          0,
+        ],
+      );
+      assert.match(futureCfp[11], /38 general[\s\S]*?10 eligible[\s\S]*?does not apply/i);
+
+      const expectedCategories = [
+        [
+          "arrt-rt-standard-2026-applications-training",
+          "arrt-rt-standard-2026-v1",
+          8,
+          "maximum",
+          "independent",
+          "optional",
+          "ARRT capped activity type",
+        ],
+        [
+          "arrt-rt-standard-2026-advanced-life-support",
+          "arrt-rt-standard-2026-v1",
+          6,
+          "maximum",
+          "independent",
+          "optional",
+          "ARRT capped activity type",
+        ],
+        [
+          "cfp-professional-pre-2027-general",
+          "cfp-professional-pre-2027-v1",
+          28,
+          "minimum",
+          "independent",
+          "always",
+          "CFP CE type",
+        ],
+        [
+          "cfp-professional-pre-2027-ethics",
+          "cfp-professional-pre-2027-v1",
+          2,
+          "minimum",
+          "independent",
+          "always",
+          "CFP CE type",
+        ],
+        [
+          "tx-real-estate-2026-legal-i",
+          "tx-real-estate-2026-v1",
+          4,
+          "minimum",
+          "independent",
+          "always",
+          "TREC course type",
+        ],
+        [
+          "tx-real-estate-2026-legal-ii",
+          "tx-real-estate-2026-v1",
+          4,
+          "minimum",
+          "independent",
+          "always",
+          "TREC course type",
+        ],
+        [
+          "tx-real-estate-2026-contracts",
+          "tx-real-estate-2026-v1",
+          3,
+          "minimum",
+          "independent",
+          "always",
+          "TREC course type",
+        ],
+        [
+          "tx-real-estate-2026-broker-responsibility",
+          "tx-real-estate-2026-v1",
+          6,
+          "minimum",
+          "independent",
+          "conditional",
+          "TREC course type",
+        ],
+        [
+          "ca-pharmacist-2026-law-webinar",
+          "ca-pharmacist-2026-v1",
+          1,
+          "minimum",
+          "independent",
+          "always",
+          "California pharmacist mandatory course",
+        ],
+        [
+          "ca-pharmacist-2026-ethics-webinar",
+          "ca-pharmacist-2026-v1",
+          1,
+          "minimum",
+          "independent",
+          "always",
+          "California pharmacist mandatory course",
+        ],
+        [
+          "ca-pharmacist-2026-cultural-competency",
+          "ca-pharmacist-2026-v1",
+          1,
+          "minimum",
+          "independent",
+          "always",
+          "California pharmacist mandatory course",
+        ],
+        [
+          "ny-architect-2026-hsw",
+          "ny-architect-2026-v1",
+          24,
+          "minimum",
+          "overlapping",
+          "always",
+          null,
+        ],
+        [
+          "ptcb-cpht-2026-technician-specific",
+          "ptcb-cpht-2026-v1",
+          15,
+          "minimum",
+          "overlapping",
+          "always",
+          "PTCB provider audience",
+        ],
+        [
+          "ptcb-cpht-2026-pharmacist-specific",
+          "ptcb-cpht-2026-v1",
+          5,
+          "maximum",
+          "overlapping",
+          "optional",
+          "PTCB provider audience",
+        ],
+        [
+          "ptcb-cpht-2026-pharmacy-law",
+          "ptcb-cpht-2026-v1",
+          1,
+          "minimum",
+          "overlapping",
+          "always",
+          null,
+        ],
+        [
+          "ptcb-cpht-2026-patient-safety",
+          "ptcb-cpht-2026-v1",
+          1,
+          "minimum",
+          "overlapping",
+          "always",
+          null,
+        ],
+        [
+          "ptcb-cpht-2026-college-coursework",
+          "ptcb-cpht-2026-v1",
+          10,
+          "maximum",
+          "independent",
+          "optional",
+          "PTCB capped activity type",
+        ],
+        [
+          "ptcb-cpht-2026-bls-cpr-aed",
+          "ptcb-cpht-2026-v1",
+          2,
+          "maximum",
+          "independent",
+          "optional",
+          "PTCB capped activity type",
+        ],
+        [
+          "asha-ccc-2026-ethics",
+          "asha-ccc-2026-v1",
+          1,
+          "minimum",
+          "independent",
+          "always",
+          "ASHA required content allocation",
+        ],
+        [
+          "asha-ccc-2026-content-area-2",
+          "asha-ccc-2026-v1",
+          2,
+          "minimum",
+          "independent",
+          "always",
+          "ASHA required content allocation",
+        ],
+      ];
+      const categoryRows = expectedCategories.map((expected) =>
+        sourceLiteralArrayAround(categorySource, expected[0]),
+      );
+      assert.deepEqual(
+        categoryRows.map((category) => [
+          category[0],
+          category[1],
+          category[3],
+          category[4],
+          category[5],
+          category[7],
+          category[9],
+        ]),
+        expectedCategories,
+      );
+      assert.equal(new Set(categoryRows.map((category) => category[0])).size, 20);
+      const futureCfpCategories = [
+        sourceLiteralArrayAround(
+          categorySource,
+          "cfp-professional-2027-general",
+        ),
+        sourceLiteralArrayAround(
+          categorySource,
+          "cfp-professional-2027-ethics",
+        ),
+      ];
+      assert.deepEqual(
+        futureCfpCategories.map((category) => [
+          category[1],
+          category[3],
+          category[4],
+          category[9],
+          category[10],
+        ]),
+        [
+          ["cfp-professional-2027-v1", 38, "minimum", "CFP CE type", 0],
+          ["cfp-professional-2027-v1", 2, "minimum", "CFP CE type", 1],
+        ],
+      );
+      for (const rule of expectedRules) {
+        const rows = categoryRows.filter((category) => category[1] === rule[0]);
+        assert.deepEqual(
+          rows.map((category) => category[10]),
+          rows.map((_, index) => index),
+          `${rule[0]} category sort order must be contiguous`,
+        );
+        assert.ok(rows.every((category) => category[6] === null));
+        assert.ok(rows.every((category) => category[8].length > 40));
+      }
+      assert.doesNotMatch(categorySource, /elective minimum/i);
+      assert.doesNotMatch(ruleSource, /NASM|HRCI|SHRM/i);
+      assert.match(
+        sourceLiteralArrayAround(ruleSource, "cfp-professional-pre-2027-v1")[11],
+        /Q1 2027[\s\S]*?40 hours[\s\S]*?10 carryover/i,
+      );
+      assert.match(
+        sourceLiteralArrayAround(categorySource, "ptcb-cpht-2026-bls-cpr-aed")[8],
+        /cannot satisfy Patient Safety/i,
+      );
+      assert.match(
+        sourceLiteralArrayAround(ruleSource, "asha-ccc-2026-v1")[11],
+        /Split a dual-topic course[\s\S]*?same time block cannot satisfy both/i,
+      );
+    },
+  );
+
+  await t.test(
+    "refreshes six authoritative attorney templates with rich CLE rules",
+    async () => {
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const ruleRefreshSource = runtimeSource.slice(
+        runtimeSource.indexOf("const ATTORNEY_RULE_SET_REFRESH_BINDINGS"),
+        runtimeSource.indexOf("const ATTORNEY_RULE_CATEGORY_REFRESH_SQL"),
+      );
+      const categoryRefreshSource = runtimeSource.slice(
+        runtimeSource.indexOf("const ATTORNEY_RULE_CATEGORY_REFRESH_BINDINGS"),
+        runtimeSource.indexOf(
+          "const RETIRED_ATTORNEY_RULE_CATEGORY_BINDINGS",
+        ),
+      );
+      const retiredCategorySource = runtimeSource.slice(
+        runtimeSource.indexOf(
+          "const RETIRED_ATTORNEY_RULE_CATEGORY_BINDINGS",
+        ),
+        runtimeSource.indexOf("const GLOBAL_SEED_STATEMENTS"),
+      );
+      const templates = [
+        {
+          id: "ca-attorney-active-2026-v1",
+          stableKey: "ca-attorney-active",
+          jurisdiction: "California",
+          sourceHost: "www.calbar.ca.gov",
+          totalUnits: 25,
+          cycleMonths: 36,
+          effectiveDate: "2024-01-01",
+          categories: [
+            [
+              "ca-attorney-active-2026-legal-ethics",
+              "Legal Ethics",
+              4,
+              "minimum",
+              "independent",
+              null,
+              "always",
+              "California MCLE subject allocation",
+            ],
+            [
+              "ca-attorney-active-2026-elimination-bias",
+              "Elimination of Bias",
+              2,
+              "minimum",
+              "independent",
+              null,
+              "always",
+              "California MCLE subject allocation",
+            ],
+            [
+              "ca-attorney-active-2026-competence",
+              "Competence",
+              2,
+              "minimum",
+              "independent",
+              null,
+              "always",
+              "California MCLE subject allocation",
+            ],
+            [
+              "ca-attorney-active-2026-technology",
+              "Technology",
+              1,
+              "minimum",
+              "independent",
+              null,
+              "always",
+              "California MCLE subject allocation",
+            ],
+            [
+              "ca-attorney-active-2026-civility",
+              "Civility",
+              1,
+              "minimum",
+              "independent",
+              null,
+              "always",
+              "California MCLE subject allocation",
+            ],
+            [
+              "ca-attorney-active-2026-participatory",
+              "Participatory Credit",
+              12.5,
+              "minimum",
+              "overlapping",
+              null,
+              "always",
+              null,
+            ],
+            [
+              "ca-attorney-active-2026-implicit-bias",
+              "Implicit Bias and Bias-Reducing Strategies",
+              1,
+              "minimum",
+              "nested",
+              "ca-attorney-active-2026-elimination-bias",
+              "always",
+              "California MCLE subject allocation",
+            ],
+            [
+              "ca-attorney-active-2026-prevention-detection",
+              "Prevention and Detection",
+              1,
+              "minimum",
+              "nested",
+              "ca-attorney-active-2026-competence",
+              "always",
+              "California MCLE subject allocation",
+            ],
+          ],
+        },
+        {
+          id: "tx-attorney-active-2026-v1",
+          stableKey: "tx-attorney-active",
+          jurisdiction: "Texas",
+          sourceHost: "www.texasbar.com",
+          totalUnits: 15,
+          cycleMonths: 12,
+          effectiveDate: "2026-04-24",
+          categories: [
+            [
+              "tx-attorney-active-2026-ethics",
+              "Legal Ethics and Professional Responsibility",
+              3,
+              "minimum",
+              "independent",
+              null,
+              "always",
+              null,
+            ],
+            [
+              "tx-attorney-active-2026-accredited",
+              "Accredited CLE",
+              12,
+              "minimum",
+              "overlapping",
+              null,
+              "always",
+              "Texas CLE delivery type",
+            ],
+            [
+              "tx-attorney-active-2026-self-study",
+              "Self-Study CLE",
+              3,
+              "maximum",
+              "overlapping",
+              null,
+              "optional",
+              "Texas CLE delivery type",
+            ],
+            [
+              "tx-attorney-active-2026-accredited-ethics",
+              "Accredited Ethics",
+              2,
+              "minimum",
+              "nested",
+              "tx-attorney-active-2026-accredited",
+              "always",
+              "Texas CLE delivery type",
+            ],
+          ],
+        },
+        {
+          id: "ny-attorney-experienced-2026-v1",
+          stableKey: "ny-attorney-experienced",
+          jurisdiction: "New York",
+          sourceHost: "www.nycourts.gov",
+          totalUnits: 24,
+          cycleMonths: 24,
+          effectiveDate: "2023-07-01",
+          categories: [
+            [
+              "ny-attorney-2026-ethics",
+              "Ethics and Professionalism",
+              4,
+              "minimum",
+              "independent",
+              null,
+              "always",
+              null,
+            ],
+            [
+              "ny-attorney-2026-diversity",
+              "Diversity, Inclusion and Elimination of Bias",
+              1,
+              "minimum",
+              "independent",
+              null,
+              "always",
+              null,
+            ],
+            [
+              "ny-attorney-2026-cybersecurity",
+              "Cybersecurity, Privacy and Data Protection",
+              1,
+              "minimum",
+              "overlapping",
+              null,
+              "always",
+              null,
+            ],
+            [
+              "ny-attorney-2026-non-cyber-ethics",
+              "Non-Cybersecurity Ethics and Professionalism",
+              1,
+              "minimum",
+              "nested",
+              "ny-attorney-2026-ethics",
+              "always",
+              "New York ethics/cybersecurity allocation",
+            ],
+            [
+              "ny-attorney-2026-cybersecurity-general",
+              "Cybersecurity General",
+              1,
+              "informational",
+              "nested",
+              "ny-attorney-2026-cybersecurity",
+              "always",
+              "New York ethics/cybersecurity allocation",
+            ],
+            [
+              "ny-attorney-2026-cybersecurity-ethics",
+              "Cybersecurity Ethics",
+              1,
+              "informational",
+              "nested",
+              "ny-attorney-2026-cybersecurity",
+              "always",
+              "New York ethics/cybersecurity allocation",
+            ],
+          ],
+        },
+        {
+          id: "fl-attorney-active-2026-v1",
+          stableKey: "fl-attorney-active",
+          jurisdiction: "Florida",
+          sourceHost: "www-media.floridabar.org",
+          totalUnits: 30,
+          cycleMonths: 36,
+          effectiveDate: "2026-06-15",
+          categories: [
+            [
+              "fl-attorney-active-2026-technology",
+              "Technology",
+              3,
+              "minimum",
+              "independent",
+              null,
+              "always",
+              null,
+            ],
+            [
+              "fl-attorney-active-2026-ethics-professionalism-wellness",
+              "Legal Ethics, Professionalism, Substance Use Disorder, or Mental Health and Wellness",
+              5,
+              "minimum",
+              "independent",
+              null,
+              "always",
+              null,
+            ],
+            [
+              "fl-attorney-active-2026-florida-professionalism",
+              "Florida Legal Professionalism Course",
+              2,
+              "minimum",
+              "nested",
+              "fl-attorney-active-2026-ethics-professionalism-wellness",
+              "always",
+              null,
+            ],
+          ],
+        },
+        {
+          id: "nj-attorney-active-2026-v1",
+          stableKey: "nj-attorney-active",
+          jurisdiction: "New Jersey",
+          sourceHost: "www.njcourts.gov",
+          totalUnits: 24,
+          cycleMonths: 24,
+          effectiveDate: "2021-01-01",
+          categories: [
+            [
+              "nj-attorney-active-2026-ethics",
+              "Ethics and Professionalism",
+              5,
+              "minimum",
+              "independent",
+              null,
+              "always",
+              null,
+            ],
+            [
+              "nj-attorney-active-2026-diversity",
+              "Diversity, Inclusion and Elimination of Bias",
+              2,
+              "minimum",
+              "nested",
+              "nj-attorney-active-2026-ethics",
+              "always",
+              null,
+            ],
+            [
+              "nj-attorney-active-2026-technology",
+              "Technology-related",
+              1,
+              "minimum",
+              "overlapping",
+              null,
+              "conditional",
+              null,
+            ],
+            [
+              "nj-attorney-active-2026-live",
+              "Live Instruction",
+              12,
+              "minimum",
+              "overlapping",
+              null,
+              "conditional",
+              null,
+            ],
+          ],
+        },
+        {
+          id: "pa-attorney-active-2026-v1",
+          stableKey: "pa-attorney-active",
+          jurisdiction: "Pennsylvania",
+          sourceHost: "www.pacle.org",
+          totalUnits: 12,
+          cycleMonths: 12,
+          effectiveDate: "2014-01-30",
+          categories: [
+            [
+              "pa-attorney-active-2026-ethics",
+              "Ethics, Professionalism, or Substance Abuse",
+              2,
+              "minimum",
+              "independent",
+              null,
+              "always",
+              null,
+            ],
+            [
+              "pa-attorney-active-2026-live",
+              "Live Online or In-Person/Classroom",
+              6,
+              "minimum",
+              "overlapping",
+              null,
+              "always",
+              "Pennsylvania CLE delivery type",
+            ],
+            [
+              "pa-attorney-active-2026-on-demand",
+              "Pre-Recorded/On-Demand",
+              6,
+              "maximum",
+              "overlapping",
+              null,
+              "optional",
+              "Pennsylvania CLE delivery type",
+            ],
+          ],
+        },
+      ];
+
+      const expectedRuleIds = templates.map((template) => template.id);
+      const expectedCategoryIds = templates.flatMap((template) =>
+        template.categories.map((category) => category[0]),
+      );
+      assert.equal(expectedCategoryIds.length, 28);
+      assert.equal(new Set(expectedCategoryIds).size, 28);
+
+      const expectedRuleRows = [];
+      const expectedCategoryRows = [];
+      for (const template of templates) {
+        const rule = sourceLiteralArrayAround(ruleRefreshSource, template.id);
+        expectedRuleRows.push(rule);
+        assert.deepEqual(
+          [
+            rule[15],
+            rule[0],
+            rule[1],
+            rule[2],
+            rule[4],
+            rule[6],
+            rule[8],
+            new URL(rule[9]).hostname,
+            rule[11],
+            rule[12],
+            rule[13],
+            rule[14],
+          ],
+          [
+            template.id,
+            template.stableKey,
+            1,
+            "Law",
+            template.jurisdiction,
+            template.totalUnits,
+            template.cycleMonths,
+            template.sourceHost,
+            template.effectiveDate,
+            "2026-07-26",
+            "source_linked_check_conditions",
+            1,
+          ],
+        );
+        assert.ok(
+          rule[10].length > 100,
+          `${template.id} needs a precise authoritative-source caveat`,
+        );
+
+        assert.equal(
+          categoryRefreshSource.split(`"${template.id}"`).length - 1,
+          template.categories.length,
+          `${template.id} category count drifted`,
+        );
+        const categoryRows = template.categories.map((category) =>
+          sourceLiteralArrayAround(categoryRefreshSource, category[0]),
+        );
+        expectedCategoryRows.push(...categoryRows);
+        assert.deepEqual(
+          categoryRows.map((category) => [
+            category[10],
+            category[1],
+            category[2],
+            category[3],
+            category[4],
+            category[5],
+            category[6],
+            category[8],
+          ]),
+          template.categories,
+        );
+        assert.deepEqual(
+          categoryRows.map((category) => category[9]),
+          categoryRows.map((_, index) => index),
+          `${template.id} category sort order must be contiguous`,
+        );
+
+        const categoryIds = new Set(
+          categoryRows.map((category) => category[10]),
+        );
+        for (const category of categoryRows) {
+          assert.equal(category[0], template.id);
+          assert.ok(category[2] <= template.totalUnits);
+          if (category[4] === "nested") {
+            assert.ok(
+              category[5] && categoryIds.has(category[5]),
+              `${category[10]} must reference a category in its rule set`,
+            );
+          }
+          if (category[6] === "conditional") {
+            assert.ok(
+              category[7]?.length > 60,
+              `${category[10]} needs an actionable applicability note`,
+            );
+          }
+          if (category[3] === "maximum") {
+            assert.equal(category[6], "optional");
+          }
+        }
+      }
+
+      const californiaSubjectIds = templates[0].categories
+        .map((category) => category[0])
+        .filter(
+          (categoryId) =>
+            categoryId !== "ca-attorney-active-2026-participatory",
+        );
+      const californiaSubjectRows = californiaSubjectIds.map((categoryId) =>
+        sourceLiteralArrayAround(categoryRefreshSource, categoryId),
+      );
+      assert.ok(
+        californiaSubjectRows.every(
+          (category) =>
+            category[8] === "California MCLE subject allocation",
+        ),
+        "California substantive MCLE allocations must be mutually exclusive",
+      );
+      assert.ok(
+        californiaSubjectRows.every((category) =>
+          /split[\s\S]*?separate activity entries[\s\S]*?non-overlapping hours/i.test(
+            category[7],
+          ),
+        ),
+        "California subject notes must require split entries for divided hours",
+      );
+      assert.equal(
+        sourceLiteralArrayAround(
+          categoryRefreshSource,
+          "ca-attorney-active-2026-participatory",
+        )[8],
+        null,
+        "California participatory credit remains a delivery overlay",
+      );
+      assert.match(
+        sourceLiteralArrayAround(
+          ruleRefreshSource,
+          "ca-attorney-active-2026-v1",
+        )[10],
+        /same instructional time[\s\S]*?only one substantive MCLE subfield[\s\S]*?split/i,
+      );
+
+      assert.doesNotMatch(
+        categoryRefreshSource,
+        /tx-attorney-active-2026-self-study-ethics/,
+        "Texas must not retain a standalone one-hour self-study-ethics cap",
+      );
+      assert.match(
+        retiredCategorySource,
+        /tx-attorney-active-2026-self-study-ethics/,
+        "the unsafe previously seeded Texas category must be retired",
+      );
+      const texasAccreditedEthics = sourceLiteralArrayAround(
+        categoryRefreshSource,
+        "tx-attorney-active-2026-accredited-ethics",
+      );
+      assert.equal(
+        texasAccreditedEthics[5],
+        "tx-attorney-active-2026-accredited",
+      );
+      assert.equal(texasAccreditedEthics[8], "Texas CLE delivery type");
+      assert.match(
+        texasAccreditedEthics[7],
+        /must also be tagged Legal Ethics and Professional Responsibility/i,
+      );
+      assert.match(
+        sourceLiteralArrayAround(
+          categoryRefreshSource,
+          "tx-attorney-active-2026-self-study",
+        )[7],
+        /also be tagged Legal Ethics[\s\S]*?no separate deduction/i,
+      );
+
+      const newYorkAllocationIds = [
+        "ny-attorney-2026-non-cyber-ethics",
+        "ny-attorney-2026-cybersecurity-general",
+        "ny-attorney-2026-cybersecurity-ethics",
+      ];
+      const newYorkAllocationRows = newYorkAllocationIds.map((categoryId) =>
+        sourceLiteralArrayAround(categoryRefreshSource, categoryId),
+      );
+      assert.ok(
+        newYorkAllocationRows.every(
+          (category) =>
+            category[8] === "New York ethics/cybersecurity allocation",
+        ),
+        "New York ethics/cybersecurity allocation leaves must be exclusive",
+      );
+      assert.match(newYorkAllocationRows[0][7], /At least 1 of the 4/i);
+      assert.ok(
+        newYorkAllocationRows.slice(1).every((category) =>
+          /split[\s\S]*?separate activity entries/i.test(category[7]),
+        ),
+        "New York mixed cybersecurity credit must be split into entries",
+      );
+      assert.match(
+        newYorkAllocationRows[2][7],
+        /must also be tagged Ethics and Professionalism/i,
+      );
+      assert.match(
+        sourceLiteralArrayAround(
+          ruleRefreshSource,
+          "ny-attorney-experienced-2026-v1",
+        )[10],
+        /reporting cycle and deadline[\s\S]*?partial-practice proration/i,
+      );
+
+      const runtimeModule = await importTypeScriptModule(runtimeSource);
+      const deployedRichColumns = [
+        "kind",
+        "relation",
+        "parent_category_id",
+        "parent_requirement_id",
+        "applicability",
+        "applicability_status",
+        "condition_note",
+        "exclusive_group",
+        "is_active",
+      ].map((name) => ({ name }));
+      const staleDatabase = new FakeDatabase({
+        resolveAll(call) {
+          if (/^PRAGMA table_info\(/i.test(call.sql)) {
+            return deployedRichColumns;
+          }
+          return [];
+        },
+      });
+      await runtimeModule.initializeDatabase(staleDatabase);
+
+      const ruleRefreshBatch = staleDatabase.batches.find(
+        (batch) =>
+          batch.length === expectedRuleIds.length &&
+          batch.every(({ sql }) =>
+            /^UPDATE rule_sets SET stable_key = \?/i.test(sql),
+          ),
+      );
+      const categoryRefreshBatch = staleDatabase.batches.find(
+        (batch) =>
+          batch.length === expectedCategoryIds.length &&
+          batch.every(({ sql }) =>
+            /^UPDATE rule_categories SET rule_set_id = \?/i.test(sql),
+          ),
+      );
+      const retiredRequirementBatch = staleDatabase.batches.find(
+        (batch) =>
+          batch.length === 1 &&
+          /^UPDATE credential_requirements SET applicability_status = 'not_applicable'/i.test(
+            batch[0].sql,
+          ),
+      );
+      const retiredCategoryBatch = staleDatabase.batches.find(
+        (batch) =>
+          batch.length === 1 &&
+          /^DELETE FROM rule_categories WHERE id = \?/i.test(batch[0].sql),
+      );
+      assert.ok(ruleRefreshBatch, "attorney rule-set refresh batch did not run");
+      assert.ok(
+        categoryRefreshBatch,
+        "attorney category refresh batch did not run",
+      );
+      assert.ok(
+        retiredRequirementBatch,
+        "retired Texas requirements were not disabled",
+      );
+      assert.ok(retiredCategoryBatch, "retired Texas category was not deleted");
+      assert.equal(
+        retiredRequirementBatch[0].bindings[1],
+        "tx-attorney-active-2026-self-study-ethics",
+      );
+      assert.deepEqual(retiredCategoryBatch[0].bindings, [
+        "tx-attorney-active-2026-self-study-ethics",
+      ]);
+      assert.deepEqual(
+        ruleRefreshBatch.map(({ bindings }) => bindings),
+        expectedRuleRows,
+      );
+      assert.deepEqual(
+        categoryRefreshBatch.map(({ bindings }) => bindings),
+        expectedCategoryRows,
+      );
+      assert.deepEqual(
+        ruleRefreshBatch.map(({ bindings }) => bindings.at(-1)),
+        expectedRuleIds,
+      );
+      assert.deepEqual(
+        categoryRefreshBatch.map(({ bindings }) => bindings.at(-1)),
+        expectedCategoryIds,
+      );
+      assert.ok(
+        ruleRefreshBatch.every(({ sql }) => /WHERE id = \?$/i.test(sql)),
+      );
+      assert.ok(
+        categoryRefreshBatch.every(({ sql }) => /WHERE id = \?$/i.test(sql)),
+      );
+
+      const ruleRefreshBatchIndex =
+        staleDatabase.batches.indexOf(ruleRefreshBatch);
+      const categoryRefreshBatchIndex =
+        staleDatabase.batches.indexOf(categoryRefreshBatch);
+      const retiredRequirementBatchIndex =
+        staleDatabase.batches.indexOf(retiredRequirementBatch);
+      const retiredCategoryBatchIndex =
+        staleDatabase.batches.indexOf(retiredCategoryBatch);
+      assert.ok(
+        staleDatabase.batches
+          .slice(0, ruleRefreshBatchIndex)
+          .some((batch) =>
+            batch.some(({ sql }) =>
+              /^INSERT OR IGNORE INTO rule_sets \(/i.test(sql),
+            ),
+          ),
+      );
+      assert.ok(
+        staleDatabase.batches
+          .slice(ruleRefreshBatchIndex + 1, categoryRefreshBatchIndex)
+          .some((batch) =>
+            batch.some(({ sql }) =>
+              /^INSERT OR IGNORE INTO rule_categories \(/i.test(sql),
+            ),
+          ),
+      );
+      assert.ok(retiredRequirementBatchIndex < retiredCategoryBatchIndex);
+      assert.ok(retiredCategoryBatchIndex < categoryRefreshBatchIndex);
+    },
+  );
+
+  await t.test(
+    "keeps the larger template chooser and alternative tags mobile-accessible",
+    async () => {
+      const [clientSource, styles] = await Promise.all([
+        readFile(
+          new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+          "utf8",
+        ),
+        readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+      ]);
+      assert.match(clientSource, /<optgroup[\s\S]*?group\.profession/);
+      assert.match(
+        clientSource,
+        /setCatalogQuery\(event\.currentTarget\.value\);[\s\S]*?setSelectedRuleId\(""\);/,
+      );
+      assert.match(
+        clientSource,
+        /setSelectedRuleId\(event\.currentTarget\.value\)[\s\S]*?setCatalogQuery\(""\)/,
+      );
+      assert.match(
+        clientSource,
+        /catalogMatches\.length[\s\S]*?matches[\s\S]*?No exact match — enter my own requirements/,
+      );
+      assert.match(
+        clientSource,
+        /setSelectedRuleId\(""\)[\s\S]*?setCatalogQuery\(""\)[\s\S]*?setCustomCredential\(true\)[\s\S]*?No exact match — enter my own requirements/,
+      );
+      assert.match(clientSource, /Official source verified/);
+      assert.match(clientSource, /Transition rule · check assigned cycle/);
+      assert.match(clientSource, /Review date not set/);
+      assert.match(
+        clientSource,
+        /selectedRule\.sourceTitle[\s\S]*?className="source-caution"[\s\S]*?\{selectedRule\.sourceTitle\}/,
+      );
+      assert.match(
+        clientSource,
+        /selectedRequirementIds[\s\S]*?exclusiveGroup[\s\S]*?Choose only one activity type from this group/,
+      );
+      assert.match(
+        styles,
+        /\.source-card p\s*\{[\s\S]*?font-size:\s*11px[\s\S]*?line-height:\s*1\.5/,
+      );
+      assert.match(
+        styles,
+        /\.source-card a\s*\{[\s\S]*?min-height:\s*44px/,
+      );
+      assert.match(
+        styles,
+        /\.catalog-custom-button\s*\{[\s\S]*?min-height:\s*44px/,
+      );
+    },
+  );
+
+  await t.test(
     "stores evidence metadata under private, owner-scoped R2 keys",
     async () => {
       const userId = await expectedStableUserId("owner@example.com");
@@ -1983,6 +3718,52 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
+    "blocks the retired CFP template for cycles beginning in 2027",
+    async () => {
+      const database = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /FROM rule_sets WHERE id = \? AND is_current = 1/i.test(call.sql)
+          ) {
+            return {
+              id: "cfp-professional-pre-2027-v1",
+              credentialName:
+                "CFP® Professional — cycle beginning before Q1 2027",
+              profession: "Financial Planning",
+              jurisdiction: "United States",
+              issuer: "CFP Board",
+              totalUnits: 30,
+              unitLabel: "CE hours",
+              cycleMonths: 24,
+            };
+          }
+          return null;
+        },
+      });
+      testCloudflareEnv.DB = database;
+      const response = await postWorkspace("createCredential", {
+        ruleSetId: "cfp-professional-pre-2027-v1",
+        cycleStart: "2027-01-01",
+        deadline: "2028-12-31",
+      });
+      assert.equal(response.status, 409);
+      assert.deepEqual(await response.json(), {
+        error:
+          "This CFP template is only for certification periods beginning before Q1 2027. Enter the newer 40-hour requirement as a custom plan while its carryover eligibility is confirmed.",
+        code: "rule_transition_outside_template",
+      });
+      assert.equal(
+        flattenedStatements(database).some((statement) =>
+          /^INSERT INTO (credentials|credential_requirements|checklist_tasks) \(/i.test(
+            statement.sql,
+          ),
+        ),
+        false,
+      );
+    },
+  );
+
+  await t.test(
     "snapshots conditional rules, scopes updates, and rejects inactive tags",
     async () => {
       const userId = await expectedStableUserId("owner@example.com");
@@ -1996,6 +3777,7 @@ test("License Lantern product contract", async (t) => {
           parentCategoryId: null,
           applicability: "always",
           conditionNote: null,
+          exclusiveGroup: "Test activity type",
         },
         {
           id: "category-special-role",
@@ -2006,6 +3788,7 @@ test("License Lantern product contract", async (t) => {
           parentCategoryId: "category-core",
           applicability: "conditional",
           conditionNote: "Applies only when serving in the special role.",
+          exclusiveGroup: null,
         },
         {
           id: "category-self-study",
@@ -2016,6 +3799,7 @@ test("License Lantern product contract", async (t) => {
           parentCategoryId: null,
           applicability: "always",
           conditionNote: null,
+          exclusiveGroup: null,
         },
       ];
       const createDatabase = new FakeDatabase({
@@ -2073,7 +3857,7 @@ test("License Lantern product contract", async (t) => {
       assert.ok(conditionalInsert);
       assert.ok(maximumInsert);
       assert.equal(parentInsert.bindings[1], createResult.id);
-      assert.deepEqual(parentInsert.bindings.slice(4, 13), [
+      assert.deepEqual(parentInsert.bindings.slice(4, 14), [
         4,
         "minimum",
         "independent",
@@ -2081,6 +3865,7 @@ test("License Lantern product contract", async (t) => {
         "always",
         "applies",
         null,
+        "Test activity type",
         1,
         0,
       ]);
@@ -2089,7 +3874,7 @@ test("License Lantern product contract", async (t) => {
         parentInsert.bindings[0],
         "nested parent must use the credential requirement snapshot ID",
       );
-      assert.deepEqual(conditionalInsert.bindings.slice(4, 13), [
+      assert.deepEqual(conditionalInsert.bindings.slice(4, 14), [
         2,
         "minimum",
         "nested",
@@ -2097,16 +3882,18 @@ test("License Lantern product contract", async (t) => {
         "conditional",
         "not_applicable",
         "Applies only when serving in the special role.",
+        null,
         0,
         1,
       ]);
-      assert.deepEqual(maximumInsert.bindings.slice(4, 13), [
+      assert.deepEqual(maximumInsert.bindings.slice(4, 14), [
         3,
         "maximum",
         "overlapping",
         null,
         "always",
         "applies",
+        null,
         null,
         1,
         2,
@@ -2518,6 +4305,97 @@ test("License Lantern product contract", async (t) => {
         userId,
         ...requirementIds,
       ]);
+    },
+  );
+
+  await t.test(
+    "rejects alternative activity types while preserving valid overlay tags",
+    async () => {
+      const requirementRows = [
+        {
+          id: "requirement-general",
+          name: "Technician-Specific CE",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: "PTCB provider audience",
+        },
+        {
+          id: "requirement-ethics",
+          name: "Pharmacist-Specific CE",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: "PTCB provider audience",
+        },
+        {
+          id: "requirement-law",
+          name: "Pharmacy Law",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: null,
+        },
+      ];
+      const makeDatabase = () =>
+        new FakeDatabase({
+          resolveFirst(call) {
+            if (isOwnedCredentialCycleLookup(call.sql)) {
+              return {
+                id: call.bindings[0],
+                status: "active",
+                cycleStart: "2027-01-01",
+                deadline: "2027-12-31",
+              };
+            }
+            return null;
+          },
+          resolveAll(call) {
+            if (!isRequirementTagLookup(call.sql)) return [];
+            const requestedIds = new Set(call.bindings.slice(2));
+            return requirementRows.filter((row) => requestedIds.has(row.id));
+          },
+        });
+
+      const conflictDatabase = makeDatabase();
+      testCloudflareEnv.DB = conflictDatabase;
+      const conflictResponse = await postWorkspace("addActivity", {
+        title: "Conflicting classification",
+        completionDate: "2027-05-20",
+        totalUnits: 2,
+        credentialId: "credential-rich",
+        requirementIds: ["requirement-general", "requirement-ethics"],
+        evidenceStatus: "missing",
+      });
+      assert.equal(conflictResponse.status, 409);
+      assert.deepEqual(await conflictResponse.json(), {
+        error:
+          "Technician-Specific CE and Pharmacist-Specific CE are alternative activity types. Choose only one for this activity.",
+        code: "exclusive_requirement_conflict",
+      });
+      assert.equal(
+        flattenedStatements(conflictDatabase).some((statement) =>
+          /^INSERT INTO (activities|activity_allocations|activity_requirement_matches) \(/i.test(
+            statement.sql,
+          ),
+        ),
+        false,
+      );
+
+      const overlayDatabase = makeDatabase();
+      testCloudflareEnv.DB = overlayDatabase;
+      const overlayResponse = await postWorkspace("addActivity", {
+        title: "Technician pharmacy-law update",
+        completionDate: "2027-05-20",
+        totalUnits: 1,
+        credentialId: "credential-rich",
+        requirementIds: ["requirement-general", "requirement-law"],
+        evidenceStatus: "missing",
+      });
+      assert.equal(overlayResponse.status, 200);
+      assert.equal(
+        flattenedStatements(overlayDatabase).filter((statement) =>
+          /^INSERT INTO activity_requirement_matches \(/i.test(statement.sql),
+        ).length,
+        2,
+      );
     },
   );
 
@@ -2974,6 +4852,12 @@ test("License Lantern product contract", async (t) => {
       );
       assert.equal(
         acceptanceReminder.scheduledFor,
+        shiftIsoDate(submittedDate, 7),
+      );
+      assert.equal(taskReminder.eventDate, taskDueDate);
+      assert.equal(deadlineReminder.eventDate, deadline);
+      assert.equal(
+        acceptanceReminder.eventDate,
         shiftIsoDate(submittedDate, 7),
       );
       assert.equal(taskReminder.urgency, "soon");
@@ -3543,6 +5427,7 @@ test("License Lantern product contract", async (t) => {
                 parentRequirementId: null,
                 applicability: "always",
                 conditionNote: null,
+                exclusiveGroup: "Test activity type",
                 sortOrder: 0,
               },
               {
@@ -3556,6 +5441,7 @@ test("License Lantern product contract", async (t) => {
                 applicability: "conditional",
                 conditionNote:
                   "Confirm whether the ethics condition applies this cycle.",
+                exclusiveGroup: null,
                 sortOrder: 1,
               },
               {
@@ -3568,6 +5454,7 @@ test("License Lantern product contract", async (t) => {
                 parentRequirementId: null,
                 applicability: "optional",
                 conditionNote: "No more than four self-study hours count.",
+                exclusiveGroup: null,
                 sortOrder: 2,
               },
             ];
@@ -3658,6 +5545,7 @@ test("License Lantern product contract", async (t) => {
         "always",
         "applies",
         null,
+        "Test activity type",
         1,
         0,
       ]);
@@ -3677,6 +5565,7 @@ test("License Lantern product contract", async (t) => {
         "conditional",
         "needs_confirmation",
         "Confirm whether the ethics condition applies this cycle.",
+        null,
         0,
         1,
       ]);
@@ -3696,6 +5585,7 @@ test("License Lantern product contract", async (t) => {
         "optional",
         "applies",
         "No more than four self-study hours count.",
+        null,
         1,
         2,
       ]);
@@ -3775,6 +5665,159 @@ test("License Lantern product contract", async (t) => {
       assert.match(
         routeSource,
         /WHERE c\.user_id = \?[\s\S]*?GROUP BY c\.id/i,
+      );
+    },
+  );
+
+  await t.test(
+    "moves a pre-2027 CFP cycle onto the source-linked 40-hour rule",
+    async () => {
+      const database = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /SELECT next_credential_id AS nextCredentialId FROM renewal_acceptances/i.test(
+              call.sql,
+            )
+          ) {
+            return null;
+          }
+          if (
+            /FROM credentials credential LEFT JOIN credential_cycle_links cycle/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "credential-cfp-prior",
+              ruleSetId: "cfp-professional-pre-2027-v1",
+              credentialName:
+                "CFP® Professional — cycle beginning before Q1 2027",
+              profession: "Financial Planning",
+              jurisdiction: "United States",
+              issuer: "CFP Board",
+              status: "submitted",
+              totalRequired: 30,
+              unitLabel: "CE hours",
+              seriesId: "series-cfp",
+              cycleMonths: 24,
+            };
+          }
+          if (
+            /FROM renewal_submissions WHERE credential_id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "submission-cfp-prior",
+              submittedAt: "2026-12-20T15:00:00.000Z",
+            };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (
+            /FROM credential_requirements requirement JOIN credentials credential/i.test(
+              call.sql,
+            )
+          ) {
+            return [
+              {
+                id: "requirement-cfp-general",
+                ruleCategoryId: "cfp-professional-pre-2027-general",
+                name: "General CE",
+                requiredUnits: 28,
+                kind: "minimum",
+                relation: "independent",
+                parentRequirementId: null,
+                applicability: "always",
+                conditionNote: "Twenty-eight general hours.",
+                exclusiveGroup: "CFP CE type",
+                sortOrder: 0,
+              },
+              {
+                id: "requirement-cfp-ethics",
+                ruleCategoryId: "cfp-professional-pre-2027-ethics",
+                name: "CFP Board-Approved Ethics CE",
+                requiredUnits: 2,
+                kind: "minimum",
+                relation: "independent",
+                parentRequirementId: null,
+                applicability: "always",
+                conditionNote: "Two approved ethics hours.",
+                exclusiveGroup: "CFP CE type",
+                sortOrder: 1,
+              },
+            ];
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = database;
+      const response = await postWorkspace("markRenewalAccepted", {
+        credentialId: "credential-cfp-prior",
+        acceptedAt: "2026-12-22",
+        reference: "CFP-ACCEPTED",
+        nextCycleStart: "2027-01-01",
+        nextDeadline: "2028-12-31",
+      });
+      assert.equal(response.status, 200);
+      const nextCredentialId = (await response.json()).id;
+      const statements = flattenedStatements(database);
+      const credentialInsert = statements.find((statement) =>
+        /^INSERT INTO credentials \(/i.test(statement.sql),
+      );
+      assert.ok(credentialInsert);
+      assert.deepEqual(credentialInsert.bindings, [
+        nextCredentialId,
+        await expectedStableUserId("owner@example.com"),
+        "cfp-professional-2027-v1",
+        "CFP® Professional — cycle beginning Q1 2027 or later",
+        "Financial Planning",
+        "United States",
+        "CFP Board",
+        "2027-01-01",
+        "2028-12-31",
+        40,
+        "CE hours",
+      ]);
+      const requirementSnapshots = statements.filter((statement) =>
+        /^INSERT INTO credential_requirements \(/i.test(statement.sql),
+      );
+      const snapshotByName = new Map(
+        requirementSnapshots.map((statement) => [
+          statement.bindings[3],
+          statement,
+        ]),
+      );
+      assert.deepEqual(
+        [
+          snapshotByName.get("General CE")?.bindings[2],
+          snapshotByName.get("General CE")?.bindings[4],
+          snapshotByName.get("General CE")?.bindings[11],
+        ],
+        ["cfp-professional-2027-general", 38, "CFP CE type"],
+      );
+      assert.deepEqual(
+        [
+          snapshotByName.get("CFP Board-Approved Ethics CE")?.bindings[2],
+          snapshotByName.get("CFP Board-Approved Ethics CE")?.bindings[4],
+          snapshotByName.get("CFP Board-Approved Ethics CE")?.bindings[11],
+        ],
+        ["cfp-professional-2027-ethics", 2, "CFP CE type"],
+      );
+      const reviewTask = statements.find(
+        (statement) =>
+          /^INSERT INTO checklist_tasks \(/i.test(statement.sql) &&
+          statement.bindings[3] ===
+            "Confirm CFP Board carryover eligibility for the 40-hour cycle",
+      );
+      assert.ok(reviewTask);
+      assert.equal(
+        statements.some((statement) =>
+          /^INSERT INTO (activities|activity_allocations|activity_requirement_matches) \(/i.test(
+            statement.sql,
+          ),
+        ),
+        false,
       );
     },
   );

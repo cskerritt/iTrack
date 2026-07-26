@@ -1,0 +1,6 @@
+/sw.js
+  Cache-Control: no-cache, no-store, must-revalidate
+
+# Keep Vinext's generated immutable asset policy when this source file is copied.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
