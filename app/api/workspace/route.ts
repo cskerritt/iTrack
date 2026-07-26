@@ -1861,7 +1861,7 @@ async function getWorkspace(
     const credential = credentialById.get(requirement.credentialId);
     if (
       !credential ||
-      !["active", "submitted"].includes(credential.status) ||
+      !["active", "submitted", "renewed"].includes(credential.status) ||
       requirement.kind !== "maximum" ||
       !requirement.exclusiveGroup ||
       !Boolean(requirement.isActive) ||
@@ -1884,7 +1884,7 @@ async function getWorkspace(
   }
   for (const credential of credentialResult.results) {
     if (
-      !["active", "submitted"].includes(credential.status) ||
+      !["active", "submitted", "renewed"].includes(credential.status) ||
       credential.ruleSetId !== NJ_LCSW_RULE_SET_ID
     ) {
       continue;
@@ -1912,7 +1912,7 @@ async function getWorkspace(
       !activity.allocationId ||
       !activity.credentialId ||
       !credential ||
-      !["active", "submitted"].includes(credential.status) ||
+      !["active", "submitted", "renewed"].includes(credential.status) ||
       classificationIssueByAllocation.has(activity.allocationId)
     ) {
       continue;

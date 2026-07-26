@@ -3457,6 +3457,10 @@ test("License Lantern product contract", async (t) => {
           "nested",
           "nasm-cpt-2026-non-cpr-recertification",
         ]);
+        assert.match(
+          category[8],
+          /1\.9 CEU maximum[\s\S]*?shared 1\.9 Non-CPR aggregate/i,
+        );
       }
       assert.equal(
         sourceLiteralArrayAround(
@@ -3503,7 +3507,7 @@ test("License Lantern product contract", async (t) => {
       )[11];
       assert.match(
         nasmRuleNote,
-        /expiration date printed[\s\S]*?0\.1 CEU[\s\S]*?do not carry/i,
+        /expiration date printed[\s\S]*?0\.1 CEU[\s\S]*?do not carry[\s\S]*?reuse the same course/i,
       );
       assert.match(
         nasmRuleNote,
@@ -7737,7 +7741,7 @@ test("License Lantern product contract", async (t) => {
                 cycleMonths: 24,
                 seriesId: ptcbCredentialId,
                 previousCredentialId: null,
-                status: "submitted",
+                status: "renewed",
                 submittedAt: "2027-12-20T12:00:00.000Z",
                 confirmationNumber: "PTCB-SUBMITTED",
                 submissionProof: null,
@@ -7763,7 +7767,7 @@ test("License Lantern product contract", async (t) => {
                 cycleMonths: 24,
                 seriesId: njLcswCredentialId,
                 previousCredentialId: null,
-                status: "submitted",
+                status: "renewed",
                 submittedAt: "2027-08-20T12:00:00.000Z",
                 confirmationNumber: "NJ-LCSW-SUBMITTED",
                 submissionProof: null,
@@ -8821,6 +8825,59 @@ test("License Lantern product contract", async (t) => {
              WHERE allocation_id = 'allocation-nasm-real'`,
           )
           .run();
+        raw
+          .prepare(
+            `UPDATE activity_allocations
+             SET requirement_id = NULL
+             WHERE id = 'allocation-nasm-real'`,
+          )
+          .run();
+        assert.deepEqual(
+          {
+            ...raw
+              .prepare(
+              `SELECT
+                 rule_set_id AS ruleSetId,
+                 status
+               FROM credentials
+               WHERE id = 'credential-nasm-real'`,
+              )
+              .get(),
+          },
+          {
+            ruleSetId: "nasm-cpt-2026-v1",
+            status: "renewed",
+          },
+        );
+        assert.deepEqual(
+          raw
+            .prepare(
+              `SELECT
+                 kind,
+                 exclusive_group AS exclusiveGroup,
+                 is_active AS isActive,
+                 applicability_status AS applicabilityStatus
+               FROM credential_requirements
+               WHERE credential_id = 'credential-nasm-real'
+               ORDER BY sort_order`,
+            )
+            .all()
+            .map((row) => ({ ...row })),
+          [
+            {
+              kind: "informational",
+              exclusiveGroup: "NASM CEU activity type",
+              isActive: 1,
+              applicabilityStatus: "applies",
+            },
+            {
+              kind: "maximum",
+              exclusiveGroup: "NASM CEU activity type",
+              isActive: 1,
+              applicabilityStatus: "applies",
+            },
+          ],
+        );
         const workspaceResponse = await fetchWorker(
           "https://license-lantern.example/api/workspace",
           { headers: authHeaders() },
@@ -8842,9 +8899,17 @@ test("License Lantern product contract", async (t) => {
           {
             status: "renewed",
             totalLoggedUnits: 1.9,
-            unclassifiedUnits: 0,
-            totalEarned: 1.9,
-            classificationIssues: [],
+            unclassifiedUnits: 1.9,
+            totalEarned: 0,
+            classificationIssues: [
+              {
+                allocationId: "allocation-nasm-real",
+                activityId: "activity-nasm-real",
+                activityTitle: "NASM approved education",
+                unresolvedExclusiveGroups: ["NASM CEU activity type"],
+                allocatedUnits: 1.9,
+              },
+            ],
           },
         );
       } finally {
