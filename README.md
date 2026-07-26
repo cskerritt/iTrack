@@ -23,16 +23,18 @@ rewards meaningful record-keeping without punitive daily streaks.
 - one-tap calendar handoff for renewal dates and timely check-ins
 - activity CSV export
 - durable levels, weekly quests, gentle one-week-grace momentum, XP, and badges
+- a user-selected weekly rhythm whose goal and time zone stay fixed for the active week
 - installable phone companion with a privacy-safe offline fallback
 - account-scoped, text-only activity drafts that recover in the same browser
 - responsive dashboard with home-screen and standalone-app support
 - server-derived ownership from authenticated workspace identity
 
-The starter catalog contains 31 current, source-linked templates spanning
-nursing, medicine, law, accounting, architecture, engineering, financial
-planning, information technology, pharmacy, radiologic technology, real estate,
-project management, psychology, speech and hearing, and social work credentials.
-Templates model applicable minimums, nested
+The catalog contains 97 current, source-linked templates across 24 profession
+labels and 55 issuing bodies. Sixty templates are state-specific across
+California, Florida, New Jersey, New York, Pennsylvania, and Texas; the
+remainder are United States-wide or global. A template can represent a
+phase, tenure tier, or other variant of the same credential, so this count
+does not mean 97 distinct license types. Templates model applicable minimums, nested
 subrequirements, overlapping facets, and reporting caps where the source can
 be represented safely. Conditional rules require an explicit answer for each
 cycle. Users can search the catalog or create a custom credential, and the
@@ -85,6 +87,7 @@ Node.js `>=22.13.0` is required.
 
 ## Next product phases
 
+- correct/archive learning records and personalize renewal checklist tasks
 - opt-in email and push reminder delivery
 - broader effective-dated profession/state rule research
 - packet-style PDF export and richer archive browsing

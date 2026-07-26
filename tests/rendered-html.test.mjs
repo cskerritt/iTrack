@@ -2321,6 +2321,9 @@ test("License Lantern product contract", async (t) => {
       attestationMigration,
       builtAttestationMigration,
       attestationSnapshotSource,
+      weeklyPeriodMigration,
+      builtWeeklyPeriodMigration,
+      weeklyPeriodSnapshotSource,
     ] = await Promise.all([
         readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
         readFile(
@@ -2425,6 +2428,21 @@ test("License Lantern product contract", async (t) => {
           new URL("../drizzle/meta/0006_snapshot.json", import.meta.url),
           "utf8",
         ),
+        readFile(
+          new URL("../drizzle/0007_damp_mandroid.sql", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL(
+            "../dist/.openai/drizzle/0007_damp_mandroid.sql",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+        readFile(
+          new URL("../drizzle/meta/0007_snapshot.json", import.meta.url),
+          "utf8",
+        ),
       ]);
 
     const hosting = JSON.parse(hostingSource);
@@ -2440,8 +2458,9 @@ test("License Lantern product contract", async (t) => {
     assert.equal(builtProgressionMigration, progressionMigration);
     assert.equal(builtExclusiveGroupMigration, exclusiveGroupMigration);
     assert.equal(builtAttestationMigration, attestationMigration);
+    assert.equal(builtWeeklyPeriodMigration, weeklyPeriodMigration);
 
-    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}\n${attestationMigration}`;
+    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}\n${attestationMigration}\n${weeklyPeriodMigration}`;
     const migratedTables = new Set(
       [...migration.matchAll(/CREATE TABLE `([^`]+)`/g)].map(
         (match) => match[1],
@@ -2466,6 +2485,7 @@ test("License Lantern product contract", async (t) => {
       "reminder_states",
       "badge_definitions",
       "xp_events",
+      "weekly_progression_periods",
       "weekly_quest_claims",
       "badge_events",
     ];
@@ -2550,7 +2570,25 @@ test("License Lantern product contract", async (t) => {
     const migrationJournal = JSON.parse(migrationJournalSource);
     assert.equal(
       migrationJournal.entries.at(-1)?.tag,
-      "0006_graceful_jackal",
+      "0007_damp_mandroid",
+    );
+    assert.match(
+      weeklyPeriodMigration,
+      /CREATE TABLE `weekly_progression_periods`[\s\S]*?`user_id` text NOT NULL[\s\S]*?`week_start` text NOT NULL[\s\S]*?`weekly_goal` integer NOT NULL[\s\S]*?`time_zone` text NOT NULL[\s\S]*?FOREIGN KEY \(`user_id`\) REFERENCES `users`\(`id`\)[\s\S]*?ON DELETE cascade/i,
+    );
+    assert.match(
+      weeklyPeriodMigration,
+      /CREATE UNIQUE INDEX `weekly_progression_periods_user_week_unique`[\s\S]*?`user_id`,`week_start`/i,
+    );
+    const weeklyPeriodSnapshot = JSON.parse(weeklyPeriodSnapshotSource);
+    assert.deepEqual(
+      weeklyPeriodSnapshot.tables.weekly_progression_periods.indexes
+        .weekly_progression_periods_user_week_unique,
+      {
+        name: "weekly_progression_periods_user_week_unique",
+        columns: ["user_id", "week_start"],
+        isUnique: true,
+      },
     );
     assert.match(
       exclusiveGroupMigration,
@@ -2655,6 +2693,14 @@ test("License Lantern product contract", async (t) => {
     assert.match(
       schemaSource,
       /export const weeklyQuestClaims = sqliteTable\([\s\S]*?"weekly_quest_claims"[\s\S]*?weekly_quest_claims_user_week_quest_unique/i,
+    );
+    assert.match(
+      runtimeSource,
+      /CREATE TABLE IF NOT EXISTS weekly_progression_periods[\s\S]*?CREATE UNIQUE INDEX IF NOT EXISTS weekly_progression_periods_user_week_unique[\s\S]*?user_id, week_start/i,
+    );
+    assert.match(
+      schemaSource,
+      /export const weeklyProgressionPeriods = sqliteTable\([\s\S]*?"weekly_progression_periods"[\s\S]*?weekly_progression_periods_user_week_unique/i,
     );
     assert.match(
       migration,
@@ -2875,6 +2921,226 @@ test("License Lantern product contract", async (t) => {
       assert.ok(claimLookup);
       assert.equal(actionLookup.bindings[0], userId);
       assert.equal(claimLookup.bindings[0], userId);
+    },
+  );
+
+  await t.test(
+    "freezes the active weekly rhythm and schedules owner-scoped preset changes",
+    async () => {
+      const currentWeekStart = mondayOfWeek(
+        new Date().toISOString().slice(0, 10),
+      );
+      const frozenPeriod = {
+        weekStart: currentWeekStart,
+        weeklyGoal: 4,
+        timeZone: "UTC",
+      };
+      const pendingDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /AS lifetimeXp FROM profiles p WHERE p\.user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return { weeklyGoal: 5, lifetimeXp: 0 };
+          }
+          if (
+            /FROM weekly_progression_periods WHERE user_id = \? ORDER BY week_start DESC LIMIT 1/i.test(
+              call.sql,
+            )
+          ) {
+            return frozenPeriod;
+          }
+          if (
+            /^SELECT time_zone AS timeZone FROM reminder_preferences WHERE user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return { timeZone: "Pacific/Kiritimati" };
+          }
+          if (
+            /SELECT in_app_enabled AS inAppEnabled, lead_days AS leadDays, time_zone AS timeZone FROM reminder_preferences/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              inAppEnabled: 1,
+              leadDays: "[90,30,7,1]",
+              timeZone: "Pacific/Kiritimati",
+            };
+          }
+          return null;
+        },
+      });
+      testCloudflareEnv.DB = pendingDatabase;
+
+      const pendingResponse = await fetchWorker(
+        "https://license-lantern.example/api/workspace",
+        { headers: authHeaders() },
+      );
+      assert.equal(pendingResponse.status, 200);
+      const pendingWorkspace = await pendingResponse.json();
+      assert.deepEqual(pendingWorkspace.profile, {
+        xp: 0,
+        weekActions: 0,
+        weeklyGoal: 4,
+        nextWeeklyGoal: 5,
+        nextWeeklyGoalEffectiveOn: shiftIsoDate(currentWeekStart, 7),
+        badges: [],
+      });
+      assert.equal(pendingWorkspace.progression.week.timeZone, "UTC");
+      assert.equal(
+        pendingWorkspace.progression.week.startsOn,
+        currentWeekStart,
+      );
+      assert.equal(pendingWorkspace.progression.weeklyGoal, 4);
+      assert.equal(pendingWorkspace.progression.nextWeeklyGoal, 5);
+      assert.equal(
+        pendingWorkspace.progression.nextWeeklyGoalEffectiveOn,
+        shiftIsoDate(currentWeekStart, 7),
+      );
+      assert.equal(
+        pendingDatabase.calls.some((statement) =>
+          /^INSERT OR IGNORE INTO weekly_progression_periods/i.test(
+            statement.sql,
+          ),
+        ),
+        false,
+        "a reminder-timezone change must not replace the active weekly snapshot",
+      );
+
+      const updateDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /AS lifetimeXp FROM profiles p WHERE p\.user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return { weeklyGoal: 4, lifetimeXp: 0 };
+          }
+          if (
+            /FROM weekly_progression_periods WHERE user_id = \? ORDER BY week_start DESC LIMIT 1/i.test(
+              call.sql,
+            )
+          ) {
+            return frozenPeriod;
+          }
+          if (
+            /^SELECT time_zone AS timeZone FROM reminder_preferences WHERE user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return { timeZone: "UTC" };
+          }
+          return null;
+        },
+      });
+      testCloudflareEnv.DB = updateDatabase;
+
+      const ownerResponse = await postWorkspace("updateWeeklyGoal", {
+        weeklyGoal: 5,
+      });
+      assert.equal(ownerResponse.status, 200);
+      assert.deepEqual(await ownerResponse.json(), {
+        ok: true,
+        action: "updateWeeklyGoal",
+        id: "weekly-goal",
+      });
+      const colleagueResponse = await postWorkspace(
+        "updateWeeklyGoal",
+        { weeklyGoal: 3 },
+        "colleague@example.com",
+      );
+      assert.equal(colleagueResponse.status, 200);
+      const keepCurrentResponse = await postWorkspace("updateWeeklyGoal", {
+        weeklyGoal: 4,
+      });
+      assert.equal(keepCurrentResponse.status, 200);
+
+      for (const invalidGoal of [0, 2, 6, 8, 1.5, "5", null]) {
+        const response = await postWorkspace("updateWeeklyGoal", {
+          weeklyGoal: invalidGoal,
+        });
+        assert.equal(response.status, 400);
+        assert.equal((await response.json()).code, "invalid_weekly_goal");
+      }
+
+      const updates = updateDatabase.calls.filter(
+        (statement) =>
+          /^UPDATE profiles SET weekly_goal = \?, updated_at = CURRENT_TIMESTAMP WHERE user_id = \?$/i.test(
+            statement.sql,
+          ),
+      );
+      assert.deepEqual(
+        updates.map((statement) => statement.bindings),
+        [
+          [5, await expectedStableUserId("owner@example.com")],
+          [3, await expectedStableUserId("colleague@example.com")],
+          [4, await expectedStableUserId("owner@example.com")],
+        ],
+      );
+      assert.equal(
+        updateDatabase.calls.some((statement) =>
+          /INSERT(?: OR IGNORE)? INTO xp_events/i.test(statement.sql),
+        ),
+        false,
+        "changing a setting must never award XP",
+      );
+    },
+  );
+
+  await t.test(
+    "ships an accessible phone-first weekly-rhythm control",
+    async () => {
+      const [clientSource, stylesSource] = await Promise.all([
+        readFile(
+          new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+          "utf8",
+        ),
+        readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+      ]);
+
+      assert.match(
+        clientSource,
+        /window\.scrollTo\(\{\s*top:\s*0,\s*left:\s*0,\s*behavior:\s*"auto"\s*\}\);[\s\S]*?\[view\]/,
+      );
+      assert.match(
+        clientSource,
+        /weeklyGoalPresets\s*=\s*\[[\s\S]*?Light[\s\S]*?Steady[\s\S]*?Balanced[\s\S]*?Focused[\s\S]*?Ambitious[\s\S]*?\];/,
+      );
+      assert.match(clientSource, /<legend>Weekly action target<\/legend>/);
+      assert.match(
+        clientSource,
+        /Changes start next Monday[\s\S]*?Missed\s+days do not break your rhythm/i,
+      );
+      assert.match(
+        clientSource,
+        /className="readiness-ring"[\s\S]*?role="progressbar"[\s\S]*?aria-valuenow=\{readiness\}/,
+      );
+      assert.match(
+        stylesSource,
+        /\.weekly-goal-option\s*\{[^}]*min-height:\s*48px/,
+      );
+      assert.match(
+        stylesSource,
+        /@media \(max-width: 820px\)[\s\S]*?\.progression-card\s*\{[^}]*order:\s*-1/,
+      );
+      assert.match(
+        stylesSource,
+        /\.mobile-nav \.nav-button\s*\{[^}]*min-height:\s*48px[^}]*font-size:\s*10px/,
+      );
+      assert.match(
+        stylesSource,
+        /\.quest-copy small\s*\{[^}]*color:\s*#5f716a[^}]*font-size:\s*10px/,
+      );
+      assert.match(
+        stylesSource,
+        /\.quest-row button\s*\{[^}]*min-height:\s*44px[^}]*font-size:\s*10px/,
+      );
+      assert.doesNotMatch(
+        stylesSource,
+        /\.renewal-identity \.text-button\s*\{[^}]*font-size:\s*0/,
+      );
     },
   );
 
