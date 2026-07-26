@@ -438,6 +438,10 @@ export const reminderPreferences = sqliteTable("reminder_preferences", {
   inAppEnabled: integer("in_app_enabled", { mode: "boolean" })
     .notNull()
     .default(true),
+  pushEnabled: integer("push_enabled", { mode: "boolean" })
+    .notNull()
+    .default(false),
+  pushHourLocal: integer("push_hour_local").notNull().default(9),
   leadDays: text("lead_days").notNull().default("[90,30,7,1]"),
   timeZone: text("time_zone").notNull().default("UTC"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -468,6 +472,77 @@ export const reminderStates = sqliteTable(
     index("reminder_states_user_credential_idx").on(
       table.userId,
       table.credentialId,
+    ),
+  ],
+);
+
+export const pushSubscriptions = sqliteTable(
+  "push_subscriptions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    endpoint: text("endpoint").notNull(),
+    p256dh: text("p256dh").notNull(),
+    auth: text("auth").notNull(),
+    expirationTime: integer("expiration_time"),
+    deviceLabel: text("device_label"),
+    failureCount: integer("failure_count").notNull().default(0),
+    lastSeenAt: text("last_seen_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    lastSuccessAt: text("last_success_at"),
+    lastFailureAt: text("last_failure_at"),
+    lastTestAt: text("last_test_at"),
+    disabledAt: text("disabled_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("push_subscriptions_endpoint_unique").on(table.endpoint),
+    index("push_subscriptions_user_active_idx").on(
+      table.userId,
+      table.disabledAt,
+      table.updatedAt,
+    ),
+  ],
+);
+
+export const pushDeliveryLedger = sqliteTable(
+  "push_delivery_ledger",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    subscriptionId: text("subscription_id")
+      .notNull()
+      .references(() => pushSubscriptions.id, { onDelete: "cascade" }),
+    reminderKey: text("reminder_key").notNull(),
+    scheduledFor: text("scheduled_for").notNull(),
+    status: text("status").notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    nextAttemptAt: text("next_attempt_at"),
+    httpStatus: integer("http_status"),
+    errorCode: text("error_code"),
+    deliveredAt: text("delivered_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("push_delivery_ledger_occurrence_unique").on(
+      table.subscriptionId,
+      table.reminderKey,
+      table.scheduledFor,
+    ),
+    index("push_delivery_ledger_retry_idx").on(
+      table.status,
+      table.nextAttemptAt,
+    ),
+    index("push_delivery_ledger_user_created_idx").on(
+      table.userId,
+      table.createdAt,
     ),
   ],
 );

@@ -5384,6 +5384,9 @@ test("License Lantern product contract", async (t) => {
       archiveMigration,
       builtArchiveMigration,
       archiveSnapshotSource,
+      pushMigration,
+      builtPushMigration,
+      pushSnapshotSource,
     ] = await Promise.all([
         readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
         readFile(
@@ -5518,6 +5521,21 @@ test("License Lantern product contract", async (t) => {
           new URL("../drizzle/meta/0008_snapshot.json", import.meta.url),
           "utf8",
         ),
+        readFile(
+          new URL("../drizzle/0009_lethal_fat_cobra.sql", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL(
+            "../dist/.openai/drizzle/0009_lethal_fat_cobra.sql",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+        readFile(
+          new URL("../drizzle/meta/0009_snapshot.json", import.meta.url),
+          "utf8",
+        ),
       ]);
 
     const hosting = JSON.parse(hostingSource);
@@ -5535,8 +5553,9 @@ test("License Lantern product contract", async (t) => {
     assert.equal(builtAttestationMigration, attestationMigration);
     assert.equal(builtWeeklyPeriodMigration, weeklyPeriodMigration);
     assert.equal(builtArchiveMigration, archiveMigration);
+    assert.equal(builtPushMigration, pushMigration);
 
-    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}\n${attestationMigration}\n${weeklyPeriodMigration}\n${archiveMigration}`;
+    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}\n${attestationMigration}\n${weeklyPeriodMigration}\n${archiveMigration}\n${pushMigration}`;
     const migratedTables = new Set(
       [...migration.matchAll(/CREATE TABLE `([^`]+)`/g)].map(
         (match) => match[1],
@@ -5559,6 +5578,8 @@ test("License Lantern product contract", async (t) => {
       "renewal_acceptances",
       "reminder_preferences",
       "reminder_states",
+      "push_subscriptions",
+      "push_delivery_ledger",
       "badge_definitions",
       "xp_events",
       "weekly_progression_periods",
@@ -5646,7 +5667,7 @@ test("License Lantern product contract", async (t) => {
     const migrationJournal = JSON.parse(migrationJournalSource);
     assert.equal(
       migrationJournal.entries.at(-1)?.tag,
-      "0008_mighty_snowbird",
+      "0009_lethal_fat_cobra",
     );
     assert.match(
       weeklyPeriodMigration,
@@ -5682,6 +5703,49 @@ test("License Lantern product contract", async (t) => {
     assert.equal(
       archiveSnapshot.tables.checklist_tasks.columns.revision.default,
       1,
+    );
+    const pushSnapshot = JSON.parse(pushSnapshotSource);
+    assert.equal(
+      pushSnapshot.tables.reminder_preferences.columns.push_enabled.default,
+      false,
+    );
+    assert.equal(
+      pushSnapshot.tables.reminder_preferences.columns.push_hour_local.default,
+      9,
+    );
+    assert.deepEqual(
+      pushSnapshot.tables.push_subscriptions.indexes
+        .push_subscriptions_endpoint_unique,
+      {
+        name: "push_subscriptions_endpoint_unique",
+        columns: ["endpoint"],
+        isUnique: true,
+      },
+    );
+    assert.deepEqual(
+      pushSnapshot.tables.push_delivery_ledger.indexes
+        .push_delivery_ledger_occurrence_unique,
+      {
+        name: "push_delivery_ledger_occurrence_unique",
+        columns: ["subscription_id", "reminder_key", "scheduled_for"],
+        isUnique: true,
+      },
+    );
+    assert.match(
+      pushMigration,
+      /CREATE TABLE `push_subscriptions`[\s\S]*?CREATE UNIQUE INDEX `push_subscriptions_endpoint_unique`/i,
+    );
+    assert.match(
+      pushMigration,
+      /CREATE TABLE `push_delivery_ledger`[\s\S]*?CREATE UNIQUE INDEX `push_delivery_ledger_occurrence_unique`[\s\S]*?`subscription_id`,`reminder_key`,`scheduled_for`/i,
+    );
+    assert.match(
+      pushMigration,
+      /ALTER TABLE `reminder_preferences` ADD `push_enabled` integer DEFAULT false NOT NULL/i,
+    );
+    assert.match(
+      pushMigration,
+      /ALTER TABLE `reminder_preferences` ADD `push_hour_local` integer DEFAULT 9 NOT NULL/i,
     );
     assert.match(
       exclusiveGroupMigration,
@@ -5926,9 +5990,13 @@ test("License Lantern product contract", async (t) => {
           .checklist_tasks_user_credential_archive_idx.columns,
         ["user_id", "credential_id", "archived_at", "sort_order"],
       );
+      const journalEntries = JSON.parse(journalSource).entries;
+      assert.ok(
+        journalEntries.some((entry) => entry.tag === "0008_mighty_snowbird"),
+      );
       assert.equal(
-        JSON.parse(journalSource).entries.at(-1)?.tag,
-        "0008_mighty_snowbird",
+        journalEntries.at(-1)?.tag,
+        "0009_lethal_fat_cobra",
       );
 
       assert.match(
@@ -11151,6 +11219,47 @@ test("License Lantern product contract", async (t) => {
       assert.deepEqual(await anonymousResponse.json(), {
         error: "Sign in with ChatGPT to access your CEU workspace.",
         code: "authentication_required",
+      });
+
+      const wrongContentTypeResponse = await fetchWorker(
+        "https://license-lantern.example/api/workspace",
+        {
+          method: "POST",
+          headers: {
+            ...authHeaders(),
+            "content-type": "text/plain",
+          },
+          body: JSON.stringify({
+            action: "updateWeeklyGoal",
+            payload: { weeklyGoal: 7 },
+          }),
+        },
+      );
+      assert.equal(wrongContentTypeResponse.status, 415);
+      assert.deepEqual(await wrongContentTypeResponse.json(), {
+        error: "Request body must use application/json.",
+        code: "invalid_content_type",
+      });
+
+      const crossOriginResponse = await fetchWorker(
+        "https://license-lantern.example/api/workspace",
+        {
+          method: "POST",
+          headers: {
+            ...authHeaders(),
+            origin: "https://attacker.example",
+            "sec-fetch-site": "cross-site",
+          },
+          body: JSON.stringify({
+            action: "updateWeeklyGoal",
+            payload: { weeklyGoal: 7 },
+          }),
+        },
+      );
+      assert.equal(crossOriginResponse.status, 403);
+      assert.deepEqual(await crossOriginResponse.json(), {
+        error: "Cross-origin workspace updates are not allowed.",
+        code: "cross_origin_request",
       });
 
       const injectedIdentityResponse = await postWorkspace("addActivity", {
@@ -16601,8 +16710,13 @@ test("License Lantern product contract", async (t) => {
       );
       assert.deepEqual(workspace.reminderPreferences, {
         inAppEnabled: true,
+        pushEnabled: false,
+        pushHourLocal: 9,
         leadDays: [30, 7, 1],
         timeZone: "UTC",
+        webPushConfigured: false,
+        vapidPublicKey: null,
+        activePushDeviceCount: 0,
       });
 
       const taskReminder = workspace.reminders.find(
@@ -17829,6 +17943,8 @@ test("License Lantern product contract", async (t) => {
         "updateReminderPreferences",
         {
           inAppEnabled: true,
+          pushEnabled: false,
+          pushHourLocal: 9,
           leadDays: [7, 90, 7, 1],
           timeZone: "America/New_York",
         },
@@ -17848,6 +17964,8 @@ test("License Lantern product contract", async (t) => {
       assert.deepEqual(preferenceUpsert.bindings, [
         userId,
         1,
+        0,
+        9,
         "[90,7,1]",
         "America/New_York",
       ]);
@@ -17856,6 +17974,8 @@ test("License Lantern product contract", async (t) => {
         "updateReminderPreferences",
         {
           inAppEnabled: true,
+          pushEnabled: false,
+          pushHourLocal: 9,
           leadDays: [30],
           timeZone: "Mars/Olympus_Mons",
         },
@@ -17918,6 +18038,834 @@ test("License Lantern product contract", async (t) => {
         ),
         false,
       );
+    },
+  );
+
+  await t.test(
+    "owns, schedules, deduplicates, retries, and expires private phone alerts",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __pushDeliveryTestNonce = "push";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      testCloudflareEnv.DB = database;
+      const reminderSource = await readFile(
+        new URL("../app/lib/reminders.ts", import.meta.url),
+        "utf8",
+      );
+      const reminderModule = await importTypeScriptModule(reminderSource);
+      assert.deepEqual(
+        reminderModule.localReminderClock(
+          new Date("2026-07-26T03:15:00.000Z"),
+          "Asia/Kathmandu",
+        ),
+        { date: "2026-07-26", hour: 9 },
+      );
+      assert.equal(
+        reminderModule.localReminderClock(
+          new Date("2026-03-08T13:00:00.000Z"),
+          "America/New_York",
+        ).hour,
+        9,
+      );
+      assert.equal(
+        reminderModule.localReminderClock(
+          new Date("2026-11-01T14:00:00.000Z"),
+          "America/New_York",
+        ).hour,
+        9,
+      );
+
+      const encodeBase64Url = (bytes) =>
+        Buffer.from(bytes)
+          .toString("base64")
+          .replace(/\+/g, "-")
+          .replace(/\//g, "_")
+          .replace(/=+$/g, "");
+      const vapidPair = await crypto.subtle.generateKey(
+        { name: "ECDSA", namedCurve: "P-256" },
+        true,
+        ["sign", "verify"],
+      );
+      const vapidPublicKey = encodeBase64Url(
+        new Uint8Array(
+          await crypto.subtle.exportKey("raw", vapidPair.publicKey),
+        ),
+      );
+      const vapidPrivateJwk = await crypto.subtle.exportKey(
+        "jwk",
+        vapidPair.privateKey,
+      );
+      const vapidPrivateKey = vapidPrivateJwk.d;
+      assert.ok(vapidPrivateKey);
+      testCloudflareEnv.VAPID_PUBLIC_KEY = vapidPublicKey;
+      testCloudflareEnv.VAPID_PRIVATE_KEY = vapidPrivateKey;
+      testCloudflareEnv.VAPID_SUBJECT =
+        "https://license-lantern.example";
+
+      const makeSubscription = async (endpoint) => {
+        const clientPair = await crypto.subtle.generateKey(
+          { name: "ECDH", namedCurve: "P-256" },
+          true,
+          ["deriveBits"],
+        );
+        return {
+          endpoint,
+          expirationTime: null,
+          keys: {
+            p256dh: encodeBase64Url(
+              new Uint8Array(
+                await crypto.subtle.exportKey("raw", clientPair.publicKey),
+              ),
+            ),
+            auth: encodeBase64Url(crypto.getRandomValues(new Uint8Array(16))),
+          },
+        };
+      };
+
+      const firstSubscription = await makeSubscription(
+        "https://fcm.googleapis.com/fcm/send/owner-device",
+      );
+      const unsupportedSubscription = await makeSubscription(
+        "https://attacker.example.net/browser-shaped/path",
+      );
+      const unsupportedSave = await postWorkspace(
+        "savePushSubscription",
+        {
+          subscription: unsupportedSubscription,
+          deviceLabel: "Untrusted destination",
+          enableAccountPush: true,
+        },
+      );
+      assert.equal(unsupportedSave.status, 400);
+      assert.deepEqual(await unsupportedSave.json(), {
+        error:
+          "subscription.endpoint must be a supported browser push-service URL",
+        code: "invalid_push_endpoint",
+      });
+      const saveFirst = await postWorkspace("savePushSubscription", {
+        subscription: firstSubscription,
+        deviceLabel: "Owner phone",
+        enableAccountPush: true,
+      });
+      assert.equal(saveFirst.status, 200);
+      const firstId = (await saveFirst.json()).id;
+      assert.ok(firstId);
+
+      const conflict = await postWorkspace(
+        "savePushSubscription",
+        {
+          subscription: firstSubscription,
+          deviceLabel: "Other phone",
+          enableAccountPush: true,
+        },
+        "other@example.com",
+      );
+      assert.equal(conflict.status, 409);
+      assert.deepEqual(await conflict.json(), {
+        error: "This browser subscription belongs to another account.",
+        code: "push_subscription_conflict",
+      });
+
+      const preferenceResponse = await postWorkspace(
+        "updateReminderPreferences",
+        {
+          inAppEnabled: true,
+          pushEnabled: true,
+          pushHourLocal: 9,
+          leadDays: [1],
+          timeZone: "America/New_York",
+        },
+      );
+      assert.equal(preferenceResponse.status, 200);
+
+      const ownerId = await expectedStableUserId("owner@example.com");
+      database.raw
+        .prepare(
+          `INSERT INTO credentials (
+             id, user_id, rule_set_id, credential_name, profession,
+             jurisdiction, issuer, cycle_start, deadline, total_required,
+             unit_label, status
+           ) VALUES (
+             'credential-push-due',
+             ?,
+             NULL,
+             'Private test credential',
+             'Testing',
+             'New York',
+             'Test board',
+             '2026-01-01',
+             '2026-07-27',
+             1,
+             'credit',
+             'active'
+           )`,
+        )
+        .run(ownerId);
+
+      const workspaceResponse = await fetchWorker(
+        "https://license-lantern.example/api/workspace",
+        { headers: authHeaders() },
+      );
+      assert.equal(workspaceResponse.status, 200);
+      const workspaceText = await workspaceResponse.text();
+      const workspace = JSON.parse(workspaceText);
+      assert.equal(workspace.reminderPreferences.pushEnabled, true);
+      assert.equal(workspace.reminderPreferences.webPushConfigured, true);
+      assert.equal(workspace.reminderPreferences.vapidPublicKey, vapidPublicKey);
+      assert.equal(
+        workspace.reminderPreferences.activePushDeviceCount,
+        1,
+      );
+      assert.doesNotMatch(workspaceText, /fcm\.googleapis\.com/);
+      assert.doesNotMatch(workspaceText, new RegExp(firstSubscription.keys.p256dh));
+      assert.doesNotMatch(workspaceText, new RegExp(firstSubscription.keys.auth));
+      const pushReminder = workspace.reminders.find(
+        (reminder) => reminder.credentialId === "credential-push-due",
+      );
+      assert.ok(pushReminder);
+      database.raw
+        .prepare(
+          `INSERT INTO push_delivery_ledger (
+             id, user_id, subscription_id, reminder_key, scheduled_for,
+             status, attempt_count
+           ) VALUES (?, ?, ?, ?, ?, 'pending', 0)`,
+        )
+        .run(
+          "11111111-1111-4111-8111-111111111111",
+          ownerId,
+          firstId,
+          pushReminder.key,
+          pushReminder.scheduledFor,
+        );
+
+      const originalFetch = globalThis.fetch;
+      const pushCalls = [];
+      const responseModes = new Map([
+        [firstSubscription.endpoint, [201, 201]],
+      ]);
+      globalThis.fetch = async (input, init) => {
+        const endpoint =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
+        pushCalls.push({ endpoint, init });
+        const statuses = responseModes.get(endpoint) ?? [500];
+        const status = statuses.length > 1 ? statuses.shift() : statuses[0];
+        return new Response(null, { status });
+      };
+
+      try {
+        const testResponse = await postWorkspace("sendTestPush", {
+          endpoint: firstSubscription.endpoint,
+        });
+        assert.equal(testResponse.status, 200);
+        const rateLimited = await postWorkspace("sendTestPush", {
+          endpoint: firstSubscription.endpoint,
+        });
+        assert.equal(rateLimited.status, 429);
+        assert.deepEqual(await rateLimited.json(), {
+          error: "Wait a minute before sending another test alert.",
+          code: "push_test_rate_limited",
+        });
+        pushCalls.length = 0;
+
+        const worker = await workerPromise;
+        const runScheduled = async (scheduledTime) => {
+          const waits = [];
+          await worker.scheduled(
+            { scheduledTime, cron: "*/15 * * * *" },
+            {
+              ...runtimeEnvironment(),
+              VAPID_PUBLIC_KEY: vapidPublicKey,
+              VAPID_PRIVATE_KEY: vapidPrivateKey,
+              VAPID_SUBJECT: "https://license-lantern.example",
+            },
+            {
+              waitUntil(promise) {
+                waits.push(promise);
+              },
+              passThroughOnException() {},
+            },
+          );
+          await Promise.all(waits);
+        };
+        const scheduledTime = Date.parse("2026-07-26T14:00:00.000Z");
+        await runScheduled(scheduledTime);
+        assert.equal(pushCalls.length, 1);
+        assert.equal(pushCalls[0].endpoint, firstSubscription.endpoint);
+        assert.equal(pushCalls[0].init.redirect, "manual");
+        assert.equal(
+          database.raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM push_delivery_ledger
+               WHERE status = 'delivered'`,
+            )
+            .get().count,
+          1,
+        );
+        const resolvedLaunch = await fetchWorker(
+          "https://license-lantern.example/api/workspace?delivery=11111111-1111-4111-8111-111111111111",
+          { headers: authHeaders() },
+        );
+        assert.equal(resolvedLaunch.status, 200);
+        assert.deepEqual(await resolvedLaunch.json(), {
+          target: {
+            credentialId: "credential-push-due",
+            reminderKey: pushReminder.key,
+          },
+        });
+        const crossOwnerLaunch = await fetchWorker(
+          "https://license-lantern.example/api/workspace?delivery=11111111-1111-4111-8111-111111111111",
+          { headers: authHeaders("other@example.com") },
+        );
+        assert.equal(crossOwnerLaunch.status, 404);
+        assert.deepEqual(await crossOwnerLaunch.json(), {
+          error: "That check-in is no longer available.",
+          code: "push_delivery_not_found",
+        });
+        assert.equal(
+          Buffer.from(pushCalls[0].init.body).includes(
+            Buffer.from(pushReminder.key),
+          ),
+          false,
+          "the encrypted notification body must not expose the reminder key",
+        );
+        await runScheduled(scheduledTime);
+        assert.equal(
+          pushCalls.length,
+          1,
+          "the same device/reminder/threshold occurrence must be deduplicated",
+        );
+        const regressedLeadResponse = await postWorkspace(
+          "updateReminderPreferences",
+          {
+            inAppEnabled: true,
+            pushEnabled: true,
+            pushHourLocal: 9,
+            leadDays: [7],
+            timeZone: "America/New_York",
+          },
+        );
+        assert.equal(regressedLeadResponse.status, 200);
+        await runScheduled(scheduledTime);
+        assert.equal(
+          pushCalls.length,
+          1,
+          "an older threshold exposed by preference changes must not resend",
+        );
+        const restoreLeadResponse = await postWorkspace(
+          "updateReminderPreferences",
+          {
+            inAppEnabled: true,
+            pushEnabled: true,
+            pushHourLocal: 9,
+            leadDays: [1],
+            timeZone: "America/New_York",
+          },
+        );
+        assert.equal(restoreLeadResponse.status, 200);
+
+        const secondSubscription = await makeSubscription(
+          "https://fcm.googleapis.com/fcm/send/expired-device",
+        );
+        responseModes.set(secondSubscription.endpoint, [410]);
+        const saveSecond = await postWorkspace("savePushSubscription", {
+          subscription: secondSubscription,
+          deviceLabel: "Expired phone",
+          enableAccountPush: true,
+        });
+        assert.equal(saveSecond.status, 200);
+        await runScheduled(scheduledTime);
+        assert.equal(
+          database.raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM push_subscriptions
+               WHERE endpoint = ? AND disabled_at IS NOT NULL`,
+            )
+            .get(secondSubscription.endpoint).count,
+          1,
+        );
+        assert.equal(
+          database.raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM push_delivery_ledger
+               WHERE status = 'expired'`,
+            )
+            .get().count,
+          1,
+        );
+
+        const thirdSubscription = await makeSubscription(
+          "https://fcm.googleapis.com/fcm/send/retry-device",
+        );
+        responseModes.set(thirdSubscription.endpoint, [503, 201]);
+        const saveThird = await postWorkspace("savePushSubscription", {
+          subscription: thirdSubscription,
+          deviceLabel: "Retry phone",
+          enableAccountPush: true,
+        });
+        assert.equal(saveThird.status, 200);
+        await runScheduled(scheduledTime);
+        assert.deepEqual(
+          {
+            ...database.raw
+              .prepare(
+                `SELECT
+                   delivery.status,
+                   delivery.attempt_count AS attemptCount,
+                   delivery.next_attempt_at AS nextAttemptAt
+                 FROM push_delivery_ledger delivery
+                 JOIN push_subscriptions subscription
+                   ON subscription.id = delivery.subscription_id
+                 WHERE subscription.endpoint = ?`,
+              )
+              .get(thirdSubscription.endpoint),
+          },
+          {
+            status: "retry",
+            attemptCount: 1,
+            nextAttemptAt: "2026-07-26 14:15:00",
+          },
+        );
+        await runScheduled(
+          Date.parse("2026-07-26T14:15:00.000Z"),
+        );
+        assert.deepEqual(
+          {
+            ...database.raw
+              .prepare(
+                `SELECT
+                   delivery.status,
+                   delivery.attempt_count AS attemptCount,
+                   delivery.http_status AS httpStatus
+                 FROM push_delivery_ledger delivery
+                 JOIN push_subscriptions subscription
+                   ON subscription.id = delivery.subscription_id
+                 WHERE subscription.endpoint = ?`,
+              )
+              .get(thirdSubscription.endpoint),
+          },
+          {
+            status: "delivered",
+            attemptCount: 2,
+            httpStatus: 201,
+          },
+        );
+
+        const removeThird = await postWorkspace("removePushSubscription", {
+          endpoint: thirdSubscription.endpoint,
+        });
+        assert.equal(removeThird.status, 200);
+        assert.equal(
+          database.raw
+            .prepare(
+              `SELECT push_enabled AS pushEnabled
+               FROM reminder_preferences
+               WHERE user_id = ?`,
+            )
+            .get(ownerId).pushEnabled,
+          1,
+          "removing one device must not pause another active device",
+        );
+        const removeFirst = await postWorkspace("removePushSubscription", {
+          endpoint: firstSubscription.endpoint,
+        });
+        assert.equal(removeFirst.status, 200);
+        assert.equal(
+          database.raw
+            .prepare(
+              `SELECT push_enabled AS pushEnabled
+               FROM reminder_preferences
+               WHERE user_id = ?`,
+            )
+            .get(ownerId).pushEnabled,
+          0,
+          "removing the last active device must pause account push",
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+        delete testCloudflareEnv.VAPID_PUBLIC_KEY;
+        delete testCloudflareEnv.VAPID_PRIVATE_KEY;
+        delete testCloudflareEnv.VAPID_SUBJECT;
+        database.close();
+      }
+
+      const [wranglerSource, serviceWorkerSource, clientSource] =
+        await Promise.all([
+          readFile(
+            new URL("../dist/server/wrangler.json", import.meta.url),
+            "utf8",
+          ),
+          readFile(new URL("../public/sw.js", import.meta.url), "utf8"),
+          readFile(
+            new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+            "utf8",
+          ),
+        ]);
+      assert.deepEqual(JSON.parse(wranglerSource).triggers, {
+        crons: ["*/15 * * * *"],
+      });
+      assert.match(serviceWorkerSource, /addEventListener\("push"/);
+      assert.match(
+        serviceWorkerSource,
+        /addEventListener\("notificationclick"/,
+      );
+      assert.match(
+        serviceWorkerSource,
+        /GENERIC_NOTIFICATION_BODY[\s\S]*?showNotification/,
+      );
+      assert.match(serviceWorkerSource, /safeLaunchTarget/);
+      assert.match(clientSource, /handleEnablePhoneAlerts/);
+      assert.match(
+        clientSource,
+        /pushManager\.subscribe\(\{[\s\S]*?userVisibleOnly:\s*true[\s\S]*?applicationServerKey/,
+      );
+      assert.match(
+        clientSource,
+        /userVisibleOnly:\s*true[\s\S]*?applicationServerKey/,
+      );
+      assert.doesNotMatch(
+        clientSource,
+        /Notification\.requestPermission\(\)/,
+      );
+    },
+  );
+
+  await t.test(
+    "bounds and fairly rotates the durable phone-alert queue",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __pushQueueTestNonce = "push-queue";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      const raw = database.raw;
+      const encodeBase64Url = (bytes) =>
+        Buffer.from(bytes).toString("base64url");
+      const clientPair = await crypto.subtle.generateKey(
+        { name: "ECDH", namedCurve: "P-256" },
+        true,
+        ["deriveBits"],
+      );
+      const clientPublicKey = encodeBase64Url(
+        new Uint8Array(
+          await crypto.subtle.exportKey("raw", clientPair.publicKey),
+        ),
+      );
+      const clientAuth = encodeBase64Url(
+        crypto.getRandomValues(new Uint8Array(16)),
+      );
+      const vapidPair = await crypto.subtle.generateKey(
+        { name: "ECDSA", namedCurve: "P-256" },
+        true,
+        ["sign", "verify"],
+      );
+      const vapidPublicKey = encodeBase64Url(
+        new Uint8Array(
+          await crypto.subtle.exportKey("raw", vapidPair.publicKey),
+        ),
+      );
+      const vapidPrivateKey = (
+        await crypto.subtle.exportKey("jwk", vapidPair.privateKey)
+      ).d;
+      assert.ok(vapidPrivateKey);
+
+      for (const suffix of ["a", "b"]) {
+        const userId = `scheduler-user-${suffix}`;
+        const credentialId = `scheduler-credential-${suffix}`;
+        raw
+          .prepare(
+            `INSERT INTO users (id, email, display_name, is_demo)
+             VALUES (?, ?, ?, 0)`,
+          )
+          .run(
+            userId,
+            `scheduler-${suffix}@example.com`,
+            `Scheduler ${suffix.toUpperCase()}`,
+          );
+        raw
+          .prepare(
+            `INSERT INTO reminder_preferences (
+               user_id, in_app_enabled, push_enabled, push_hour_local,
+               lead_days, time_zone
+             ) VALUES (?, 1, 1, 0, '[1]', 'UTC')`,
+          )
+          .run(userId);
+        raw
+          .prepare(
+            `INSERT INTO credentials (
+               id, user_id, rule_set_id, credential_name, profession,
+               jurisdiction, issuer, cycle_start, deadline, total_required,
+               unit_label, status
+             ) VALUES (?, ?, NULL, ?, 'Testing', 'United States',
+               'Test board', '2026-01-01', '2026-07-27', 1, 'credit', 'active')`,
+          )
+          .run(credentialId, userId, `Scheduler credential ${suffix}`);
+      }
+
+      for (let index = 0; index < 65; index += 1) {
+        const suffix = index % 2 === 0 ? "a" : "b";
+        const padded = String(index).padStart(3, "0");
+        raw
+          .prepare(
+            `INSERT INTO push_subscriptions (
+               id, user_id, endpoint, p256dh, auth, expiration_time,
+               device_label, last_seen_at, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+          )
+          .run(
+            `scheduler-sub-${padded}`,
+            `scheduler-user-${suffix}`,
+            `https://fcm.googleapis.com/fcm/send/scheduler-${suffix}-${padded}`,
+            clientPublicKey,
+            clientAuth,
+            `Scheduler ${padded}`,
+            "2026-07-25 00:00:00",
+            "2026-07-25 00:00:00",
+            "2026-07-25 00:00:00",
+          );
+      }
+
+      const worker = await workerPromise;
+      const originalFetch = globalThis.fetch;
+      const pushEndpoints = [];
+      let pushStatus = 201;
+      globalThis.fetch = async (input) => {
+        const endpoint =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
+        pushEndpoints.push(endpoint);
+        return new Response(null, { status: pushStatus });
+      };
+      const runScheduled = async (scheduledTime) => {
+        const waits = [];
+        await worker.scheduled(
+          { scheduledTime, cron: "*/15 * * * *" },
+          {
+            ...runtimeEnvironment(),
+            DB: database,
+            VAPID_PUBLIC_KEY: vapidPublicKey,
+            VAPID_PRIVATE_KEY: vapidPrivateKey,
+            VAPID_SUBJECT: "https://license-lantern.example",
+          },
+          {
+            waitUntil(promise) {
+              waits.push(promise);
+            },
+            passThroughOnException() {},
+          },
+        );
+        await Promise.all(waits);
+      };
+
+      try {
+        const start = Date.parse("2026-07-26T00:00:00.000Z");
+        await runScheduled(start);
+        assert.equal(pushEndpoints.length, 8);
+        assert.equal(
+          pushEndpoints.filter((endpoint) =>
+            endpoint.includes("/scheduler-a-"),
+          ).length,
+          4,
+        );
+        assert.equal(
+          pushEndpoints.filter((endpoint) =>
+            endpoint.includes("/scheduler-b-"),
+          ).length,
+          4,
+        );
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT COUNT(*) AS count FROM push_delivery_ledger`,
+            )
+            .get().count,
+          64,
+          "the first invocation must scan only its bounded subscription page",
+        );
+
+        await runScheduled(start + 15 * 60_000);
+        assert.equal(pushEndpoints.length, 16);
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT COUNT(*) AS count FROM push_delivery_ledger`,
+            )
+            .get().count,
+          65,
+          "the next invocation must rotate to the previously unscanned device",
+        );
+
+        pushStatus = 401;
+        await runScheduled(start + 30 * 60_000);
+        assert.equal(pushEndpoints.length, 20);
+        assert.deepEqual(
+          {
+            ...raw
+              .prepare(
+                `SELECT
+                   COUNT(*) AS count,
+                   MIN(attempt_count) AS minimumAttemptCount,
+                   MAX(attempt_count) AS maximumAttemptCount
+                 FROM push_delivery_ledger
+                 WHERE status = 'retry'`,
+              )
+              .get(),
+          },
+          {
+            count: 4,
+            minimumAttemptCount: 0,
+            maximumAttemptCount: 0,
+          },
+          "a configuration rejection must remain retryable without consuming an attempt",
+        );
+
+        pushStatus = 201;
+        let nextScheduledTime = start + 45 * 60_000;
+        while (
+          raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM push_delivery_ledger
+               WHERE status = 'delivered'`,
+            )
+            .get().count < 65
+        ) {
+          await runScheduled(nextScheduledTime);
+          nextScheduledTime += 15 * 60_000;
+        }
+        assert.equal(pushEndpoints.length, 69);
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM push_delivery_ledger
+               WHERE status = 'delivered'`,
+            )
+            .get().count,
+          65,
+        );
+
+        const retainedId = raw
+          .prepare(
+            `SELECT id FROM push_delivery_ledger
+             WHERE status = 'delivered'
+             LIMIT 1`,
+          )
+          .get().id;
+        raw
+          .prepare(
+            `UPDATE push_delivery_ledger
+             SET created_at = '2025-01-01 00:00:00'
+             WHERE id = ?`,
+          )
+          .run(retainedId);
+        await runScheduled(nextScheduledTime);
+        nextScheduledTime += 15 * 60_000;
+        assert.equal(
+          raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM push_delivery_ledger
+               WHERE id = ?`,
+            )
+            .get(retainedId).count,
+          1,
+          "active-device dedupe rows must not age out and resend",
+        );
+
+        raw
+          .prepare(
+            `INSERT INTO users (id, email, display_name, is_demo)
+             VALUES ('scheduler-expired-user', 'expired@example.com', 'Expired', 0)`,
+          )
+          .run();
+        raw
+          .prepare(
+            `INSERT INTO reminder_preferences (
+               user_id, in_app_enabled, push_enabled, push_hour_local,
+               lead_days, time_zone
+             ) VALUES ('scheduler-expired-user', 1, 1, 0, '[1]', 'UTC')`,
+          )
+          .run();
+        raw
+          .prepare(
+            `INSERT INTO push_subscriptions (
+               id, user_id, endpoint, p256dh, auth, expiration_time, device_label
+             ) VALUES (
+               'scheduler-expired-sub', 'scheduler-expired-user',
+               'https://fcm.googleapis.com/fcm/send/scheduler-expired',
+               ?, ?, ?, 'Expired phone'
+             )`,
+          )
+          .run(clientPublicKey, clientAuth, nextScheduledTime + 5 * 60_000);
+        raw
+          .prepare(
+            `INSERT INTO push_delivery_ledger (
+               id, user_id, subscription_id, reminder_key, scheduled_for,
+               status, attempt_count
+             ) VALUES (
+               '22222222-2222-4222-8222-222222222222',
+               'scheduler-expired-user', 'scheduler-expired-sub',
+               'deadline:expired:2026-07-27', '2026-07-26',
+               'pending', 0
+             )`,
+          )
+          .run();
+        await runScheduled(nextScheduledTime + 15 * 60_000);
+        const expiredAt = new Date(
+          nextScheduledTime + 15 * 60_000,
+        )
+          .toISOString()
+          .slice(0, 19)
+          .replace("T", " ");
+        assert.deepEqual(
+          {
+            ...raw
+              .prepare(
+                `SELECT
+                   subscription.disabled_at AS disabledAt,
+                   preference.push_enabled AS pushEnabled,
+                   delivery.status
+                 FROM push_subscriptions subscription
+                 JOIN reminder_preferences preference
+                   ON preference.user_id = subscription.user_id
+                 JOIN push_delivery_ledger delivery
+                   ON delivery.subscription_id = subscription.id
+                 WHERE subscription.id = 'scheduler-expired-sub'`,
+              )
+              .get(),
+          },
+          {
+            disabledAt: expiredAt,
+            pushEnabled: 0,
+            status: "expired",
+          },
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+        database.close();
+      }
     },
   );
 

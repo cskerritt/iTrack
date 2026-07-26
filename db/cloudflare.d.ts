@@ -81,6 +81,9 @@ declare module "cloudflare:workers" {
   export const env: {
     DB?: D1Database;
     EVIDENCE?: R2Bucket;
+    VAPID_PUBLIC_KEY?: string;
+    VAPID_PRIVATE_KEY?: string;
+    VAPID_SUBJECT?: string;
     [binding: string]: unknown;
   };
 }

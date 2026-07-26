@@ -1327,6 +1327,11 @@ a {
   padding: 12px 20px;
 }
 
+.reminder-list article.highlighted {
+  background: #fff3cf;
+  box-shadow: inset 4px 0 #3d8069;
+}
+
 .reminder-dot {
   width: 8px;
   height: 8px;
@@ -1362,7 +1367,7 @@ a {
   background: transparent;
   color: #6e6249;
   cursor: pointer;
-  font-size: 8px;
+  font-size: 12px;
   font-weight: 800;
   padding: 6px 8px;
 }
@@ -2531,6 +2536,90 @@ a {
     var(--card);
 }
 
+.phone-alert-status {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  max-width: 620px;
+  margin-top: 18px;
+  border: 1px solid #d7e2dc;
+  border-radius: 14px;
+  background: rgba(247, 251, 248, 0.92);
+  padding: 13px 14px;
+}
+
+.phone-alert-status > span {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  background: var(--sage-bright);
+  color: #32735d;
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.phone-alert-status.denied {
+  border-color: #e2c7be;
+  background: #fff8f5;
+}
+
+.phone-alert-status.denied > span {
+  background: #f4ddd6;
+  color: #984536;
+}
+
+.phone-alert-status p,
+.install-companion-row p {
+  margin: 0;
+}
+
+.phone-alert-status strong,
+.phone-alert-status small {
+  display: block;
+}
+
+.phone-alert-status strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.phone-alert-status small {
+  margin-top: 2px;
+  color: #667872;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.phone-alert-actions .button,
+.install-companion-row .button {
+  margin-top: 0;
+}
+
+.connected-device-count {
+  display: block;
+  margin-top: 12px;
+  color: #60736d;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.install-companion-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  max-width: 720px;
+  margin-top: 22px;
+  border-top: 1px solid var(--line);
+  color: #6c7b76;
+  font-size: 12px;
+  line-height: 1.5;
+  padding-top: 18px;
+}
+
 .installed-pill {
   display: inline-flex;
   align-items: center;
@@ -2543,6 +2632,29 @@ a {
   font-size: 9px;
   font-weight: 850;
   padding: 8px 12px;
+}
+
+.install-help {
+  display: grid;
+  gap: 18px;
+  color: #566963;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.install-help > p,
+.install-help ol {
+  margin: 0;
+}
+
+.install-help ol {
+  display: grid;
+  gap: 12px;
+  padding-left: 24px;
+}
+
+.install-help li {
+  padding-left: 5px;
 }
 
 .badge-grid {
@@ -2803,6 +2915,24 @@ a {
   color: #984536;
   font-weight: 750;
   line-height: 1.45;
+}
+
+.field-inline-action {
+  justify-self: start;
+  min-height: 44px;
+  margin-top: -10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #32735d;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+  padding: 8px 4px;
+}
+
+.field-inline-action:hover {
+  text-decoration: underline;
 }
 
 .requirement-picker,
@@ -3540,13 +3670,14 @@ a {
 }
 
 .switch-row strong {
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .switch-row small {
   margin-top: 2px;
   color: #8a9490;
-  font-size: 8px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .switch-row input {
@@ -3588,7 +3719,7 @@ a {
   border-radius: 10px;
   color: #74817c;
   cursor: pointer;
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 800;
 }
 
@@ -4594,6 +4725,29 @@ a {
 
   .check-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .phone-alert-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .phone-alert-actions .button {
+    width: 100%;
+  }
+
+  .install-companion-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .install-companion-row .button {
+    width: 100%;
+  }
+
+  .field input,
+  .field select {
+    font-size: 16px;
   }
 
   .submitted-note-action {

@@ -306,6 +306,8 @@ const TABLE_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS reminder_preferences (
     user_id TEXT PRIMARY KEY NOT NULL,
     in_app_enabled INTEGER NOT NULL DEFAULT 1,
+    push_enabled INTEGER NOT NULL DEFAULT 0,
+    push_hour_local INTEGER NOT NULL DEFAULT 9,
     lead_days TEXT NOT NULL DEFAULT '[90,30,7,1]',
     time_zone TEXT NOT NULL DEFAULT 'UTC',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -328,6 +330,51 @@ const TABLE_STATEMENTS = [
     ON reminder_states (user_id, reminder_key)`,
   `CREATE INDEX IF NOT EXISTS reminder_states_user_credential_idx
     ON reminder_states (user_id, credential_id)`,
+  `CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    expiration_time INTEGER,
+    device_label TEXT,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_success_at TEXT,
+    last_failure_at TEXT,
+    last_test_at TEXT,
+    disabled_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS push_subscriptions_endpoint_unique
+    ON push_subscriptions (endpoint)`,
+  `CREATE INDEX IF NOT EXISTS push_subscriptions_user_active_idx
+    ON push_subscriptions (user_id, disabled_at, updated_at)`,
+  `CREATE TABLE IF NOT EXISTS push_delivery_ledger (
+    id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT NOT NULL,
+    subscription_id TEXT NOT NULL,
+    reminder_key TEXT NOT NULL,
+    scheduled_for TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    http_status INTEGER,
+    error_code TEXT,
+    delivered_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (subscription_id) REFERENCES push_subscriptions(id) ON DELETE CASCADE
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS push_delivery_ledger_occurrence_unique
+    ON push_delivery_ledger (subscription_id, reminder_key, scheduled_for)`,
+  `CREATE INDEX IF NOT EXISTS push_delivery_ledger_retry_idx
+    ON push_delivery_ledger (status, next_attempt_at)`,
+  `CREATE INDEX IF NOT EXISTS push_delivery_ledger_user_created_idx
+    ON push_delivery_ledger (user_id, created_at)`,
   `CREATE TABLE IF NOT EXISTS badge_definitions (
     id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL,
@@ -740,6 +787,16 @@ const RICH_RULE_COLUMNS = [
     table: "checklist_tasks",
     name: "archived_at",
     definition: "archived_at TEXT",
+  },
+  {
+    table: "reminder_preferences",
+    name: "push_enabled",
+    definition: "push_enabled INTEGER NOT NULL DEFAULT 0",
+  },
+  {
+    table: "reminder_preferences",
+    name: "push_hour_local",
+    definition: "push_hour_local INTEGER NOT NULL DEFAULT 9",
   },
 ] as const;
 
@@ -5029,6 +5086,7 @@ async function ensureRichRuleColumns(database: D1Database) {
     "renewal_acceptances",
     "activities",
     "checklist_tasks",
+    "reminder_preferences",
   ] as const) {
     const result = await database
       .prepare(`PRAGMA table_info(${table})`)
@@ -5252,8 +5310,9 @@ export async function ensureUser(
     statement(
       database,
       `INSERT OR IGNORE INTO reminder_preferences (
-        user_id, in_app_enabled, lead_days, time_zone
-      ) VALUES (?, 1, '[90,30,7,1]', 'UTC')`,
+        user_id, in_app_enabled, push_enabled, push_hour_local,
+        lead_days, time_zone
+      ) VALUES (?, 1, 0, 9, '[90,30,7,1]', 'UTC')`,
       [identity.userId],
     ),
   ]);

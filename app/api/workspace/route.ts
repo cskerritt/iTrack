@@ -5,6 +5,15 @@ import {
   resolveRequestIdentity,
 } from "@/db/identity";
 import { ensureUser, initializeDatabase } from "@/db/runtime";
+import { env } from "cloudflare:workers";
+import {
+  isWebPushConfigured,
+  sendWebPush,
+} from "../../lib/pushDelivery";
+import {
+  validatePushEndpoint as validateBrowserPushEndpoint,
+} from "../../lib/rfc8291Push";
+import { loadReminderData } from "../../lib/reminders";
 import {
   findRequirementIncompatibility,
   REQUIREMENT_INCOMPATIBILITIES,
@@ -2108,6 +2117,8 @@ async function getReminderData(
 ) {
   type PreferenceRow = {
     inAppEnabled: number;
+    pushEnabled: number;
+    pushHourLocal: number;
     leadDays: string;
     timeZone: string;
   };
@@ -2132,11 +2143,14 @@ async function getReminderData(
     snoozedUntil: string | null;
   };
 
-  const [preference, tasks, cycles, states] = await Promise.all([
+  const [preference, tasks, cycles, states, activeDeviceCount] =
+    await Promise.all([
     query(
       database,
       `SELECT
         in_app_enabled AS inAppEnabled,
+        push_enabled AS pushEnabled,
+        push_hour_local AS pushHourLocal,
         lead_days AS leadDays,
         time_zone AS timeZone
       FROM reminder_preferences
@@ -2199,6 +2213,18 @@ async function getReminderData(
       WHERE user_id = ?`,
       [identity.userId],
     ).all<ReminderStateRow>(),
+    query(
+      database,
+      `SELECT COUNT(*) AS count
+       FROM push_subscriptions
+       WHERE user_id = ?
+         AND disabled_at IS NULL
+         AND (
+           expiration_time IS NULL
+           OR expiration_time > ?
+         )`,
+      [identity.userId, Date.now()],
+    ).first<{ count: number }>(),
   ]);
 
   const leadDays = parsedLeadDays(preference?.leadDays);
@@ -2208,8 +2234,34 @@ async function getReminderData(
       : "UTC";
   const reminderPreferences = {
     inAppEnabled: Boolean(preference?.inAppEnabled ?? 1),
+    pushEnabled: Boolean(preference?.pushEnabled ?? 0),
+    pushHourLocal:
+      Number.isInteger(preference?.pushHourLocal) &&
+      Number(preference?.pushHourLocal) >= 0 &&
+      Number(preference?.pushHourLocal) <= 23
+        ? Number(preference?.pushHourLocal)
+        : 9,
     leadDays,
     timeZone,
+    webPushConfigured: isWebPushConfigured({
+      publicKey:
+        typeof env.VAPID_PUBLIC_KEY === "string"
+          ? env.VAPID_PUBLIC_KEY
+          : undefined,
+      privateKey:
+        typeof env.VAPID_PRIVATE_KEY === "string"
+          ? env.VAPID_PRIVATE_KEY
+          : undefined,
+      subject:
+        typeof env.VAPID_SUBJECT === "string"
+          ? env.VAPID_SUBJECT
+          : undefined,
+    }),
+    vapidPublicKey:
+      typeof env.VAPID_PUBLIC_KEY === "string" && env.VAPID_PUBLIC_KEY
+        ? env.VAPID_PUBLIC_KEY
+        : null,
+    activePushDeviceCount: Number(activeDeviceCount?.count ?? 0),
   };
   if (!reminderPreferences.inAppEnabled) {
     return { reminderPreferences, reminders: [] };
@@ -9152,6 +9204,416 @@ async function updateWeeklyGoal(
   return "weekly-goal";
 }
 
+const MAX_PUSH_DEVICES = 8;
+
+type ValidPushSubscription = {
+  endpoint: string;
+  expirationTime: number | null;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+};
+
+function base64UrlBytes(value: string, field: string) {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new RequestError(`${field} must use base64url encoding`);
+  }
+  try {
+    const base64 = value
+      .replace(/-/g, "+")
+      .replace(/_/g, "/")
+      .padEnd(Math.ceil(value.length / 4) * 4, "=");
+    const binary = atob(base64);
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  } catch {
+    throw new RequestError(`${field} must use valid base64url encoding`);
+  }
+}
+
+function validPushEndpoint(value: unknown) {
+  if (typeof value !== "string") {
+    throw new RequestError("subscription.endpoint must be a string");
+  }
+  const endpoint = value.trim();
+  if (!endpoint || endpoint.length > 4096) {
+    throw new RequestError(
+      "subscription.endpoint must be between 1 and 4096 characters",
+    );
+  }
+  try {
+    return validateBrowserPushEndpoint(endpoint).href;
+  } catch {
+    throw new RequestError(
+      "subscription.endpoint must be a supported browser push-service URL",
+      400,
+      "invalid_push_endpoint",
+    );
+  }
+}
+
+function validPushSubscription(payload: JsonRecord): ValidPushSubscription {
+  if (!isRecord(payload.subscription)) {
+    throw new RequestError("subscription must be an object");
+  }
+  const subscription = payload.subscription;
+  if (!isRecord(subscription.keys)) {
+    throw new RequestError("subscription.keys must be an object");
+  }
+  const p256dh = textField(subscription.keys, "p256dh", {
+    required: true,
+    max: 180,
+  })!;
+  const auth = textField(subscription.keys, "auth", {
+    required: true,
+    max: 120,
+  })!;
+  const p256dhBytes = base64UrlBytes(p256dh, "subscription.keys.p256dh");
+  const authBytes = base64UrlBytes(auth, "subscription.keys.auth");
+  if (p256dhBytes.length !== 65 || p256dhBytes[0] !== 4) {
+    throw new RequestError(
+      "subscription.keys.p256dh must be an uncompressed P-256 public key",
+    );
+  }
+  if (authBytes.length !== 16) {
+    throw new RequestError(
+      "subscription.keys.auth must decode to 16 bytes",
+    );
+  }
+  const expirationValue = subscription.expirationTime;
+  const expirationTime =
+    expirationValue === null || expirationValue === undefined
+      ? null
+      : expirationValue;
+  if (
+    expirationTime !== null &&
+    (typeof expirationTime !== "number" ||
+      !Number.isSafeInteger(expirationTime) ||
+      expirationTime <= Date.now())
+  ) {
+    throw new RequestError(
+      "subscription.expirationTime must be null or a future timestamp",
+    );
+  }
+  return {
+    endpoint: validPushEndpoint(subscription.endpoint),
+    expirationTime,
+    keys: { p256dh, auth },
+  };
+}
+
+async function savePushSubscription(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  if (typeof payload.enableAccountPush !== "boolean") {
+    throw new RequestError("enableAccountPush must be a boolean");
+  }
+  const subscription = validPushSubscription(payload);
+  const deviceLabel = textField(payload, "deviceLabel", { max: 80 });
+  const existing = await query(
+    database,
+    `SELECT id, user_id AS userId
+     FROM push_subscriptions
+     WHERE endpoint = ?`,
+    [subscription.endpoint],
+  ).first<{ id: string; userId: string }>();
+  if (existing && existing.userId !== identity.userId) {
+    throw new RequestError(
+      "This browser subscription belongs to another account.",
+      409,
+      "push_subscription_conflict",
+    );
+  }
+  const subscriptionId = existing?.id ?? crypto.randomUUID();
+  const now = Date.now();
+  const saveStatement = query(
+    database,
+    `INSERT INTO push_subscriptions (
+      id, user_id, endpoint, p256dh, auth, expiration_time, device_label
+    )
+    SELECT ?, ?, ?, ?, ?, ?, ?
+    WHERE (
+      EXISTS (
+        SELECT 1
+        FROM push_subscriptions
+        WHERE endpoint = ?
+          AND user_id = ?
+          AND disabled_at IS NULL
+          AND (
+            expiration_time IS NULL
+            OR expiration_time > ?
+          )
+      )
+      OR (
+        SELECT COUNT(*)
+        FROM push_subscriptions
+        WHERE user_id = ?
+          AND disabled_at IS NULL
+          AND (
+            expiration_time IS NULL
+            OR expiration_time > ?
+          )
+      ) < ?
+    )
+    ON CONFLICT(endpoint) DO UPDATE SET
+      p256dh = excluded.p256dh,
+      auth = excluded.auth,
+      expiration_time = excluded.expiration_time,
+      device_label = excluded.device_label,
+      failure_count = 0,
+      last_seen_at = CURRENT_TIMESTAMP,
+      disabled_at = NULL,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE push_subscriptions.user_id = excluded.user_id`,
+    [
+      subscriptionId,
+      identity.userId,
+      subscription.endpoint,
+      subscription.keys.p256dh,
+      subscription.keys.auth,
+      subscription.expirationTime,
+      deviceLabel,
+      subscription.endpoint,
+      identity.userId,
+      now,
+      identity.userId,
+      now,
+      MAX_PUSH_DEVICES,
+    ],
+  );
+  const statements = [saveStatement];
+  if (payload.enableAccountPush) {
+    statements.push(
+      query(
+        database,
+        `UPDATE reminder_preferences
+         SET push_enabled = 1, updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = ?`,
+        [identity.userId],
+      ),
+    );
+  }
+  const [saved] = await database.batch(statements);
+  if (Number(saved.meta?.changes ?? 0) === 0) {
+    throw new RequestError(
+      `License Lantern supports up to ${MAX_PUSH_DEVICES} active alert devices.`,
+      409,
+      "push_device_limit",
+    );
+  }
+  return subscriptionId;
+}
+
+async function removePushSubscription(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  const endpoint = validPushEndpoint(payload.endpoint);
+  const existing = await query(
+    database,
+    `SELECT id
+     FROM push_subscriptions
+     WHERE endpoint = ? AND user_id = ?`,
+    [endpoint, identity.userId],
+  ).first<{ id: string }>();
+  if (!existing) return "push-subscription";
+
+  await database.batch([
+    query(
+      database,
+      `UPDATE push_subscriptions
+       SET disabled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ?`,
+      [existing.id, identity.userId],
+    ),
+    query(
+      database,
+      `UPDATE reminder_preferences
+       SET push_enabled = 0, updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = ?
+         AND NOT EXISTS (
+           SELECT 1
+           FROM push_subscriptions
+           WHERE user_id = ?
+             AND disabled_at IS NULL
+             AND (
+               expiration_time IS NULL
+               OR expiration_time > ?
+             )
+         )`,
+      [identity.userId, identity.userId, Date.now()],
+    ),
+  ]);
+  return existing.id;
+}
+
+function runtimeWebPushConfig() {
+  const publicKey =
+    typeof env.VAPID_PUBLIC_KEY === "string"
+      ? env.VAPID_PUBLIC_KEY.trim()
+      : "";
+  const privateKey =
+    typeof env.VAPID_PRIVATE_KEY === "string"
+      ? env.VAPID_PRIVATE_KEY.trim()
+      : "";
+  const subject =
+    typeof env.VAPID_SUBJECT === "string" ? env.VAPID_SUBJECT.trim() : "";
+  if (!publicKey || !privateKey || !subject) {
+    throw new RequestError(
+      "Phone-alert delivery is not configured yet.",
+      503,
+      "push_not_configured",
+    );
+  }
+  return { publicKey, privateKey, subject };
+}
+
+async function sendTestPush(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  const endpoint = validPushEndpoint(payload.endpoint);
+  const subscription = await query(
+    database,
+    `SELECT
+       id,
+       endpoint,
+       p256dh,
+       auth,
+       expiration_time AS expirationTime,
+       last_test_at AS lastTestAt
+     FROM push_subscriptions
+     WHERE endpoint = ?
+       AND user_id = ?
+       AND disabled_at IS NULL
+       AND (
+         expiration_time IS NULL
+         OR expiration_time > ?
+       )`,
+    [endpoint, identity.userId, Date.now()],
+  ).first<{
+    id: string;
+    endpoint: string;
+    p256dh: string;
+    auth: string;
+    expirationTime: number | null;
+    lastTestAt: string | null;
+  }>();
+  if (!subscription) {
+    throw new RequestError(
+      "This device is not connected for phone alerts.",
+      404,
+      "push_subscription_not_found",
+    );
+  }
+
+  const now = new Date();
+  const sqlTime = (date: Date) =>
+    date.toISOString().slice(0, 19).replace("T", " ");
+  const claimed = await query(
+    database,
+    `UPDATE push_subscriptions
+     SET last_test_at = CURRENT_TIMESTAMP,
+         last_seen_at = CURRENT_TIMESTAMP,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?
+       AND user_id = ?
+       AND (
+         last_test_at IS NULL
+         OR last_test_at <= ?
+       )`,
+    [
+      subscription.id,
+      identity.userId,
+      sqlTime(new Date(now.getTime() - 60_000)),
+    ],
+  ).run();
+  if (Number(claimed.meta?.changes ?? 0) === 0) {
+    throw new RequestError(
+      "Wait a minute before sending another test alert.",
+      429,
+      "push_test_rate_limited",
+    );
+  }
+
+  let response: Response;
+  try {
+    response = await sendWebPush(
+      {
+        endpoint: subscription.endpoint,
+        expirationTime: subscription.expirationTime,
+        keys: {
+          p256dh: subscription.p256dh,
+          auth: subscription.auth,
+        },
+      },
+      runtimeWebPushConfig(),
+      {
+        title: "License Lantern check-in",
+        body: "Your private test alert is working.",
+        tag: `ll-test-${subscription.id
+          .replace(/[^A-Za-z0-9_-]/g, "")
+          .slice(0, 80)}`,
+        url: "/",
+      },
+    );
+  } catch {
+    await query(
+      database,
+      `UPDATE push_subscriptions
+       SET failure_count = failure_count + 1,
+           last_failure_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ?`,
+      [subscription.id, identity.userId],
+    ).run();
+    throw new RequestError(
+      "The test alert could not reach the push service. Try again shortly.",
+      502,
+      "push_test_failed",
+    );
+  }
+
+  if (response.ok) {
+    await query(
+      database,
+      `UPDATE push_subscriptions
+       SET failure_count = 0,
+           last_success_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ?`,
+      [subscription.id, identity.userId],
+    ).run();
+    return subscription.id;
+  }
+  if (response.status === 404 || response.status === 410) {
+    await removePushSubscription(database, identity, { endpoint });
+    throw new RequestError(
+      "This device’s alert connection expired. Turn phone alerts on again.",
+      410,
+      "push_subscription_expired",
+    );
+  }
+  await query(
+    database,
+    `UPDATE push_subscriptions
+     SET failure_count = failure_count + 1,
+         last_failure_at = CURRENT_TIMESTAMP,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND user_id = ?`,
+    [subscription.id, identity.userId],
+  ).run();
+  throw new RequestError(
+    "The push service did not accept the test alert. Try again shortly.",
+    502,
+    "push_test_failed",
+  );
+}
+
 async function updateReminderPreferences(
   database: D1Database,
   identity: RequestIdentity,
@@ -9159,6 +9621,21 @@ async function updateReminderPreferences(
 ) {
   if (typeof payload.inAppEnabled !== "boolean") {
     throw new RequestError("inAppEnabled must be a boolean");
+  }
+  if (typeof payload.pushEnabled !== "boolean") {
+    throw new RequestError("pushEnabled must be a boolean");
+  }
+  if (
+    typeof payload.pushHourLocal !== "number" ||
+    !Number.isInteger(payload.pushHourLocal) ||
+    payload.pushHourLocal < 0 ||
+    payload.pushHourLocal > 23
+  ) {
+    throw new RequestError(
+      "pushHourLocal must be a whole hour from 0 through 23",
+      400,
+      "invalid_push_hour",
+    );
   }
   const leadDays = normalizeLeadDays(payload.leadDays);
   const timeZone = textField(payload, "timeZone", {
@@ -9172,20 +9649,47 @@ async function updateReminderPreferences(
       "invalid_time_zone",
     );
   }
+  if (payload.pushEnabled) {
+    const activeSubscription = await query(
+      database,
+      `SELECT id
+       FROM push_subscriptions
+       WHERE user_id = ?
+         AND disabled_at IS NULL
+         AND (
+           expiration_time IS NULL
+           OR expiration_time > ?
+         )
+       LIMIT 1`,
+      [identity.userId, Date.now()],
+    ).first<{ id: string }>();
+    if (!activeSubscription) {
+      throw new RequestError(
+        "Turn on phone alerts on at least one device before enabling push reminders.",
+        409,
+        "push_subscription_required",
+      );
+    }
+  }
 
   await query(
     database,
     `INSERT INTO reminder_preferences (
-      user_id, in_app_enabled, lead_days, time_zone
-    ) VALUES (?, ?, ?, ?)
+      user_id, in_app_enabled, push_enabled, push_hour_local,
+      lead_days, time_zone
+    ) VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET
       in_app_enabled = excluded.in_app_enabled,
+      push_enabled = excluded.push_enabled,
+      push_hour_local = excluded.push_hour_local,
       lead_days = excluded.lead_days,
       time_zone = excluded.time_zone,
       updated_at = CURRENT_TIMESTAMP`,
     [
       identity.userId,
       payload.inAppEnabled ? 1 : 0,
+      payload.pushEnabled ? 1 : 0,
+      payload.pushHourLocal,
       JSON.stringify(leadDays),
       timeZone,
     ],
@@ -9319,6 +9823,53 @@ async function setReminderState(
   return stateId;
 }
 
+async function resolvePushDelivery(
+  database: D1Database,
+  identity: RequestIdentity,
+  value: string | null,
+) {
+  const unavailable = () =>
+    new RequestError(
+      "That check-in is no longer available.",
+      404,
+      "push_delivery_not_found",
+    );
+  if (
+    !value ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value,
+    )
+  ) {
+    throw unavailable();
+  }
+  const delivery = await query(
+    database,
+    `SELECT
+       reminder_key AS reminderKey,
+       scheduled_for AS scheduledFor
+     FROM push_delivery_ledger
+     WHERE id = ?
+       AND user_id = ?
+       AND status = 'delivered'`,
+    [value, identity.userId],
+  ).first<{ reminderKey: string; scheduledFor: string }>();
+  if (!delivery) throw unavailable();
+
+  const reminderData = await loadReminderData(database, identity.userId, {
+    channel: "resolve",
+  });
+  const reminder = reminderData.reminders.find(
+    (candidate) =>
+      candidate.key === delivery.reminderKey &&
+      candidate.scheduledFor === delivery.scheduledFor,
+  );
+  if (!reminder) throw unavailable();
+  return {
+    credentialId: reminder.credentialId,
+    reminderKey: reminder.key,
+  };
+}
+
 async function authenticatedContext(request: Request) {
   const identity = await resolveRequestIdentity(request);
   if (!identity) {
@@ -9337,6 +9888,26 @@ async function authenticatedContext(request: Request) {
 export async function GET(request: Request) {
   try {
     const { database, identity } = await authenticatedContext(request);
+    const url = new URL(request.url);
+    if (url.searchParams.has("delivery")) {
+      if (
+        url.searchParams.getAll("delivery").length !== 1 ||
+        [...url.searchParams.keys()].some((key) => key !== "delivery")
+      ) {
+        throw new RequestError(
+          "That check-in is no longer available.",
+          404,
+          "push_delivery_not_found",
+        );
+      }
+      return json({
+        target: await resolvePushDelivery(
+          database,
+          identity,
+          url.searchParams.get("delivery"),
+        ),
+      });
+    }
     return json(await getWorkspace(database, identity));
   } catch (error) {
     return errorResponse(error);
@@ -9345,6 +9916,27 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const contentType = request.headers.get("content-type") ?? "";
+    if (!/^application\/json(?:\s*;|$)/i.test(contentType)) {
+      throw new RequestError(
+        "Request body must use application/json.",
+        415,
+        "invalid_content_type",
+      );
+    }
+    const requestOrigin = new URL(request.url).origin;
+    const suppliedOrigin = request.headers.get("origin");
+    const fetchSite = request.headers.get("sec-fetch-site");
+    if (
+      (suppliedOrigin && suppliedOrigin !== requestOrigin) ||
+      (fetchSite && fetchSite !== "same-origin")
+    ) {
+      throw new RequestError(
+        "Cross-origin workspace updates are not allowed.",
+        403,
+        "cross_origin_request",
+      );
+    }
     const contentLength = Number(request.headers.get("content-length") ?? 0);
     if (contentLength > 100_000) {
       throw new RequestError("Request body is too large.", 413, "body_too_large");
@@ -9431,6 +10023,15 @@ export async function POST(request: Request) {
           identity,
           body.payload,
         );
+        break;
+      case "savePushSubscription":
+        id = await savePushSubscription(database, identity, body.payload);
+        break;
+      case "removePushSubscription":
+        id = await removePushSubscription(database, identity, body.payload);
+        break;
+      case "sendTestPush":
+        id = await sendTestPush(database, identity, body.payload);
         break;
       case "setReminderState":
         id = await setReminderState(database, identity, body.payload);

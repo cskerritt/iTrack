@@ -43,6 +43,19 @@ import {
   nextRequirementSelection,
   requirementIncompatibilityMessage,
 } from "./lib/requirementCompatibility";
+import {
+  applicationServerKeyBytes,
+  detectedPushCapability,
+  deviceTimeZone,
+  friendlyDeviceLabel,
+  installedDisplayMode,
+  isIosLike,
+  pushSubscriptionUsesApplicationServerKey,
+  safeReminderLaunchTarget,
+  serializePushSubscription,
+  type PushDeviceState,
+  type ReminderLaunchTarget,
+} from "./lib/webPush";
 
 type Requirement = {
   id: string;
@@ -266,6 +279,11 @@ type Workspace = {
     inAppEnabled: boolean;
     leadDays: number[];
     timeZone: string;
+    pushEnabled: boolean;
+    pushHourLocal: number;
+    webPushConfigured: boolean;
+    vapidPublicKey: string | null;
+    activePushDeviceCount: number;
   };
   reminders: Reminder[];
 };
@@ -1084,6 +1102,16 @@ export function LicenseLanternApp() {
   const [installPrompt, setInstallPrompt] =
     useState<InstallPromptEvent | null>(null);
   const [isStandalone, setIsStandalone] = useState(false);
+  const [installHelpOpen, setInstallHelpOpen] = useState(false);
+  const [pushDeviceState, setPushDeviceState] =
+    useState<PushDeviceState>("checking");
+  const [pushPending, setPushPending] = useState(false);
+  const [currentPushSubscription, setCurrentPushSubscription] =
+    useState<PushSubscription | null>(null);
+  const [pendingReminderLaunch, setPendingReminderLaunch] =
+    useState<ReminderLaunchTarget | null>(null);
+  const [highlightedReminderKey, setHighlightedReminderKey] = useState("");
+  const pushRegistrationRef = useRef<ServiceWorkerRegistration | null>(null);
   const activityScanSequence = useRef(0);
   const activityDraftPersistenceEnabled = useRef(false);
   const activityDraftPersistenceGeneration = useRef(0);
@@ -1255,6 +1283,70 @@ export function LicenseLanternApp() {
     }
   }, []);
 
+  const refreshPushDeviceState = useCallback(async () => {
+    const capability = detectedPushCapability(isStandalone);
+    if (capability !== "available") {
+      setCurrentPushSubscription(null);
+      setPushDeviceState(capability);
+      return;
+    }
+    if (!workspace) {
+      setPushDeviceState("checking");
+      return;
+    }
+    if (
+      !workspace.reminderPreferences.webPushConfigured ||
+      !workspace.reminderPreferences.vapidPublicKey
+    ) {
+      setCurrentPushSubscription(null);
+      setPushDeviceState("unconfigured");
+      return;
+    }
+    try {
+      const registration =
+        pushRegistrationRef.current ??
+        (await navigator.serviceWorker.ready);
+      pushRegistrationRef.current = registration;
+      const subscription = await registration.pushManager.getSubscription();
+      if (
+        subscription &&
+        !pushSubscriptionUsesApplicationServerKey(
+          subscription,
+          workspace.reminderPreferences.vapidPublicKey,
+        )
+      ) {
+        setCurrentPushSubscription(subscription);
+        setPushDeviceState("available");
+        return;
+      }
+      if (subscription) {
+        const response = await fetch("/api/workspace", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "savePushSubscription",
+            payload: {
+              subscription: serializePushSubscription(subscription),
+              deviceLabel: friendlyDeviceLabel(),
+              enableAccountPush: false,
+            },
+          }),
+        });
+        if (!response.ok) {
+          throw new Error("This device could not refresh its alert connection.");
+        }
+      }
+      setCurrentPushSubscription(subscription);
+      setPushDeviceState(subscription ? "subscribed" : "available");
+    } catch {
+      setCurrentPushSubscription(null);
+      setPushDeviceState("error");
+    }
+  }, [
+    isStandalone,
+    workspace,
+  ]);
+
   useEffect(() => {
     const timeout = window.setTimeout(() => {
       void loadWorkspace();
@@ -1288,23 +1380,22 @@ export function LicenseLanternApp() {
   useEffect(() => {
     if (
       "serviceWorker" in navigator &&
-      window.location.protocol === "https:"
+      window.isSecureContext
     ) {
       void navigator.serviceWorker
         .register("/sw.js", {
           scope: "/",
           updateViaCache: "none",
         })
+        .then((registration) => {
+          pushRegistrationRef.current = registration;
+        })
         .catch(() => undefined);
     }
   }, []);
 
   useEffect(() => {
-    const standalone =
-      window.matchMedia("(display-mode: standalone)").matches ||
-      Boolean(
-        (window.navigator as Navigator & { standalone?: boolean }).standalone,
-      );
+    const standalone = installedDisplayMode();
     const standaloneTimeout = window.setTimeout(
       () => setIsStandalone(standalone),
       0,
@@ -1325,6 +1416,148 @@ export function LicenseLanternApp() {
       window.removeEventListener("appinstalled", handleInstalled);
     };
   }, []);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      void refreshPushDeviceState();
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [refreshPushDeviceState]);
+
+  useEffect(() => {
+    const launchTarget = safeReminderLaunchTarget(window.location.href);
+    const launchTimeout = launchTarget
+      ? window.setTimeout(() => setPendingReminderLaunch(launchTarget), 0)
+      : null;
+
+    const handleServiceWorkerMessage = (event: MessageEvent<unknown>) => {
+      if (
+        !event.data ||
+        typeof event.data !== "object" ||
+        !("type" in event.data) ||
+        event.data.type !== "OPEN_REMINDER" ||
+        !("path" in event.data) ||
+        typeof event.data.path !== "string"
+      ) {
+        return;
+      }
+      const target = safeReminderLaunchTarget(event.data.path);
+      if (target) setPendingReminderLaunch(target);
+    };
+    navigator.serviceWorker?.addEventListener(
+      "message",
+      handleServiceWorkerMessage,
+    );
+    return () => {
+      if (launchTimeout !== null) window.clearTimeout(launchTimeout);
+      navigator.serviceWorker?.removeEventListener(
+        "message",
+        handleServiceWorkerMessage,
+      );
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!workspace || !pendingReminderLaunch) return;
+    const controller = new AbortController();
+    window.history.replaceState(window.history.state, "", "/");
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/workspace?delivery=${encodeURIComponent(
+            pendingReminderLaunch.deliveryId,
+          )}`,
+          {
+            headers: { accept: "application/json" },
+            cache: "no-store",
+            signal: controller.signal,
+          },
+        );
+        const result = (await response.json()) as {
+          target?: {
+            credentialId?: unknown;
+            reminderKey?: unknown;
+          };
+        };
+        if (controller.signal.aborted) return;
+        setPendingReminderLaunch(null);
+        if (
+          !response.ok ||
+          typeof result.target?.credentialId !== "string" ||
+          typeof result.target.reminderKey !== "string"
+        ) {
+          setHighlightedReminderKey("");
+          setToast({
+            message:
+              "That check-in is no longer available in this signed-in workspace.",
+          });
+          return;
+        }
+        const credential = workspace.credentials.find(
+          (candidate) =>
+            candidate.id === result.target?.credentialId &&
+            candidate.status !== "renewed",
+        );
+        const reminder = workspace.reminders.find(
+          (candidate) =>
+            candidate.key === result.target?.reminderKey &&
+            candidate.credentialId === result.target?.credentialId,
+        );
+        if (!credential) {
+          setHighlightedReminderKey("");
+          setToast({
+            message:
+              "That check-in is no longer available in this signed-in workspace.",
+          });
+          return;
+        }
+        setSelectedCredentialId(credential.id);
+        setView("today");
+        setHighlightedReminderKey(reminder?.key ?? "");
+        if (!reminder) {
+          setToast({
+            message:
+              "That check-in may already be complete. The related credential is open.",
+          });
+        }
+      } catch {
+        if (controller.signal.aborted) return;
+        setPendingReminderLaunch(null);
+        setHighlightedReminderKey("");
+        setToast({
+          message:
+            "That check-in could not be opened. Reconnect and try the alert again.",
+        });
+      }
+    })();
+    return () => controller.abort();
+  }, [pendingReminderLaunch, workspace]);
+
+  useEffect(() => {
+    if (!highlightedReminderKey || view !== "today") return;
+    const timeout = window.setTimeout(() => {
+      const reminderElement = Array.from(
+        document.querySelectorAll<HTMLElement>("[data-reminder-key]"),
+      ).find(
+        (element) =>
+          element.dataset.reminderKey === highlightedReminderKey,
+      );
+      reminderElement?.scrollIntoView({ behavior: "smooth", block: "center" });
+      reminderElement?.focus({ preventScroll: true });
+    }, 100);
+    return () => window.clearTimeout(timeout);
+  }, [highlightedReminderKey, view, workspace?.reminders]);
+
+  useEffect(() => {
+    const refreshOnVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void refreshPushDeviceState();
+      }
+    };
+    document.addEventListener("visibilitychange", refreshOnVisibility);
+    return () =>
+      document.removeEventListener("visibilitychange", refreshOnVisibility);
+  }, [refreshPushDeviceState]);
 
   useEffect(() => {
     if (!draftStorageKey) return;
@@ -1573,6 +1806,33 @@ export function LicenseLanternApp() {
     }
   }
 
+  async function postPushAction(
+    action: string,
+    payload: Record<string, unknown>,
+  ) {
+    if (!window.navigator.onLine) {
+      setIsOnline(false);
+      throw new Error(
+        "Reconnect before changing phone-alert settings on this device.",
+      );
+    }
+    const response = await fetch("/api/workspace", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, payload }),
+    });
+    const result = (await response.json()) as {
+      ok?: boolean;
+      error?: string;
+      code?: string;
+      id?: string;
+    };
+    if (!response.ok) {
+      throw new Error(result.error || "Phone-alert setup did not save.");
+    }
+    return result;
+  }
+
   function clearSavedActivityDraft() {
     if (!draftStorageKey) return true;
     try {
@@ -1613,10 +1873,7 @@ export function LicenseLanternApp() {
 
   async function handleInstallApp() {
     if (!installPrompt) {
-      setToast({
-        message:
-          "Use your browser’s Add to Home Screen or Install app option.",
-      });
+      setInstallHelpOpen(true);
       return;
     }
     await installPrompt.prompt();
@@ -1625,6 +1882,169 @@ export function LicenseLanternApp() {
     if (choice.outcome === "accepted") {
       setIsStandalone(true);
       setToast({ message: "License Lantern was added to this device." });
+    }
+  }
+
+  async function handleEnablePhoneAlerts() {
+    if (!workspace) return;
+    const capability = detectedPushCapability(isStandalone);
+    if (capability === "install_required") {
+      setInstallHelpOpen(true);
+      return;
+    }
+    if (capability === "denied") {
+      setPushDeviceState("denied");
+      setToast({
+        message:
+          "Alerts are blocked in this device’s notification settings. Change that setting, then return here.",
+      });
+      return;
+    }
+    if (
+      capability !== "available" ||
+      !workspace.reminderPreferences.webPushConfigured ||
+      !workspace.reminderPreferences.vapidPublicKey
+    ) {
+      setToast({
+        message:
+          "Phone alerts are not available on this device yet. Calendar check-ins still work.",
+      });
+      return;
+    }
+
+    setPushPending(true);
+    setError("");
+    let createdSubscription: PushSubscription | null = null;
+    let savedOnServer = false;
+    try {
+      const registration =
+        pushRegistrationRef.current ??
+        (await navigator.serviceWorker.ready);
+      pushRegistrationRef.current = registration;
+      let subscription = await registration.pushManager.getSubscription();
+      let replacedEndpoint: string | null = null;
+      if (
+        subscription &&
+        !pushSubscriptionUsesApplicationServerKey(
+          subscription,
+          workspace.reminderPreferences.vapidPublicKey,
+        )
+      ) {
+        replacedEndpoint = subscription.endpoint;
+        await subscription.unsubscribe();
+        subscription = null;
+      }
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: applicationServerKeyBytes(
+            workspace.reminderPreferences.vapidPublicKey,
+          ),
+        });
+        createdSubscription = subscription;
+      }
+      await postPushAction("savePushSubscription", {
+        subscription: serializePushSubscription(subscription),
+        deviceLabel: friendlyDeviceLabel(),
+        enableAccountPush: true,
+      });
+      savedOnServer = true;
+      if (replacedEndpoint && replacedEndpoint !== subscription.endpoint) {
+        await postPushAction("removePushSubscription", {
+          endpoint: replacedEndpoint,
+        }).catch(() => undefined);
+      }
+      setCurrentPushSubscription(subscription);
+      setPushDeviceState("subscribed");
+      await loadWorkspace();
+      setToast({
+        message:
+          "Phone alerts are on for this device. Lock-screen previews stay private.",
+      });
+    } catch (pushError) {
+      if (createdSubscription && !savedOnServer) {
+        await createdSubscription.unsubscribe().catch(() => false);
+      }
+      setPushDeviceState(
+        Notification.permission === "denied"
+          ? "denied"
+          : savedOnServer
+            ? "subscribed"
+            : "error",
+      );
+      setError(
+        pushError instanceof Error
+          ? pushError.message
+          : "Phone-alert setup did not finish.",
+      );
+    } finally {
+      setPushPending(false);
+    }
+  }
+
+  async function handleDisablePhoneAlerts() {
+    if (!workspace) return;
+    setPushPending(true);
+    setError("");
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const subscription =
+        currentPushSubscription ??
+        (await registration.pushManager.getSubscription());
+      if (subscription) {
+        await postPushAction("removePushSubscription", {
+          endpoint: subscription.endpoint,
+        });
+        await subscription.unsubscribe();
+      }
+      setCurrentPushSubscription(null);
+      setPushDeviceState("available");
+      await loadWorkspace();
+      setToast({
+        message:
+          workspace.reminderPreferences.activePushDeviceCount > 1
+            ? "Phone alerts are off on this device. Other connected devices are unchanged."
+            : "Phone alerts are off.",
+      });
+    } catch (pushError) {
+      setError(
+        pushError instanceof Error
+          ? pushError.message
+          : "Phone alerts could not be turned off on this device.",
+      );
+      await refreshPushDeviceState();
+    } finally {
+      setPushPending(false);
+    }
+  }
+
+  async function handleTestPhoneAlert() {
+    const subscription = currentPushSubscription;
+    if (!subscription) {
+      await refreshPushDeviceState();
+      setToast({
+        message: "Turn on phone alerts for this device before sending a test.",
+      });
+      return;
+    }
+    setPushPending(true);
+    setError("");
+    try {
+      await postPushAction("sendTestPush", {
+        endpoint: subscription.endpoint,
+      });
+      setToast({
+        message:
+          "Test sent. Your device will show a private License Lantern check-in.",
+      });
+    } catch (pushError) {
+      setError(
+        pushError instanceof Error
+          ? pushError.message
+          : "The test alert could not be sent.",
+      );
+    } finally {
+      setPushPending(false);
     }
   }
 
@@ -2228,6 +2648,8 @@ export function LicenseLanternApp() {
         inAppEnabled: form.get("inAppEnabled") === "on",
         leadDays,
         timeZone: String(form.get("timeZone") ?? "UTC"),
+        pushEnabled: form.get("pushEnabled") === "on",
+        pushHourLocal: Number(form.get("pushHourLocal") ?? 9),
       },
       "Reminder check-ins updated.",
     );
@@ -2630,6 +3052,7 @@ export function LicenseLanternApp() {
             <TodayView
               workspace={workspace}
               credential={selectedCredential}
+              highlightedReminderKey={highlightedReminderKey}
               onAddActivity={openActivityEntry}
               onAddCredential={() => setCredentialOpen(true)}
               onViewCredentials={() => setView("credentials")}
@@ -2735,6 +3158,13 @@ export function LicenseLanternApp() {
               installAvailable={Boolean(installPrompt)}
               onInstall={() => void handleInstallApp()}
               onAddAllCheckIns={() => void addAllCheckInsToCalendar()}
+              pushDeviceState={pushDeviceState}
+              pushPending={pushPending}
+              isOnline={isOnline}
+              onEnablePhoneAlerts={() => void handleEnablePhoneAlerts()}
+              onDisablePhoneAlerts={() => void handleDisablePhoneAlerts()}
+              onTestPhoneAlert={() => void handleTestPhoneAlert()}
+              onRefreshPhoneAlerts={() => void refreshPushDeviceState()}
             />
           )}
         </main>
@@ -4047,6 +4477,26 @@ export function LicenseLanternApp() {
                 defaultChecked={workspace.reminderPreferences.inAppEnabled}
               />
             </label>
+            <label className="switch-row">
+              <span>
+                <strong>Send phone alerts</strong>
+                <small>
+                  {workspace.reminderPreferences.activePushDeviceCount === 0 &&
+                  !workspace.reminderPreferences.pushEnabled
+                    ? "Connect this device from Account before turning on phone alerts."
+                    : "Deliver private check-ins to devices you explicitly connect."}
+                </small>
+              </span>
+              <input
+                name="pushEnabled"
+                type="checkbox"
+                defaultChecked={workspace.reminderPreferences.pushEnabled}
+                disabled={
+                  workspace.reminderPreferences.activePushDeviceCount === 0 &&
+                  !workspace.reminderPreferences.pushEnabled
+                }
+              />
+            </label>
             <fieldset className="check-grid">
               <legend>Remind me before a due date</legend>
               {[90, 30, 7, 1].map((days) => (
@@ -4068,6 +4518,7 @@ export function LicenseLanternApp() {
             <label className="field">
               <span>Time zone</span>
               <input
+                id="reminder-time-zone"
                 name="timeZone"
                 defaultValue={workspace.reminderPreferences.timeZone}
                 placeholder="America/New_York"
@@ -4075,13 +4526,50 @@ export function LicenseLanternApp() {
               />
               <small>Use an IANA zone such as America/New_York.</small>
             </label>
+            <button
+              className="field-inline-action"
+              type="button"
+              onClick={(event) => {
+                const input = event.currentTarget.form?.elements.namedItem(
+                  "timeZone",
+                );
+                if (input instanceof HTMLInputElement) {
+                  input.value = deviceTimeZone();
+                  input.focus();
+                }
+              }}
+            >
+              Use this device’s time zone
+            </button>
+            <label className="field">
+              <span>Phone-alert delivery time</span>
+              <select
+                name="pushHourLocal"
+                defaultValue={String(
+                  workspace.reminderPreferences.pushHourLocal ?? 9,
+                )}
+              >
+                {Array.from({ length: 24 }, (_, hour) => (
+                  <option key={hour} value={hour}>
+                    {new Intl.DateTimeFormat("en-US", {
+                      hour: "numeric",
+                      minute: "2-digit",
+                    }).format(new Date(2020, 0, 1, hour))}
+                  </option>
+                ))}
+              </select>
+              <small>
+                Alerts use this hour in the saved time zone. Delivery can vary
+                slightly by phone.
+              </small>
+            </label>
             <div className="advisory-note">
               <span aria-hidden="true">i</span>
               <p>
-                In-app check-ins stay inside License Lantern. When you import
-                its calendar events, your phone calendar can alert on the lead days selected here;
+                In-app check-ins stay inside License Lantern. Phone alerts use
+                generic lock-screen copy and only reach devices you connect
+                from Account. Your calendar can alert on the lead days selected here;
                 your calendar controls final delivery.
-                Email and web push remain off.
               </p>
             </div>
             <div className="form-actions">
@@ -4101,6 +4589,63 @@ export function LicenseLanternApp() {
               </button>
             </div>
           </form>
+        </Modal>
+      ) : null}
+
+      {installHelpOpen ? (
+        <Modal
+          title="Add License Lantern to your phone"
+          eyebrow="Phone companion"
+          onClose={() => setInstallHelpOpen(false)}
+        >
+          <div className="install-help">
+            {isIosLike() ? (
+              <>
+                <p>
+                  Apple enables web alerts only after License Lantern is opened
+                  from your Home Screen.
+                </p>
+                <ol>
+                  <li>Open License Lantern in Safari.</li>
+                  <li>
+                    Tap the Share button, then choose <strong>Add to Home Screen</strong>.
+                  </li>
+                  <li>
+                    Open the new Lantern icon and return to Account to turn on
+                    phone alerts.
+                  </li>
+                </ol>
+              </>
+            ) : (
+              <>
+                <p>
+                  Open your browser menu and choose <strong>Install app</strong>{" "}
+                  or <strong>Add to Home Screen</strong>.
+                </p>
+                <p>
+                  Then open Lantern from its new icon for a focused,
+                  full-screen workspace.
+                </p>
+              </>
+            )}
+            <div className="advisory-note">
+              <span aria-hidden="true">i</span>
+              <p>
+                Installing does not turn on alerts. License Lantern asks for
+                notification permission only after you tap the separate
+                phone-alert button.
+              </p>
+            </div>
+            <div className="form-actions">
+              <button
+                className="button button-primary"
+                type="button"
+                onClick={() => setInstallHelpOpen(false)}
+              >
+                Got it
+              </button>
+            </div>
+          </div>
         </Modal>
       ) : null}
 
@@ -4602,6 +5147,7 @@ function NavButton({
 function TodayView({
   workspace,
   credential,
+  highlightedReminderKey,
   onAddActivity,
   onAddCredential,
   onViewCredentials,
@@ -4622,6 +5168,7 @@ function TodayView({
 }: {
   workspace: Workspace;
   credential: Credential | null;
+  highlightedReminderKey: string;
   onAddActivity: () => void;
   onAddCredential: () => void;
   onViewCredentials: () => void;
@@ -4726,7 +5273,17 @@ function TodayView({
       activity.evidenceStatus === "missing",
   ).length;
   const deadlineDays = daysUntil(credential.deadline);
-  const visibleReminders = workspace.reminders;
+  const highlightedReminder = workspace.reminders.find(
+    (reminder) => reminder.key === highlightedReminderKey,
+  );
+  const visibleReminders = highlightedReminder
+    ? [
+        highlightedReminder,
+        ...workspace.reminders.filter(
+          (reminder) => reminder.key !== highlightedReminder.key,
+        ),
+      ]
+    : workspace.reminders;
   const guidedAction = bestNextAction(credential, missingEvidence);
   const progression = workspace.progression;
   const xpToNextLevel = Math.max(
@@ -4903,7 +5460,16 @@ function TodayView({
           </div>
           <div className="reminder-list">
             {visibleReminders.slice(0, 3).map((reminder) => (
-              <article className={reminder.urgency} key={reminder.key}>
+              <article
+                className={`${reminder.urgency} ${
+                  reminder.key === highlightedReminderKey ? "highlighted" : ""
+                }`}
+                data-reminder-key={reminder.key}
+                key={reminder.key}
+                tabIndex={
+                  reminder.key === highlightedReminderKey ? -1 : undefined
+                }
+              >
                 <span className="reminder-dot" aria-hidden="true" />
                 <div>
                   <strong>{reminder.title}</strong>
@@ -6518,6 +7084,13 @@ function AccountView({
   installAvailable,
   onInstall,
   onAddAllCheckIns,
+  pushDeviceState,
+  pushPending,
+  isOnline,
+  onEnablePhoneAlerts,
+  onDisablePhoneAlerts,
+  onTestPhoneAlert,
+  onRefreshPhoneAlerts,
 }: {
   workspace: Workspace;
   onReminders: () => void;
@@ -6527,6 +7100,13 @@ function AccountView({
   installAvailable: boolean;
   onInstall: () => void;
   onAddAllCheckIns: () => void;
+  pushDeviceState: PushDeviceState;
+  pushPending: boolean;
+  isOnline: boolean;
+  onEnablePhoneAlerts: () => void;
+  onDisablePhoneAlerts: () => void;
+  onTestPhoneAlert: () => void;
+  onRefreshPhoneAlerts: () => void;
 }) {
   const currentWeeklyGoal = workspace.profile.weeklyGoal;
   const scheduledWeeklyGoal = workspace.profile.nextWeeklyGoal;
@@ -6547,6 +7127,42 @@ function AccountView({
     { label: "Ambitious", value: 7 },
   ];
   const weeklyGoalChanged = selectedWeeklyGoal !== savedWeeklyGoal;
+  const phoneAlertHeading =
+    pushDeviceState === "checking"
+      ? "Checking phone-alert support…"
+      : pushDeviceState === "install_required"
+        ? "Add Lantern to your Home Screen first."
+        : pushDeviceState === "unconfigured"
+          ? "Phone alerts are being prepared."
+          : pushDeviceState === "unsupported"
+            ? "Use calendar alerts on this device."
+            : pushDeviceState === "denied"
+              ? "Alerts are blocked in device settings."
+              : pushDeviceState === "subscribed"
+                ? workspace.reminderPreferences.pushEnabled
+                  ? "Phone alerts are on for this device."
+                  : "This device is connected, but alerts are paused."
+                : pushDeviceState === "error"
+                  ? "Phone-alert status needs another check."
+                  : workspace.reminderPreferences.activePushDeviceCount > 0
+                    ? "Add this device to your phone alerts."
+                    : "Get renewal check-ins on this device.";
+  const phoneAlertBody =
+    pushDeviceState === "install_required"
+      ? "On iPhone and iPad, Apple enables web alerts only for apps opened from the Home Screen."
+      : pushDeviceState === "unconfigured"
+        ? "Calendar and in-app check-ins remain available while delivery setup is completed."
+        : pushDeviceState === "unsupported"
+          ? "This browser cannot receive web push, but your phone calendar can still deliver the same lead-day schedule."
+          : pushDeviceState === "denied"
+            ? "Allow notifications for License Lantern in your phone or browser settings, then check again."
+            : pushDeviceState === "subscribed"
+              ? workspace.reminderPreferences.pushEnabled
+                ? `Private check-ins arrive around ${
+                    workspace.reminderPreferences.pushHourLocal ?? 9
+                  }:00 in ${workspace.reminderPreferences.timeZone}.`
+                : "Resume delivery when you are ready; the device connection is still saved."
+              : "Permission is requested only after you tap the button below.";
 
   const handleWeeklyGoalSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -6749,29 +7365,126 @@ function AccountView({
         </section>
         <section className="card phone-companion-card">
           <span className="section-kicker">Phone companion</span>
-          <h2>
-            {isStandalone
-              ? "Installed and ready from your home screen."
-              : "Keep License Lantern one tap away."}
-          </h2>
-          <p>
-            {isStandalone
-              ? "The installed app uses a protected offline fallback and reconnects to your cloud record when online."
-              : installAvailable
-                ? "Install the app for a focused, full-screen renewal workspace."
-                : "Use your browser’s Install app or Add to Home Screen option for a focused, full-screen workspace."}
-          </p>
-          {!isStandalone ? (
-            <button
-              className="button button-primary"
-              type="button"
-              onClick={onInstall}
-            >
-              {installAvailable ? "Install on this device" : "How to install"}
-            </button>
-          ) : (
+          <h2>{phoneAlertHeading}</h2>
+          <p>{phoneAlertBody}</p>
+          <div
+            className={`phone-alert-status ${pushDeviceState}`}
+            aria-busy={pushPending}
+            aria-live="polite"
+          >
+            <span aria-hidden="true">
+              {pushDeviceState === "subscribed"
+                ? "✓"
+                : pushDeviceState === "denied"
+                  ? "!"
+                  : "◇"}
+            </span>
+            <p>
+              <strong>
+                {pushPending
+                  ? "Updating this device…"
+                  : pushDeviceState === "subscribed"
+                    ? "This device is connected"
+                    : "Private by default"}
+              </strong>
+              <small>
+                Alerts show “License Lantern check-in,” not credential or
+                certificate details.
+              </small>
+            </p>
+          </div>
+          <div className="account-card-actions phone-alert-actions">
+            {pushDeviceState === "install_required" ? (
+              <button
+                className="button button-primary"
+                type="button"
+                disabled={pushPending}
+                onClick={onInstall}
+              >
+                Add to Home Screen
+              </button>
+            ) : pushDeviceState === "available" ||
+              pushDeviceState === "error" ? (
+              <button
+                className="button button-primary"
+                type="button"
+                disabled={pushPending || !isOnline}
+                onClick={onEnablePhoneAlerts}
+              >
+                {workspace.reminderPreferences.pushEnabled
+                  ? "Add this device"
+                  : "Turn on phone alerts"}
+              </button>
+            ) : pushDeviceState === "denied" ? (
+              <button
+                className="button button-outline"
+                type="button"
+                disabled={pushPending}
+                onClick={onRefreshPhoneAlerts}
+              >
+                Check again
+              </button>
+            ) : pushDeviceState === "subscribed" ? (
+              <>
+                {!workspace.reminderPreferences.pushEnabled ? (
+                  <button
+                    className="button button-primary"
+                    type="button"
+                    disabled={pushPending || !isOnline}
+                    onClick={onEnablePhoneAlerts}
+                  >
+                    Resume phone alerts
+                  </button>
+                ) : null}
+                <button
+                  className="button button-outline"
+                  type="button"
+                  disabled={
+                    pushPending ||
+                    !isOnline ||
+                    !workspace.reminderPreferences.pushEnabled
+                  }
+                  onClick={onTestPhoneAlert}
+                >
+                  Send test alert
+                </button>
+                <button
+                  className="button button-ghost"
+                  type="button"
+                  disabled={pushPending || !isOnline}
+                  onClick={onDisablePhoneAlerts}
+                >
+                  Turn off on this device
+                </button>
+              </>
+            ) : null}
+          </div>
+          {workspace.reminderPreferences.activePushDeviceCount > 0 ? (
+            <small className="connected-device-count">
+              {workspace.reminderPreferences.activePushDeviceCount} connected{" "}
+              {workspace.reminderPreferences.activePushDeviceCount === 1
+                ? "device"
+                : "devices"}{" "}
+              on this account
+            </small>
+          ) : null}
+          {!isStandalone && pushDeviceState !== "install_required" ? (
+            <div className="install-companion-row">
+              <p>
+                Install Lantern for a focused, full-screen workspace with a
+                protected offline fallback.
+              </p>
+              <button
+                className="button button-outline"
+                type="button"
+                onClick={onInstall}
+              >
+                {installAvailable ? "Install on this device" : "How to install"}
+              </button>
+            </div>
+          ) : isStandalone ? (
             <span className="installed-pill">✓ Installed on this device</span>
-          )}
+          ) : null}
         </section>
         <section className="card compliance-card">
           <span className="section-kicker">A careful boundary</span>
