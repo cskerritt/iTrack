@@ -154,6 +154,41 @@ export const activities = sqliteTable(
   ],
 );
 
+export const evidenceFiles = sqliteTable(
+  "evidence_files",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    activityId: text("activity_id")
+      .notNull()
+      .references(() => activities.id),
+    objectKey: text("object_key").notNull(),
+    originalFilename: text("original_filename").notNull(),
+    contentType: text("content_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    sha256: text("sha256").notNull(),
+    storageEtag: text("storage_etag"),
+    status: text("status").notNull().default("ready"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("evidence_files_object_key_unique").on(table.objectKey),
+    uniqueIndex("evidence_files_activity_hash_unique").on(
+      table.userId,
+      table.activityId,
+      table.sha256,
+    ),
+    index("evidence_files_user_created_idx").on(table.userId, table.createdAt),
+    index("evidence_files_activity_created_idx").on(
+      table.activityId,
+      table.createdAt,
+    ),
+  ],
+);
+
 export const activityAllocations = sqliteTable(
   "activity_allocations",
   {
@@ -172,10 +207,9 @@ export const activityAllocations = sqliteTable(
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
-    uniqueIndex("activity_allocations_target_unique").on(
+    uniqueIndex("activity_allocations_activity_credential_unique").on(
       table.activityId,
       table.credentialId,
-      table.requirementId,
     ),
     index("activity_allocations_credential_idx").on(table.credentialId),
     index("activity_allocations_requirement_idx").on(table.requirementId),
@@ -231,6 +265,116 @@ export const renewalSubmissions = sqliteTable(
       table.credentialId,
     ),
     index("renewal_submissions_user_idx").on(table.userId),
+  ],
+);
+
+export const credentialCycleLinks = sqliteTable(
+  "credential_cycle_links",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    credentialId: text("credential_id")
+      .notNull()
+      .references(() => credentials.id, { onDelete: "cascade" }),
+    seriesId: text("series_id").notNull(),
+    previousCredentialId: text("previous_credential_id").references(
+      () => credentials.id,
+      { onDelete: "restrict" },
+    ),
+    cycleMonths: integer("cycle_months").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("credential_cycle_links_credential_unique").on(
+      table.credentialId,
+    ),
+    uniqueIndex("credential_cycle_links_previous_unique").on(
+      table.previousCredentialId,
+    ),
+    index("credential_cycle_links_user_series_idx").on(
+      table.userId,
+      table.seriesId,
+    ),
+  ],
+);
+
+export const renewalAcceptances = sqliteTable(
+  "renewal_acceptances",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    credentialId: text("credential_id")
+      .notNull()
+      .references(() => credentials.id, { onDelete: "restrict" }),
+    submissionId: text("submission_id")
+      .notNull()
+      .references(() => renewalSubmissions.id, { onDelete: "restrict" }),
+    acceptedAt: text("accepted_at").notNull(),
+    acceptanceReference: text("acceptance_reference"),
+    nextCredentialId: text("next_credential_id")
+      .notNull()
+      .references(() => credentials.id, { onDelete: "restrict" }),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("renewal_acceptances_credential_unique").on(
+      table.credentialId,
+    ),
+    uniqueIndex("renewal_acceptances_submission_unique").on(
+      table.submissionId,
+    ),
+    uniqueIndex("renewal_acceptances_next_credential_unique").on(
+      table.nextCredentialId,
+    ),
+    index("renewal_acceptances_user_created_idx").on(
+      table.userId,
+      table.createdAt,
+    ),
+  ],
+);
+
+export const reminderPreferences = sqliteTable("reminder_preferences", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  inAppEnabled: integer("in_app_enabled", { mode: "boolean" })
+    .notNull()
+    .default(true),
+  leadDays: text("lead_days").notNull().default("[90,30,7,1]"),
+  timeZone: text("time_zone").notNull().default("UTC"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const reminderStates = sqliteTable(
+  "reminder_states",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    credentialId: text("credential_id")
+      .notNull()
+      .references(() => credentials.id, { onDelete: "cascade" }),
+    reminderKey: text("reminder_key").notNull(),
+    status: text("status").notNull(),
+    snoozedUntil: text("snoozed_until"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("reminder_states_user_key_unique").on(
+      table.userId,
+      table.reminderKey,
+    ),
+    index("reminder_states_user_credential_idx").on(
+      table.userId,
+      table.credentialId,
+    ),
   ],
 );
 

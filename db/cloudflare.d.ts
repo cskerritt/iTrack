@@ -21,6 +21,58 @@ interface D1Database {
   exec(sql: string): Promise<unknown>;
 }
 
+interface R2HTTPMetadata {
+  contentType?: string;
+  contentLanguage?: string;
+  contentDisposition?: string;
+  contentEncoding?: string;
+  cacheControl?: string;
+  cacheExpiry?: Date;
+}
+
+interface R2Object {
+  key: string;
+  version: string;
+  size: number;
+  etag: string;
+  httpEtag: string;
+  uploaded: Date;
+  httpMetadata?: R2HTTPMetadata;
+  customMetadata?: Record<string, string>;
+}
+
+interface R2ObjectBody extends R2Object {
+  body: ReadableStream<Uint8Array>;
+  bodyUsed: boolean;
+  arrayBuffer(): Promise<ArrayBuffer>;
+  text(): Promise<string>;
+  json<T>(): Promise<T>;
+  blob(): Promise<Blob>;
+}
+
+interface R2PutOptions {
+  httpMetadata?: R2HTTPMetadata;
+  customMetadata?: Record<string, string>;
+  sha256?: ArrayBuffer | string;
+}
+
+interface R2Bucket {
+  head(key: string): Promise<R2Object | null>;
+  get(key: string): Promise<R2ObjectBody | null>;
+  put(
+    key: string,
+    value:
+      | ReadableStream
+      | ArrayBuffer
+      | ArrayBufferView
+      | string
+      | Blob
+      | null,
+    options?: R2PutOptions,
+  ): Promise<R2Object | null>;
+  delete(keys: string | string[]): Promise<void>;
+}
+
 interface Fetcher {
   fetch(request: Request): Promise<Response>;
 }
@@ -28,6 +80,7 @@ interface Fetcher {
 declare module "cloudflare:workers" {
   export const env: {
     DB?: D1Database;
+    EVIDENCE?: R2Bucket;
     [binding: string]: unknown;
   };
 }

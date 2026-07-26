@@ -11,18 +11,22 @@ rewards meaningful record-keeping without punitive daily streaks.
 - cycle dates, renewal deadlines, total-credit and category minimums
 - fast course, conference, and activity entry
 - durable per-user records in Cloudflare D1
+- private certificate/photo/PDF evidence in Cloudflare R2
+- one learning activity reusable across eligible credentials
 - renewal checklist with reversible completion
 - submission date and confirmation tracking
+- regulator acceptance, read-only cycle history, and clean next-cycle rollover
+- configurable in-app due-date and acceptance check-ins with snooze/dismiss
 - activity CSV export
 - weekly momentum, XP, and milestone badges
 - responsive dashboard and installable web-app manifest
 - server-derived ownership from authenticated workspace identity
 
-The starter catalog contains a small, current, source-linked set of rules for
-representative nursing, legal, accounting, engineering, psychology, and social
-work credentials. Templates with conditions are labeled accordingly. Users can
-always create a custom credential, and the product reminds them to confirm
-requirements with the issuing authority.
+The starter catalog contains 14 current, source-linked templates spanning
+nursing, legal, accounting, engineering, psychology, and social work
+credentials. Templates with conditions are labeled accordingly. Users can
+search the catalog or create a custom credential, and the product reminds them
+to confirm requirements with the issuing authority.
 
 ## Product boundary
 
@@ -35,14 +39,16 @@ license status are never inferred from a checked box.
 
 - Vinext App Router on Cloudflare Workers
 - React 19 phone-first client experience
-- Cloudflare D1 with versioned rule sets and user-owned records
+- Cloudflare D1 with versioned rule sets and user-owned lifecycle records
+- private Cloudflare R2 evidence objects with owner-scoped metadata
 - workspace/SIWC identity headers in production
 - localhost-only demo identity for development
 - Drizzle schema and generated migrations
 
 Structured activities and allocations are separate from renewal submissions.
 This preserves the difference between learning completed, credit documented,
-renewal submitted, and renewal accepted.
+renewal submitted, and renewal accepted. Closing a cycle creates a fresh next
+cycle without copying completed education, submissions, or checked tasks.
 
 ## Local development
 
@@ -69,10 +75,8 @@ Node.js `>=22.13.0` is required.
 
 ## Next product phases
 
-- certificate/photo/PDF uploads backed by R2
 - evidence review and OCR-assisted entry
-- notifications and renewal reminders
-- multi-credential allocation for one activity
+- opt-in email and push reminder delivery
 - broader effective-dated profession/state rule research
-- packet-style PDF export and prior-cycle archive
+- packet-style PDF export and richer archive browsing
 - native mobile packaging and regulator/provider integrations

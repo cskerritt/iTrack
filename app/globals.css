@@ -906,6 +906,11 @@ a {
   text-decoration: line-through;
 }
 
+.task-row.locked {
+  cursor: default;
+  opacity: 0.78;
+}
+
 .submitted-note {
   margin-top: 18px;
   border-top: 1px solid var(--line);
@@ -913,6 +918,102 @@ a {
   font-size: 10px;
   font-weight: 700;
   padding-top: 15px;
+}
+
+.submitted-note-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.submitted-note-action button {
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  color: #2f705b;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 850;
+}
+
+.reminder-inbox {
+  overflow: hidden;
+  border: 1px solid #d9c48d;
+  border-radius: var(--radius-md);
+  background: #fffaf0;
+  box-shadow: var(--shadow-sm);
+}
+
+.reminder-inbox-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 17px 20px 12px;
+}
+
+.reminder-inbox-heading h2 {
+  margin: 3px 0 0;
+  font-family: var(--font-newsreader), Georgia, serif;
+  font-size: 21px;
+  font-weight: 600;
+}
+
+.reminder-list {
+  display: grid;
+}
+
+.reminder-list article {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid rgba(208, 185, 126, 0.35);
+  padding: 12px 20px;
+}
+
+.reminder-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c79a34;
+}
+
+.reminder-list article.overdue .reminder-dot {
+  background: #b75645;
+}
+
+.reminder-list strong {
+  display: block;
+  font-size: 10px;
+}
+
+.reminder-list p {
+  margin: 2px 0 0;
+  color: #7e745d;
+  font-size: 9px;
+}
+
+.reminder-list article > div:last-child {
+  display: flex;
+  gap: 4px;
+}
+
+.reminder-list button {
+  min-height: 44px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #6e6249;
+  cursor: pointer;
+  font-size: 8px;
+  font-weight: 800;
+  padding: 6px 8px;
+}
+
+.reminder-list button:hover {
+  background: rgba(221, 198, 137, 0.2);
 }
 
 .recent-list {
@@ -1367,6 +1468,20 @@ a {
   background: #f7f8f3;
 }
 
+.reminder-setting-link {
+  min-height: 44px;
+  justify-self: start;
+  margin: 0 32px 15px;
+  border: 0;
+  background: transparent;
+  color: #3f7562;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .detail-footer strong {
   display: block;
   font-size: 11px;
@@ -1536,6 +1651,45 @@ a {
   color: #737d78;
 }
 
+.proof-cell {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  justify-self: start;
+  gap: 1px;
+}
+
+.proof-action {
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  color: #356f5b;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 850;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.proof-action:hover {
+  color: var(--ink);
+}
+
+.allocation-stack {
+  display: grid;
+  gap: 5px;
+}
+
+.allocation-stack > span {
+  display: block;
+}
+
+.allocation-action {
+  display: block;
+  margin-top: 4px;
+  padding: 0;
+}
+
 .record-credit {
   justify-self: end;
   color: #3b755f;
@@ -1596,7 +1750,8 @@ a {
 }
 
 .account-momentum h2,
-.compliance-card h2 {
+.compliance-card h2,
+.reminder-settings-card h2 {
   margin: 4px 0 6px;
   font-family: var(--font-newsreader), Georgia, serif;
   font-size: 27px;
@@ -1604,11 +1759,21 @@ a {
 }
 
 .account-momentum > p,
-.compliance-card > p {
+.compliance-card > p,
+.reminder-settings-card > p {
   max-width: 630px;
   margin: 0;
   color: #737e7a;
   font-size: 11px;
+}
+
+.reminder-settings-card {
+  padding: 28px;
+}
+
+.reminder-settings-card .button {
+  justify-self: start;
+  margin-top: 18px;
 }
 
 .badge-grid {
@@ -1854,9 +2019,94 @@ a {
   font-size: 9px;
 }
 
+.file-field input[type="file"] {
+  padding: 7px;
+}
+
+.file-field input[type="file"]::file-selector-button {
+  min-height: 34px;
+  margin-right: 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--sage-bright);
+  color: #326f5a;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  padding: 6px 10px;
+}
+
+.evidence-upload {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.evidence-file-list {
+  display: grid;
+  gap: 9px;
+}
+
+.evidence-file-list > article {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f8f8f4;
+  padding: 12px;
+}
+
+.evidence-file-list strong,
+.evidence-file-list small {
+  display: block;
+}
+
+.evidence-file-list strong {
+  overflow-wrap: anywhere;
+  font-size: 10px;
+}
+
+.evidence-file-list small {
+  margin-top: 3px;
+  color: #8b9490;
+  font-size: 8px;
+}
+
+.evidence-empty {
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+  color: #75817d;
+  padding: 18px;
+  text-align: center;
+}
+
+.evidence-empty strong {
+  color: var(--ink);
+}
+
+.evidence-empty p {
+  margin: 4px 0 0;
+  font-size: 9px;
+}
+
+.evidence-file-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.button-compact {
+  min-height: 44px;
+  padding: 7px 10px;
+  font-size: 9px;
+}
+
 .segmented-field {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
   gap: 8px;
   margin: 0;
   border: 0;
@@ -1898,6 +2148,101 @@ a {
 .segmented-field input:focus-visible + span {
   outline: 3px solid #2f8a70;
   outline-offset: 3px;
+}
+
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f8f8f4;
+  padding: 13px 14px;
+}
+
+.switch-row strong,
+.switch-row small {
+  display: block;
+}
+
+.switch-row strong {
+  font-size: 10px;
+}
+
+.switch-row small {
+  margin-top: 2px;
+  color: #8a9490;
+  font-size: 8px;
+}
+
+.switch-row input {
+  width: 22px;
+  height: 22px;
+  accent-color: #3d8069;
+}
+
+.check-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.check-grid legend {
+  margin-bottom: 8px;
+  color: #536762;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.check-grid label {
+  position: relative;
+}
+
+.check-grid input {
+  position: absolute;
+  opacity: 0;
+}
+
+.check-grid span {
+  display: grid;
+  place-items: center;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: #74817c;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.check-grid input:checked + span {
+  border-color: #72a994;
+  background: var(--sage-bright);
+  color: #326f5a;
+}
+
+.check-grid input:focus-visible + span {
+  outline: 3px solid #2f8a70;
+  outline-offset: 3px;
+}
+
+.cycle-rollover {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #cfe0d7;
+  border-radius: 13px;
+  background: #f1f8f4;
+  padding: 15px;
+}
+
+.cycle-rollover > p {
+  margin: -5px 0 0;
+  color: #708079;
+  font-size: 9px;
 }
 
 .form-actions {
@@ -2497,12 +2842,12 @@ a {
     padding-block: 16px;
   }
 
-  .records-table > span:not(.proof-label) {
+  .records-table > span:not(.proof-label):not(.proof-cell) {
     grid-column: 1;
     padding-left: 37px;
   }
 
-  .records-table .proof-label {
+  .records-table .proof-cell {
     grid-column: 1;
     justify-self: start;
     margin-left: 37px;
@@ -2515,6 +2860,18 @@ a {
 
   .account-grid {
     grid-template-columns: 1fr;
+  }
+
+  .evidence-upload {
+    grid-template-columns: 1fr;
+  }
+
+  .reminder-list article {
+    grid-template-columns: 10px minmax(0, 1fr);
+  }
+
+  .reminder-list article > div:last-child {
+    grid-column: 2;
   }
 
   .compliance-card {
@@ -2597,6 +2954,20 @@ a {
   .next-action-card h2 {
     font-size: 18px;
     line-height: 1.15;
+  }
+
+  .reminder-inbox-heading,
+  .reminder-list article {
+    padding-inline: 15px;
+  }
+
+  .check-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .submitted-note-action {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .progress-card,

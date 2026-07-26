@@ -8,6 +8,20 @@
       "when": 1785029458493,
       "tag": "0000_past_agent_zero",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1785031427823,
+      "tag": "0001_lethal_revanche",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785032292768,
+      "tag": "0002_lonely_green_goblin",
+      "breakpoints": true
     }
   ]
 }

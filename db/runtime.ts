@@ -101,6 +101,30 @@ const TABLE_STATEMENTS = [
   )`,
   `CREATE INDEX IF NOT EXISTS activities_user_date_idx
     ON activities (user_id, completion_date)`,
+  `CREATE TABLE IF NOT EXISTS evidence_files (
+    id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT NOT NULL,
+    activity_id TEXT NOT NULL,
+    object_key TEXT NOT NULL,
+    original_filename TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    storage_etag TEXT,
+    status TEXT NOT NULL DEFAULT 'ready',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (activity_id) REFERENCES activities(id)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS evidence_files_object_key_unique
+    ON evidence_files (object_key)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS evidence_files_activity_hash_unique
+    ON evidence_files (user_id, activity_id, sha256)`,
+  `CREATE INDEX IF NOT EXISTS evidence_files_user_created_idx
+    ON evidence_files (user_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS evidence_files_activity_created_idx
+    ON evidence_files (activity_id, created_at)`,
   `CREATE TABLE IF NOT EXISTS activity_allocations (
     id TEXT PRIMARY KEY NOT NULL,
     activity_id TEXT NOT NULL,
@@ -112,8 +136,8 @@ const TABLE_STATEMENTS = [
     FOREIGN KEY (credential_id) REFERENCES credentials(id) ON DELETE CASCADE,
     FOREIGN KEY (requirement_id) REFERENCES credential_requirements(id) ON DELETE SET NULL
   )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS activity_allocations_target_unique
-    ON activity_allocations (activity_id, credential_id, requirement_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS activity_allocations_activity_credential_unique
+    ON activity_allocations (activity_id, credential_id)`,
   `CREATE INDEX IF NOT EXISTS activity_allocations_credential_idx
     ON activity_allocations (credential_id)`,
   `CREATE INDEX IF NOT EXISTS activity_allocations_requirement_idx
@@ -151,6 +175,71 @@ const TABLE_STATEMENTS = [
     ON renewal_submissions (credential_id)`,
   `CREATE INDEX IF NOT EXISTS renewal_submissions_user_idx
     ON renewal_submissions (user_id)`,
+  `CREATE TABLE IF NOT EXISTS credential_cycle_links (
+    id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT NOT NULL,
+    credential_id TEXT NOT NULL,
+    series_id TEXT NOT NULL,
+    previous_credential_id TEXT,
+    cycle_months INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (credential_id) REFERENCES credentials(id) ON DELETE CASCADE,
+    FOREIGN KEY (previous_credential_id) REFERENCES credentials(id) ON DELETE RESTRICT
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS credential_cycle_links_credential_unique
+    ON credential_cycle_links (credential_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS credential_cycle_links_previous_unique
+    ON credential_cycle_links (previous_credential_id)`,
+  `CREATE INDEX IF NOT EXISTS credential_cycle_links_user_series_idx
+    ON credential_cycle_links (user_id, series_id)`,
+  `CREATE TABLE IF NOT EXISTS renewal_acceptances (
+    id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT NOT NULL,
+    credential_id TEXT NOT NULL,
+    submission_id TEXT NOT NULL,
+    accepted_at TEXT NOT NULL,
+    acceptance_reference TEXT,
+    next_credential_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (credential_id) REFERENCES credentials(id) ON DELETE RESTRICT,
+    FOREIGN KEY (submission_id) REFERENCES renewal_submissions(id) ON DELETE RESTRICT,
+    FOREIGN KEY (next_credential_id) REFERENCES credentials(id) ON DELETE RESTRICT
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS renewal_acceptances_credential_unique
+    ON renewal_acceptances (credential_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS renewal_acceptances_submission_unique
+    ON renewal_acceptances (submission_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS renewal_acceptances_next_credential_unique
+    ON renewal_acceptances (next_credential_id)`,
+  `CREATE INDEX IF NOT EXISTS renewal_acceptances_user_created_idx
+    ON renewal_acceptances (user_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS reminder_preferences (
+    user_id TEXT PRIMARY KEY NOT NULL,
+    in_app_enabled INTEGER NOT NULL DEFAULT 1,
+    lead_days TEXT NOT NULL DEFAULT '[90,30,7,1]',
+    time_zone TEXT NOT NULL DEFAULT 'UTC',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  `CREATE TABLE IF NOT EXISTS reminder_states (
+    id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT NOT NULL,
+    credential_id TEXT NOT NULL,
+    reminder_key TEXT NOT NULL,
+    status TEXT NOT NULL,
+    snoozed_until TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (credential_id) REFERENCES credentials(id) ON DELETE CASCADE
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS reminder_states_user_key_unique
+    ON reminder_states (user_id, reminder_key)`,
+  `CREATE INDEX IF NOT EXISTS reminder_states_user_credential_idx
+    ON reminder_states (user_id, credential_id)`,
   `CREATE TABLE IF NOT EXISTS badge_definitions (
     id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL,
@@ -517,6 +606,313 @@ const GLOBAL_SEED_STATEMENTS = [
     ],
   },
   {
+    sql: `INSERT OR IGNORE INTO rule_sets (
+      id, stable_key, version, profession, credential_name, jurisdiction,
+      issuer, total_units, unit_label, cycle_months, source_url, source_title,
+      effective_date, last_verified_at, review_status, is_current
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    bindings: [
+      "ca-rn-2026-v1",
+      "ca-rn",
+      1,
+      "Nursing",
+      "Registered Nurse",
+      "California",
+      "California Board of Registered Nursing",
+      30,
+      "contact hours",
+      24,
+      "https://www.rn.ca.gov/licensees/ce-renewal.shtml",
+      "California BRN CE renewal requirements; first-renewal exemption, implicit-bias, and NP conditions must be checked",
+      null,
+      "2026-07-25",
+      "source_linked_check_conditions",
+      1,
+    ],
+  },
+  {
+    sql: `INSERT OR IGNORE INTO rule_sets (
+      id, stable_key, version, profession, credential_name, jurisdiction,
+      issuer, total_units, unit_label, cycle_months, source_url, source_title,
+      effective_date, last_verified_at, review_status, is_current
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    bindings: [
+      "tx-rn-2026-v1",
+      "tx-rn",
+      1,
+      "Nursing",
+      "Registered Nurse",
+      "Texas",
+      "Texas Board of Nursing",
+      20,
+      "CNE contact hours",
+      24,
+      "https://www.bon.texas.gov/education_continuing_education.asp",
+      "Texas BON continuing competency requirements; certification alternative and role-, topic-, and cycle-specific requirements must be checked",
+      null,
+      "2026-07-25",
+      "source_linked_check_conditions",
+      1,
+    ],
+  },
+  {
+    sql: `INSERT OR IGNORE INTO rule_sets (
+      id, stable_key, version, profession, credential_name, jurisdiction,
+      issuer, total_units, unit_label, cycle_months, source_url, source_title,
+      effective_date, last_verified_at, review_status, is_current
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    bindings: [
+      "fl-rn-2026-v1",
+      "fl-rn",
+      1,
+      "Nursing",
+      "Registered Nurse",
+      "Florida",
+      "Florida Board of Nursing",
+      24,
+      "CE hours",
+      24,
+      "https://floridasnursing.gov/registered-nurse-renewal/",
+      "Florida RN renewal requirements; first-renewal, rotating, additional, and exemption conditions must be checked",
+      null,
+      "2026-07-25",
+      "source_linked_check_conditions",
+      1,
+    ],
+  },
+  {
+    sql: `INSERT OR IGNORE INTO rule_categories
+      (id, rule_set_id, name, required_units, sort_order)
+      VALUES (?, ?, ?, ?, ?)`,
+    bindings: [
+      "fl-rn-2026-medical-errors",
+      "fl-rn-2026-v1",
+      "Prevention of Medical Errors",
+      2,
+      0,
+    ],
+  },
+  {
+    sql: `INSERT OR IGNORE INTO rule_categories
+      (id, rule_set_id, name, required_units, sort_order)
+      VALUES (?, ?, ?, ?, ?)`,
+    bindings: [
+      "fl-rn-2026-laws-rules",
+      "fl-rn-2026-v1",
+      "Florida Laws and Rules",
+      2,
+      1,
+    ],
+  },
+  {
+    sql: `INSERT OR IGNORE INTO rule_categories
+      (id, rule_set_id, name, required_units, sort_order)
+      VALUES (?, ?, ?, ?, ?)`,
+    bindings: [
+      "fl-rn-2026-human-trafficking",
+      "fl-rn-2026-v1",
+      "Human Trafficking",
+      2,
+      2,
+    ],
+  },
+  {
+    sql: `INSERT OR IGNORE INTO rule_sets (
+      id, stable_key, version, profession, credential_name, jurisdiction,
+      issuer, total_units, unit_label, cycle_months, source_url, source_title,
+      effective_date, last_verified_at, review_status, is_current
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    bindings: [
+      "ca-attorney-active-2026-v1",
+      "ca-attorney-active",
+      1,
+      "Law",
+      "Attorney — active",
+      "California",
+      "State Bar of California",
+      25,
+      "MCLE credit hours",
+      36,
+      "https://www.calbar.ca.gov/legal-professionals/maintaining-compliance/mcle/mcle-requirements",
+      "California MCLE requirements; participatory overlap, nested subtopics, group transitions, exemptions, and proration must be checked",
+      "2024-01-01",
+      "2026-07-25",
+      "source_linked_check_conditions",
+      1,
+    ],
+  },
+  {
+    sql: `INSERT OR IGNORE INTO rule_categories
+      (id, rule_set_id, name, required_units, sort_order)
+      VALUES (?, ?, ?, ?, ?)`,
+    bindings: [
+      "ca-attorney-active-2026-legal-ethics",
+      "ca-attorney-active-2026-v1",
+      "Legal Ethics",
+      4,
+      0,
+    ],
+  },
+  {
+    sql: `INSERT OR IGNORE INTO rule_categories
+      (id, rule_set_id, name, required_units, sort_order)
+      VALUES (?, ?, ?, ?, ?)`,
+    bindings: [
+      "ca-attorney-active-2026-elimination-bias",
+      "ca-attorney-active-2026-v1",
+      "Elimination of Bias",
+      2,
+      1,
+    ],
+  },
+  {
+    sql: `INSERT OR IGNORE INTO rule_categories
+      (id, rule_set_id, name, required_units, sort_order)
+      VALUES (?, ?, ?, ?, ?)`,
+    bindings: [
+      "ca-attorney-active-2026-competence",
+      "ca-attorney-active-2026-v1",
+      "Competence",
+      2,
+      2,
+    ],
+  },
+  {
+    sql: `INSERT OR IGNORE INTO rule_categories
+      (id, rule_set_id, name, required_units, sort_order)
+      VALUES (?, ?, ?, ?, ?)`,
+    bindings: [
+      "ca-attorney-active-2026-technology",
+      "ca-attorney-active-2026-v1",
+      "Technology",
+      1,
+      3,
+    ],
+  },
+  {
+    sql: `INSERT OR IGNORE INTO rule_categories
+      (id, rule_set_id, name, required_units, sort_order)
+      VALUES (?, ?, ?, ?, ?)`,
+    bindings: [
+      "ca-attorney-active-2026-civility",
+      "ca-attorney-active-2026-v1",
+      "Civility",
+      1,
+      4,
+    ],
+  },
+  {
+    sql: `INSERT OR IGNORE INTO rule_sets (
+      id, stable_key, version, profession, credential_name, jurisdiction,
+      issuer, total_units, unit_label, cycle_months, source_url, source_title,
+      effective_date, last_verified_at, review_status, is_current
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    bindings: [
+      "tx-attorney-active-2026-v1",
+      "tx-attorney-active",
+      1,
+      "Law",
+      "Attorney — active",
+      "Texas",
+      "State Bar of Texas",
+      15,
+      "CLE credit hours",
+      12,
+      "https://www.texasbar.com/AM/Template.cfm?ContentID=71381&Section=MCLE_Rules1&Template=%2FCM%2FContentDisplay.cfm",
+      "Texas MCLE regulations; accredited-delivery overlap, initial cycle, grace period, and January dates must be checked",
+      "2026-04-24",
+      "2026-07-25",
+      "source_linked_check_conditions",
+      1,
+    ],
+  },
+  {
+    sql: `INSERT OR IGNORE INTO rule_categories
+      (id, rule_set_id, name, required_units, sort_order)
+      VALUES (?, ?, ?, ?, ?)`,
+    bindings: [
+      "tx-attorney-active-2026-ethics",
+      "tx-attorney-active-2026-v1",
+      "Legal Ethics and Professional Responsibility",
+      3,
+      0,
+    ],
+  },
+  {
+    sql: `INSERT OR IGNORE INTO rule_sets (
+      id, stable_key, version, profession, credential_name, jurisdiction,
+      issuer, total_units, unit_label, cycle_months, source_url, source_title,
+      effective_date, last_verified_at, review_status, is_current
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    bindings: [
+      "ca-cpa-2026-v1",
+      "ca-cpa",
+      1,
+      "Accounting",
+      "Certified Public Accountant",
+      "California",
+      "California Board of Accountancy",
+      80,
+      "CE hours",
+      24,
+      "https://www.dca.ca.gov/cba/licensees/cequickref.shtml",
+      "California CBA CE Quick Reference Guide; technical overlap, annual floors, service-specific categories, and proration must be checked",
+      null,
+      "2026-07-25",
+      "source_linked_check_conditions",
+      1,
+    ],
+  },
+  {
+    sql: `INSERT OR IGNORE INTO rule_categories
+      (id, rule_set_id, name, required_units, sort_order)
+      VALUES (?, ?, ?, ?, ?)`,
+    bindings: [
+      "ca-cpa-2026-ethics",
+      "ca-cpa-2026-v1",
+      "Ethics",
+      4,
+      0,
+    ],
+  },
+  {
+    sql: `INSERT OR IGNORE INTO rule_sets (
+      id, stable_key, version, profession, credential_name, jurisdiction,
+      issuer, total_units, unit_label, cycle_months, source_url, source_title,
+      effective_date, last_verified_at, review_status, is_current
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    bindings: [
+      "nj-cpa-2026-v1",
+      "nj-cpa",
+      1,
+      "Accounting",
+      "Certified Public Accountant",
+      "New Jersey",
+      "New Jersey State Board of Accountancy",
+      120,
+      "CPE credits",
+      36,
+      "https://www.njconsumeraffairs.gov/acc/Pages/FAQ.aspx",
+      "New Jersey Board of Accountancy CE FAQ; technical overlap, annual floor, public-accountancy, and first-renewal conditions must be checked",
+      null,
+      "2026-07-25",
+      "source_linked_check_conditions",
+      1,
+    ],
+  },
+  {
+    sql: `INSERT OR IGNORE INTO rule_categories
+      (id, rule_set_id, name, required_units, sort_order)
+      VALUES (?, ?, ?, ?, ?)`,
+    bindings: [
+      "nj-cpa-2026-law-ethics",
+      "nj-cpa-2026-v1",
+      "New Jersey Law and Ethics",
+      4,
+      0,
+    ],
+  },
+  {
     sql: `INSERT OR IGNORE INTO badge_definitions
       (id, name, description, icon) VALUES (?, ?, ?, ?)`,
     bindings: [
@@ -604,9 +1000,34 @@ export async function ensureUser(
       `INSERT OR IGNORE INTO profiles (user_id, weekly_goal) VALUES (?, ?)`,
       [identity.userId, 4],
     ),
+    statement(
+      database,
+      `INSERT OR IGNORE INTO reminder_preferences (
+        user_id, in_app_enabled, lead_days, time_zone
+      ) VALUES (?, 1, '[90,30,7,1]', 'UTC')`,
+      [identity.userId],
+    ),
   ]);
 
   if (identity.isDemo) await ensureDemoWorkspace(database, identity.userId);
+
+  await statement(
+    database,
+    `INSERT OR IGNORE INTO credential_cycle_links (
+      id, user_id, credential_id, series_id, previous_credential_id, cycle_months
+    )
+    SELECT
+      'cycle-link-' || c.id,
+      c.user_id,
+      c.id,
+      c.id,
+      NULL,
+      COALESCE(rules.cycle_months, 12)
+    FROM credentials c
+    LEFT JOIN rule_sets rules ON rules.id = c.rule_set_id
+    WHERE c.user_id = ?`,
+    [identity.userId],
+  ).run();
 }
 
 async function ensureDemoWorkspace(database: D1Database, userId: string) {

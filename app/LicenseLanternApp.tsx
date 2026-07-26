@@ -34,9 +34,15 @@ type Credential = {
   deadline: string;
   totalRequired: number;
   unitLabel: string;
+  cycleMonths: number;
   status: "active" | "submitted" | "renewed";
+  seriesId?: string | null;
+  previousCredentialId?: string | null;
   submittedAt?: string | null;
   confirmationNumber?: string | null;
+  acceptedAt?: string | null;
+  acceptanceReference?: string | null;
+  nextCredentialId?: string | null;
   sourceUrl?: string | null;
   sourceTitle?: string | null;
   ruleReviewStatus?: string | null;
@@ -68,6 +74,15 @@ type CatalogRule = {
   categories: CatalogCategory[];
 };
 
+type ActivityAllocation = {
+  id: string;
+  credentialId: string;
+  credentialName: string;
+  requirementId?: string | null;
+  categoryName?: string | null;
+  allocatedUnits: number;
+};
+
 type Activity = {
   id: string;
   title: string;
@@ -75,9 +90,24 @@ type Activity = {
   completionDate: string;
   totalUnits: number;
   evidenceStatus: "missing" | "attached" | "not_required";
+  evidenceCount: number;
+  credentialId?: string | null;
   credentialName?: string | null;
+  requirementId?: string | null;
   categoryName?: string | null;
   allocatedUnits: number;
+  allocations?: ActivityAllocation[];
+};
+
+type EvidenceFile = {
+  id: string;
+  activityId: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  sha256: string;
+  createdAt: string;
+  downloadUrl: string;
 };
 
 type Badge = {
@@ -103,6 +133,23 @@ type Workspace = {
   catalog: CatalogRule[];
   credentials: Credential[];
   activities: Activity[];
+  reminderPreferences: {
+    inAppEnabled: boolean;
+    leadDays: number[];
+    timeZone: string;
+  };
+  reminders: Reminder[];
+};
+
+type Reminder = {
+  key: string;
+  credentialId: string;
+  credentialName: string;
+  kind: "task" | "deadline" | "acceptance";
+  title: string;
+  body: string;
+  scheduledFor: string;
+  urgency: "overdue" | "today" | "soon";
 };
 
 type ViewName = "today" | "credentials" | "records" | "account";
@@ -140,10 +187,40 @@ function formatDate(value?: string | null, options?: Intl.DateTimeFormatOptions)
 function daysUntil(value: string) {
   const deadline = new Date(`${value.slice(0, 10)}T23:59:59`);
   const today = new Date();
-  return Math.max(
-    0,
-    Math.ceil((deadline.getTime() - today.getTime()) / 86_400_000),
-  );
+  return Math.ceil((deadline.getTime() - today.getTime()) / 86_400_000);
+}
+
+function addDaysIso(value: string, days: number) {
+  const date = new Date(`${value.slice(0, 10)}T12:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function addMonthsIso(value: string, months: number) {
+  const date = new Date(`${value.slice(0, 10)}T12:00:00.000Z`);
+  const targetDay = date.getUTCDate();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() + months);
+  const lastDay = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0),
+  ).getUTCDate();
+  date.setUTCDate(Math.min(targetDay, lastDay));
+  return date.toISOString().slice(0, 10);
+}
+
+function allocationsFor(activity: Activity): ActivityAllocation[] {
+  if (activity.allocations?.length) return activity.allocations;
+  if (!activity.credentialId || !activity.credentialName) return [];
+  return [
+    {
+      id: `${activity.id}:${activity.credentialId}`,
+      credentialId: activity.credentialId,
+      credentialName: activity.credentialName,
+      requirementId: activity.requirementId,
+      categoryName: activity.categoryName,
+      allocatedUnits: activity.allocatedUnits,
+    },
+  ];
 }
 
 function compactNumber(value: number) {
@@ -187,6 +264,11 @@ function readinessScore(credential: Credential) {
 }
 
 function bestNextAction(credential: Credential) {
+  if (credential.status === "renewed")
+    return "Review the preserved record for this completed cycle";
+  if (credential.status === "submitted")
+    return "Record acceptance when your renewal is approved";
+
   const missingRequirement = credential.requirements
     .filter((item) => item.earnedUnits < item.requiredUnits)
     .sort(
@@ -217,8 +299,19 @@ export function LicenseLanternApp() {
   const [activityOpen, setActivityOpen] = useState(false);
   const [credentialOpen, setCredentialOpen] = useState(false);
   const [submissionOpen, setSubmissionOpen] = useState(false);
+  const [acceptanceOpen, setAcceptanceOpen] = useState(false);
+  const [remindersOpen, setRemindersOpen] = useState(false);
+  const [allocationActivity, setAllocationActivity] =
+    useState<Activity | null>(null);
+  const [allocationCredentialId, setAllocationCredentialId] = useState("");
+  const [evidenceActivity, setEvidenceActivity] = useState<Activity | null>(
+    null,
+  );
+  const [evidenceFiles, setEvidenceFiles] = useState<EvidenceFile[]>([]);
+  const [evidencePending, setEvidencePending] = useState(false);
   const [customCredential, setCustomCredential] = useState(false);
   const [selectedRuleId, setSelectedRuleId] = useState("");
+  const [catalogQuery, setCatalogQuery] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -275,6 +368,10 @@ export function LicenseLanternApp() {
       setActivityOpen(false);
       setCredentialOpen(false);
       setSubmissionOpen(false);
+      setAcceptanceOpen(false);
+      setRemindersOpen(false);
+      setAllocationActivity(null);
+      setEvidenceActivity(null);
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
@@ -297,6 +394,54 @@ export function LicenseLanternApp() {
     [selectedRuleId, workspace],
   );
 
+  const catalogMatches = useMemo(() => {
+    if (!workspace) return [];
+    const query = catalogQuery.trim().toLowerCase();
+    if (!query) return workspace.catalog;
+    return workspace.catalog.filter((rule) =>
+      [
+        rule.profession,
+        rule.credentialName,
+        rule.jurisdiction,
+        rule.issuer,
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(query),
+    );
+  }, [catalogQuery, workspace]);
+
+  const eligibleAllocationCredentials = useMemo(() => {
+    if (!workspace || !allocationActivity) return [];
+    const existingIds = new Set(
+      allocationsFor(allocationActivity).map(
+        (allocation) => allocation.credentialId,
+      ),
+    );
+    return workspace.credentials.filter(
+      (credential) =>
+        credential.status !== "renewed" && !existingIds.has(credential.id),
+    );
+  }, [allocationActivity, workspace]);
+
+  const allocationCredential =
+    eligibleAllocationCredentials.find(
+      (credential) => credential.id === allocationCredentialId,
+    ) ??
+    eligibleAllocationCredentials[0] ??
+    null;
+
+  const activityCredentials =
+    workspace?.credentials.filter(
+      (credential) => credential.status !== "renewed",
+    ) ?? [];
+  const activityCredential =
+    activityCredentials.find(
+      (credential) => credential.id === selectedCredentialId,
+    ) ??
+    activityCredentials[0] ??
+    null;
+
   async function runAction(
     action: string,
     payload: Record<string, unknown>,
@@ -313,20 +458,21 @@ export function LicenseLanternApp() {
       const result = (await response.json()) as {
         ok?: boolean;
         error?: string;
+        id?: string;
       };
       if (!response.ok) {
         throw new Error(result.error || "That update didn’t save.");
       }
       await loadWorkspace();
       setToast({ message: successMessage });
-      return true;
+      return result;
     } catch (actionError) {
       setError(
         actionError instanceof Error
           ? actionError.message
           : "That update didn’t save.",
       );
-      return false;
+      return null;
     } finally {
       setPending(false);
     }
@@ -338,7 +484,10 @@ export function LicenseLanternApp() {
     const form = new FormData(formElement);
     const credentialId = String(form.get("credentialId") ?? "");
     const totalUnits = Number(form.get("totalUnits"));
-    const success = await runAction(
+    const evidenceFile = form.get("evidenceFile");
+    const hasEvidenceFile =
+      evidenceFile instanceof File && evidenceFile.size > 0;
+    const result = await runAction(
       "addActivity",
       {
         title: String(form.get("title") ?? ""),
@@ -354,9 +503,132 @@ export function LicenseLanternApp() {
         totalUnits === 1 ? "credit" : "credits"
       } added to your record.`,
     );
-    if (success) {
+    if (result?.id && hasEvidenceFile) {
+      const uploaded = await uploadEvidence(result.id, evidenceFile);
+      if (!uploaded) {
+        setActivityOpen(false);
+        formElement.reset();
+        setToast({
+          message:
+            "Activity saved, but the proof file did not upload. You can add it from Records.",
+        });
+        return;
+      }
+      setToast({
+        message: `${compactNumber(totalUnits)} ${
+          totalUnits === 1 ? "credit" : "credits"
+        } and proof saved.`,
+      });
+    }
+    if (result) {
       setActivityOpen(false);
       formElement.reset();
+    }
+  }
+
+  async function uploadEvidence(activityId: string, file: File) {
+    setEvidencePending(true);
+    setError("");
+    try {
+      const payload = new FormData();
+      payload.set("activityId", activityId);
+      payload.set("file", file);
+      const response = await fetch("/api/evidence", {
+        method: "POST",
+        body: payload,
+      });
+      const result = (await response.json()) as {
+        evidence?: EvidenceFile;
+        error?: string;
+      };
+      if (!response.ok || !result.evidence) {
+        throw new Error(result.error || "The proof file did not upload.");
+      }
+      await loadWorkspace();
+      setEvidenceFiles((current) => [result.evidence!, ...current]);
+      return true;
+    } catch (uploadError) {
+      setError(
+        uploadError instanceof Error
+          ? uploadError.message
+          : "The proof file did not upload.",
+      );
+      return false;
+    } finally {
+      setEvidencePending(false);
+    }
+  }
+
+  async function openEvidence(activity: Activity) {
+    setEvidenceActivity(activity);
+    setEvidenceFiles([]);
+    setEvidencePending(true);
+    setError("");
+    try {
+      const response = await fetch(
+        `/api/evidence?activityId=${encodeURIComponent(activity.id)}`,
+        { headers: { accept: "application/json" }, cache: "no-store" },
+      );
+      const result = (await response.json()) as {
+        evidence?: EvidenceFile[];
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(result.error || "The proof files could not be loaded.");
+      }
+      setEvidenceFiles(result.evidence ?? []);
+    } catch (evidenceError) {
+      setError(
+        evidenceError instanceof Error
+          ? evidenceError.message
+          : "The proof files could not be loaded.",
+      );
+    } finally {
+      setEvidencePending(false);
+    }
+  }
+
+  async function handleEvidenceUpload(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!evidenceActivity) return;
+    const form = new FormData(event.currentTarget);
+    const file = form.get("file");
+    if (!(file instanceof File) || file.size === 0) {
+      setError("Choose a PDF or image to upload.");
+      return;
+    }
+    const uploaded = await uploadEvidence(evidenceActivity.id, file);
+    if (uploaded) {
+      event.currentTarget.reset();
+      setToast({ message: "Proof saved securely." });
+    }
+  }
+
+  async function deleteEvidence(evidence: EvidenceFile) {
+    setEvidencePending(true);
+    setError("");
+    try {
+      const response = await fetch(
+        `/api/evidence/${encodeURIComponent(evidence.id)}`,
+        { method: "DELETE" },
+      );
+      const result = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(result.error || "The proof file could not be removed.");
+      }
+      setEvidenceFiles((current) =>
+        current.filter((item) => item.id !== evidence.id),
+      );
+      await loadWorkspace();
+      setToast({ message: "Proof removed." });
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : "The proof file could not be removed.",
+      );
+    } finally {
+      setEvidencePending(false);
     }
   }
 
@@ -415,6 +687,7 @@ export function LicenseLanternApp() {
     if (success) {
       setCredentialOpen(false);
       setSelectedRuleId("");
+      setCatalogQuery("");
       setCustomCredential(false);
     }
   }
@@ -433,6 +706,88 @@ export function LicenseLanternApp() {
       "Submission logged. Keep the confirmation until your renewal is accepted.",
     );
     if (success) setSubmissionOpen(false);
+  }
+
+  async function handleAcceptance(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedCredential) return;
+    const form = new FormData(event.currentTarget);
+    const result = await runAction(
+      "markRenewalAccepted",
+      {
+        credentialId: selectedCredential.id,
+        acceptedAt: String(form.get("acceptedAt") ?? ""),
+        reference: String(form.get("reference") ?? ""),
+        nextCycleStart: String(form.get("nextCycleStart") ?? ""),
+        nextDeadline: String(form.get("nextDeadline") ?? ""),
+      },
+      "Renewal accepted. Your next cycle is ready.",
+    );
+    if (result) {
+      setAcceptanceOpen(false);
+      if (result.id) setSelectedCredentialId(result.id);
+    }
+  }
+
+  async function handleReminderPreferences(
+    event: FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const leadDays = form
+      .getAll("leadDays")
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value >= 0);
+    const result = await runAction(
+      "updateReminderPreferences",
+      {
+        inAppEnabled: form.get("inAppEnabled") === "on",
+        leadDays,
+        timeZone: String(form.get("timeZone") ?? "UTC"),
+      },
+      "Reminder check-ins updated.",
+    );
+    if (result) setRemindersOpen(false);
+  }
+
+  async function setReminderState(
+    reminder: Reminder,
+    status: "dismissed" | "snoozed",
+  ) {
+    await runAction(
+      "setReminderState",
+      {
+        reminderKey: reminder.key,
+        credentialId: reminder.credentialId,
+        status,
+        snoozedUntil:
+          status === "snoozed" ? addDaysIso(todayIso(), 7) : null,
+      },
+      status === "snoozed"
+        ? "Reminder snoozed for one week."
+        : "Reminder dismissed for this cycle.",
+    );
+  }
+
+  async function handleAllocation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!allocationActivity) return;
+    const form = new FormData(event.currentTarget);
+    const allocatedUnits = Number(form.get("allocatedUnits"));
+    const result = await runAction(
+      "addActivityAllocation",
+      {
+        activityId: allocationActivity.id,
+        credentialId: String(form.get("credentialId") ?? ""),
+        requirementId: String(form.get("requirementId") ?? "") || null,
+        allocatedUnits,
+      },
+      `Activity applied to another credential.`,
+    );
+    if (result) {
+      setAllocationActivity(null);
+      setAllocationCredentialId("");
+    }
   }
 
   async function toggleTask(task: RenewalTask) {
@@ -507,6 +862,11 @@ export function LicenseLanternApp() {
               onViewCredentials={() => setView("credentials")}
               onViewRecords={() => setView("records")}
               onSubmit={() => setSubmissionOpen(true)}
+              onAccept={() => setAcceptanceOpen(true)}
+              onReminders={() => setRemindersOpen(true)}
+              onReminderState={(reminder, status) =>
+                void setReminderState(reminder, status)
+              }
               onToggleTask={toggleTask}
             />
           ) : view === "credentials" ? (
@@ -516,15 +876,35 @@ export function LicenseLanternApp() {
               onSelect={(id) => setSelectedCredentialId(id)}
               onAdd={() => setCredentialOpen(true)}
               onSubmit={() => setSubmissionOpen(true)}
+              onAccept={() => setAcceptanceOpen(true)}
+              onReminders={() => setRemindersOpen(true)}
             />
           ) : view === "records" ? (
             <RecordsView
               activities={workspace.activities}
               credentials={workspace.credentials}
               onAdd={() => setActivityOpen(true)}
+              onEvidence={(activity) => void openEvidence(activity)}
+              onAllocate={(activity) => {
+                const existingIds = new Set(
+                  allocationsFor(activity).map(
+                    (allocation) => allocation.credentialId,
+                  ),
+                );
+                const firstEligible = workspace.credentials.find(
+                  (credential) =>
+                    credential.status !== "renewed" &&
+                    !existingIds.has(credential.id),
+                );
+                setAllocationCredentialId(firstEligible?.id ?? "");
+                setAllocationActivity(activity);
+              }}
             />
           ) : (
-            <AccountView workspace={workspace} />
+            <AccountView
+              workspace={workspace}
+              onReminders={() => setRemindersOpen(true)}
+            />
           )}
         </main>
       </div>
@@ -542,10 +922,10 @@ export function LicenseLanternApp() {
           eyebrow="Quick add"
           onClose={() => setActivityOpen(false)}
         >
-          {workspace.credentials.length === 0 ? (
+          {activityCredentials.length === 0 ? (
             <EmptyModalState
-              title="Add a credential first"
-              body="Credits need a renewal cycle so License Lantern knows where to count them."
+              title="Add an active credential first"
+              body="Credits need an open renewal cycle so License Lantern knows where to count them."
               action="Set up credential"
               onAction={() => {
                 setActivityOpen(false);
@@ -590,13 +970,13 @@ export function LicenseLanternApp() {
                 <span>Apply to credential</span>
                 <select
                   name="credentialId"
-                  defaultValue={selectedCredential?.id}
+                  value={activityCredential?.id ?? ""}
                   required
                   onChange={(event) =>
                     setSelectedCredentialId(event.currentTarget.value)
                   }
                 >
-                  {workspace.credentials.map((credential) => (
+                  {activityCredentials.map((credential) => (
                     <option key={credential.id} value={credential.id}>
                       {credential.credentialName} · {credential.jurisdiction}
                     </option>
@@ -605,13 +985,13 @@ export function LicenseLanternApp() {
               </label>
               <label className="field">
                 <span>Category</span>
-                <select name="requirementId" defaultValue="">
+                <select
+                  key={activityCredential?.id}
+                  name="requirementId"
+                  defaultValue=""
+                >
                   <option value="">General / decide later</option>
-                  {(workspace.credentials.find(
-                    (credential) => credential.id === selectedCredentialId,
-                  )?.requirements ??
-                    selectedCredential?.requirements ??
-                    []).map((requirement) => (
+                  {(activityCredential?.requirements ?? []).map((requirement) => (
                     <option key={requirement.id} value={requirement.id}>
                       {requirement.name}
                     </option>
@@ -629,15 +1009,7 @@ export function LicenseLanternApp() {
                 />
               </label>
               <fieldset className="segmented-field">
-                <legend>Proof status</legend>
-                <label>
-                  <input
-                    type="radio"
-                    name="evidenceStatus"
-                    value="attached"
-                  />
-                  <span>Proof on file</span>
-                </label>
+                <legend>Proof requirement</legend>
                 <label>
                   <input
                     type="radio"
@@ -656,6 +1028,15 @@ export function LicenseLanternApp() {
                   <span>Not required</span>
                 </label>
               </fieldset>
+              <label className="field file-field">
+                <span>Certificate or proof <em>Optional</em></span>
+                <input
+                  name="evidenceFile"
+                  type="file"
+                  accept=".pdf,image/jpeg,image/png,image/webp"
+                />
+                <small>PDF, JPEG, PNG, or WebP · up to 10 MB</small>
+              </label>
               <div className="form-actions">
                 <button
                   className="button button-ghost"
@@ -764,22 +1145,43 @@ export function LicenseLanternApp() {
             ) : (
               <>
                 <label className="field">
+                  <span>Find a credential template</span>
+                  <input
+                    autoFocus
+                    type="search"
+                    value={catalogQuery}
+                    onChange={(event) =>
+                      setCatalogQuery(event.currentTarget.value)
+                    }
+                    placeholder="Search profession, license, or state"
+                  />
+                  <small>
+                    {workspace.catalog.length} researched starting templates ·
+                    custom plans are always available
+                  </small>
+                </label>
+                <label className="field">
                   <span>Profession, credential, and state</span>
                   <select
-                    autoFocus
                     name="ruleSetId"
                     value={selectedRuleId}
-                    onChange={(event) =>
+                    onChange={(event) => {
                       setSelectedRuleId(event.currentTarget.value)
-                    }
+                      setCatalogQuery("");
+                    }}
                     required
                   >
                     <option value="">Choose a rule template</option>
-                    {workspace.catalog.map((rule) => (
+                    {catalogMatches.map((rule) => (
                       <option key={rule.id} value={rule.id}>
                         {rule.credentialName} · {rule.jurisdiction}
                       </option>
                     ))}
+                    {catalogMatches.length === 0 ? (
+                      <option value="" disabled>
+                        No matching template — enter your own
+                      </option>
+                    ) : null}
                   </select>
                 </label>
                 {selectedRule ? (
@@ -948,6 +1350,335 @@ export function LicenseLanternApp() {
               </button>
             </div>
           </form>
+        </Modal>
+      ) : null}
+
+      {acceptanceOpen &&
+      selectedCredential?.status === "submitted" ? (
+        <Modal
+          title="Close this renewal cycle"
+          eyebrow="Acceptance received"
+          onClose={() => setAcceptanceOpen(false)}
+        >
+          <form className="form-stack" onSubmit={handleAcceptance}>
+            <div className="celebration-panel">
+              <span className="celebration-mark" aria-hidden="true">
+                ✓
+              </span>
+              <div>
+                <strong>Your renewed license starts a clean cycle</strong>
+                <p>
+                  The completed cycle stays in history. Credits, checked tasks,
+                  and submission records will not be copied forward.
+                </p>
+              </div>
+            </div>
+            <div className="form-grid">
+              <label className="field">
+                <span>Accepted or renewed date</span>
+                <input
+                  autoFocus
+                  name="acceptedAt"
+                  type="date"
+                  defaultValue={todayIso()}
+                  min={selectedCredential.submittedAt?.slice(0, 10)}
+                  required
+                />
+              </label>
+              <label className="field">
+                <span>Decision or license reference <em>Optional</em></span>
+                <input name="reference" placeholder="e.g., license receipt ID" />
+              </label>
+            </div>
+            <div className="cycle-rollover">
+              <span className="section-kicker">Next renewal cycle</span>
+              <p>Confirm the dates shown by your issuing organization.</p>
+              <div className="form-grid">
+                <label className="field">
+                  <span>New cycle starts</span>
+                  <input
+                    name="nextCycleStart"
+                    type="date"
+                    defaultValue={addDaysIso(selectedCredential.deadline, 1)}
+                    required
+                  />
+                </label>
+                <label className="field">
+                  <span>Next renewal deadline</span>
+                  <input
+                    name="nextDeadline"
+                    type="date"
+                    defaultValue={addMonthsIso(
+                      selectedCredential.deadline,
+                      selectedCredential.cycleMonths || 12,
+                    )}
+                    required
+                  />
+                </label>
+              </div>
+            </div>
+            <div className="advisory-note">
+              <span aria-hidden="true">i</span>
+              <p>
+                Requirements are copied as a starting snapshot. Review the
+                current official rules before relying on the new plan.
+              </p>
+            </div>
+            <div className="form-actions">
+              <button
+                className="button button-ghost"
+                type="button"
+                onClick={() => setAcceptanceOpen(false)}
+              >
+                Not yet
+              </button>
+              <button
+                className="button button-primary"
+                type="submit"
+                disabled={pending}
+              >
+                {pending ? "Creating next cycle…" : "Mark accepted & continue"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      ) : null}
+
+      {remindersOpen && workspace ? (
+        <Modal
+          title="Renewal check-ins"
+          eyebrow="Reminder preferences"
+          onClose={() => setRemindersOpen(false)}
+        >
+          <form className="form-stack" onSubmit={handleReminderPreferences}>
+            <label className="switch-row">
+              <span>
+                <strong>Show in-app reminders</strong>
+                <small>
+                  See upcoming tasks and submission follow-ups on Today.
+                </small>
+              </span>
+              <input
+                name="inAppEnabled"
+                type="checkbox"
+                defaultChecked={workspace.reminderPreferences.inAppEnabled}
+              />
+            </label>
+            <fieldset className="check-grid">
+              <legend>Remind me before a due date</legend>
+              {[90, 30, 7, 1].map((days) => (
+                <label key={days}>
+                  <input
+                    name="leadDays"
+                    type="checkbox"
+                    value={days}
+                    defaultChecked={workspace.reminderPreferences.leadDays.includes(
+                      days,
+                    )}
+                  />
+                  <span>
+                    {days} {days === 1 ? "day" : "days"}
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+            <label className="field">
+              <span>Time zone</span>
+              <input
+                name="timeZone"
+                defaultValue={workspace.reminderPreferences.timeZone}
+                placeholder="America/New_York"
+                required
+              />
+              <small>Use an IANA zone such as America/New_York.</small>
+            </label>
+            <div className="advisory-note">
+              <span aria-hidden="true">i</span>
+              <p>
+                This release provides reliable in-app check-ins. Email and push
+                delivery will be added after explicit opt-in and delivery
+                verification.
+              </p>
+            </div>
+            <div className="form-actions">
+              <button
+                className="button button-ghost"
+                type="button"
+                onClick={() => setRemindersOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="button button-primary"
+                type="submit"
+                disabled={pending}
+              >
+                {pending ? "Saving…" : "Save reminders"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      ) : null}
+
+      {allocationActivity && workspace ? (
+        <Modal
+          title="Reuse completed learning"
+          eyebrow={allocationActivity.title}
+          onClose={() => setAllocationActivity(null)}
+        >
+          {eligibleAllocationCredentials.length ? (
+            <form className="form-stack" onSubmit={handleAllocation}>
+              <div className="advisory-note">
+                <span aria-hidden="true">i</span>
+                <p>
+                  One course may count toward more than one credential. Confirm
+                  eligibility with each issuing organization.
+                </p>
+              </div>
+              <label className="field">
+                <span>Also apply to</span>
+                <select
+                  name="credentialId"
+                  value={allocationCredential?.id ?? ""}
+                  onChange={(event) =>
+                    setAllocationCredentialId(event.currentTarget.value)
+                  }
+                  required
+                >
+                  {eligibleAllocationCredentials.map((credential) => (
+                    <option key={credential.id} value={credential.id}>
+                      {credential.credentialName} · {credential.jurisdiction}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="form-grid">
+                <label className="field">
+                  <span>Category</span>
+                  <select
+                    key={allocationCredential?.id}
+                    name="requirementId"
+                    defaultValue=""
+                  >
+                    <option value="">General / decide later</option>
+                    {allocationCredential?.requirements.map((requirement) => (
+                      <option key={requirement.id} value={requirement.id}>
+                        {requirement.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Credits to apply</span>
+                  <input
+                    name="allocatedUnits"
+                    type="number"
+                    min="0.1"
+                    max={allocationActivity.totalUnits}
+                    step="0.1"
+                    defaultValue={allocationActivity.totalUnits}
+                    required
+                  />
+                </label>
+              </div>
+              <div className="form-actions">
+                <button
+                  className="button button-ghost"
+                  type="button"
+                  onClick={() => setAllocationActivity(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="button button-primary"
+                  type="submit"
+                  disabled={pending}
+                >
+                  {pending ? "Applying…" : "Apply to credential"}
+                </button>
+              </div>
+            </form>
+          ) : (
+            <EmptyModalState
+              title="No other eligible credential"
+              body="Add another active credential, or this activity is already applied everywhere it can be."
+              action="Close"
+              onAction={() => setAllocationActivity(null)}
+            />
+          )}
+        </Modal>
+      ) : null}
+
+      {evidenceActivity ? (
+        <Modal
+          title="Proof and certificates"
+          eyebrow={evidenceActivity.title}
+          onClose={() => setEvidenceActivity(null)}
+        >
+          <div className="form-stack">
+            <form className="evidence-upload" onSubmit={handleEvidenceUpload}>
+              <label className="field file-field">
+                <span>Add a proof file</span>
+                <input
+                  name="file"
+                  type="file"
+                  accept=".pdf,image/jpeg,image/png,image/webp"
+                  required
+                />
+                <small>
+                  Private to your account · PDF, JPEG, PNG, or WebP · up to 10 MB
+                </small>
+              </label>
+              <button
+                className="button button-primary"
+                type="submit"
+                disabled={evidencePending}
+              >
+                {evidencePending ? "Saving…" : "Upload proof"}
+              </button>
+            </form>
+            <div className="evidence-file-list" aria-live="polite">
+              {evidencePending && evidenceFiles.length === 0 ? (
+                <p className="form-hint">Loading proof files…</p>
+              ) : evidenceFiles.length ? (
+                evidenceFiles.map((evidence) => (
+                  <article key={evidence.id}>
+                    <div>
+                      <strong>{evidence.fileName}</strong>
+                      <small>
+                        {(evidence.sizeBytes / 1_048_576).toFixed(1)} MB · saved{" "}
+                        {formatDate(evidence.createdAt)}
+                      </small>
+                    </div>
+                    <div className="evidence-file-actions">
+                      <a
+                        className="button button-outline button-compact"
+                        href={evidence.downloadUrl}
+                      >
+                        Download
+                      </a>
+                      <button
+                        className="button button-ghost button-compact"
+                        type="button"
+                        disabled={evidencePending}
+                        onClick={() => void deleteEvidence(evidence)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </article>
+                ))
+              ) : (
+                <div className="evidence-empty">
+                  <strong>No proof uploaded yet</strong>
+                  <p>
+                    Add the completion certificate, receipt, or attendance
+                    record above.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
         </Modal>
       ) : null}
 
@@ -1132,6 +1863,9 @@ function TodayView({
   onViewCredentials,
   onViewRecords,
   onSubmit,
+  onAccept,
+  onReminders,
+  onReminderState,
   onToggleTask,
 }: {
   workspace: Workspace;
@@ -1141,6 +1875,12 @@ function TodayView({
   onViewCredentials: () => void;
   onViewRecords: () => void;
   onSubmit: () => void;
+  onAccept: () => void;
+  onReminders: () => void;
+  onReminderState: (
+    reminder: Reminder,
+    status: "dismissed" | "snoozed",
+  ) => void;
   onToggleTask: (task: RenewalTask) => void;
 }) {
   if (!credential) {
@@ -1218,9 +1958,13 @@ function TodayView({
   );
   const missingEvidence = workspace.activities.filter(
     (activity) =>
-      activity.credentialName === credential.credentialName &&
+      allocationsFor(activity).some(
+        (allocation) => allocation.credentialId === credential.id,
+      ) &&
       activity.evidenceStatus === "missing",
   ).length;
+  const deadlineDays = daysUntil(credential.deadline);
+  const visibleReminders = workspace.reminders;
 
   return (
     <div className="view-stack">
@@ -1273,8 +2017,10 @@ function TodayView({
 
           <div className="deadline-row">
             <div className="deadline-number">
-              <strong>{daysUntil(credential.deadline)}</strong>
-              <span>days to renewal</span>
+              <strong>{Math.abs(deadlineDays)}</strong>
+              <span>
+                {deadlineDays < 0 ? "days overdue" : "days to renewal"}
+              </span>
             </div>
             <div className="deadline-detail">
               <span>Due {formatDate(credential.deadline)}</span>
@@ -1312,6 +2058,49 @@ function TodayView({
         </div>
       </section>
 
+      {visibleReminders.length ? (
+        <section className="reminder-inbox" aria-labelledby="reminder-title">
+          <div className="reminder-inbox-heading">
+            <div>
+              <span className="section-kicker">Needs attention</span>
+              <h2 id="reminder-title">
+                {visibleReminders.length === 1
+                  ? "One timely check-in"
+                  : `${visibleReminders.length} timely check-ins`}
+              </h2>
+            </div>
+            <button className="text-button" type="button" onClick={onReminders}>
+              Settings
+            </button>
+          </div>
+          <div className="reminder-list">
+            {visibleReminders.slice(0, 3).map((reminder) => (
+              <article className={reminder.urgency} key={reminder.key}>
+                <span className="reminder-dot" aria-hidden="true" />
+                <div>
+                  <strong>{reminder.title}</strong>
+                  <p>{reminder.body}</p>
+                </div>
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => onReminderState(reminder, "snoozed")}
+                  >
+                    Snooze 7 days
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onReminderState(reminder, "dismissed")}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       <section className="next-action-card">
         <span className="next-action-icon" aria-hidden="true">
           ↗
@@ -1329,18 +2118,22 @@ function TodayView({
           className="button button-dark"
           type="button"
           onClick={
-            remaining > 0
+            credential.status === "renewed"
+              ? onViewCredentials
+              : credential.status === "submitted"
+                ? onAccept
+                : remaining > 0
               ? onAddActivity
-              : credential.status === "active"
-                ? onSubmit
-                : onViewCredentials
+                  : onSubmit
           }
         >
-          {remaining > 0
+          {credential.status === "renewed"
+            ? "View cycle history"
+            : credential.status === "submitted"
+              ? "Record acceptance"
+              : remaining > 0
             ? "Add completed learning"
-            : credential.status === "active"
-              ? "Review submission"
-              : "View confirmation"}
+                : "Review submission"}
         </button>
       </section>
 
@@ -1373,9 +2166,18 @@ function TodayView({
           <button
             className="card-link"
             type="button"
-            onClick={onAddActivity}
+            onClick={
+              credential.status === "renewed"
+                ? onViewRecords
+                : onAddActivity
+            }
           >
-            Log an activity <span aria-hidden="true">＋</span>
+            {credential.status === "renewed"
+              ? "View preserved records"
+              : "Log an activity"}{" "}
+            <span aria-hidden="true">
+              {credential.status === "renewed" ? "→" : "＋"}
+            </span>
           </button>
         </section>
 
@@ -1452,12 +2254,13 @@ function TodayView({
               <label
                 className={`task-row ${
                   task.status === "completed" ? "completed" : ""
-                }`}
+                } ${credential.status === "renewed" ? "locked" : ""}`}
                 key={task.id}
               >
                 <input
                   type="checkbox"
                   checked={task.status === "completed"}
+                  disabled={credential.status === "renewed"}
                   onChange={() => onToggleTask(task)}
                 />
                 <span className="custom-check" aria-hidden="true">
@@ -1470,7 +2273,9 @@ function TodayView({
                       ? `${missingEvidence} records still need proof`
                       : task.dueDate
                         ? `Due ${formatDate(task.dueDate)}`
-                        : "You can undo this anytime"}
+                        : credential.status === "renewed"
+                          ? "Preserved in cycle history"
+                          : "You can undo this anytime"}
                   </small>
                 </span>
               </label>
@@ -1480,11 +2285,23 @@ function TodayView({
             <button className="card-link" type="button" onClick={onSubmit}>
               Log renewal submission <span aria-hidden="true">→</span>
             </button>
+          ) : credential.status === "submitted" ? (
+            <div className="submitted-note submitted-note-action">
+              <span>
+                Submitted {formatDate(credential.submittedAt)}
+                {credential.confirmationNumber
+                  ? ` · ${credential.confirmationNumber}`
+                  : ""}
+              </span>
+              <button type="button" onClick={onAccept}>
+                Record acceptance →
+              </button>
+            </div>
           ) : (
             <div className="submitted-note">
-              Submitted {formatDate(credential.submittedAt)}
-              {credential.confirmationNumber
-                ? ` · ${credential.confirmationNumber}`
+              Renewed {formatDate(credential.acceptedAt)}
+              {credential.acceptanceReference
+                ? ` · ${credential.acceptanceReference}`
                 : ""}
             </div>
           )}
@@ -1521,13 +2338,17 @@ function TodayView({
                         month: "short",
                         day: "numeric",
                       })}
-                      {activity.categoryName
-                        ? ` · ${activity.categoryName}`
-                        : " · General"}
+                      {allocationsFor(activity).length
+                        ? ` · ${allocationsFor(activity).length} ${
+                            allocationsFor(activity).length === 1
+                              ? "credential"
+                              : "credentials"
+                          }`
+                        : ""}
                     </p>
                   </div>
                   <span className="credit-value">
-                    +{compactNumber(activity.allocatedUnits)}
+                    +{compactNumber(activity.totalUnits)}
                   </span>
                 </article>
               ))}
@@ -1552,12 +2373,16 @@ function CredentialsView({
   onSelect,
   onAdd,
   onSubmit,
+  onAccept,
+  onReminders,
 }: {
   credentials: Credential[];
   selectedId: string;
   onSelect: (id: string) => void;
   onAdd: () => void;
   onSubmit: () => void;
+  onAccept: () => void;
+  onReminders: () => void;
 }) {
   const selected =
     credentials.find((credential) => credential.id === selectedId) ??
@@ -1587,7 +2412,10 @@ function CredentialsView({
               >
                 <span>
                   <strong>{credential.credentialName}</strong>
-                  <small>{credential.jurisdiction}</small>
+                  <small>
+                    {credential.jurisdiction} ·{" "}
+                    {credential.status === "renewed" ? "history" : credential.status}
+                  </small>
                 </span>
                 <span className="picker-progress">
                   {credentialProgress(credential)}%
@@ -1615,6 +2443,15 @@ function CredentialsView({
                 <strong>{formatDate(selected.deadline)}</strong>
               </div>
             </div>
+            {selected.status !== "renewed" ? (
+              <button
+                className="reminder-setting-link"
+                type="button"
+                onClick={onReminders}
+              >
+                ◷ Configure renewal check-ins
+              </button>
+            ) : null}
             <div className="detail-stats">
               <div>
                 <span>Documented</span>
@@ -1630,9 +2467,17 @@ function CredentialsView({
                 <small>credits + checklist</small>
               </div>
               <div>
-                <span>Time left</span>
-                <strong>{daysUntil(selected.deadline)}</strong>
-                <small>days</small>
+                <span>
+                  {daysUntil(selected.deadline) < 0
+                    ? "Past deadline"
+                    : "Time left"}
+                </span>
+                <strong>{Math.abs(daysUntil(selected.deadline))}</strong>
+                <small>
+                  {daysUntil(selected.deadline) < 0
+                    ? "days overdue"
+                    : "days"}
+                </small>
               </div>
             </div>
             <div className="detail-section">
@@ -1698,7 +2543,7 @@ function CredentialsView({
                   Log submission
                 </button>
               </div>
-            ) : (
+            ) : selected.status === "submitted" ? (
               <div className="detail-footer submitted-footer">
                 <div>
                   <strong>Renewal submitted {formatDate(selected.submittedAt)}</strong>
@@ -1708,7 +2553,25 @@ function CredentialsView({
                       : "No confirmation number recorded."}
                   </p>
                 </div>
-                <span className="verified-chip">Submission logged</span>
+                <button
+                  className="button button-primary"
+                  type="button"
+                  onClick={onAccept}
+                >
+                  Record acceptance
+                </button>
+              </div>
+            ) : (
+              <div className="detail-footer submitted-footer">
+                <div>
+                  <strong>Renewed {formatDate(selected.acceptedAt)}</strong>
+                  <p>
+                    {selected.acceptanceReference
+                      ? `Reference: ${selected.acceptanceReference}`
+                      : "This completed cycle is preserved in history."}
+                  </p>
+                </div>
+                <span className="verified-chip">Historical cycle</span>
               </div>
             )}
           </section>
@@ -1729,13 +2592,23 @@ function RecordsView({
   activities,
   credentials,
   onAdd,
+  onEvidence,
+  onAllocate,
 }: {
   activities: Activity[];
   credentials: Credential[];
   onAdd: () => void;
+  onEvidence: (activity: Activity) => void;
+  onAllocate: (activity: Activity) => void;
 }) {
   const total = activities.reduce(
-    (sum, activity) => sum + activity.allocatedUnits,
+    (sum, activity) =>
+      sum +
+      allocationsFor(activity).reduce(
+        (allocationSum, allocation) =>
+          allocationSum + allocation.allocatedUnits,
+        0,
+      ),
     0,
   );
   const missingProof = activities.filter(
@@ -1758,7 +2631,7 @@ function RecordsView({
         <div>
           <span>Total allocated</span>
           <strong>{compactNumber(total)}</strong>
-          <small>credits across active cycles</small>
+          <small>credits across recorded cycles</small>
         </div>
         <div>
           <span>Activities</span>
@@ -1789,7 +2662,12 @@ function RecordsView({
             <span>Credits</span>
           </div>
           {activities.map((activity) => (
-            <article className="records-table" key={activity.id}>
+            <article
+              className="records-table"
+              key={`${activity.id}:${activity.credentialId ?? "unassigned"}:${
+                activity.requirementId ?? "general"
+              }`}
+            >
               <div className="record-title">
                 <span
                   className={`evidence-mark ${activity.evidenceStatus}`}
@@ -1810,18 +2688,58 @@ function RecordsView({
                 </span>
               </div>
               <span>
-                {activity.credentialName ?? "Unassigned"}
-                <small>{activity.categoryName ?? "General"}</small>
+                {allocationsFor(activity).length ? (
+                  <span className="allocation-stack">
+                    {allocationsFor(activity).map((allocation) => (
+                      <span key={allocation.id}>
+                        {allocation.credentialName}
+                        <small>
+                          {allocation.categoryName ?? "General"} ·{" "}
+                          {compactNumber(allocation.allocatedUnits)}
+                        </small>
+                      </span>
+                    ))}
+                  </span>
+                ) : (
+                  "Unassigned"
+                )}
+                {credentials.some(
+                  (credential) =>
+                    credential.status !== "renewed" &&
+                    !allocationsFor(activity).some(
+                      (allocation) =>
+                        allocation.credentialId === credential.id,
+                    ),
+                ) ? (
+                  <button
+                    className="proof-action allocation-action"
+                    type="button"
+                    onClick={() => onAllocate(activity)}
+                  >
+                    ＋ Use for another
+                  </button>
+                ) : null}
               </span>
-              <span className={`proof-label ${activity.evidenceStatus}`}>
-                {activity.evidenceStatus === "attached"
-                  ? "On file"
-                  : activity.evidenceStatus === "missing"
-                    ? "Add later"
-                    : "Not required"}
+              <span className="proof-cell">
+                <span className={`proof-label ${activity.evidenceStatus}`}>
+                  {activity.evidenceStatus === "attached"
+                    ? `${activity.evidenceCount || 1} on file`
+                    : activity.evidenceStatus === "missing"
+                      ? "Add later"
+                      : "Not required"}
+                </span>
+                {activity.evidenceStatus !== "not_required" ? (
+                  <button
+                    className="proof-action"
+                    type="button"
+                    onClick={() => onEvidence(activity)}
+                  >
+                    {activity.evidenceCount ? "Manage" : "Upload"}
+                  </button>
+                ) : null}
               </span>
               <strong className="record-credit">
-                {compactNumber(activity.allocatedUnits)}
+                {compactNumber(activity.totalUnits)}
               </strong>
             </article>
           ))}
@@ -1838,7 +2756,13 @@ function RecordsView({
   );
 }
 
-function AccountView({ workspace }: { workspace: Workspace }) {
+function AccountView({
+  workspace,
+  onReminders,
+}: {
+  workspace: Workspace;
+  onReminders: () => void;
+}) {
   return (
     <div className="view-stack">
       <PageGreeting
@@ -1890,6 +2814,28 @@ function AccountView({ workspace }: { workspace: Workspace }) {
               </article>
             ))}
           </div>
+        </section>
+        <section className="card reminder-settings-card">
+          <span className="section-kicker">Renewal check-ins</span>
+          <h2>
+            {workspace.reminderPreferences.inAppEnabled
+              ? "In-app reminders are on."
+              : "In-app reminders are paused."}
+          </h2>
+          <p>
+            {workspace.reminderPreferences.leadDays.length
+              ? `Check-ins are scheduled ${workspace.reminderPreferences.leadDays.join(
+                  ", ",
+                )} days before due dates.`
+              : "Choose when upcoming due dates should appear on Today."}
+          </p>
+          <button
+            className="button button-outline"
+            type="button"
+            onClick={onReminders}
+          >
+            Manage reminders
+          </button>
         </section>
         <section className="card compliance-card">
           <span className="section-kicker">A careful boundary</span>
