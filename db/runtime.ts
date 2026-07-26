@@ -37,6 +37,29 @@ import {
   NURSING_RENEWAL_TASK_COPY_BINDINGS,
   NURSING_RULE_SET_SEED_BINDINGS,
 } from "./catalog/nursing";
+import {
+  DENTAL_ADDITIONAL_TOTAL_BINDINGS,
+  DENTAL_CATEGORY_SEED_BINDINGS,
+  DENTAL_DAILY_UNIT_LIMIT_BINDINGS,
+  DENTAL_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+  DENTAL_RENEWAL_TASK_COPY_BINDINGS,
+  DENTAL_RULE_SET_SEED_BINDINGS,
+} from "./catalog/dental";
+
+const DENTAL_ADDITIONAL_TOTAL_RELATION_SQL =
+  DENTAL_ADDITIONAL_TOTAL_BINDINGS.map(
+    ([ruleSetId, categoryId, additionalUnits]) =>
+      `SELECT '${ruleSetId}' AS rule_set_id, '${categoryId}' AS category_id, ${additionalUnits} AS additional_units`,
+  ).join("\n        UNION ALL\n        ");
+const DENTAL_ADDITIONAL_TOTAL_RULE_SET_IDS_SQL =
+  DENTAL_ADDITIONAL_TOTAL_BINDINGS.map(
+    ([ruleSetId]) => `'${ruleSetId}'`,
+  ).join(", ");
+const DENTAL_DAILY_UNIT_LIMIT_RELATION_SQL =
+  DENTAL_DAILY_UNIT_LIMIT_BINDINGS.map(
+    ([ruleSetId, maximumUnits], index) =>
+      `${index === 0 ? "SELECT" : "UNION ALL SELECT"} '${ruleSetId}' AS rule_set_id, ${maximumUnits} AS maximum_units`,
+  ).join("\n       ");
 
 const TABLE_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS users (
@@ -150,6 +173,41 @@ const TABLE_STATEMENTS = [
   )`,
   `CREATE INDEX IF NOT EXISTS credential_requirements_credential_idx
     ON credential_requirements (credential_id, sort_order)`,
+  `CREATE TABLE IF NOT EXISTS dental_checkpoint_states (
+    id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT NOT NULL,
+    credential_id TEXT NOT NULL,
+    requirement_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    completed_at TEXT,
+    evidence_note TEXT,
+    revision INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT dental_checkpoint_states_status_check
+      CHECK (status IN ('pending', 'completed')),
+    CONSTRAINT dental_checkpoint_states_completion_shape_check
+      CHECK (
+        (status = 'pending' AND completed_at IS NULL)
+        OR (
+          status = 'completed'
+          AND completed_at IS NOT NULL
+          AND evidence_note IS NOT NULL
+          AND length(trim(evidence_note)) > 0
+        )
+      ),
+    CONSTRAINT dental_checkpoint_states_revision_check
+      CHECK (revision >= 1),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (credential_id) REFERENCES credentials(id) ON DELETE CASCADE,
+    FOREIGN KEY (requirement_id) REFERENCES credential_requirements(id) ON DELETE CASCADE
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS dental_checkpoint_states_scope_unique
+    ON dental_checkpoint_states (user_id, credential_id, requirement_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS dental_checkpoint_states_requirement_unique
+    ON dental_checkpoint_states (requirement_id)`,
+  `CREATE INDEX IF NOT EXISTS dental_checkpoint_states_credential_idx
+    ON dental_checkpoint_states (user_id, credential_id, status)`,
   `CREATE TABLE IF NOT EXISTS activities (
     id TEXT PRIMARY KEY NOT NULL,
     user_id TEXT NOT NULL,
@@ -432,6 +490,84 @@ const TABLE_STATEMENTS = [
 ] as const;
 
 const INTEGRITY_TRIGGER_STATEMENTS = [
+  `CREATE TRIGGER IF NOT EXISTS dental_checkpoint_states_insert_guard_v1
+   BEFORE INSERT ON dental_checkpoint_states
+   FOR EACH ROW
+   WHEN NOT EXISTS (
+     SELECT 1
+     FROM credential_requirements requirement
+     JOIN credentials credential
+       ON credential.id = requirement.credential_id
+     WHERE requirement.id = NEW.requirement_id
+       AND requirement.credential_id = NEW.credential_id
+       AND credential.user_id = NEW.user_id
+       AND credential.status IN ('active', 'submitted')
+   )
+   BEGIN
+     SELECT RAISE(ABORT, 'dental_checkpoint_not_mutable');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS dental_checkpoint_states_update_guard_v1
+   BEFORE UPDATE OF status, completed_at, evidence_note, revision, updated_at
+   ON dental_checkpoint_states
+   FOR EACH ROW
+   WHEN NOT EXISTS (
+     SELECT 1
+     FROM credential_requirements requirement
+     JOIN credentials credential
+       ON credential.id = requirement.credential_id
+     WHERE requirement.id = OLD.requirement_id
+       AND requirement.credential_id = OLD.credential_id
+       AND credential.user_id = OLD.user_id
+       AND credential.status IN ('active', 'submitted')
+   )
+   BEGIN
+     SELECT RAISE(ABORT, 'dental_checkpoint_not_mutable');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS dental_checkpoint_states_identity_guard_v1
+   BEFORE UPDATE OF id, user_id, credential_id, requirement_id, created_at
+   ON dental_checkpoint_states
+   FOR EACH ROW
+   BEGIN
+     SELECT RAISE(ABORT, 'dental_checkpoint_identity_immutable');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS dental_checkpoint_credentials_scope_guard_v1
+   BEFORE UPDATE OF user_id ON credentials
+   FOR EACH ROW
+   WHEN EXISTS (
+     SELECT 1
+     FROM dental_checkpoint_states checkpoint
+     WHERE checkpoint.credential_id = OLD.id
+   )
+   BEGIN
+     SELECT RAISE(ABORT, 'dental_checkpoint_scope_immutable');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS dental_checkpoint_requirements_scope_guard_v1
+   BEFORE UPDATE OF credential_id ON credential_requirements
+   FOR EACH ROW
+   WHEN EXISTS (
+     SELECT 1
+     FROM dental_checkpoint_states checkpoint
+     WHERE checkpoint.requirement_id = OLD.id
+   )
+   BEGIN
+     SELECT RAISE(ABORT, 'dental_checkpoint_scope_immutable');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS dental_checkpoint_states_delete_guard_v1
+   BEFORE DELETE ON dental_checkpoint_states
+   FOR EACH ROW
+   WHEN EXISTS (
+     SELECT 1
+     FROM credential_requirements requirement
+     JOIN credentials credential
+       ON credential.id = requirement.credential_id
+     WHERE requirement.id = OLD.requirement_id
+       AND requirement.credential_id = OLD.credential_id
+       AND credential.user_id = OLD.user_id
+       AND credential.status NOT IN ('active', 'submitted')
+   )
+   BEGIN
+     SELECT RAISE(ABORT, 'dental_checkpoint_not_mutable');
+   END`,
   `CREATE TRIGGER IF NOT EXISTS activity_requirement_matches_active_guard
    BEFORE INSERT ON activity_requirement_matches
    FOR EACH ROW
@@ -544,6 +680,101 @@ const INTEGRITY_TRIGGER_STATEMENTS = [
    )
    BEGIN
      SELECT RAISE(ABORT, 'activity_allocation_not_mutable');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS dental_daily_unit_limit_allocation_insert_guard_v1
+   BEFORE INSERT ON activity_allocations
+   FOR EACH ROW
+   WHEN EXISTS (
+     SELECT 1
+     FROM activities incoming_activity
+     JOIN credentials incoming_credential
+       ON incoming_credential.id = NEW.credential_id
+       AND incoming_credential.user_id = incoming_activity.user_id
+     JOIN (
+       ${DENTAL_DAILY_UNIT_LIMIT_RELATION_SQL}
+     ) daily_limit
+       ON daily_limit.rule_set_id = incoming_credential.rule_set_id
+     WHERE incoming_activity.id = NEW.activity_id
+       AND incoming_activity.archived_at IS NULL
+       AND (
+         COALESCE((
+           SELECT SUM(existing_allocation.allocated_units)
+           FROM activity_allocations existing_allocation
+           JOIN activities existing_activity
+             ON existing_activity.id = existing_allocation.activity_id
+             AND existing_activity.archived_at IS NULL
+           WHERE existing_allocation.credential_id = NEW.credential_id
+             AND existing_activity.completion_date =
+               incoming_activity.completion_date
+         ), 0) + NEW.allocated_units
+       ) > daily_limit.maximum_units + 0.000001
+   )
+   BEGIN
+     SELECT RAISE(ABORT, 'dental_daily_unit_limit_exceeded');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS dental_daily_unit_limit_allocation_update_guard_v1
+   BEFORE UPDATE OF allocated_units ON activity_allocations
+   FOR EACH ROW
+   WHEN EXISTS (
+     SELECT 1
+     FROM activities incoming_activity
+     JOIN credentials incoming_credential
+       ON incoming_credential.id = NEW.credential_id
+       AND incoming_credential.user_id = incoming_activity.user_id
+     JOIN (
+       ${DENTAL_DAILY_UNIT_LIMIT_RELATION_SQL}
+     ) daily_limit
+       ON daily_limit.rule_set_id = incoming_credential.rule_set_id
+     WHERE incoming_activity.id = NEW.activity_id
+       AND incoming_activity.archived_at IS NULL
+       AND (
+         COALESCE((
+           SELECT SUM(existing_allocation.allocated_units)
+           FROM activity_allocations existing_allocation
+           JOIN activities existing_activity
+             ON existing_activity.id = existing_allocation.activity_id
+             AND existing_activity.archived_at IS NULL
+           WHERE existing_allocation.credential_id = NEW.credential_id
+             AND existing_allocation.id <> OLD.id
+             AND existing_activity.completion_date =
+               incoming_activity.completion_date
+         ), 0) + NEW.allocated_units
+       ) > daily_limit.maximum_units + 0.000001
+   )
+   BEGIN
+     SELECT RAISE(ABORT, 'dental_daily_unit_limit_exceeded');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS dental_daily_unit_limit_activity_update_guard_v1
+   BEFORE UPDATE OF completion_date, archived_at ON activities
+   FOR EACH ROW
+   WHEN NEW.archived_at IS NULL
+     AND EXISTS (
+       SELECT 1
+       FROM activity_allocations moving_allocation
+       JOIN credentials daily_credential
+         ON daily_credential.id = moving_allocation.credential_id
+         AND daily_credential.user_id = NEW.user_id
+       JOIN (
+         ${DENTAL_DAILY_UNIT_LIMIT_RELATION_SQL}
+       ) daily_limit
+         ON daily_limit.rule_set_id = daily_credential.rule_set_id
+       WHERE moving_allocation.activity_id = OLD.id
+         AND (
+           COALESCE((
+             SELECT SUM(existing_allocation.allocated_units)
+             FROM activity_allocations existing_allocation
+             JOIN activities existing_activity
+               ON existing_activity.id = existing_allocation.activity_id
+               AND existing_activity.archived_at IS NULL
+             WHERE existing_allocation.credential_id =
+               moving_allocation.credential_id
+               AND existing_activity.id <> OLD.id
+               AND existing_activity.completion_date = NEW.completion_date
+           ), 0) + moving_allocation.allocated_units
+         ) > daily_limit.maximum_units + 0.000001
+     )
+   BEGIN
+     SELECT RAISE(ABORT, 'dental_daily_unit_limit_exceeded');
    END`,
   `CREATE TRIGGER IF NOT EXISTS activity_allocations_update_guard_v2
    BEFORE UPDATE OF requirement_id, allocated_units ON activity_allocations
@@ -3586,6 +3817,7 @@ const CATALOG_2026_RULE_SET_SEED_BINDINGS = [
   ...MENTAL_HEALTH_RULE_SET_SEED_BINDINGS,
   ...PHARMACY_RULE_SET_SEED_BINDINGS,
   ...NURSING_RULE_SET_SEED_BINDINGS,
+  ...DENTAL_RULE_SET_SEED_BINDINGS,
 ] as const;
 
 const CATALOG_2026_CATEGORY_INSERT_SQL = `INSERT INTO rule_categories (
@@ -4354,6 +4586,7 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
   ...MENTAL_HEALTH_CATEGORY_SEED_BINDINGS,
   ...PHARMACY_CATEGORY_SEED_BINDINGS,
   ...NURSING_CATEGORY_SEED_BINDINGS,
+  ...DENTAL_CATEGORY_SEED_BINDINGS,
 ] as const;
 
 const MANAGED_EXTERNAL_RULE_SET_IDS = [
@@ -4365,6 +4598,7 @@ const MANAGED_EXTERNAL_RULE_SET_IDS = [
   ...MENTAL_HEALTH_RULE_SET_SEED_BINDINGS,
   ...PHARMACY_RULE_SET_SEED_BINDINGS,
   ...NURSING_RULE_SET_SEED_BINDINGS,
+  ...DENTAL_RULE_SET_SEED_BINDINGS,
 ].map((bindings) => bindings[0]);
 
 const MANAGED_EXTERNAL_CATEGORY_IDS = [
@@ -4376,6 +4610,7 @@ const MANAGED_EXTERNAL_CATEGORY_IDS = [
   ...MENTAL_HEALTH_CATEGORY_SEED_BINDINGS,
   ...PHARMACY_CATEGORY_SEED_BINDINGS,
   ...NURSING_CATEGORY_SEED_BINDINGS,
+  ...DENTAL_CATEGORY_SEED_BINDINGS,
 ].map((bindings) => bindings[0]);
 
 function trustedSqlStringList(values: readonly string[]) {
@@ -4407,7 +4642,21 @@ const MANAGED_EXTERNAL_SCOPE_SQL = `(managed_rule.id LIKE 'isc2-%'
   OR managed_rule.id LIKE 'pa-lpc-%'
   OR managed_rule.id LIKE 'fl-lcsw-lmft-lmhc-%'
   OR managed_rule.profession = 'Pharmacy'
-  OR managed_rule.profession = 'Nursing')`;
+  OR managed_rule.profession = 'Nursing'
+  OR managed_rule.stable_key IN (
+    'ca-dentist',
+    'ca-dental-hygienist',
+    'fl-dentist',
+    'fl-dental-hygienist',
+    'nj-dentist',
+    'nj-dental-hygienist',
+    'ny-dentist',
+    'ny-dental-hygienist',
+    'pa-dentist',
+    'pa-dental-hygienist',
+    'tx-dentist',
+    'tx-dental-hygienist'
+  ))`;
 
 const RETIRE_MISSING_MANAGED_RULE_SETS_SQL = `UPDATE rule_sets AS managed_rule
 SET is_current = 0
@@ -4541,6 +4790,7 @@ const MAXIMUM_CLASSIFICATION_RULE_SET_IDS = [
   ...MENTAL_HEALTH_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
   ...PHARMACY_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
   ...NURSING_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+  ...DENTAL_MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
 ] as const;
 
 const ACTIVE_CATALOG_SNAPSHOT_RULE_SET_IDS = [
@@ -4764,6 +5014,39 @@ WHERE status = 'active'
   AND rule_set_id IN ('fl-rn-2026-v1', 'fl-lpn-2026-v1')
   AND total_required IS NOT ${ACTIVE_FLORIDA_NURSING_TOTAL_SQL}`;
 
+const ACTIVE_DENTAL_TOTAL_SQL = `(
+  SELECT
+    catalog_rule.total_units +
+    COALESCE(
+      (
+        SELECT MAX(additional_requirement.required_units)
+        FROM credential_requirements additional_requirement
+        JOIN (
+          ${DENTAL_ADDITIONAL_TOTAL_RELATION_SQL}
+        ) additional_relation
+          ON additional_relation.rule_set_id = credentials.rule_set_id
+          AND additional_relation.category_id =
+            additional_requirement.rule_category_id
+        WHERE additional_requirement.credential_id = credentials.id
+          AND additional_requirement.applicability_status = 'applies'
+          AND additional_requirement.is_active = 1
+      ),
+      0
+    )
+  FROM rule_sets catalog_rule
+  WHERE catalog_rule.id = credentials.rule_set_id
+)`;
+
+const SYNC_ACTIVE_DENTAL_TOTAL_SQL = `UPDATE credentials
+SET
+  total_required = ${ACTIVE_DENTAL_TOTAL_SQL},
+  updated_at = CURRENT_TIMESTAMP
+WHERE status = 'active'
+  AND rule_set_id IN (
+    ${DENTAL_ADDITIONAL_TOTAL_RULE_SET_IDS_SQL}
+  )
+  AND total_required IS NOT ${ACTIVE_DENTAL_TOTAL_SQL}`;
+
 const SYNC_NURSING_DEFAULT_TASK_SQL = `UPDATE checklist_tasks
 SET title = ?, updated_at = CURRENT_TIMESTAMP
 WHERE kind = ?
@@ -4780,6 +5063,31 @@ WHERE kind = ?
 
 const NURSING_DEFAULT_TASK_REFRESH_BINDINGS =
   NURSING_RENEWAL_TASK_COPY_BINDINGS.flatMap(
+    ([ruleSetId, review, progress, submission]) =>
+      [
+        [
+          review,
+          "review",
+          "Review the renewal requirements",
+          ruleSetId,
+        ],
+        [
+          progress,
+          "progress",
+          "Complete and document required education",
+          ruleSetId,
+        ],
+        [
+          submission,
+          "submission",
+          "Submit renewal and save confirmation",
+          ruleSetId,
+        ],
+      ] as const,
+  );
+
+const DENTAL_DEFAULT_TASK_REFRESH_BINDINGS =
+  DENTAL_RENEWAL_TASK_COPY_BINDINGS.flatMap(
     ([ruleSetId, review, progress, submission]) =>
       [
         [
@@ -5240,6 +5548,7 @@ export async function initializeDatabase(database: D1Database): Promise<void> {
         statement(database, BACKFILL_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL),
         statement(database, SYNC_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL),
         statement(database, SYNC_ACTIVE_FLORIDA_NURSING_TOTAL_SQL),
+        statement(database, SYNC_ACTIVE_DENTAL_TOTAL_SQL),
         statement(database, MERGE_CFP_BOUNDARY_GENERAL_MATCHES_SQL),
         statement(database, REPOINT_CFP_BOUNDARY_ALLOCATIONS_SQL),
         statement(database, DELETE_CFP_BOUNDARY_SOURCE_MATCHES_SQL),
@@ -5267,6 +5576,11 @@ export async function initializeDatabase(database: D1Database): Promise<void> {
       ]);
       await database.batch(
         NURSING_DEFAULT_TASK_REFRESH_BINDINGS.map((bindings) =>
+          statement(database, SYNC_NURSING_DEFAULT_TASK_SQL, bindings),
+        ),
+      );
+      await database.batch(
+        DENTAL_DEFAULT_TASK_REFRESH_BINDINGS.map((bindings) =>
           statement(database, SYNC_NURSING_DEFAULT_TASK_SQL, bindings),
         ),
       );

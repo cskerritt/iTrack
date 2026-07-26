@@ -11,6 +11,11 @@ import {
   useState,
 } from "react";
 import {
+  DENTAL_AGGREGATE_PARENT_CATEGORY_IDS,
+  DENTAL_LINKED_APPLICABILITY_CATEGORY_GROUPS,
+  DENTAL_REQUIRED_SUBTYPE_CATEGORY_GROUPS,
+} from "@/db/catalog/dental";
+import {
   CertificateFieldSuggestions,
   scanCertificateImage,
 } from "./lib/certificateOcr";
@@ -57,6 +62,12 @@ import {
   type ReminderLaunchTarget,
 } from "./lib/webPush";
 
+const DENTAL_LINKED_APPLICABILITY_CHILD_CATEGORY_IDS = new Set<string>(
+  DENTAL_LINKED_APPLICABILITY_CATEGORY_GROUPS.flatMap((categoryIds) =>
+    categoryIds.slice(1),
+  ),
+);
+
 type Requirement = {
   id: string;
   ruleCategoryId?: string | null;
@@ -74,6 +85,11 @@ type Requirement = {
   isActive?: boolean;
   conditionNote?: string | null;
   exclusiveGroup?: string | null;
+  isDentalCheckpoint?: boolean;
+  checkpointStatus?: "pending" | "completed" | null;
+  checkpointCompletedAt?: string | null;
+  checkpointEvidenceNote?: string | null;
+  checkpointRevision?: number;
 };
 
 type RenewalTask = {
@@ -313,6 +329,7 @@ type ActivityDraft = {
   title: string;
   completionDate: string;
   totalUnits: string;
+  allocatedUnits: string;
   provider: string;
 };
 
@@ -330,6 +347,29 @@ type InstallPromptEvent = Event & {
 
 const CFP_2027_GENERAL_CATEGORY_ID = "cfp-professional-2027-general";
 const NJ_LCSW_CREDIT_CATEGORY_GROUP = "New Jersey LCSW credit category";
+const DENTAL_AGGREGATE_PARENT_CATEGORY_ID_SET = new Set<string>(
+  DENTAL_AGGREGATE_PARENT_CATEGORY_IDS,
+);
+const DENTAL_AGGREGATE_BY_SUBTYPE_CATEGORY_ID = new Map<string, string>(
+  DENTAL_REQUIRED_SUBTYPE_CATEGORY_GROUPS.flatMap(
+    ([aggregateCategoryId, subtypeCategoryIds]) =>
+      subtypeCategoryIds.map(
+        (subtypeCategoryId) =>
+          [subtypeCategoryId, aggregateCategoryId] as const,
+      ),
+  ),
+);
+const DENTAL_SUBTYPE_CATEGORY_IDS_BY_AGGREGATE = new Map<
+  string,
+  ReadonlySet<string>
+>(
+  DENTAL_REQUIRED_SUBTYPE_CATEGORY_GROUPS.map(
+    ([aggregateCategoryId, subtypeCategoryIds]) => [
+      aggregateCategoryId,
+      new Set<string>(subtypeCategoryIds),
+    ],
+  ),
+);
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
@@ -492,6 +532,15 @@ function activeMinimums(credential: Credential) {
   );
 }
 
+function activeDentalCheckpoints(credential: Credential) {
+  return credential.requirements.filter(
+    (requirement) =>
+      requirement.isDentalCheckpoint === true &&
+      requirementStatus(requirement) === "applies" &&
+      requirement.isActive !== false,
+  );
+}
+
 function allocationCategoryLabel(allocation: ActivityAllocation) {
   if (allocation.categoryNames?.length) {
     return allocation.categoryNames.join(" · ");
@@ -567,10 +616,16 @@ function readinessScore(credential: Credential) {
   const unresolved = credential.requirements.filter(
     (item) => requirementStatus(item) === "needs_confirmation",
   );
-  const requirementCount = minimums.length + unresolved.length;
-  const metRequirements = minimums.filter(
-    (item) => requirementEarned(item) >= item.requiredUnits,
-  ).length;
+  const dentalCheckpoints = activeDentalCheckpoints(credential);
+  const requirementCount =
+    minimums.length + unresolved.length + dentalCheckpoints.length;
+  const metRequirements =
+    minimums.filter(
+      (item) => requirementEarned(item) >= item.requiredUnits,
+    ).length +
+    dentalCheckpoints.filter(
+      (item) => item.checkpointStatus === "completed",
+    ).length;
   const requirementProgressValue =
     requirementCount === 0 ? 1 : metRequirements / requirementCount;
   const taskCount = credential.tasks.length;
@@ -775,6 +830,14 @@ function isManagedNursingCredential(
   );
 }
 
+function isManagedDentalCredential(
+  credential: Credential | null | undefined,
+) {
+  return Boolean(
+    credential?.profession === "Dental" && credential.ruleSetId,
+  );
+}
+
 function isCompliancePeriodCredential(
   credential: Credential | null | undefined,
 ) {
@@ -823,7 +886,8 @@ function requiresOfficialNextPeriodAttestation(
     isFloridaMentalHealthPhaseCredential(credential) ||
     isNremtCredential(credential) ||
     isManagedPharmacistCredential(credential) ||
-    isManagedNursingCredential(credential)
+    isManagedNursingCredential(credential) ||
+    isManagedDentalCredential(credential)
   );
 }
 
@@ -835,7 +899,8 @@ function requiresNonOverlappingNextPeriod(
     isCompliancePeriodCredential(credential) ||
     isFloridaMentalHealthPhaseCredential(credential) ||
     isManagedPharmacistCredential(credential) ||
-    isManagedNursingCredential(credential)
+    isManagedNursingCredential(credential) ||
+    isManagedDentalCredential(credential)
   );
 }
 
@@ -998,6 +1063,19 @@ function bestNextAction(
     };
   }
 
+  const pendingDentalCheckpoint = activeDentalCheckpoints(credential).find(
+    (requirement) => requirement.checkpointStatus !== "completed",
+  );
+  if (pendingDentalCheckpoint) {
+    return {
+      kind: "conditions",
+      title: `Complete ${pendingDentalCheckpoint.name}`,
+      body:
+        "Save a concise certificate, card, portal, or assessment reference. This checkpoint does not add CE units.",
+      buttonLabel: "Open requirements",
+    };
+  }
+
   const openTask = credential.tasks.find((task) => task.status !== "completed");
   if (openTask) {
     return {
@@ -1082,6 +1160,7 @@ export function LicenseLanternApp() {
     title: "",
     completionDate: todayIso(),
     totalUnits: "",
+    allocatedUnits: "",
     provider: "",
   }));
   const [activityEvidenceFile, setActivityEvidenceFile] =
@@ -1139,6 +1218,7 @@ export function LicenseLanternApp() {
       title: "",
       completionDate: todayIso(),
       totalUnits: "",
+      allocatedUnits: "",
       provider: "",
     });
     setActivityEvidenceFile(null);
@@ -1196,6 +1276,7 @@ export function LicenseLanternApp() {
             title: saved.title,
             completionDate: saved.completionDate,
             totalUnits: saved.totalUnits,
+            allocatedUnits: saved.allocatedUnits || saved.totalUnits,
             provider: saved.provider,
           });
           if (credential) {
@@ -1776,6 +1857,7 @@ export function LicenseLanternApp() {
             "allocation_state_changed",
             "task_version_conflict",
             "task_state_changed",
+            "dental_checkpoint_state_changed",
             "cycle_closed",
           ].includes(result.code ?? "")
         ) {
@@ -2187,6 +2269,12 @@ export function LicenseLanternApp() {
         String(previousSuggestions.credits) === current.totalUnits
           ? ""
           : current.totalUnits,
+      allocatedUnits:
+        previousSuggestions.credits !== undefined &&
+        String(previousSuggestions.credits) === current.totalUnits &&
+        current.allocatedUnits === current.totalUnits
+          ? ""
+          : current.allocatedUnits,
     }));
     setActivityEvidenceFile(file);
     if (isPdf) {
@@ -2233,16 +2321,24 @@ export function LicenseLanternApp() {
       ).length;
 
       if (suggestionCount) {
-        setActivityDraft((current) => ({
-          title: suggestions.title ?? current.title,
-          provider: suggestions.provider ?? current.provider,
-          completionDate:
-            suggestions.completionDate ?? current.completionDate,
-          totalUnits:
+        setActivityDraft((current) => {
+          const suggestedUnits =
             suggestions.credits !== undefined
               ? String(suggestions.credits)
-              : current.totalUnits,
-        }));
+              : current.totalUnits;
+          return {
+            title: suggestions.title ?? current.title,
+            provider: suggestions.provider ?? current.provider,
+            completionDate:
+              suggestions.completionDate ?? current.completionDate,
+            totalUnits: suggestedUnits,
+            allocatedUnits:
+              !current.allocatedUnits ||
+              current.allocatedUnits === current.totalUnits
+                ? suggestedUnits
+                : current.allocatedUnits,
+          };
+        });
         setActivityScan({
           phase: "success",
           label: `Found ${suggestionCount} ${
@@ -2291,6 +2387,7 @@ export function LicenseLanternApp() {
     const form = new FormData(formElement);
     const credentialId = String(form.get("credentialId") ?? "");
     const totalUnits = Number(form.get("totalUnits"));
+    const allocatedUnits = Number(form.get("allocatedUnits"));
     const credential =
       workspace?.credentials.find((item) => item.id === credentialId) ?? null;
     let nremtMatches: RequirementMatchPayload[] | undefined;
@@ -2299,7 +2396,7 @@ export function LicenseLanternApp() {
         nremtMatches = nremtRequirementMatchPayload(
           form,
           credential!,
-          totalUnits,
+          allocatedUnits,
         );
       } catch (matchError) {
         setError(
@@ -2331,14 +2428,18 @@ export function LicenseLanternApp() {
                 .map((value) => String(value))
                 .filter(Boolean),
             }),
-        allocatedUnits: totalUnits,
+        allocatedUnits,
         evidenceStatus: String(form.get("evidenceStatus") ?? "missing"),
         portalCarryoverAttested:
           form.get("portalCarryoverAttested") === "on",
       },
-      `${compactNumber(totalUnits)} ${
-        totalUnits === 1 ? "credit" : "credits"
-      } added to your record.`,
+      allocatedUnits === totalUnits
+        ? `${compactNumber(totalUnits)} ${
+            totalUnits === 1 ? "credit" : "credits"
+          } added to your record.`
+        : `${compactNumber(totalUnits)} earned; ${compactNumber(
+            allocatedUnits,
+          )} applied to this credential.`,
     );
     if (result?.id && hasEvidenceFile && evidenceFile) {
       const uploaded = await uploadEvidence(result.id, evidenceFile);
@@ -2352,9 +2453,14 @@ export function LicenseLanternApp() {
         return;
       }
       setToast({
-        message: `${compactNumber(totalUnits)} ${
-          totalUnits === 1 ? "credit" : "credits"
-        } and proof saved.`,
+        message:
+          allocatedUnits === totalUnits
+            ? `${compactNumber(totalUnits)} ${
+                totalUnits === 1 ? "credit" : "credits"
+              } and proof saved.`
+            : `${compactNumber(totalUnits)} earned; ${compactNumber(
+                allocatedUnits,
+              )} applied, with proof saved.`,
       });
     }
     if (result) {
@@ -2505,14 +2611,31 @@ export function LicenseLanternApp() {
     const totalRequired = customCredential
       ? Number(form.get("totalRequired") ?? 0)
       : (rule?.totalUnits ?? 0);
-    const applicabilityChoices = (rule?.categories ?? [])
-      .filter((category) => category.applicability === "conditional")
-      .map((category) => ({
-        ruleCategoryId: category.id,
-        status: String(
-          form.get(`applicability:${category.id}`) ?? "needs_confirmation",
-        ),
-      }));
+    const applicabilityChoiceByCategoryId = new Map(
+      (rule?.categories ?? [])
+        .filter((category) => category.applicability === "conditional")
+        .map((category) => [
+          category.id,
+          String(
+            form.get(`applicability:${category.id}`) ?? "needs_confirmation",
+          ),
+        ]),
+    );
+    for (const categoryIds of DENTAL_LINKED_APPLICABILITY_CATEGORY_GROUPS) {
+      const synchronizedStatus = applicabilityChoiceByCategoryId.get(
+        categoryIds[0],
+      );
+      if (!synchronizedStatus) continue;
+      for (const categoryId of categoryIds) {
+        applicabilityChoiceByCategoryId.set(
+          categoryId,
+          synchronizedStatus,
+        );
+      }
+    }
+    const applicabilityChoices = [...applicabilityChoiceByCategoryId].map(
+      ([ruleCategoryId, status]) => ({ ruleCategoryId, status }),
+    );
 
     const success = await runAction(
       "createCredential",
@@ -2534,7 +2657,8 @@ export function LicenseLanternApp() {
         deadline: String(form.get("deadline") ?? ""),
         templateEligibilityAttested:
           rule?.profession === "Pharmacy" ||
-          rule?.profession === "Nursing"
+          rule?.profession === "Nursing" ||
+          rule?.profession === "Dental"
             ? form.get("templateEligibilityAttested") === "on"
             : undefined,
         totalRequired,
@@ -2620,7 +2744,8 @@ export function LicenseLanternApp() {
             : undefined,
         templateEligibilityAttested:
           isManagedPharmacistCredential(selectedCredential) ||
-          isManagedNursingCredential(selectedCredential)
+          isManagedNursingCredential(selectedCredential) ||
+          isManagedDentalCredential(selectedCredential)
           ? form.get("templateEligibilityAttested") === "on"
           : undefined,
       },
@@ -2735,7 +2860,8 @@ export function LicenseLanternApp() {
     if (!classificationRepair) return;
     const form = new FormData(event.currentTarget);
     let nremtMatches: RequirementMatchPayload[] | undefined;
-    if (isNremtCredential(classificationCredential)) {
+    const isNremt = isNremtCredential(classificationCredential);
+    if (isNremt) {
       try {
         nremtMatches = nremtRequirementMatchPayload(
           form,
@@ -2765,11 +2891,12 @@ export function LicenseLanternApp() {
                 .getAll("requirementIds")
                 .map((value) => String(value))
                 .filter(Boolean),
+              allocatedUnits: Number(form.get("allocatedUnits")),
             }),
         portalCarryoverAttested:
           form.get("portalCarryoverAttested") === "on",
       },
-      "Activity classification updated and credit recalculated.",
+      "Activity allocation updated and progress recalculated.",
     );
     if (result) setClassificationRepair(null);
   }
@@ -2793,6 +2920,27 @@ export function LicenseLanternApp() {
       applicabilityStatus === "applies"
         ? `${requirement.name} added to this cycle.`
         : `${requirement.name} marked not applicable for this cycle.`,
+    );
+  }
+
+  async function saveDentalCheckpoint(
+    credentialId: string,
+    requirement: Requirement,
+    completed: boolean,
+    evidenceNote: string,
+  ) {
+    await runAction(
+      "saveDentalCheckpoint",
+      {
+        credentialId,
+        requirementId: requirement.id,
+        completed,
+        evidenceNote,
+        expectedRevision: requirement.checkpointRevision ?? 0,
+      },
+      completed
+        ? `${requirement.name} completion saved without adding CE units.`
+        : `${requirement.name} reopened.`,
     );
   }
 
@@ -3094,6 +3242,16 @@ export function LicenseLanternApp() {
                     )
                   : undefined
               }
+              onDentalCheckpoint={(requirement, completed, evidenceNote) =>
+                selectedCredential
+                  ? void saveDentalCheckpoint(
+                      selectedCredential.id,
+                      requirement,
+                      completed,
+                      evidenceNote,
+                    )
+                  : undefined
+              }
             />
           ) : view === "credentials" ? (
             <CredentialsView
@@ -3120,6 +3278,20 @@ export function LicenseLanternApp() {
                   status,
                 )
               }
+              onDentalCheckpoint={(
+                credentialId,
+                requirement,
+                completed,
+                evidenceNote,
+              ) =>
+                void saveDentalCheckpoint(
+                  credentialId,
+                  requirement,
+                  completed,
+                  evidenceNote,
+                )
+              }
+              actionsDisabled={pending || !isOnline}
             />
           ) : view === "records" ? (
             <RecordsView
@@ -3426,10 +3598,18 @@ export function LicenseLanternApp() {
                     value={activityDraft.totalUnits}
                     disabled={scanningActivityEvidence}
                     onChange={(event) =>
-                      setActivityDraft((current) => ({
-                        ...current,
-                        totalUnits: event.currentTarget.value,
-                      }))
+                      setActivityDraft((current) => {
+                        const totalUnits = event.currentTarget.value;
+                        return {
+                          ...current,
+                          totalUnits,
+                          allocatedUnits:
+                            !current.allocatedUnits ||
+                            current.allocatedUnits === current.totalUnits
+                              ? totalUnits
+                              : current.allocatedUnits,
+                        };
+                      })
                     }
                     required
                   />
@@ -3438,6 +3618,35 @@ export function LicenseLanternApp() {
                       Suggested from the scan — confirm the units.
                     </small>
                   ) : null}
+                </label>
+                <label className="field">
+                  <span>Credits to apply to this credential</span>
+                  <input
+                    name="allocatedUnits"
+                    type="number"
+                    min="0.1"
+                    max={
+                      Number(activityDraft.totalUnits) > 0
+                        ? Number(activityDraft.totalUnits)
+                        : ACTIVITY_DRAFT_MAX_UNITS
+                    }
+                    step="0.1"
+                    inputMode="decimal"
+                    placeholder="1.0"
+                    value={activityDraft.allocatedUnits}
+                    disabled={scanningActivityEvidence}
+                    onChange={(event) =>
+                      setActivityDraft((current) => ({
+                        ...current,
+                        allocatedUnits: event.currentTarget.value,
+                      }))
+                    }
+                    required
+                  />
+                  <small>
+                    Keep the full certificate amount above. Lower this only
+                    when the regulator limits how much may count here.
+                  </small>
                 </label>
               </div>
               <label className="field">
@@ -3482,7 +3691,7 @@ export function LicenseLanternApp() {
                 <NremtRequirementAllocator
                   key={activityCredential?.id}
                   credential={activityCredential!}
-                  availableUnits={Number(activityDraft.totalUnits) || 0}
+                  availableUnits={Number(activityDraft.allocatedUnits) || 0}
                 />
               ) : (
                 <RequirementPicker
@@ -3497,14 +3706,14 @@ export function LicenseLanternApp() {
                 <label className="switch-row">
                   <span>
                     <strong>
-                      The issuing portal posted this carryover
+                      The issuing authority permits this carryover
                     </strong>
                     <small>
-                      I selected the portal-confirmed carryover source plus
-                      only compatible classifiers, entered the actual
-                      eligible prior-period date, and will retain the portal
-                      record. A reference or uploaded proof is required
-                      before cycle completion.
+                      I selected the evidence-backed carryover source plus only
+                      compatible classifiers, entered the actual eligible
+                      prior-period date, and will retain the authority record.
+                      A reference or uploaded proof is required before cycle
+                      completion.
                     </small>
                   </span>
                   <input
@@ -3843,7 +4052,11 @@ export function LicenseLanternApp() {
                   </p>
                 )}
                 {selectedRule?.categories.some(
-                  (category) => category.applicability === "conditional",
+                  (category) =>
+                    category.applicability === "conditional" &&
+                    !DENTAL_LINKED_APPLICABILITY_CHILD_CATEGORY_IDS.has(
+                      category.id,
+                    ),
                 ) ? (
                   <fieldset className="condition-review">
                     <legend>Which conditions apply this cycle?</legend>
@@ -3855,7 +4068,10 @@ export function LicenseLanternApp() {
                       {selectedRule.categories
                         .filter(
                           (category) =>
-                            category.applicability === "conditional",
+                            category.applicability === "conditional" &&
+                            !DENTAL_LINKED_APPLICABILITY_CHILD_CATEGORY_IDS.has(
+                              category.id,
+                            ),
                         )
                         .map((category) => (
                           <article key={category.id}>
@@ -3896,12 +4112,14 @@ export function LicenseLanternApp() {
                   </fieldset>
                 ) : null}
                 {selectedRule?.profession === "Pharmacy" ||
-                selectedRule?.profession === "Nursing" ? (
+                selectedRule?.profession === "Nursing" ||
+                selectedRule?.profession === "Dental" ? (
                   <label className="switch-row">
                     <span>
                       <strong>
                         I confirmed this is a standard full-cycle{" "}
-                        {selectedRule.profession === "Nursing"
+                        {selectedRule.profession === "Nursing" ||
+                        selectedRule.profession === "Dental"
                           ? "renewal or registration"
                           : "renewal"}
                       </strong>
@@ -3909,7 +4127,9 @@ export function LicenseLanternApp() {
                         {selectedRule.id === "tx-rn-2026-v1" ||
                         selectedRule.id === "tx-lvn-2026-v1"
                           ? "The regulator record matches the dates below, I am using the 20-hour CNE path rather than the certification alternative, and no initial, shortened, inactive, exempt, or other adjusted-status variant applies."
-                          : "The regulator record matches the dates below, and no initial, shortened, inactive, prorated, exempt, or other adjusted-status variant applies."}
+                          : selectedRule.profession === "Dental"
+                            ? "The regulator record matches the dates below, and no initial, shortened, inactive, retired, prorated, exempt, or other adjusted-status variant applies."
+                            : "The regulator record matches the dates below, and no initial, shortened, inactive, prorated, exempt, or other adjusted-status variant applies."}
                       </small>
                     </span>
                     <input
@@ -4398,12 +4618,14 @@ export function LicenseLanternApp() {
               </label>
             ) : null}
             {isManagedPharmacistCredential(selectedCredential) ||
-            isManagedNursingCredential(selectedCredential) ? (
+            isManagedNursingCredential(selectedCredential) ||
+            isManagedDentalCredential(selectedCredential) ? (
               <label className="switch-row">
                 <span>
                   <strong>
                     I confirmed the next period is a standard full-cycle
-                    {isManagedNursingCredential(selectedCredential)
+                    {isManagedNursingCredential(selectedCredential) ||
+                    isManagedDentalCredential(selectedCredential)
                       ? " renewal or registration"
                       : " renewal"}
                   </strong>
@@ -4411,7 +4633,9 @@ export function LicenseLanternApp() {
                     {selectedCredential.ruleSetId === "tx-rn-2026-v1" ||
                     selectedCredential.ruleSetId === "tx-lvn-2026-v1"
                       ? "I am using the 20-hour CNE path rather than the certification alternative, and no initial, shortened, inactive, exempt, or other adjusted-status variant applies."
-                      : "No shortened, inactive, prorated, exempt, or other adjusted-status variant applies to the next period."}
+                      : isManagedDentalCredential(selectedCredential)
+                        ? "No initial, shortened, inactive, retired, prorated, exempt, or other adjusted-status variant applies to the next period."
+                        : "No shortened, inactive, prorated, exempt, or other adjusted-status variant applies to the next period."}
                   </small>
                 </span>
                 <input
@@ -4434,6 +4658,8 @@ export function LicenseLanternApp() {
                         ? "The next renewal will use the latest current version of this state pharmacist template and reset every conditional authorization for review."
                         : isManagedNursingCredential(selectedCredential)
                           ? "The next period will use the latest current version of this nursing template and reset every conditional training rule for review."
+                          : isManagedDentalCredential(selectedCredential)
+                            ? "The next period will use the latest current version of this dental template and reset every conditional permit, training, and cadence rule for review."
                         : "Requirements are copied as a starting snapshot. Review the current official rules before relying on the new plan."}
               </p>
             </div>
@@ -4718,12 +4944,12 @@ export function LicenseLanternApp() {
                 <label className="switch-row">
                   <span>
                     <strong>
-                      The target portal posted this carryover
+                      The issuing authority permits this carryover
                     </strong>
                     <small>
-                      Apply this prior-period record to the
-                      portal-confirmed carryover source plus only compatible
-                      classifiers, and retain the issuer’s supporting record.
+                      Apply this prior-period record to the evidence-backed
+                      carryover source plus only compatible classifiers, and
+                      retain the issuer’s supporting record.
                     </small>
                   </span>
                   <input
@@ -4798,8 +5024,11 @@ export function LicenseLanternApp() {
                 ) : (
                   <p>
                     Update which requirements this preserved activity
-                    satisfies. Its date, proof, and credit amount will not
-                    change.
+                    satisfies
+                    {isNremtCredential(classificationCredential)
+                      ? ". Its National Registry amount stays exact."
+                      : ", and correct how much of the full learning record counts here."}{" "}
+                    Its date and proof will not change.
                   </p>
                 )}
               </div>
@@ -4815,13 +5044,38 @@ export function LicenseLanternApp() {
                   }
                 />
               ) : (
-                <RequirementPicker
-                  key={classificationRepair.allocation.id}
-                  credential={classificationCredential}
-                  initialRequirementIds={
-                    classificationRepair.allocation.requirementIds
-                  }
-                />
+                <>
+                  <label className="field">
+                    <span>Credits to apply to this credential</span>
+                    <input
+                      name="allocatedUnits"
+                      type="number"
+                      min="0.01"
+                      max={classificationRepair.activity.totalUnits}
+                      step="0.01"
+                      inputMode="decimal"
+                      defaultValue={
+                        classificationRepair.allocation.allocatedUnits
+                      }
+                      required
+                    />
+                    <small>
+                      The full learning record remains{" "}
+                      {compactNumber(
+                        classificationRepair.activity.totalUnits,
+                      )}{" "}
+                      credits; change only the amount this credential may
+                      count.
+                    </small>
+                  </label>
+                  <RequirementPicker
+                    key={classificationRepair.allocation.id}
+                    credential={classificationCredential}
+                    initialRequirementIds={
+                      classificationRepair.allocation.requirementIds
+                    }
+                  />
+                </>
               )}
               {isPriorPeriodCarryoverEntry(
                 classificationRepair.activity.completionDate,
@@ -4830,11 +5084,11 @@ export function LicenseLanternApp() {
                 <label className="switch-row">
                   <span>
                     <strong>
-                      The issuing portal posted this carryover
+                      The issuing authority permits this carryover
                     </strong>
                     <small>
                       Keep this prior-period activity tagged to the
-                      portal-confirmed carryover source plus only compatible
+                      evidence-backed carryover source plus only compatible
                       classifiers, and retain the official supporting record.
                     </small>
                   </span>
@@ -4858,7 +5112,7 @@ export function LicenseLanternApp() {
                   type="submit"
                   disabled={pending}
                 >
-                  {pending ? "Updating…" : "Update classification"}
+                  {pending ? "Updating…" : "Update allocation"}
                 </button>
               </div>
             </form>
@@ -5172,6 +5426,7 @@ function TodayView({
   onClaimQuest,
   progressionPending,
   onRequirementApplicability,
+  onDentalCheckpoint,
 }: {
   workspace: Workspace;
   credential: Credential | null;
@@ -5202,6 +5457,11 @@ function TodayView({
   onRequirementApplicability: (
     requirement: Requirement,
     status: "applies" | "not_applicable",
+  ) => void;
+  onDentalCheckpoint: (
+    requirement: Requirement,
+    completed: boolean,
+    evidenceNote: string,
   ) => void;
 }) {
   if (!credential) {
@@ -5445,7 +5705,7 @@ function TodayView({
           </div>
           <p>
             {credential.totalRequired > 0
-              ? "Based on countable units, active minimums, and checklist steps."
+              ? "Based on countable units, active minimums, required checkpoints, and checklist steps."
               : "Based on applicable training conditions and checklist steps."}
           </p>
         </div>
@@ -5584,11 +5844,22 @@ function TodayView({
                 unit={credential.unitLabel}
                 requirement={requirement}
                 onApplicability={
-                  credential.status === "active"
+                  credential.status !== "renewed"
                     ? (status) =>
                         onRequirementApplicability(requirement, status)
                     : undefined
                 }
+                onDentalCheckpoint={
+                  credential.status === "renewed"
+                    ? undefined
+                    : (completed, evidenceNote) =>
+                        onDentalCheckpoint(
+                          requirement,
+                          completed,
+                          evidenceNote,
+                        )
+                }
+                actionsDisabled={taskActionsDisabled}
               />
             ))}
           </div>
@@ -6042,6 +6313,8 @@ function CredentialsView({
   onReminders,
   onAddToCalendar,
   onRequirementApplicability,
+  onDentalCheckpoint,
+  actionsDisabled,
 }: {
   credentials: Credential[];
   activities: Activity[];
@@ -6058,6 +6331,13 @@ function CredentialsView({
     requirement: Requirement,
     status: "applies" | "not_applicable",
   ) => void;
+  onDentalCheckpoint: (
+    credentialId: string,
+    requirement: Requirement,
+    completed: boolean,
+    evidenceNote: string,
+  ) => void;
+  actionsDisabled: boolean;
 }) {
   const selected =
     credentials.find((credential) => credential.id === selectedId) ??
@@ -6318,9 +6598,9 @@ function CredentialsView({
                 />
               ) : (
                 <p className="total-excess-note">
-                  This regulator does not set a general numeric nursing CE
-                  total. Complete the applicable training conditions and
-                  checklist using the official record.
+                  This regulator does not set a general numeric
+                  continuing-education total. Complete the applicable training
+                  conditions and checklist using the official record.
                 </p>
               )}
               {Number(selected.totalExcessUnits ?? 0) > 0 ? (
@@ -6347,7 +6627,7 @@ function CredentialsView({
                   unit={selected.unitLabel}
                   requirement={requirement}
                   onApplicability={
-                    selected.status === "active"
+                    selected.status !== "renewed"
                       ? (status) =>
                           onRequirementApplicability(
                             selected.id,
@@ -6356,6 +6636,18 @@ function CredentialsView({
                           )
                       : undefined
                   }
+                  onDentalCheckpoint={
+                    selected.status === "renewed"
+                      ? undefined
+                      : (completed, evidenceNote) =>
+                          onDentalCheckpoint(
+                            selected.id,
+                            requirement,
+                            completed,
+                            evidenceNote,
+                          )
+                  }
+                  actionsDisabled={actionsDisabled}
                 />
               ))}
             </div>
@@ -7643,6 +7935,8 @@ function ProgressRow({
   unit,
   requirement,
   onApplicability,
+  onDentalCheckpoint,
+  actionsDisabled = false,
 }: {
   name: string;
   earned: number;
@@ -7652,6 +7946,11 @@ function ProgressRow({
   onApplicability?: (
     status: "applies" | "not_applicable",
   ) => void;
+  onDentalCheckpoint?: (
+    completed: boolean,
+    evidenceNote: string,
+  ) => void;
+  actionsDisabled?: boolean;
 }) {
   const kind = requirement ? requirementKind(requirement) : "minimum";
   const status = requirement ? requirementStatus(requirement) : "applies";
@@ -7710,22 +8009,104 @@ function ProgressRow({
   }
 
   if (kind === "informational") {
+    const isDentalCheckpoint = requirement?.isDentalCheckpoint === true;
+    const checkpointCompleted =
+      requirement?.checkpointStatus === "completed";
     return (
       <div
         className={`progress-row requirement-condition ${
           nested ? "nested" : ""
+        } ${isDentalCheckpoint ? "dental-checkpoint" : ""} ${
+          checkpointCompleted ? "completed" : ""
         }`}
       >
         <div>
           <span>
             <strong>{name}</strong>
-            <small>Checklist checkpoint</small>
+            <small>
+              {isDentalCheckpoint
+                ? checkpointCompleted
+                  ? "Completion documented · 0 CE units"
+                  : "Completion required · 0 CE units"
+                : "Checklist checkpoint"}
+            </small>
           </span>
           {requirement?.conditionNote ? (
             <p>{requirement.conditionNote}</p>
           ) : null}
+          {isDentalCheckpoint &&
+          requirement?.checkpointEvidenceNote &&
+          !onDentalCheckpoint ? (
+            <p className="checkpoint-reference">
+              Reference: {requirement.checkpointEvidenceNote}
+            </p>
+          ) : null}
+          {isDentalCheckpoint &&
+          requirement?.checkpointCompletedAt &&
+          !onDentalCheckpoint ? (
+            <small className="checkpoint-date">
+              Completed{" "}
+              {formatDate(requirement.checkpointCompletedAt.slice(0, 10))}
+            </small>
+          ) : null}
         </div>
-        {conditional && onApplicability ? (
+        {isDentalCheckpoint && onDentalCheckpoint ? (
+          <form
+            className="dental-checkpoint-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const form = new FormData(event.currentTarget);
+              onDentalCheckpoint(
+                true,
+                String(form.get("checkpointEvidenceNote") ?? "").trim(),
+              );
+            }}
+          >
+            <label>
+              <span>Evidence or official-record reference</span>
+              <input
+                key={`${requirement?.id}:${requirement?.checkpointRevision ?? 0}`}
+                name="checkpointEvidenceNote"
+                type="text"
+                maxLength={500}
+                required
+                defaultValue={requirement?.checkpointEvidenceNote ?? ""}
+                placeholder="Certificate, CPR card, portal, or assessment reference"
+                disabled={actionsDisabled}
+              />
+            </label>
+            <div className="dental-checkpoint-actions">
+              <button type="submit" disabled={actionsDisabled}>
+                {checkpointCompleted
+                  ? "Update reference"
+                  : "Mark complete"}
+              </button>
+              {checkpointCompleted ? (
+                <button
+                  type="button"
+                  disabled={actionsDisabled}
+                  onClick={() =>
+                    onDentalCheckpoint(
+                      false,
+                      requirement?.checkpointEvidenceNote ?? "",
+                    )
+                  }
+                >
+                  Reopen
+                </button>
+              ) : null}
+              {conditional && onApplicability ? (
+                <button
+                  type="button"
+                  disabled={actionsDisabled}
+                  onClick={() => onApplicability("not_applicable")}
+                >
+                  Not this cycle
+                </button>
+              ) : null}
+            </div>
+          </form>
+        ) : conditional && onApplicability ? (
           <div className="requirement-condition-actions">
             <button
               type="button"
@@ -7973,7 +8354,11 @@ function RequirementPicker({
       (requirement) =>
         requirementStatus(requirement) === "applies" &&
         requirement.isActive !== false &&
-        requirement.ruleCategoryId !== CFP_2027_GENERAL_CATEGORY_ID,
+        requirement.isDentalCheckpoint !== true &&
+        requirement.ruleCategoryId !== CFP_2027_GENERAL_CATEGORY_ID &&
+        !DENTAL_AGGREGATE_PARENT_CATEGORY_ID_SET.has(
+          requirement.ruleCategoryId ?? "",
+        ),
     ) ?? [];
   const unresolved =
     credential?.requirements.filter(
@@ -7982,9 +8367,42 @@ function RequirementPicker({
     ).length ?? 0;
 
   const toggleRequirement = (requirement: Requirement, checked: boolean) => {
-    setSelectedRequirementIds((current) =>
-      nextRequirementSelection(current, requirement, selectable, checked),
-    );
+    setSelectedRequirementIds((current) => {
+      let next = nextRequirementSelection(current, requirement, selectable, checked);
+      const categoryId = requirement.ruleCategoryId ?? "";
+      const aggregateCategoryId =
+        DENTAL_AGGREGATE_BY_SUBTYPE_CATEGORY_ID.get(categoryId);
+      if (checked && aggregateCategoryId) {
+        const aggregateRequirement = selectable.find(
+          (candidate) =>
+            candidate.ruleCategoryId === aggregateCategoryId,
+        );
+        if (
+          aggregateRequirement &&
+          !next.includes(aggregateRequirement.id)
+        ) {
+          next = [...next, aggregateRequirement.id];
+        }
+      }
+      if (!checked) {
+        const subtypeCategoryIds =
+          DENTAL_SUBTYPE_CATEGORY_IDS_BY_AGGREGATE.get(categoryId);
+        if (subtypeCategoryIds) {
+          const subtypeRequirementIds = new Set(
+            selectable.flatMap((candidate) =>
+              subtypeCategoryIds.has(candidate.ruleCategoryId ?? "")
+                ? [candidate.id]
+                : [],
+            ),
+          );
+          next = next.filter(
+            (requirementId) =>
+              !subtypeRequirementIds.has(requirementId),
+          );
+        }
+      }
+      return next;
+    });
   };
 
   return (

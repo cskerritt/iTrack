@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   type AnySQLiteColumn,
+  check,
   index,
   integer,
   real,
@@ -176,6 +177,66 @@ export const credentialRequirements = sqliteTable(
       table.sortOrder,
     ),
     index("credential_requirements_parent_idx").on(table.parentRequirementId),
+  ],
+);
+
+export const dentalCheckpointStates = sqliteTable(
+  "dental_checkpoint_states",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    credentialId: text("credential_id")
+      .notNull()
+      .references(() => credentials.id, { onDelete: "cascade" }),
+    requirementId: text("requirement_id")
+      .notNull()
+      .references(() => credentialRequirements.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("pending"),
+    completedAt: text("completed_at"),
+    evidenceNote: text("evidence_note"),
+    revision: integer("revision").notNull().default(1),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    check(
+      "dental_checkpoint_states_status_check",
+      sql`${table.status} IN ('pending', 'completed')`,
+    ),
+    check(
+      "dental_checkpoint_states_completion_shape_check",
+      sql`(
+        (
+          ${table.status} = 'pending'
+          AND ${table.completedAt} IS NULL
+        )
+        OR (
+          ${table.status} = 'completed'
+          AND ${table.completedAt} IS NOT NULL
+          AND ${table.evidenceNote} IS NOT NULL
+          AND length(trim(${table.evidenceNote})) > 0
+        )
+      )`,
+    ),
+    check(
+      "dental_checkpoint_states_revision_check",
+      sql`${table.revision} >= 1`,
+    ),
+    uniqueIndex("dental_checkpoint_states_scope_unique").on(
+      table.userId,
+      table.credentialId,
+      table.requirementId,
+    ),
+    uniqueIndex("dental_checkpoint_states_requirement_unique").on(
+      table.requirementId,
+    ),
+    index("dental_checkpoint_states_credential_idx").on(
+      table.userId,
+      table.credentialId,
+      table.status,
+    ),
   ],
 );
 

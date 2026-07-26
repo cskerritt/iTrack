@@ -470,6 +470,18 @@ const runtimeCatalogModules = [
       "NURSING_RULE_SET_SEED_BINDINGS",
     ],
   },
+  {
+    moduleName: "dental",
+    sourceUrl: new URL("../db/catalog/dental.ts", import.meta.url),
+    exports: [
+      "DENTAL_ADDITIONAL_TOTAL_BINDINGS",
+      "DENTAL_CATEGORY_SEED_BINDINGS",
+      "DENTAL_DAILY_UNIT_LIMIT_BINDINGS",
+      "DENTAL_MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+      "DENTAL_RENEWAL_TASK_COPY_BINDINGS",
+      "DENTAL_RULE_SET_SEED_BINDINGS",
+    ],
+  },
 ];
 
 async function importTypeScriptModule(source) {
@@ -795,7 +807,7 @@ test("License Lantern product contract", async (t) => {
       assert.equal(
         raw.prepare("SELECT COUNT(*) AS count FROM rule_categories").get()
           .count,
-        505,
+        623,
       );
 
       assert.deepEqual(
@@ -1868,12 +1880,12 @@ test("License Lantern product contract", async (t) => {
             )
             .get(),
         },
-        { totalRules: 105, currentRules: 104 },
+        { totalRules: 117, currentRules: 116 },
       );
       assert.equal(
         raw.prepare("SELECT COUNT(*) AS count FROM rule_categories").get()
           .count,
-        505,
+        623,
       );
       assert.deepEqual(
         {
@@ -2320,7 +2332,7 @@ test("License Lantern product contract", async (t) => {
       );
       assert.match(
         clientSource,
-        /selected\.totalRequired > 0[\s\S]*?"Checklist"[\s\S]*?selected\.totalRequired > 0[\s\S]*?This regulator does not set a general numeric nursing CE\s+total/,
+        /selected\.totalRequired > 0[\s\S]*?"Checklist"[\s\S]*?selected\.totalRequired > 0[\s\S]*?This regulator does not set a general numeric[\s\S]*?continuing-education total/,
       );
       assert.match(
         clientSource,
@@ -4102,6 +4114,7 @@ test("License Lantern product contract", async (t) => {
         title: "Trauma-informed practice",
         completionDate: "2026-05-30",
         totalUnits: "3.5",
+        allocatedUnits: "2.5",
         provider: "State Medical Society",
       };
 
@@ -4264,6 +4277,7 @@ test("License Lantern product contract", async (t) => {
           title: input.title,
           completionDate: "",
           totalUnits: "",
+          allocatedUnits: "",
           provider: input.provider,
         },
       );
@@ -4289,6 +4303,7 @@ test("License Lantern product contract", async (t) => {
         "title",
         "completionDate",
         "totalUnits",
+        "allocatedUnits",
         "provider",
       ]);
       assert.doesNotMatch(
@@ -5285,6 +5300,10 @@ test("License Lantern product contract", async (t) => {
       assert.match(clientSource, /max=\{ACTIVITY_DRAFT_MAX_UNITS\}/);
       assert.match(
         clientSource,
+        /const allocatedUnits = Number\(form\.get\("allocatedUnits"\)\)[\s\S]*?nremtRequirementMatchPayload\([\s\S]*?allocatedUnits[\s\S]*?allocatedUnits,[\s\S]*?Credits to apply to this credential[\s\S]*?name="allocatedUnits"[\s\S]*?Keep the full certificate amount above/,
+      );
+      assert.match(
+        clientSource,
         /navigator\.serviceWorker[\s\S]*?register\("\/sw\.js"/,
       );
       assert.match(clientSource, /window\.addEventListener\("offline"/);
@@ -5387,6 +5406,9 @@ test("License Lantern product contract", async (t) => {
       pushMigration,
       builtPushMigration,
       pushSnapshotSource,
+      dentalCheckpointMigration,
+      builtDentalCheckpointMigration,
+      dentalCheckpointSnapshotSource,
     ] = await Promise.all([
         readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
         readFile(
@@ -5536,6 +5558,21 @@ test("License Lantern product contract", async (t) => {
           new URL("../drizzle/meta/0009_snapshot.json", import.meta.url),
           "utf8",
         ),
+        readFile(
+          new URL("../drizzle/0011_left_timeslip.sql", import.meta.url),
+          "utf8",
+        ),
+        readFile(
+          new URL(
+            "../dist/.openai/drizzle/0011_left_timeslip.sql",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+        readFile(
+          new URL("../drizzle/meta/0011_snapshot.json", import.meta.url),
+          "utf8",
+        ),
       ]);
 
     const hosting = JSON.parse(hostingSource);
@@ -5554,8 +5591,12 @@ test("License Lantern product contract", async (t) => {
     assert.equal(builtWeeklyPeriodMigration, weeklyPeriodMigration);
     assert.equal(builtArchiveMigration, archiveMigration);
     assert.equal(builtPushMigration, pushMigration);
+    assert.equal(
+      builtDentalCheckpointMigration,
+      dentalCheckpointMigration,
+    );
 
-    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}\n${attestationMigration}\n${weeklyPeriodMigration}\n${archiveMigration}\n${pushMigration}`;
+    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}\n${attestationMigration}\n${weeklyPeriodMigration}\n${archiveMigration}\n${pushMigration}\n${dentalCheckpointMigration}`;
     const migratedTables = new Set(
       [...migration.matchAll(/CREATE TABLE `([^`]+)`/g)].map(
         (match) => match[1],
@@ -5585,6 +5626,7 @@ test("License Lantern product contract", async (t) => {
       "weekly_progression_periods",
       "weekly_quest_claims",
       "badge_events",
+      "dental_checkpoint_states",
     ];
     assert.deepEqual(
       requiredTables.filter((tableName) => !migratedTables.has(tableName)),
@@ -5667,7 +5709,57 @@ test("License Lantern product contract", async (t) => {
     const migrationJournal = JSON.parse(migrationJournalSource);
     assert.equal(
       migrationJournal.entries.at(-1)?.tag,
-      "0010_dear_franklin_storm",
+      "0011_left_timeslip",
+    );
+    const dentalCheckpointSnapshot = JSON.parse(
+      dentalCheckpointSnapshotSource,
+    ).tables.dental_checkpoint_states;
+    assert.ok(dentalCheckpointSnapshot);
+    assert.deepEqual(
+      dentalCheckpointSnapshot.indexes
+        .dental_checkpoint_states_scope_unique.columns,
+      ["user_id", "credential_id", "requirement_id"],
+    );
+    assert.deepEqual(
+      dentalCheckpointSnapshot.indexes
+        .dental_checkpoint_states_requirement_unique.columns,
+      ["requirement_id"],
+    );
+    assert.match(
+      dentalCheckpointMigration,
+      /dental_checkpoint_states_status_check[\s\S]*?status[^]*?IN \('pending', 'completed'\)[\s\S]*?dental_checkpoint_states_completion_shape_check[\s\S]*?completed_at[^]*?evidence_note[\s\S]*?dental_checkpoint_states_revision_check[\s\S]*?revision[^]*?>= 1/i,
+    );
+    assert.match(
+      dentalCheckpointMigration,
+      /dental_checkpoint_states_update_guard_v1[\s\S]*?credential\.status IN \('active', 'submitted'\)[\s\S]*?dental_checkpoint_not_mutable/i,
+    );
+    assert.match(
+      dentalCheckpointMigration,
+      /dental_daily_unit_limit_allocation_insert_guard_v1[\s\S]*?SUM\(existing_allocation\.allocated_units\)[\s\S]*?dental_daily_unit_limit_exceeded/i,
+    );
+    assert.match(
+      dentalCheckpointMigration,
+      /dental_daily_unit_limit_allocation_update_guard_v1[\s\S]*?existing_allocation\.id <> OLD\.id[\s\S]*?dental_daily_unit_limit_exceeded/i,
+    );
+    assert.match(
+      dentalCheckpointMigration,
+      /dental_daily_unit_limit_activity_update_guard_v1[\s\S]*?UPDATE OF completion_date, archived_at[\s\S]*?existing_activity\.completion_date = NEW\.completion_date[\s\S]*?dental_daily_unit_limit_exceeded/i,
+    );
+    assert.match(
+      schemaSource,
+      /export const dentalCheckpointStates = sqliteTable\([\s\S]*?"dental_checkpoint_states"[\s\S]*?evidenceNote: text\("evidence_note"\)[\s\S]*?revision: integer\("revision"\)/i,
+    );
+    assert.match(
+      runtimeSource,
+      /dental_checkpoint_states_identity_guard_v1[\s\S]*?dental_checkpoint_identity_immutable/i,
+    );
+    assert.match(
+      runtimeSource,
+      /dental_checkpoint_credentials_scope_guard_v1[\s\S]*?BEFORE UPDATE OF user_id ON credentials[\s\S]*?dental_checkpoint_scope_immutable/i,
+    );
+    assert.match(
+      runtimeSource,
+      /dental_checkpoint_requirements_scope_guard_v1[\s\S]*?BEFORE UPDATE OF credential_id ON credential_requirements[\s\S]*?dental_checkpoint_scope_immutable/i,
     );
     assert.match(
       weeklyPeriodMigration,
@@ -5996,7 +6088,7 @@ test("License Lantern product contract", async (t) => {
       );
       assert.equal(
         journalEntries.at(-1)?.tag,
-        "0010_dear_franklin_storm",
+        "0011_left_timeslip",
       );
 
       assert.match(
@@ -8517,7 +8609,7 @@ test("License Lantern product contract", async (t) => {
             )
             .get(),
         },
-        { totalRules: 105, currentRules: 104 },
+        { totalRules: 117, currentRules: 116 },
       );
       assert.equal(
         raw
@@ -13551,7 +13643,7 @@ test("License Lantern product contract", async (t) => {
       assert.equal(directActivityResponse.status, 409);
       assert.deepEqual(await directActivityResponse.json(), {
         error:
-          "The activity date must fall within the target renewal cycle (2026-01-01 through 2026-12-31). A prior-period date is allowed only when every selected requirement is a portal-confirmed carryover category.",
+          "The activity date must fall within the target renewal cycle (2026-01-01 through 2026-12-31). A prior-period date is allowed only with the evidence-backed carryover source and its compatible classification tags.",
         code: "activity_outside_cycle",
       });
       assert.equal(
@@ -20389,9 +20481,14 @@ test("License Lantern product contract", async (t) => {
       });
       const correctionBatch = successDatabase.batches.at(-1);
       assert.equal(correctionBatch.length, 3);
-      const allocationCorrection = correctionBatch[0];
-      const matchCorrection = correctionBatch[1];
-      const activityCorrection = correctionBatch[2];
+      const activityCorrection = correctionBatch[0];
+      const allocationCorrection = correctionBatch[1];
+      const matchCorrection = correctionBatch[2];
+      assert.match(
+        activityCorrection.sql,
+        /^UPDATE activities/i,
+        "a move paired with an allocation increase must change the date before the daily-cap trigger evaluates the larger allocation",
+      );
       assert.match(
         allocationCorrection.sql,
         /SET allocated_units = CASE WHEN EXISTS \([\s\S]*?rule_set_id LIKE 'nremt-%'[\s\S]*?THEN MIN\(allocated_units, \?\) WHEN allocated_units = \? THEN \? ELSE MIN\(allocated_units, \?\) END/i,
@@ -20404,7 +20501,7 @@ test("License Lantern product contract", async (t) => {
         activityId,
         activityId,
         userId,
-        3,
+        4,
       ]);
       assert.match(
         matchCorrection.sql,
@@ -21923,6 +22020,2671 @@ test("License Lantern product contract", async (t) => {
       } finally {
         database.close();
       }
+    },
+  );
+
+  await t.test(
+    "tracks zero-credit dental checkpoints, gates submission, and freezes closed history",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\n// dental-checkpoint-lifecycle-${Date.now()}`,
+      );
+      await runtimeModule.initializeDatabase(database);
+
+      const email = "dental-checkpoint-owner@example.com";
+      const userId = await expectedStableUserId(email);
+      const credentialId = "credential-dental-checkpoint";
+      const checkpointRequirementId =
+        "requirement-dental-human-trafficking";
+      const classifierRequirementId =
+        "requirement-dental-classroom-classifier";
+      database.raw
+        .prepare(
+          `INSERT INTO users (
+            id, email, display_name, is_demo
+          ) VALUES (?, ?, ?, 0)`,
+        )
+        .run(userId, email, "Dental Owner");
+      database.raw
+        .prepare(
+          `INSERT INTO credentials (
+            id, user_id, rule_set_id, credential_name, profession,
+            jurisdiction, issuer, cycle_start, deadline, total_required,
+            unit_label, status
+          ) VALUES (?, ?, ?, ?, 'Dental', 'Texas', ?, ?, ?, 24, 'hours', 'active')`,
+        )
+        .run(
+          credentialId,
+          userId,
+          "tx-dentist-2026-v1",
+          "Dentist — active standard biennial renewal",
+          "Texas State Board of Dental Examiners",
+          "2027-01-01",
+          "2028-12-31",
+        );
+      const insertRequirement = database.raw.prepare(
+        `INSERT INTO credential_requirements (
+          id, credential_id, rule_category_id, name, required_units, kind,
+          relation, applicability, applicability_status, is_active, sort_order
+        ) VALUES (?, ?, ?, ?, 0, 'informational', 'independent', ?, ?, ?, ?)`,
+      );
+      insertRequirement.run(
+        checkpointRequirementId,
+        credentialId,
+        "tx-dentist-2026-human-trafficking",
+        "HHSC-Approved Human Trafficking Prevention Course",
+        "always",
+        "applies",
+        1,
+        0,
+      );
+      insertRequirement.run(
+        classifierRequirementId,
+        credentialId,
+        "tx-dentist-2026-classroom-live",
+        "Classroom, Lecture, or Live Interactive CE",
+        "always",
+        "applies",
+        1,
+        1,
+      );
+      testCloudflareEnv.DB = database;
+
+      try {
+        const pendingWorkspaceResponse = await fetchWorker(
+          "https://license-lantern.example/api/workspace",
+          { headers: authHeaders(email) },
+        );
+        assert.equal(pendingWorkspaceResponse.status, 200);
+        const pendingWorkspace = await pendingWorkspaceResponse.json();
+        const pendingCredential = pendingWorkspace.credentials.find(
+          (credential) => credential.id === credentialId,
+        );
+        const pendingCheckpoint = pendingCredential.requirements.find(
+          (requirement) => requirement.id === checkpointRequirementId,
+        );
+        const classifier = pendingCredential.requirements.find(
+          (requirement) => requirement.id === classifierRequirementId,
+        );
+        assert.equal(pendingCheckpoint.isDentalCheckpoint, true);
+        assert.equal(pendingCheckpoint.checkpointStatus, "pending");
+        assert.equal(pendingCheckpoint.checkpointRevision, 0);
+        assert.equal(classifier.isDentalCheckpoint, false);
+        assert.equal(classifier.checkpointStatus, null);
+        assert.equal(pendingCredential.totalEarned, 0);
+
+        const checkpointTagAttempt = await postWorkspace(
+          "addActivity",
+          {
+            title: "Checkpoint course must not become CE credit",
+            provider: "Checkpoint Provider",
+            completionDate: "2028-05-01",
+            totalUnits: 1,
+            credentialId,
+            allocatedUnits: 1,
+            requirementIds: [
+              checkpointRequirementId,
+              classifierRequirementId,
+            ],
+            evidenceStatus: "missing",
+          },
+          email,
+        );
+        assert.equal(checkpointTagAttempt.status, 409);
+        assert.equal(
+          (await checkpointTagAttempt.json()).code,
+          "dental_checkpoint_activity_tag_not_allowed",
+        );
+        assert.equal(
+          database.raw.prepare("SELECT COUNT(*) AS count FROM activities").get()
+            .count,
+          0,
+        );
+
+        const blockedSubmission = await postWorkspace(
+          "markSubmitted",
+          {
+            credentialId,
+            submissionDate: "2028-12-01",
+            confirmationNumber: "TX-DENTAL-PENDING",
+          },
+          email,
+        );
+        assert.equal(blockedSubmission.status, 409);
+        assert.equal(
+          (await blockedSubmission.json()).code,
+          "dental_checkpoint_incomplete",
+        );
+        assert.equal(
+          database.raw
+            .prepare("SELECT status FROM credentials WHERE id = ?")
+            .get(credentialId).status,
+          "active",
+        );
+
+        const missingEvidence = await postWorkspace(
+          "saveDentalCheckpoint",
+          {
+            credentialId,
+            requirementId: checkpointRequirementId,
+            completed: true,
+            evidenceNote: "",
+            expectedRevision: 0,
+          },
+          email,
+        );
+        assert.equal(missingEvidence.status, 409);
+        assert.equal(
+          (await missingEvidence.json()).code,
+          "dental_checkpoint_evidence_required",
+        );
+
+        const completed = await postWorkspace(
+          "saveDentalCheckpoint",
+          {
+            credentialId,
+            requirementId: checkpointRequirementId,
+            completed: true,
+            evidenceNote: "HHSC certificate HT-2048",
+            expectedRevision: 0,
+          },
+          email,
+        );
+        assert.equal(completed.status, 200);
+        assert.deepEqual(await completed.json(), {
+          ok: true,
+          action: "saveDentalCheckpoint",
+          id: checkpointRequirementId,
+        });
+        const storedCompletion = database.raw
+          .prepare(
+            `SELECT status, completed_at AS completedAt,
+              evidence_note AS evidenceNote, revision
+             FROM dental_checkpoint_states
+             WHERE requirement_id = ?`,
+          )
+          .get(checkpointRequirementId);
+        assert.equal(storedCompletion.status, "completed");
+        assert.ok(storedCompletion.completedAt);
+        assert.equal(
+          storedCompletion.evidenceNote,
+          "HHSC certificate HT-2048",
+        );
+        assert.equal(storedCompletion.revision, 1);
+        assert.throws(
+          () =>
+            database.raw
+              .prepare(
+                `UPDATE dental_checkpoint_states
+                 SET status = 'invalid'
+                 WHERE requirement_id = ?`,
+              )
+              .run(checkpointRequirementId),
+          /dental_checkpoint_states_status_check/i,
+        );
+        assert.throws(
+          () =>
+            database.raw
+              .prepare(
+                `UPDATE dental_checkpoint_states
+                 SET completed_at = NULL, evidence_note = NULL
+                 WHERE requirement_id = ?`,
+              )
+              .run(checkpointRequirementId),
+          /dental_checkpoint_states_completion_shape_check/i,
+        );
+        assert.throws(
+          () =>
+            database.raw
+              .prepare(
+                `UPDATE dental_checkpoint_states
+                 SET revision = 0
+                 WHERE requirement_id = ?`,
+              )
+              .run(checkpointRequirementId),
+          /dental_checkpoint_states_revision_check/i,
+        );
+        assert.throws(
+          () =>
+            database.raw
+              .prepare(
+                `UPDATE credential_requirements
+                 SET credential_id = 'another-credential'
+                 WHERE id = ?`,
+              )
+              .run(checkpointRequirementId),
+          /dental_checkpoint_scope_immutable/i,
+        );
+        assert.throws(
+          () =>
+            database.raw
+              .prepare(
+                `UPDATE credentials
+                 SET user_id = 'another-user'
+                 WHERE id = ?`,
+              )
+              .run(credentialId),
+          /dental_checkpoint_scope_immutable/i,
+        );
+        assert.equal(
+          database.raw.prepare("SELECT COUNT(*) AS count FROM activities").get()
+            .count,
+          0,
+          "checkpoint completion must not create CE activity",
+        );
+
+        const classifierAttempt = await postWorkspace(
+          "saveDentalCheckpoint",
+          {
+            credentialId,
+            requirementId: classifierRequirementId,
+            completed: true,
+            evidenceNote: "Must remain a classifier",
+            expectedRevision: 0,
+          },
+          email,
+        );
+        assert.equal(classifierAttempt.status, 409);
+        assert.equal(
+          (await classifierAttempt.json()).code,
+          "not_dental_checkpoint",
+        );
+        assert.equal(
+          database.raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM dental_checkpoint_states
+               WHERE requirement_id = ?`,
+            )
+            .get(classifierRequirementId).count,
+          0,
+        );
+
+        const submission = await postWorkspace(
+          "markSubmitted",
+          {
+            credentialId,
+            submissionDate: "2028-12-01",
+            confirmationNumber: "TX-DENTAL-COMPLETE",
+          },
+          email,
+        );
+        assert.equal(submission.status, 200);
+        assert.equal(
+          database.raw
+            .prepare("SELECT status FROM credentials WHERE id = ?")
+            .get(credentialId).status,
+          "submitted",
+        );
+
+        const updatedReference = await postWorkspace(
+          "saveDentalCheckpoint",
+          {
+            credentialId,
+            requirementId: checkpointRequirementId,
+            completed: true,
+            evidenceNote: "TSBDE portal record and HHSC certificate HT-2048",
+            expectedRevision: 1,
+          },
+          email,
+        );
+        assert.equal(updatedReference.status, 200);
+        const reopened = await postWorkspace(
+          "saveDentalCheckpoint",
+          {
+            credentialId,
+            requirementId: checkpointRequirementId,
+            completed: false,
+            evidenceNote:
+              "TSBDE portal record and HHSC certificate HT-2048",
+            expectedRevision: 2,
+          },
+          email,
+        );
+        assert.equal(reopened.status, 200);
+        const pendingAgain = database.raw
+          .prepare(
+            `SELECT status, completed_at AS completedAt,
+              evidence_note AS evidenceNote, revision
+             FROM dental_checkpoint_states
+             WHERE requirement_id = ?`,
+          )
+          .get(checkpointRequirementId);
+        assert.equal(pendingAgain.status, "pending");
+        assert.equal(pendingAgain.completedAt, null);
+        assert.equal(
+          pendingAgain.evidenceNote,
+          "TSBDE portal record and HHSC certificate HT-2048",
+        );
+        assert.equal(pendingAgain.revision, 3);
+
+        const blockedAcceptance = await postWorkspace(
+          "markRenewalAccepted",
+          {
+            credentialId,
+            acceptedAt: "2028-12-02",
+            reference: "TSBDE-RENEWED-PENDING",
+            nextCycleStart: "2029-01-01",
+            nextDeadline: "2030-12-31",
+            officialDatesAttested: true,
+            templateEligibilityAttested: true,
+          },
+          email,
+        );
+        assert.equal(blockedAcceptance.status, 409);
+        assert.equal(
+          (await blockedAcceptance.json()).code,
+          "dental_checkpoint_incomplete",
+        );
+        assert.equal(
+          database.raw
+            .prepare("SELECT status FROM credentials WHERE id = ?")
+            .get(credentialId).status,
+          "submitted",
+        );
+        assert.equal(
+          database.raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM renewal_acceptances
+               WHERE credential_id = ?`,
+            )
+            .get(credentialId).count,
+          0,
+        );
+
+        const blockedResubmission = await postWorkspace(
+          "markSubmitted",
+          {
+            credentialId,
+            submissionDate: "2028-12-02",
+            confirmationNumber: "TX-DENTAL-RECHECK",
+          },
+          email,
+        );
+        assert.equal(blockedResubmission.status, 409);
+        assert.equal(
+          (await blockedResubmission.json()).code,
+          "dental_checkpoint_incomplete",
+        );
+
+        const reclosed = await postWorkspace(
+          "saveDentalCheckpoint",
+          {
+            credentialId,
+            requirementId: checkpointRequirementId,
+            completed: true,
+            evidenceNote:
+              "TSBDE portal record and HHSC certificate HT-2048",
+            expectedRevision: 3,
+          },
+          email,
+        );
+        assert.equal(reclosed.status, 200);
+        database.raw
+          .prepare(
+            `UPDATE credentials
+             SET status = 'renewed'
+             WHERE id = ?`,
+          )
+          .run(credentialId);
+
+        const closedEdit = await postWorkspace(
+          "saveDentalCheckpoint",
+          {
+            credentialId,
+            requirementId: checkpointRequirementId,
+            completed: false,
+            evidenceNote:
+              "TSBDE portal record and HHSC certificate HT-2048",
+            expectedRevision: 4,
+          },
+          email,
+        );
+        assert.equal(closedEdit.status, 409);
+        assert.equal((await closedEdit.json()).code, "cycle_closed");
+        assert.throws(
+          () =>
+            database.raw
+              .prepare(
+                `UPDATE dental_checkpoint_states
+                 SET evidence_note = 'tampered'
+                 WHERE requirement_id = ?`,
+              )
+              .run(checkpointRequirementId),
+          /dental_checkpoint_not_mutable/i,
+        );
+      } finally {
+        database.close();
+      }
+    },
+  );
+
+  await t.test(
+    "keeps the managed dental catalog complete, unique, and parent-safe",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const [runtimeSource, dentalSource, carryoverSource, compatibilitySource] =
+        await Promise.all([
+          readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
+          readFile(new URL("../db/catalog/dental.ts", import.meta.url), "utf8"),
+          readFile(new URL("../app/lib/carryover.ts", import.meta.url), "utf8"),
+          readFile(
+            new URL("../app/lib/requirementCompatibility.ts", import.meta.url),
+            "utf8",
+          ),
+        ]);
+      const [runtimeModule, dentalModule, carryoverModule, compatibilityModule] =
+        await Promise.all([
+          importTypeScriptModule(
+            `${runtimeSource}\nexport const __dentalCatalogNonce = "catalog";`,
+          ),
+          importTypeScriptModule(dentalSource),
+          importTypeScriptModule(carryoverSource),
+          importTypeScriptModule(compatibilitySource),
+        ]);
+      await runtimeModule.initializeDatabase(database);
+
+      try {
+        assert.deepEqual(Object.keys(dentalModule).sort(), [
+          "DENTAL_ADDITIONAL_TOTAL_BINDINGS",
+          "DENTAL_AGGREGATE_PARENT_CATEGORY_IDS",
+          "DENTAL_ANNUAL_REQUIREMENT_WINDOW_BINDINGS",
+          "DENTAL_CATEGORY_SEED_BINDINGS",
+          "DENTAL_CHECKPOINT_RULE_CATEGORY_IDS",
+          "DENTAL_DAILY_UNIT_LIMIT_BINDINGS",
+          "DENTAL_LINKED_APPLICABILITY_CATEGORY_GROUPS",
+          "DENTAL_MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+          "DENTAL_PER_ACTIVITY_UNIT_LIMIT_BINDINGS",
+          "DENTAL_RENEWAL_TASK_COPY_BINDINGS",
+          "DENTAL_REQUIRED_SUBTYPE_CATEGORY_GROUPS",
+          "DENTAL_RULE_SET_SEED_BINDINGS",
+        ]);
+
+        const ruleBindings = dentalModule.DENTAL_RULE_SET_SEED_BINDINGS;
+        const categoryBindings = dentalModule.DENTAL_CATEGORY_SEED_BINDINGS;
+        const ruleIds = ruleBindings.map((binding) => binding[0]);
+        const stableKeys = ruleBindings.map((binding) => binding[1]);
+        const categoryIds = categoryBindings.map((binding) => binding[0]);
+        assert.equal(ruleBindings.length, 12);
+        assert.equal(categoryBindings.length, 118);
+        assert.equal(new Set(ruleIds).size, ruleIds.length);
+        assert.equal(new Set(stableKeys).size, stableKeys.length);
+        assert.equal(new Set(categoryIds).size, categoryIds.length);
+        assert.deepEqual(
+          dentalModule.DENTAL_RENEWAL_TASK_COPY_BINDINGS.map(
+            (binding) => binding[0],
+          ),
+          ruleIds,
+        );
+        assert.deepEqual(
+          [...dentalModule.DENTAL_MAXIMUM_CLASSIFICATION_RULE_SET_IDS].sort(),
+          [...ruleIds].sort(),
+        );
+
+        const categoriesById = new Map(
+          categoryBindings.map((binding) => [binding[0], binding]),
+        );
+        const parentedCategories = categoryBindings.filter(
+          (binding) => binding[6] !== null,
+        );
+        assert.deepEqual(
+          parentedCategories.map((binding) => [
+            binding[0],
+            binding[6],
+          ]),
+          [
+            [
+              "tx-dentist-2026-pain-management-year-1",
+              "tx-dentist-2026-pain-management",
+            ],
+            [
+              "tx-dentist-2026-pain-management-year-2",
+              "tx-dentist-2026-pain-management",
+            ],
+          ],
+        );
+        for (const category of parentedCategories) {
+          const parent = categoriesById.get(category[6]);
+          assert.ok(parent, `${category[0]} must reference an exported parent`);
+          assert.equal(
+            parent[1],
+            category[1],
+            `${category[0]} and its parent must belong to one rule set`,
+          );
+          assert.ok(
+            parent[10] < category[10],
+            `${category[0]} must sort after its parent`,
+          );
+        }
+
+        assert.deepEqual(
+          {
+            ...database.raw
+              .prepare(
+                `SELECT
+                   COUNT(DISTINCT rule.id) AS ruleCount,
+                   COUNT(category.id) AS categoryCount,
+                   COUNT(DISTINCT rule.stable_key) AS stableKeyCount,
+                   COUNT(DISTINCT category.id) AS uniqueCategoryCount
+                 FROM rule_sets rule
+                 JOIN rule_categories category
+                   ON category.rule_set_id = rule.id
+                 WHERE rule.profession = 'Dental'`,
+              )
+              .get(),
+          },
+          {
+            ruleCount: 12,
+            categoryCount: 118,
+            stableKeyCount: 12,
+            uniqueCategoryCount: 118,
+          },
+        );
+        assert.equal(
+          database.raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM rule_categories child
+               LEFT JOIN rule_categories parent
+                 ON parent.id = child.parent_category_id
+                 AND parent.rule_set_id = child.rule_set_id
+               WHERE child.rule_set_id IN (
+                 SELECT id FROM rule_sets WHERE profession = 'Dental'
+               )
+                 AND child.parent_category_id IS NOT NULL
+                 AND parent.id IS NULL`,
+            )
+            .get().count,
+          0,
+        );
+
+        const category = (categoryId) => {
+          const binding = categoriesById.get(categoryId);
+          assert.ok(binding, `missing dental category ${categoryId}`);
+          return binding;
+        };
+        const caBls = category("ca-dentist-2026-bls-credit");
+        const caNonBls = category("ca-dentist-2026-non-bls-credit");
+        assert.deepEqual(
+          [caBls[3], caBls[4], caBls[9]],
+          [
+            4,
+            "maximum",
+            "California dentist BLS-credit classification",
+          ],
+        );
+        assert.deepEqual(
+          [caNonBls[3], caNonBls[4], caNonBls[9]],
+          [
+            0,
+            "informational",
+            "California dentist BLS-credit classification",
+          ],
+        );
+        assert.deepEqual(
+          dentalModule.DENTAL_DAILY_UNIT_LIMIT_BINDINGS,
+          [
+            ["ca-dentist-2026-v1", 8],
+            ["ca-dental-hygienist-2026-v1", 8],
+          ],
+        );
+
+        const nyCardiopulmonary = category(
+          "ny-dentist-2026-cardiopulmonary-credit",
+        );
+        assert.deepEqual(
+          [nyCardiopulmonary[3], nyCardiopulmonary[4]],
+          [12, "maximum"],
+        );
+        assert.deepEqual(
+          dentalModule.DENTAL_REQUIRED_SUBTYPE_CATEGORY_GROUPS[0],
+          [
+            "ny-dentist-2026-cardiopulmonary-credit",
+            [
+              "ny-dentist-2026-cpr-course",
+              "ny-dentist-2026-cpr-aed-bls-course",
+              "ny-dentist-2026-initial-acls-pals-course",
+              "ny-dentist-2026-acls-recertification-course",
+            ],
+          ],
+        );
+        assert.deepEqual(
+          dentalModule.DENTAL_PER_ACTIVITY_UNIT_LIMIT_BINDINGS.slice(0, 4),
+          [
+            ["ny-dentist-2026-cpr-course", 3],
+            ["ny-dentist-2026-cpr-aed-bls-course", 4.5],
+            ["ny-dentist-2026-initial-acls-pals-course", 12],
+            ["ny-dentist-2026-acls-recertification-course", 6],
+          ],
+        );
+
+        const txPainParent = category(
+          "tx-dentist-2026-pain-management",
+        );
+        const txPainYear1 = category(
+          "tx-dentist-2026-pain-management-year-1",
+        );
+        const txPainYear2 = category(
+          "tx-dentist-2026-pain-management-year-2",
+        );
+        assert.deepEqual(
+          [
+            txPainParent[3],
+            txPainParent[4],
+            txPainYear1[3],
+            txPainYear1[5],
+            txPainYear2[3],
+            txPainYear2[5],
+          ],
+          [4, "minimum", 2, "nested", 2, "nested"],
+        );
+        assert.deepEqual(
+          dentalModule.DENTAL_LINKED_APPLICABILITY_CATEGORY_GROUPS,
+          [
+            [
+              "tx-dentist-2026-pain-management",
+              "tx-dentist-2026-pain-management-year-1",
+              "tx-dentist-2026-pain-management-year-2",
+            ],
+          ],
+        );
+        assert.deepEqual(
+          dentalModule.DENTAL_ANNUAL_REQUIREMENT_WINDOW_BINDINGS,
+          [
+            ["tx-dentist-2026-pain-management-year-1", 0, 12],
+            ["tx-dentist-2026-pain-management-year-2", 12, 24],
+          ],
+        );
+        const txLaserSupervisor = category(
+          "tx-dentist-2026-laser-supervision-qualification",
+        );
+        assert.deepEqual(
+          [
+            txLaserSupervisor[3],
+            txLaserSupervisor[4],
+            txLaserSupervisor[7],
+          ],
+          [0, "informational", "conditional"],
+        );
+        assert.ok(
+          dentalModule.DENTAL_CHECKPOINT_RULE_CATEGORY_IDS.includes(
+            txLaserSupervisor[0],
+          ),
+        );
+
+        const paCommunication = category(
+          "pa-dental-hygienist-2026-communication-skills",
+        );
+        const paOther = category(
+          "pa-dental-hygienist-2026-other-approved-subject",
+        );
+        assert.deepEqual(
+          [paCommunication[3], paCommunication[4], paCommunication[9]],
+          [
+            3,
+            "maximum",
+            "Pennsylvania dental hygienist subject-limit classification",
+          ],
+        );
+        assert.deepEqual(
+          [paOther[3], paOther[4], paOther[9]],
+          [
+            0,
+            "informational",
+            "Pennsylvania dental hygienist subject-limit classification",
+          ],
+        );
+
+        assert.equal(
+          carryoverModule.portalCarryoverLookbackMonths(
+            "nj-dentist-2026-confirmed-carryover",
+          ),
+          24,
+        );
+        assert.equal(
+          carryoverModule.portalCarryoverLookbackMonths(
+            "tx-dentist-2026-confirmed-carryover",
+          ),
+          12,
+        );
+        assert.equal(
+          compatibilityModule.requirementsAreIncompatible(
+            {
+              id: "nj-carryover",
+              name: "NJ carryover",
+              ruleCategoryId:
+                "nj-dentist-2026-confirmed-carryover",
+            },
+            {
+              id: "nj-opioids",
+              name: "NJ opioids",
+              ruleCategoryId:
+                "nj-dentist-2026-prescription-opioids",
+            },
+          ),
+          true,
+        );
+        assert.equal(
+          compatibilityModule.requirementsAreIncompatible(
+            {
+              id: "tx-carryover",
+              name: "TX carryover",
+              ruleCategoryId:
+                "tx-dentist-2026-confirmed-carryover",
+            },
+            {
+              id: "tx-self-study",
+              name: "TX self study",
+              ruleCategoryId: "tx-dentist-2026-self-study",
+            },
+          ),
+          true,
+        );
+      } finally {
+        database.close();
+      }
+    },
+  );
+
+  await t.test(
+    "requires the California BLS complement and enforces the eight-unit write ceiling",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __caDentalDailyNonce = "daily";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      const email = "ca-dental-daily@example.com";
+      const userId = await expectedStableUserId(email);
+      testCloudflareEnv.DB = database;
+
+      try {
+        const createResponse = await postWorkspace(
+          "createCredential",
+          {
+            ruleSetId: "ca-dentist-2026-v1",
+            cycleStart: "2027-01-01",
+            deadline: "2028-12-31",
+            templateEligibilityAttested: true,
+          },
+          email,
+        );
+        assert.equal(
+          createResponse.status,
+          200,
+          JSON.stringify(await createResponse.clone().json()),
+        );
+        const credentialId = (await createResponse.json()).id;
+        const requirementId = (categoryId) => {
+          const row = database.raw
+            .prepare(
+              `SELECT id
+               FROM credential_requirements
+               WHERE credential_id = ?
+                 AND rule_category_id = ?`,
+            )
+            .get(credentialId, categoryId);
+          assert.ok(row, `missing requirement ${categoryId}`);
+          return row.id;
+        };
+        const liveId = requirementId(
+          "ca-dentist-2026-live-interactive",
+        );
+        const patientBenefitId = requirementId(
+          "ca-dentist-2026-patient-practice-benefit",
+        );
+        const nonBlsId = requirementId(
+          "ca-dentist-2026-non-bls-credit",
+        );
+        const blsId = requirementId("ca-dentist-2026-bls-credit");
+
+        const missingComplement = await postWorkspace(
+          "addActivity",
+          {
+            title: "Unclassified California dental CE",
+            completionDate: "2027-03-15",
+            totalUnits: 1,
+            credentialId,
+            requirementIds: [liveId, patientBenefitId],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(missingComplement.status, 409);
+        assert.equal(
+          (await missingComplement.json()).code,
+          "maximum_classification_required",
+        );
+
+        const conflictingComplement = await postWorkspace(
+          "addActivity",
+          {
+            title: "Conflicting California BLS classification",
+            completionDate: "2027-03-15",
+            totalUnits: 1,
+            credentialId,
+            requirementIds: [
+              liveId,
+              patientBenefitId,
+              nonBlsId,
+              blsId,
+            ],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(conflictingComplement.status, 409);
+        assert.equal(
+          (await conflictingComplement.json()).code,
+          "exclusive_requirement_conflict",
+        );
+
+        const firstActivity = await postWorkspace(
+          "addActivity",
+          {
+            title: "California dental morning program",
+            completionDate: "2027-03-15",
+            totalUnits: 5,
+            credentialId,
+            requirementIds: [liveId, patientBenefitId, nonBlsId],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(
+          firstActivity.status,
+          200,
+          JSON.stringify(await firstActivity.clone().json()),
+        );
+
+        const overDailyLimit = await postWorkspace(
+          "addActivity",
+          {
+            title: "California dental evening program",
+            completionDate: "2027-03-15",
+            totalUnits: 4,
+            credentialId,
+            requirementIds: [liveId, patientBenefitId, nonBlsId],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(overDailyLimit.status, 409);
+        assert.equal(
+          (await overDailyLimit.json()).code,
+          "dental_daily_unit_limit_exceeded",
+        );
+        assert.equal(
+          database.raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM activity_allocations
+               WHERE credential_id = ?`,
+            )
+            .get(credentialId).count,
+          1,
+          "the rejected same-day activity must not be written",
+        );
+
+        database.raw
+          .prepare(
+            `INSERT INTO activities (
+               id, user_id, title, provider, completion_date, total_units,
+               evidence_status
+             ) VALUES (?, ?, ?, ?, ?, ?, 'attached')`,
+          )
+          .run(
+            "activity-ca-atomic-guard",
+            userId,
+            "Concurrent California dental entry",
+            "California Dental Institute",
+            "2027-03-15",
+            4,
+          );
+        assert.throws(
+          () =>
+            database.raw
+              .prepare(
+                `INSERT INTO activity_allocations (
+                   id, activity_id, credential_id, requirement_id,
+                   allocated_units
+                 ) VALUES (?, ?, ?, NULL, ?)`,
+              )
+              .run(
+                "allocation-ca-atomic-guard",
+                "activity-ca-atomic-guard",
+                credentialId,
+                4,
+              ),
+          /dental_daily_unit_limit_exceeded/i,
+          "the database must serialize same-day writes behind the cap",
+        );
+        database.raw
+          .prepare("DELETE FROM activities WHERE id = ?")
+          .run("activity-ca-atomic-guard");
+        const firstActivityId = (await firstActivity.json()).id;
+        const firstAllocationId = database.raw
+          .prepare(
+            `SELECT id
+             FROM activity_allocations
+             WHERE activity_id = ? AND credential_id = ?`,
+          )
+          .get(firstActivityId, credentialId).id;
+        assert.throws(
+          () =>
+            database.raw
+              .prepare(
+                `UPDATE activity_allocations
+                 SET allocated_units = 9
+                 WHERE id = ?`,
+              )
+              .run(firstAllocationId),
+          /dental_daily_unit_limit_exceeded/i,
+          "the database must guard allocation corrections too",
+        );
+
+        const companionActivity = await postWorkspace(
+          "addActivity",
+          {
+            title: "California dental afternoon program",
+            completionDate: "2027-03-15",
+            totalUnits: 3,
+            credentialId,
+            requirementIds: [liveId, patientBenefitId, nonBlsId],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(
+          companionActivity.status,
+          200,
+          JSON.stringify(await companionActivity.clone().json()),
+        );
+        const firstActivityRevision = database.raw
+          .prepare(
+            `SELECT revision
+             FROM activities
+             WHERE id = ?`,
+          )
+          .get(firstActivityId).revision;
+        const moveAndIncrease = await postWorkspace(
+          "updateActivity",
+          {
+            activityId: firstActivityId,
+            expectedRevision: Number(firstActivityRevision),
+            title: "California dental full-day program",
+            provider: "California Dental Institute",
+            completionDate: "2027-03-16",
+            totalUnits: 8,
+          },
+          email,
+        );
+        assert.equal(
+          moveAndIncrease.status,
+          200,
+          JSON.stringify(await moveAndIncrease.clone().json()),
+        );
+        assert.deepEqual(
+          database.raw
+            .prepare(
+              `SELECT
+                 activity.completion_date AS completionDate,
+                 SUM(allocation.allocated_units) AS allocatedUnits
+               FROM activity_allocations allocation
+               JOIN activities activity
+                 ON activity.id = allocation.activity_id
+               WHERE allocation.credential_id = ?
+               GROUP BY activity.completion_date
+               ORDER BY activity.completion_date`,
+            )
+            .all(credentialId)
+            .map((row) => ({ ...row })),
+          [
+            {
+              completionDate: "2027-03-15",
+              allocatedUnits: 3,
+            },
+            {
+              completionDate: "2027-03-16",
+              allocatedUnits: 8,
+            },
+          ],
+          "a date-and-unit correction must be judged by its final per-day totals, not the transient old date",
+        );
+
+        const partialActivity = await postWorkspace(
+          "addActivity",
+          {
+            title: "California ten-hour conference",
+            completionDate: "2027-04-10",
+            totalUnits: 10,
+            allocatedUnits: 2,
+            credentialId,
+            requirementIds: [liveId, patientBenefitId, nonBlsId],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(
+          partialActivity.status,
+          200,
+          JSON.stringify(await partialActivity.clone().json()),
+        );
+        const partialActivityId = (await partialActivity.json()).id;
+        const partialAllocationId = database.raw
+          .prepare(
+            `SELECT id
+             FROM activity_allocations
+             WHERE activity_id = ? AND credential_id = ?`,
+          )
+          .get(partialActivityId, credentialId).id;
+        const correctedAllocation = await postWorkspace(
+          "updateActivityAllocationRequirements",
+          {
+            allocationId: partialAllocationId,
+            allocatedUnits: 3,
+            requirementIds: [
+              liveId,
+              patientBenefitId,
+              nonBlsId,
+            ],
+          },
+          email,
+        );
+        assert.equal(
+          correctedAllocation.status,
+          200,
+          JSON.stringify(
+            await correctedAllocation.clone().json(),
+          ),
+        );
+        assert.deepEqual(
+          {
+            ...database.raw
+              .prepare(
+                `SELECT
+                   activity.total_units AS totalUnits,
+                   allocation.allocated_units AS allocatedUnits,
+                   MIN(match.matched_units) AS minimumMatchedUnits,
+                   MAX(match.matched_units) AS maximumMatchedUnits
+                 FROM activity_allocations allocation
+                 JOIN activities activity
+                   ON activity.id = allocation.activity_id
+                 JOIN activity_requirement_matches match
+                   ON match.allocation_id = allocation.id
+                 WHERE allocation.id = ?
+                 GROUP BY allocation.id`,
+              )
+              .get(partialAllocationId),
+          },
+          {
+            totalUnits: 10,
+            allocatedUnits: 3,
+            minimumMatchedUnits: 3,
+            maximumMatchedUnits: 3,
+          },
+          "correcting one credential allocation must preserve the full certificate amount and update every selected requirement match",
+        );
+      } finally {
+        database.close();
+      }
+    },
+  );
+
+  await t.test(
+    "rechecks the California eight-unit ceiling before submission",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __caDentalSubmitNonce = "submit";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      const email = "ca-dental-submit@example.com";
+      const userId = await expectedStableUserId(email);
+      testCloudflareEnv.DB = database;
+
+      try {
+        const createResponse = await postWorkspace(
+          "createCredential",
+          {
+            ruleSetId: "ca-dentist-2026-v1",
+            cycleStart: "2027-01-01",
+            deadline: "2028-12-31",
+            templateEligibilityAttested: true,
+          },
+          email,
+        );
+        assert.equal(
+          createResponse.status,
+          200,
+          JSON.stringify(await createResponse.clone().json()),
+        );
+        const credentialId = (await createResponse.json()).id;
+        const checkpointRequirementId = database.raw
+          .prepare(
+            `SELECT id
+             FROM credential_requirements
+             WHERE credential_id = ?
+               AND rule_category_id = 'ca-dentist-2026-current-bls'`,
+          )
+          .get(credentialId).id;
+        const checkpoint = await postWorkspace(
+          "saveDentalCheckpoint",
+          {
+            credentialId,
+            requirementId: checkpointRequirementId,
+            completed: true,
+            evidenceNote: "Current qualifying BLS card CA-BLS-2028",
+            expectedRevision: 0,
+          },
+          email,
+        );
+        assert.equal(checkpoint.status, 200);
+
+        database.raw
+          .prepare(
+            "DROP TRIGGER dental_daily_unit_limit_allocation_insert_guard_v1",
+          )
+          .run();
+        database.raw
+          .prepare(
+            `INSERT INTO activities (
+               id, user_id, title, provider, completion_date, total_units,
+               evidence_status
+             ) VALUES (?, ?, ?, ?, ?, ?, 'attached')`,
+          )
+          .run(
+            "activity-ca-legacy-nine",
+            userId,
+            "Legacy nine-unit California day",
+            "California Dental Institute",
+            "2027-05-20",
+            9,
+          );
+        database.raw
+          .prepare(
+            `INSERT INTO activity_allocations (
+               id, activity_id, credential_id, requirement_id,
+               allocated_units
+             ) VALUES (?, ?, ?, NULL, ?)`,
+          )
+          .run(
+            "allocation-ca-legacy-nine",
+            "activity-ca-legacy-nine",
+            credentialId,
+            9,
+          );
+
+        const submission = await postWorkspace(
+          "markSubmitted",
+          {
+            credentialId,
+            submissionDate: "2028-12-01",
+            confirmationNumber: "CA-DENTAL-DAILY-GUARD",
+          },
+          email,
+        );
+        assert.equal(submission.status, 409);
+        assert.equal(
+          (await submission.json()).code,
+          "dental_daily_unit_limit_exceeded",
+        );
+        assert.equal(
+          database.raw
+            .prepare("SELECT status FROM credentials WHERE id = ?")
+            .get(credentialId).status,
+          "active",
+        );
+
+        database.raw
+          .prepare("DELETE FROM activities WHERE id = ?")
+          .run("activity-ca-legacy-nine");
+        const exactLimitRequirementId = (categoryId) =>
+          database.raw
+            .prepare(
+              `SELECT id
+               FROM credential_requirements
+               WHERE credential_id = ?
+                 AND rule_category_id = ?`,
+            )
+            .get(credentialId, categoryId).id;
+        const exactLimitRequirementIds = [
+          exactLimitRequirementId(
+            "ca-dentist-2026-live-interactive",
+          ),
+          exactLimitRequirementId(
+            "ca-dentist-2026-patient-practice-benefit",
+          ),
+          exactLimitRequirementId(
+            "ca-dentist-2026-non-bls-credit",
+          ),
+        ];
+        const prepareBeforeDailyDrift = database.prepare.bind(database);
+        let dailyDriftInjected = false;
+        database.prepare = (sql) => {
+          const statement = prepareBeforeDailyDrift(sql);
+          if (
+            /SELECT COALESCE\(SUM\(allocation\.allocated_units\), 0\) AS allocatedUnits/i.test(
+              normalizedSql(sql),
+            )
+          ) {
+            const firstBeforeDailyDrift =
+              statement.first.bind(statement);
+            statement.first = async () => {
+              const row = await firstBeforeDailyDrift();
+              if (
+                !dailyDriftInjected &&
+                Math.abs(Number(row?.allocatedUnits) - 7.45) <
+                  0.000001
+              ) {
+                dailyDriftInjected = true;
+                return {
+                  ...row,
+                  allocatedUnits: 7.450000000000001,
+                };
+              }
+              return row;
+            };
+          }
+          return statement;
+        };
+        const exactLimitActivityIds = [];
+        for (const [index, totalUnits] of [
+          4.73,
+          2.72,
+          0.55,
+        ].entries()) {
+          const exactLimitActivity = await postWorkspace(
+            "addActivity",
+            {
+              title: `California decimal CE ${index + 1}`,
+              completionDate: "2027-06-01",
+              totalUnits,
+              credentialId,
+              requirementIds: exactLimitRequirementIds,
+              evidenceStatus: "attached",
+            },
+            email,
+          );
+          assert.equal(
+            exactLimitActivity.status,
+            200,
+            JSON.stringify(
+              await exactLimitActivity.clone().json(),
+            ),
+          );
+          exactLimitActivityIds.push(
+            (await exactLimitActivity.json()).id,
+          );
+        }
+        database.prepare = prepareBeforeDailyDrift;
+        assert.equal(
+          dailyDriftInjected,
+          true,
+          "the API preflight must tolerate D1 returning a binary drift just above 7.45 before the final 0.55 units",
+        );
+        database.raw
+          .prepare(
+            `UPDATE activity_allocations
+             SET allocated_units = allocated_units + 0.0000005
+             WHERE activity_id = ?`,
+          )
+          .run(exactLimitActivityIds[0]);
+        const floatingPointDailyTotal = Number(
+          database.raw
+            .prepare(
+              `SELECT SUM(allocation.allocated_units) AS allocatedUnits
+               FROM activity_allocations allocation
+               JOIN activities activity
+                 ON activity.id = allocation.activity_id
+               WHERE allocation.credential_id = ?
+                 AND activity.completion_date = '2027-06-01'`,
+            )
+            .get(credentialId).allocatedUnits,
+        );
+        assert.ok(
+          floatingPointDailyTotal > 8 &&
+            floatingPointDailyTotal < 8.000001,
+          "the fixture must stay within the database trigger's floating-point tolerance",
+        );
+        const exactLimitSubmission = await postWorkspace(
+          "markSubmitted",
+          {
+            credentialId,
+            submissionDate: "2028-12-01",
+            confirmationNumber: "CA-DENTAL-EXACT-EIGHT",
+          },
+          email,
+        );
+        assert.equal(
+          exactLimitSubmission.status,
+          200,
+          JSON.stringify(
+            await exactLimitSubmission.clone().json(),
+          ),
+        );
+      } finally {
+        database.close();
+      }
+    },
+  );
+
+  await t.test(
+    "requires an exact New York cardiopulmonary subtype and caps both records and the combined bucket",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __nyDentalCardioNonce = "cardio";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      const email = "ny-dental-cardio@example.com";
+      testCloudflareEnv.DB = database;
+
+      try {
+        const createResponse = await postWorkspace(
+          "createCredential",
+          {
+            ruleSetId: "ny-dentist-2026-v1",
+            cycleStart: "2027-01-01",
+            deadline: "2029-12-31",
+            templateEligibilityAttested: true,
+          },
+          email,
+        );
+        assert.equal(
+          createResponse.status,
+          200,
+          JSON.stringify(await createResponse.clone().json()),
+        );
+        const credentialId = (await createResponse.json()).id;
+        const requirementId = (categoryId) => {
+          const row = database.raw
+            .prepare(
+              `SELECT id
+               FROM credential_requirements
+               WHERE credential_id = ?
+                 AND rule_category_id = ?`,
+            )
+            .get(credentialId, categoryId);
+          assert.ok(row, `missing requirement ${categoryId}`);
+          return row.id;
+        };
+        const liveId = requirementId(
+          "ny-dentist-2026-live-interactive",
+        );
+        const otherCeId = requirementId(
+          "ny-dentist-2026-other-acceptable-ce",
+        );
+        const cardioId = requirementId(
+          "ny-dentist-2026-cardiopulmonary-credit",
+        );
+        const cprId = requirementId("ny-dentist-2026-cpr-course");
+        const blsId = requirementId(
+          "ny-dentist-2026-cpr-aed-bls-course",
+        );
+        const initialAclsId = requirementId(
+          "ny-dentist-2026-initial-acls-pals-course",
+        );
+
+        const missingSubtype = await postWorkspace(
+          "addActivity",
+          {
+            title: "New York CPR without a subtype",
+            completionDate: "2027-02-10",
+            totalUnits: 2,
+            credentialId,
+            requirementIds: [liveId, cardioId],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(missingSubtype.status, 409);
+        assert.equal(
+          (await missingSubtype.json()).code,
+          "dental_cardiopulmonary_subtype_required",
+        );
+
+        const missingAggregate = await postWorkspace(
+          "addActivity",
+          {
+            title: "New York CPR subtype without aggregate",
+            completionDate: "2027-02-11",
+            totalUnits: 2,
+            credentialId,
+            requirementIds: [liveId, otherCeId, cprId],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(missingAggregate.status, 409);
+        assert.equal(
+          (await missingAggregate.json()).code,
+          "dental_cardiopulmonary_aggregate_required",
+        );
+
+        const multipleSubtypes = await postWorkspace(
+          "addActivity",
+          {
+            title: "New York CPR with two subtypes",
+            completionDate: "2027-02-12",
+            totalUnits: 2,
+            credentialId,
+            requirementIds: [liveId, cardioId, cprId, blsId],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(multipleSubtypes.status, 409);
+        assert.equal(
+          (await multipleSubtypes.json()).code,
+          "exclusive_requirement_conflict",
+        );
+
+        const overPerRecord = await postWorkspace(
+          "addActivity",
+          {
+            title: "New York CPR over its per-record ceiling",
+            completionDate: "2027-02-13",
+            totalUnits: 3.5,
+            credentialId,
+            requirementIds: [liveId, cardioId, cprId],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(overPerRecord.status, 409);
+        assert.equal(
+          (await overPerRecord.json()).code,
+          "dental_per_activity_unit_limit_exceeded",
+        );
+
+        const validCourses = [
+          {
+            title: "New York CPR course",
+            completionDate: "2027-03-01",
+            totalUnits: 3,
+            subtypeId: cprId,
+          },
+          {
+            title: "New York initial ACLS course one",
+            completionDate: "2027-04-01",
+            totalUnits: 5,
+            subtypeId: initialAclsId,
+          },
+          {
+            title: "New York initial ACLS course two",
+            completionDate: "2027-05-01",
+            totalUnits: 5,
+            subtypeId: initialAclsId,
+          },
+        ];
+        for (const course of validCourses) {
+          const response = await postWorkspace(
+            "addActivity",
+            {
+              title: course.title,
+              completionDate: course.completionDate,
+              totalUnits: course.totalUnits,
+              credentialId,
+              requirementIds: [
+                liveId,
+                cardioId,
+                course.subtypeId,
+              ],
+              evidenceStatus: "attached",
+            },
+            email,
+          );
+          assert.equal(
+            response.status,
+            200,
+            JSON.stringify(await response.clone().json()),
+          );
+        }
+
+        const workspaceResponse = await fetchWorker(
+          "https://license-lantern.example/api/workspace",
+          { headers: authHeaders(email) },
+        );
+        assert.equal(workspaceResponse.status, 200);
+        const workspace = await workspaceResponse.json();
+        const credential = workspace.credentials.find(
+          (candidate) => candidate.id === credentialId,
+        );
+        assert.ok(credential);
+        const cardioRequirement = credential.requirements.find(
+          (requirement) =>
+            requirement.ruleCategoryId ===
+            "ny-dentist-2026-cardiopulmonary-credit",
+        );
+        assert.ok(cardioRequirement);
+        assert.deepEqual(
+          {
+            rawEarned: cardioRequirement.rawEarned,
+            countableEarned: cardioRequirement.countableEarned,
+            excessUnits: cardioRequirement.excessUnits,
+          },
+          {
+            rawEarned: 13,
+            countableEarned: 12,
+            excessUnits: 1,
+          },
+        );
+      } finally {
+        database.close();
+      }
+    },
+  );
+
+  await t.test(
+    "enforces the Pennsylvania hygienist communication complement and three-hour cap",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __paDentalCommunicationNonce = "communication";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      const email = "pa-dental-communication@example.com";
+      testCloudflareEnv.DB = database;
+
+      try {
+        const createResponse = await postWorkspace(
+          "createCredential",
+          {
+            ruleSetId: "pa-dental-hygienist-2026-v1",
+            cycleStart: "2027-01-01",
+            deadline: "2028-12-31",
+            templateEligibilityAttested: true,
+          },
+          email,
+        );
+        assert.equal(
+          createResponse.status,
+          200,
+          JSON.stringify(await createResponse.clone().json()),
+        );
+        const credentialId = (await createResponse.json()).id;
+        const requirementId = (categoryId) => {
+          const row = database.raw
+            .prepare(
+              `SELECT id
+               FROM credential_requirements
+               WHERE credential_id = ?
+                 AND rule_category_id = ?`,
+            )
+            .get(credentialId, categoryId);
+          assert.ok(row, `missing requirement ${categoryId}`);
+          return row.id;
+        };
+        const lectureId = requirementId(
+          "pa-dental-hygienist-2026-lecture-clinical",
+        );
+        const communicationId = requirementId(
+          "pa-dental-hygienist-2026-communication-skills",
+        );
+        const otherSubjectId = requirementId(
+          "pa-dental-hygienist-2026-other-approved-subject",
+        );
+
+        const missingSubject = await postWorkspace(
+          "addActivity",
+          {
+            title: "Pennsylvania unclassified hygienist CE",
+            completionDate: "2027-03-01",
+            totalUnits: 1,
+            credentialId,
+            requirementIds: [lectureId],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(missingSubject.status, 409);
+        assert.equal(
+          (await missingSubject.json()).code,
+          "maximum_classification_required",
+        );
+
+        const conflictingSubject = await postWorkspace(
+          "addActivity",
+          {
+            title: "Pennsylvania conflicting subject classification",
+            completionDate: "2027-03-02",
+            totalUnits: 1,
+            credentialId,
+            requirementIds: [
+              lectureId,
+              communicationId,
+              otherSubjectId,
+            ],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(conflictingSubject.status, 409);
+        assert.equal(
+          (await conflictingSubject.json()).code,
+          "exclusive_requirement_conflict",
+        );
+
+        const communication = await postWorkspace(
+          "addActivity",
+          {
+            title: "Patient communication workshop",
+            completionDate: "2027-04-01",
+            totalUnits: 4,
+            credentialId,
+            requirementIds: [lectureId, communicationId],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(
+          communication.status,
+          200,
+          JSON.stringify(await communication.clone().json()),
+        );
+        const complement = await postWorkspace(
+          "addActivity",
+          {
+            title: "Clinical dental hygiene workshop",
+            completionDate: "2027-05-01",
+            totalUnits: 2,
+            credentialId,
+            requirementIds: [lectureId, otherSubjectId],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(
+          complement.status,
+          200,
+          JSON.stringify(await complement.clone().json()),
+        );
+
+        const workspaceResponse = await fetchWorker(
+          "https://license-lantern.example/api/workspace",
+          { headers: authHeaders(email) },
+        );
+        assert.equal(workspaceResponse.status, 200);
+        const workspace = await workspaceResponse.json();
+        const credential = workspace.credentials.find(
+          (candidate) => candidate.id === credentialId,
+        );
+        assert.ok(credential);
+        const communicationRequirement = credential.requirements.find(
+          (requirement) =>
+            requirement.ruleCategoryId ===
+            "pa-dental-hygienist-2026-communication-skills",
+        );
+        assert.ok(communicationRequirement);
+        assert.deepEqual(
+          {
+            rawEarned: communicationRequirement.rawEarned,
+            countableEarned: communicationRequirement.countableEarned,
+            excessUnits: communicationRequirement.excessUnits,
+          },
+          {
+            rawEarned: 4,
+            countableEarned: 3,
+            excessUnits: 1,
+          },
+        );
+      } finally {
+        database.close();
+      }
+    },
+  );
+
+  await t.test(
+    "links Texas direct-care applicability and enforces annual pain-management children",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __txDentalPainNonce = "pain";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      const email = "tx-dental-pain@example.com";
+      testCloudflareEnv.DB = database;
+
+      try {
+        const conflictingCreate = await postWorkspace(
+          "createCredential",
+          {
+            ruleSetId: "tx-dentist-2026-v1",
+            cycleStart: "2027-01-01",
+            deadline: "2028-12-31",
+            templateEligibilityAttested: true,
+            applicabilityChoices: [
+              {
+                ruleCategoryId:
+                  "tx-dentist-2026-pain-management",
+                status: "applies",
+              },
+              {
+                ruleCategoryId:
+                  "tx-dentist-2026-pain-management-year-1",
+                status: "applies",
+              },
+              {
+                ruleCategoryId:
+                  "tx-dentist-2026-pain-management-year-2",
+                status: "not_applicable",
+              },
+            ],
+          },
+          email,
+        );
+        assert.equal(conflictingCreate.status, 409);
+        assert.equal(
+          (await conflictingCreate.json()).code,
+          "dental_linked_applicability_conflict",
+        );
+
+        const createResponse = await postWorkspace(
+          "createCredential",
+          {
+            ruleSetId: "tx-dentist-2026-v1",
+            cycleStart: "2027-01-01",
+            deadline: "2028-12-31",
+            templateEligibilityAttested: true,
+            applicabilityChoices: [
+              {
+                ruleCategoryId:
+                  "tx-dentist-2026-pain-management",
+                status: "applies",
+              },
+            ],
+          },
+          email,
+        );
+        assert.equal(
+          createResponse.status,
+          200,
+          JSON.stringify(await createResponse.clone().json()),
+        );
+        const credentialId = (await createResponse.json()).id;
+        const requirementId = (categoryId) => {
+          const row = database.raw
+            .prepare(
+              `SELECT id
+               FROM credential_requirements
+               WHERE credential_id = ?
+                 AND rule_category_id = ?`,
+            )
+            .get(credentialId, categoryId);
+          assert.ok(row, `missing requirement ${categoryId}`);
+          return row.id;
+        };
+        const technicalId = requirementId(
+          "tx-dentist-2026-technical-scientific",
+        );
+        const classroomId = requirementId(
+          "tx-dentist-2026-classroom-live",
+        );
+        const currentPeriodId = requirementId(
+          "tx-dentist-2026-current-period",
+        );
+        const parentId = requirementId(
+          "tx-dentist-2026-pain-management",
+        );
+        const year1Id = requirementId(
+          "tx-dentist-2026-pain-management-year-1",
+        );
+        const year2Id = requirementId(
+          "tx-dentist-2026-pain-management-year-2",
+        );
+        const linkedRequirementRows = () =>
+          database.raw
+            .prepare(
+              `SELECT
+                 rule_category_id AS categoryId,
+                 applicability_status AS applicabilityStatus,
+                 is_active AS isActive
+               FROM credential_requirements
+               WHERE id IN (?, ?, ?)
+               ORDER BY rule_category_id`,
+            )
+            .all(parentId, year1Id, year2Id)
+            .map((row) => ({ ...row }));
+        const appliesRows = [
+          {
+            categoryId: "tx-dentist-2026-pain-management",
+            applicabilityStatus: "applies",
+            isActive: 1,
+          },
+          {
+            categoryId: "tx-dentist-2026-pain-management-year-1",
+            applicabilityStatus: "applies",
+            isActive: 1,
+          },
+          {
+            categoryId: "tx-dentist-2026-pain-management-year-2",
+            applicabilityStatus: "applies",
+            isActive: 1,
+          },
+        ];
+        assert.deepEqual(
+          linkedRequirementRows(),
+          appliesRows,
+          "creation must propagate direct-care applicability to both annual children",
+        );
+
+        const conflictingApplicability = await postWorkspace(
+          "updateRequirementApplicability",
+          {
+            credentialId,
+            choices: [
+              {
+                requirementId: parentId,
+                status: "applies",
+              },
+              {
+                requirementId: year1Id,
+                status: "not_applicable",
+              },
+            ],
+          },
+          email,
+        );
+        assert.equal(conflictingApplicability.status, 409);
+        assert.equal(
+          (await conflictingApplicability.json()).code,
+          "dental_linked_applicability_conflict",
+        );
+
+        const linkedDeactivation = await postWorkspace(
+          "updateRequirementApplicability",
+          {
+            credentialId,
+            choices: [
+              {
+                requirementId: parentId,
+                status: "not_applicable",
+              },
+            ],
+          },
+          email,
+        );
+        assert.equal(
+          linkedDeactivation.status,
+          200,
+          JSON.stringify(await linkedDeactivation.clone().json()),
+        );
+        assert.ok(
+          linkedRequirementRows().every(
+            (row) =>
+              row.applicabilityStatus === "not_applicable" &&
+              row.isActive === 0,
+          ),
+        );
+
+        const linkedApplicability = await postWorkspace(
+          "updateRequirementApplicability",
+          {
+            credentialId,
+            choices: [
+              {
+                requirementId: parentId,
+                status: "applies",
+              },
+            ],
+          },
+          email,
+        );
+        assert.equal(
+          linkedApplicability.status,
+          200,
+          JSON.stringify(await linkedApplicability.clone().json()),
+        );
+        assert.deepEqual(
+          linkedRequirementRows(),
+          appliesRows,
+        );
+
+        const directParent = await postWorkspace(
+          "addActivity",
+          {
+            title: "Texas pain management tagged to parent",
+            completionDate: "2027-06-01",
+            totalUnits: 2,
+            credentialId,
+            requirementIds: [
+              technicalId,
+              classroomId,
+              currentPeriodId,
+              parentId,
+            ],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(directParent.status, 409);
+        assert.equal(
+          (await directParent.json()).code,
+          "dental_annual_child_category_required",
+        );
+
+        const wrongFirstYear = await postWorkspace(
+          "addActivity",
+          {
+            title: "Texas first-year pain management recorded in year two",
+            completionDate: "2028-01-01",
+            totalUnits: 2,
+            credentialId,
+            requirementIds: [
+              technicalId,
+              classroomId,
+              currentPeriodId,
+              year1Id,
+            ],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(wrongFirstYear.status, 409);
+        assert.equal(
+          (await wrongFirstYear.json()).code,
+          "dental_annual_requirement_outside_year",
+        );
+
+        const wrongSecondYear = await postWorkspace(
+          "addActivity",
+          {
+            title: "Texas second-year pain management recorded in year one",
+            completionDate: "2027-12-31",
+            totalUnits: 2,
+            credentialId,
+            requirementIds: [
+              technicalId,
+              classroomId,
+              currentPeriodId,
+              year2Id,
+            ],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(wrongSecondYear.status, 409);
+        assert.equal(
+          (await wrongSecondYear.json()).code,
+          "dental_annual_requirement_outside_year",
+        );
+
+        const bothYears = await postWorkspace(
+          "addActivity",
+          {
+            title: "Texas pain management tagged to both years",
+            completionDate: "2027-12-31",
+            totalUnits: 2,
+            credentialId,
+            requirementIds: [
+              technicalId,
+              classroomId,
+              currentPeriodId,
+              year1Id,
+              year2Id,
+            ],
+            evidenceStatus: "attached",
+          },
+          email,
+        );
+        assert.equal(bothYears.status, 409);
+        assert.equal(
+          (await bothYears.json()).code,
+          "incompatible_requirement_conflict",
+        );
+
+        let firstYearActivityId;
+        for (const activity of [
+          {
+            title: "Texas pain management first renewal year",
+            completionDate: "2027-12-31",
+            requirementId: year1Id,
+          },
+          {
+            title: "Texas pain management second renewal year",
+            completionDate: "2028-01-01",
+            requirementId: year2Id,
+          },
+        ]) {
+          const response = await postWorkspace(
+            "addActivity",
+            {
+              title: activity.title,
+              completionDate: activity.completionDate,
+              totalUnits: 2,
+              credentialId,
+              requirementIds: [
+                technicalId,
+                classroomId,
+                currentPeriodId,
+                activity.requirementId,
+              ],
+              evidenceStatus: "attached",
+            },
+            email,
+          );
+          assert.equal(
+            response.status,
+            200,
+            JSON.stringify(await response.clone().json()),
+          );
+          const responseBody = await response.json();
+          if (activity.requirementId === year1Id) {
+            firstYearActivityId = responseBody.id;
+          }
+        }
+        assert.ok(firstYearActivityId);
+
+        const workspaceResponse = await fetchWorker(
+          "https://license-lantern.example/api/workspace",
+          { headers: authHeaders(email) },
+        );
+        assert.equal(workspaceResponse.status, 200);
+        const workspace = await workspaceResponse.json();
+        const credential = workspace.credentials.find(
+          (candidate) => candidate.id === credentialId,
+        );
+        assert.ok(credential);
+        const progressByCategory = new Map(
+          credential.requirements.map((requirement) => [
+            requirement.ruleCategoryId,
+            requirement,
+          ]),
+        );
+        assert.deepEqual(
+          [
+            "tx-dentist-2026-pain-management",
+            "tx-dentist-2026-pain-management-year-1",
+            "tx-dentist-2026-pain-management-year-2",
+          ].map((categoryId) => ({
+            categoryId,
+            rawEarned: progressByCategory.get(categoryId).rawEarned,
+            countableEarned:
+              progressByCategory.get(categoryId).countableEarned,
+            remainingUnits:
+              progressByCategory.get(categoryId).remainingUnits,
+          })),
+          [
+            {
+              categoryId: "tx-dentist-2026-pain-management",
+              rawEarned: 4,
+              countableEarned: 4,
+              remainingUnits: 0,
+            },
+            {
+              categoryId:
+                "tx-dentist-2026-pain-management-year-1",
+              rawEarned: 2,
+              countableEarned: 2,
+              remainingUnits: 0,
+            },
+            {
+              categoryId:
+                "tx-dentist-2026-pain-management-year-2",
+              rawEarned: 2,
+              countableEarned: 2,
+              remainingUnits: 0,
+            },
+          ],
+        );
+
+        const firstYearActivity = database.raw
+          .prepare(
+            `SELECT revision
+             FROM activities
+             WHERE id = ?`,
+          )
+          .get(firstYearActivityId);
+        assert.ok(firstYearActivity);
+        const archiveResponse = await postWorkspace(
+          "archiveActivity",
+          {
+            activityId: firstYearActivityId,
+            expectedRevision: Number(firstYearActivity.revision),
+          },
+          email,
+        );
+        assert.equal(
+          archiveResponse.status,
+          200,
+          JSON.stringify(await archiveResponse.clone().json()),
+        );
+        const archivedActivity = database.raw
+          .prepare(
+            `SELECT
+               revision,
+               archived_at AS archivedAt
+             FROM activities
+             WHERE id = ?`,
+          )
+          .get(firstYearActivityId);
+        assert.ok(archivedActivity?.archivedAt);
+
+        const prepareBeforeRestoreRace = database.prepare.bind(database);
+        let restoreRaceInjected = false;
+        database.prepare = (sql) => {
+          const statement = prepareBeforeRestoreRace(sql);
+          if (
+            !restoreRaceInjected &&
+            /^UPDATE activities SET archived_at = NULL/i.test(
+              normalizedSql(sql),
+            )
+          ) {
+            const runBeforeRestoreRace = statement.run.bind(statement);
+            statement.run = async () => {
+              database.raw
+                .prepare(
+                  `UPDATE credential_requirements
+                   SET
+                     applicability_status = 'not_applicable',
+                     is_active = 0
+                   WHERE id = ?`,
+                )
+                .run(year1Id);
+              restoreRaceInjected = true;
+              return runBeforeRestoreRace();
+            };
+          }
+          return statement;
+        };
+        const racedRestore = await postWorkspace(
+          "restoreActivity",
+          {
+            activityId: firstYearActivityId,
+            expectedRevision: Number(archivedActivity.revision),
+          },
+          email,
+        );
+        database.prepare = prepareBeforeRestoreRace;
+        assert.equal(restoreRaceInjected, true);
+        assert.equal(racedRestore.status, 409);
+        assert.equal(
+          (await racedRestore.json()).code,
+          "requirement_inactive",
+        );
+        assert.ok(
+          database.raw
+            .prepare(
+              `SELECT archived_at AS archivedAt
+               FROM activities
+               WHERE id = ?`,
+            )
+            .get(firstYearActivityId).archivedAt,
+          "the restore must remain rolled back when a matched conditional requirement changes after preflight",
+        );
+      } finally {
+        database.close();
+      }
+    },
+  );
+
+  await t.test(
+    "allows only compatible New Jersey and Texas dental carryover overlays",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __dentalCarryoverNonce = "carryover";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      const email = "dental-carryover@example.com";
+      testCloudflareEnv.DB = database;
+
+      try {
+        const createManagedCredential = async (
+          ruleSetId,
+          applicabilityChoices,
+        ) => {
+          const response = await postWorkspace(
+            "createCredential",
+            {
+              ruleSetId,
+              cycleStart: "2027-01-01",
+              deadline: "2028-12-31",
+              templateEligibilityAttested: true,
+              applicabilityChoices,
+            },
+            email,
+          );
+          assert.equal(
+            response.status,
+            200,
+            JSON.stringify(await response.clone().json()),
+          );
+          return (await response.json()).id;
+        };
+        const requirementId = (credentialId, categoryId) => {
+          const row = database.raw
+            .prepare(
+              `SELECT id
+               FROM credential_requirements
+               WHERE credential_id = ?
+                 AND rule_category_id = ?`,
+            )
+            .get(credentialId, categoryId);
+          assert.ok(row, `missing requirement ${categoryId}`);
+          return row.id;
+        };
+
+        const njCredentialId = await createManagedCredential(
+          "nj-dentist-2026-v1",
+          [
+            {
+              ruleCategoryId:
+                "nj-dentist-2026-confirmed-carryover",
+              status: "applies",
+            },
+          ],
+        );
+        const njLiveId = requirementId(
+          njCredentialId,
+          "nj-dentist-2026-live-interactive",
+        );
+        const njCarryoverId = requirementId(
+          njCredentialId,
+          "nj-dentist-2026-confirmed-carryover",
+        );
+        const njOtherId = requirementId(
+          njCredentialId,
+          "nj-dentist-2026-other-approved-subject",
+        );
+        const njCprId = requirementId(
+          njCredentialId,
+          "nj-dentist-2026-cpr",
+        );
+
+        const validNjCarryover = await postWorkspace(
+          "addActivity",
+          {
+            title: "Board-confirmed New Jersey general carryover",
+            completionDate: "2026-06-30",
+            totalUnits: 2,
+            credentialId: njCredentialId,
+            requirementIds: [njLiveId, njCarryoverId, njOtherId],
+            evidenceStatus: "attached",
+            evidenceReference: "NJ Board carryover notice NJ-DEN-42",
+            portalCarryoverAttested: true,
+          },
+          email,
+        );
+        assert.equal(
+          validNjCarryover.status,
+          200,
+          JSON.stringify(await validNjCarryover.clone().json()),
+        );
+
+        const invalidNjMandatoryOverlay = await postWorkspace(
+          "addActivity",
+          {
+            title: "New Jersey carryover mislabeled as current CPR",
+            completionDate: "2026-07-01",
+            totalUnits: 1,
+            credentialId: njCredentialId,
+            requirementIds: [
+              njLiveId,
+              njCarryoverId,
+              njOtherId,
+              njCprId,
+            ],
+            evidenceStatus: "attached",
+            evidenceReference: "NJ Board carryover notice NJ-DEN-43",
+            portalCarryoverAttested: true,
+          },
+          email,
+        );
+        assert.equal(invalidNjMandatoryOverlay.status, 409);
+        assert.equal(
+          (await invalidNjMandatoryOverlay.json()).code,
+          "incompatible_requirement_conflict",
+        );
+
+        const txCredentialId = await createManagedCredential(
+          "tx-dentist-2026-v1",
+          [
+            {
+              ruleCategoryId:
+                "tx-dentist-2026-confirmed-carryover",
+              status: "applies",
+            },
+          ],
+        );
+        const txTechnicalId = requirementId(
+          txCredentialId,
+          "tx-dentist-2026-technical-scientific",
+        );
+        const txClassroomId = requirementId(
+          txCredentialId,
+          "tx-dentist-2026-classroom-live",
+        );
+        const txSelfStudyId = requirementId(
+          txCredentialId,
+          "tx-dentist-2026-self-study",
+        );
+        const txCarryoverId = requirementId(
+          txCredentialId,
+          "tx-dentist-2026-confirmed-carryover",
+        );
+
+        const validTxCarryover = await postWorkspace(
+          "addActivity",
+          {
+            title: "Board-confirmed Texas classroom carryover",
+            completionDate: "2026-06-30",
+            totalUnits: 3,
+            credentialId: txCredentialId,
+            requirementIds: [
+              txTechnicalId,
+              txClassroomId,
+              txCarryoverId,
+            ],
+            evidenceStatus: "attached",
+            evidenceReference: "TSBDE carryover notice TX-DEN-51",
+            portalCarryoverAttested: true,
+          },
+          email,
+        );
+        assert.equal(
+          validTxCarryover.status,
+          200,
+          JSON.stringify(await validTxCarryover.clone().json()),
+        );
+
+        const invalidTxSelfStudy = await postWorkspace(
+          "addActivity",
+          {
+            title: "Texas carryover mislabeled as self study",
+            completionDate: "2026-07-01",
+            totalUnits: 1,
+            credentialId: txCredentialId,
+            requirementIds: [
+              txTechnicalId,
+              txSelfStudyId,
+              txCarryoverId,
+            ],
+            evidenceStatus: "attached",
+            evidenceReference: "TSBDE carryover notice TX-DEN-52",
+            portalCarryoverAttested: true,
+          },
+          email,
+        );
+        assert.equal(invalidTxSelfStudy.status, 409);
+        assert.equal(
+          (await invalidTxSelfStudy.json()).code,
+          "incompatible_requirement_conflict",
+        );
+
+        assert.deepEqual(
+          database.raw
+            .prepare(
+              `SELECT
+                 credential_id AS credentialId,
+                 COUNT(*) AS activityCount,
+                 SUM(allocated_units) AS allocatedUnits
+               FROM activity_allocations
+               WHERE credential_id IN (?, ?)
+               GROUP BY credential_id
+               ORDER BY credential_id`,
+            )
+            .all(njCredentialId, txCredentialId)
+            .map((row) => ({ ...row })),
+          [
+            {
+              credentialId: njCredentialId,
+              activityCount: 1,
+              allocatedUnits: 2,
+            },
+            {
+              credentialId: txCredentialId,
+              activityCount: 1,
+              allocatedUnits: 3,
+            },
+          ].sort((left, right) =>
+            left.credentialId.localeCompare(right.credentialId),
+          ),
+        );
+      } finally {
+        database.close();
+      }
+    },
+  );
+
+  await t.test(
+    "rolls managed dental cycles consecutively on the latest stable-key template",
+    async () => {
+      const resolver = {
+        resolveFirst(call) {
+          if (
+            /SELECT next_credential_id AS nextCredentialId FROM renewal_acceptances/i.test(
+              call.sql,
+            )
+          ) {
+            return null;
+          }
+          if (
+            /FROM credentials credential\s+LEFT JOIN credential_cycle_links cycle/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "credential-tx-dentist-submitted",
+              ruleSetId: "tx-dentist-2026-v1",
+              ruleStableKey: "tx-dentist",
+              credentialName:
+                "Dentist — standard full biennial renewal without a sedation permit",
+              profession: "Dental",
+              jurisdiction: "Texas",
+              issuer: "Texas State Board of Dental Examiners",
+              status: "submitted",
+              cycleStart: "2027-01-01",
+              deadline: "2028-12-31",
+              totalRequired: 24,
+              unitLabel: "CE hours",
+              seriesId: "series-tx-dentist",
+              cycleMonths: 24,
+            };
+          }
+          if (
+            /FROM renewal_submissions WHERE credential_id = \? AND user_id = \?/i.test(
+              call.sql,
+            )
+          ) {
+            return {
+              id: "submission-tx-dentist",
+              submittedAt: "2028-12-20T12:00:00.000Z",
+            };
+          }
+          if (
+            /FROM rule_sets prior_rule\s+JOIN rule_sets current_rule/i.test(
+              call.sql,
+            ) &&
+            /current_rule\.profession = 'Dental'/i.test(call.sql)
+          ) {
+            assert.deepEqual(call.bindings, [
+              "tx-dentist-2026-v1",
+              "tx-dentist",
+            ]);
+            return {
+              id: "tx-dentist-2026-v1",
+              credentialName:
+                "Dentist — standard full biennial renewal without a sedation permit",
+              profession: "Dental",
+              jurisdiction: "Texas",
+              issuer: "Texas State Board of Dental Examiners",
+              totalUnits: 24,
+              unitLabel: "CE hours",
+              cycleMonths: 24,
+            };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (/FROM rule_categories WHERE rule_set_id = \?/i.test(call.sql)) {
+            assert.deepEqual(call.bindings, ["tx-dentist-2026-v1"]);
+          }
+          return [];
+        },
+      };
+      const database = new FakeDatabase(resolver);
+      testCloudflareEnv.DB = database;
+      const basePayload = {
+        credentialId: "credential-tx-dentist-submitted",
+        acceptedAt: "2029-01-01",
+        reference: "TSBDE-RENEWED-2029",
+        nextCycleStart: "2029-01-01",
+        nextDeadline: "2030-12-31",
+        officialDatesAttested: true,
+        templateEligibilityAttested: true,
+      };
+
+      const gappedCycle = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...basePayload,
+          nextCycleStart: "2029-01-02",
+          nextDeadline: "2031-01-01",
+        },
+      );
+      assert.equal(gappedCycle.status, 409);
+      assert.equal(
+        (await gappedCycle.json()).code,
+        "dental_next_cycle_must_be_consecutive",
+      );
+
+      const manuallySelected = await postWorkspace(
+        "markRenewalAccepted",
+        {
+          ...basePayload,
+          nextRuleSetId: "tx-dentist-2026-v1",
+        },
+      );
+      assert.equal(manuallySelected.status, 400);
+      assert.equal(
+        (await manuallySelected.json()).code,
+        "dental_next_template_not_selectable",
+      );
+
+      const accepted = await postWorkspace(
+        "markRenewalAccepted",
+        basePayload,
+      );
+      assert.equal(
+        accepted.status,
+        200,
+        JSON.stringify(await accepted.clone().json()),
+      );
+      const statements = flattenedStatements(database);
+      const latestRuleLookup = database.calls.find(
+        (call) =>
+          call.method === "first" &&
+          /FROM rule_sets prior_rule\s+JOIN rule_sets current_rule/i.test(
+            call.sql,
+          ) &&
+          /current_rule\.profession = 'Dental'/i.test(call.sql),
+      );
+      assert.ok(latestRuleLookup);
+      assert.match(
+        latestRuleLookup.sql,
+        /prior_rule\.stable_key IS \?[\s\S]*?ORDER BY current_rule\.version DESC[\s\S]*?LIMIT 1/i,
+      );
+      assert.deepEqual(latestRuleLookup.bindings, [
+        "tx-dentist-2026-v1",
+        "tx-dentist",
+      ]);
+
+      const nextCredentialInsert = statements.find((statement) =>
+        /^INSERT INTO credentials \(/i.test(statement.sql),
+      );
+      const oldCycleUpdate = statements.find((statement) =>
+        /UPDATE credentials SET status = 'renewed'/i.test(statement.sql),
+      );
+      assert.ok(nextCredentialInsert);
+      assert.ok(oldCycleUpdate);
+      assert.equal(
+        nextCredentialInsert.bindings[2],
+        "tx-dentist-2026-v1",
+      );
+      assert.equal(nextCredentialInsert.bindings[7], "2029-01-01");
+      assert.equal(nextCredentialInsert.bindings[8], "2030-12-31");
+      assert.match(
+        nextCredentialInsert.sql,
+        /FROM credentials source[\s\S]*?source\.status = 'renewed'/i,
+      );
+      assert.match(
+        oldCycleUpdate.sql,
+        /NOT EXISTS \([\s\S]*?FROM rule_sets newer_rule[\s\S]*?newer_rule\.stable_key = selected_rule\.stable_key[\s\S]*?newer_rule\.version > selected_rule\.version/i,
+      );
+      assert.match(
+        oldCycleUpdate.sql,
+        /selected_rule\.stable_key IS \?[\s\S]*?prior_rule_snapshot\.id = \?[\s\S]*?prior_rule_snapshot\.stable_key IS \?/i,
+      );
+      assert.match(
+        oldCycleUpdate.sql,
+        /credentials\.profession <> 'Dental'[\s\S]*?dental_checkpoint_states checkpoint_state[\s\S]*?COALESCE\(checkpoint_state\.status, 'pending'\)[\s\S]*?<>\s*'completed'/i,
+      );
+
+      class RacingDentalDatabase extends FakeDatabase {
+        async batch(statementsToRun) {
+          if (
+            statementsToRun.some((statement) =>
+              /UPDATE credentials SET status = 'renewed'/i.test(
+                normalizedSql(statement.sql),
+              ),
+            )
+          ) {
+            throw new Error("simulated dental catalog race");
+          }
+          return super.batch(statementsToRun);
+        }
+      }
+      const racingDatabase = new RacingDentalDatabase(resolver);
+      testCloudflareEnv.DB = racingDatabase;
+      const raced = await postWorkspace(
+        "markRenewalAccepted",
+        basePayload,
+      );
+      assert.equal(raced.status, 409);
+      assert.equal(
+        (await raced.json()).code,
+        "dental_current_template_changed",
+      );
     },
   );
 });

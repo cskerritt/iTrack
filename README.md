@@ -32,13 +32,14 @@ rewards meaningful record-keeping without punitive daily streaks.
 - opt-in private web-push reminders with per-device controls
 - responsive dashboard with home-screen and standalone-app support
 - server-derived ownership from authenticated workspace identity
+- zero-credit dental checkpoints with evidence references that never inflate CE totals
 
-The catalog contains 104 current, source-linked templates across 24 profession
-labels and 56 issuing bodies. Sixty-seven templates are state-specific across
+The catalog contains 116 current, source-linked templates across 25 profession
+labels and 62 issuing bodies. Seventy-nine templates are state-specific across
 California, Florida, New Jersey, New York, Pennsylvania, and Texas; the
 remainder are United States-wide or global. A template can represent a
 phase, tenure tier, or other variant of the same credential, so this count
-does not mean 97 distinct license types. Templates model applicable minimums, nested
+does not mean 109 distinct license types. Templates model applicable minimums, nested
 subrequirements, overlapping facets, and reporting caps where the source can
 be represented safely. Conditional rules require an explicit answer for each
 cycle. Users can search the catalog or create a custom credential, and the

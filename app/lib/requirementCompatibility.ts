@@ -121,6 +121,46 @@ export const REQUIREMENT_INCOMPATIBILITIES: readonly RequirementIncompatibility[
       message:
         "Pennsylvania LPC suicide-prevention credit cannot also satisfy the ethics minimum for the same credited time.",
     },
+    {
+      categoryIds: [
+        "tx-dentist-2026-pain-management-year-1",
+        "tx-dentist-2026-pain-management-year-2",
+      ],
+      message:
+        "A Texas pain-management activity belongs to either the first or second renewal year, based on its completion date; it cannot satisfy both annual minimums.",
+    },
+    ...incompatibleWithEach(
+      "nj-dentist-2026-confirmed-carryover",
+      [
+        "nj-dentist-2026-cpr",
+        "nj-dentist-2026-pharmacology-internal-medicine",
+        "nj-dentist-2026-infection-control",
+        "nj-dentist-2026-ethics-law",
+        "nj-dentist-2026-prescription-opioids",
+        "nj-dentist-2026-sedation-permit",
+      ],
+      "New Jersey dentist carryover is limited to eligible excess general credit and cannot satisfy a current-biennium mandatory subject or sedation-permit requirement.",
+    ),
+    ...incompatibleWithEach(
+      "tx-dentist-2026-confirmed-carryover",
+      [
+        "tx-dentist-2026-self-study",
+        "tx-dentist-2026-current-period",
+        "tx-dentist-2026-pain-management-year-1",
+        "tx-dentist-2026-pain-management-year-2",
+        "tx-dentist-2026-dea-controlled-substances",
+      ],
+      "Texas carryover must be eligible excess classroom or lecture credit from the allowed prior-year window; it cannot be self-study, current-period credit, or satisfy a current-cycle dentist duty.",
+    ),
+    ...incompatibleWithEach(
+      "tx-dental-hygienist-2026-confirmed-carryover",
+      [
+        "tx-dental-hygienist-2026-self-study",
+        "tx-dental-hygienist-2026-current-period",
+        "tx-dental-hygienist-2026-local-anesthesia",
+      ],
+      "Texas carryover must be eligible excess classroom or lecture credit from the allowed prior-year window; it cannot be self-study, current-period credit, or satisfy the current local-anesthesia renewal increment.",
+    ),
   ];
 
 function matchingIncompatibility(

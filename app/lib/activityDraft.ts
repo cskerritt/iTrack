@@ -5,6 +5,7 @@ export type SavedActivityDraft = {
   title: string;
   completionDate: string;
   totalUnits: string;
+  allocatedUnits: string;
   provider: string;
 };
 
@@ -111,6 +112,7 @@ export function serializeActivityDraft(
     title: boundedString(value.title, MAX_RECOVERABLE_TEXT_LENGTH),
     completionDate: recoverDate(value.completionDate),
     totalUnits: recoverUnits(value.totalUnits),
+    allocatedUnits: recoverUnits(value.allocatedUnits),
     provider: boundedString(value.provider, MAX_RECOVERABLE_TEXT_LENGTH),
   };
   return JSON.stringify(payload);
@@ -152,6 +154,7 @@ export function parseActivityDraft(
     title: recoverString(candidate.title, MAX_RECOVERABLE_TEXT_LENGTH),
     completionDate: recoverDate(candidate.completionDate),
     totalUnits: recoverUnits(candidate.totalUnits),
+    allocatedUnits: recoverUnits(candidate.allocatedUnits),
     provider: recoverString(candidate.provider, MAX_RECOVERABLE_TEXT_LENGTH),
   };
   if (

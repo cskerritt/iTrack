@@ -1,4 +1,15 @@
 import { getD1 } from "@/db";
+import {
+  DENTAL_ADDITIONAL_TOTAL_BINDINGS,
+  DENTAL_AGGREGATE_PARENT_CATEGORY_IDS,
+  DENTAL_ANNUAL_REQUIREMENT_WINDOW_BINDINGS,
+  DENTAL_CHECKPOINT_RULE_CATEGORY_IDS,
+  DENTAL_DAILY_UNIT_LIMIT_BINDINGS,
+  DENTAL_LINKED_APPLICABILITY_CATEGORY_GROUPS,
+  DENTAL_PER_ACTIVITY_UNIT_LIMIT_BINDINGS,
+  DENTAL_REQUIRED_SUBTYPE_CATEGORY_GROUPS,
+  DENTAL_RENEWAL_TASK_COPY_BINDINGS,
+} from "@/db/catalog/dental";
 import { NURSING_RENEWAL_TASK_COPY_BINDINGS } from "@/db/catalog/nursing";
 import {
   type RequestIdentity,
@@ -95,6 +106,33 @@ const NJ_PHARMACIST_CARRYOVER_OVERLAY_IDS = new Set([
   "nj-pharmacist-2026-immunizer",
   "nj-pharmacist-2026-cdtm",
 ]);
+const DENTAL_CARRYOVER_OVERLAY_IDS = new Map<string, ReadonlySet<string>>([
+  [
+    "nj-dentist-2026-confirmed-carryover",
+    new Set([
+      "nj-dentist-2026-live-interactive",
+      "nj-dentist-2026-distance-learning",
+      "nj-dentist-2026-other-approved-subject",
+      "nj-dentist-2026-practice-management",
+    ]),
+  ],
+  [
+    "tx-dentist-2026-confirmed-carryover",
+    new Set([
+      "tx-dentist-2026-technical-scientific",
+      "tx-dentist-2026-risk-management",
+      "tx-dentist-2026-classroom-live",
+    ]),
+  ],
+  [
+    "tx-dental-hygienist-2026-confirmed-carryover",
+    new Set([
+      "tx-dental-hygienist-2026-technical-scientific",
+      "tx-dental-hygienist-2026-risk-management",
+      "tx-dental-hygienist-2026-classroom-live",
+    ]),
+  ],
+]);
 const TX_PHARMACIST_STERILE_COMPOUNDING_CATEGORY_IDS = [
   "tx-pharmacist-2026-sterile-standard",
   "tx-pharmacist-2026-sterile-high-risk",
@@ -119,6 +157,81 @@ const FLORIDA_NURSING_DOMESTIC_VIOLENCE_CATEGORY_BY_RULE_SET = new Map([
 const FLORIDA_NURSING_DOMESTIC_VIOLENCE_CATEGORY_IDS = new Set(
   FLORIDA_NURSING_DOMESTIC_VIOLENCE_CATEGORY_BY_RULE_SET.values(),
 );
+const DENTAL_ADDITIONAL_CATEGORY_BY_RULE_SET = new Map<string, string>(
+  DENTAL_ADDITIONAL_TOTAL_BINDINGS.map(
+    ([ruleSetId, categoryId]) => [ruleSetId, categoryId] as const,
+  ),
+);
+const DENTAL_ADDITIONAL_CATEGORY_IDS = new Set<string>(
+  DENTAL_ADDITIONAL_CATEGORY_BY_RULE_SET.values(),
+);
+const DENTAL_ANNUAL_REQUIREMENT_YEAR_WINDOWS = new Map<
+  string,
+  { startsAfterMonths: number; endsAfterMonths: number }
+>(
+  DENTAL_ANNUAL_REQUIREMENT_WINDOW_BINDINGS.map(
+    ([categoryId, startsAfterMonths, endsAfterMonths]) =>
+      [
+        categoryId,
+        { startsAfterMonths, endsAfterMonths },
+      ] as const,
+  ),
+);
+const DENTAL_DAILY_UNIT_LIMIT_BY_RULE_SET = new Map<string, number>(
+  DENTAL_DAILY_UNIT_LIMIT_BINDINGS,
+);
+const DENTAL_DAILY_UNIT_LIMIT_EPSILON = 0.000001;
+const DENTAL_PER_ACTIVITY_UNIT_LIMIT_BY_CATEGORY_ID = new Map<
+  string,
+  number
+>(
+  DENTAL_PER_ACTIVITY_UNIT_LIMIT_BINDINGS,
+);
+const DENTAL_REQUIRED_SUBTYPES_BY_AGGREGATE_CATEGORY_ID = new Map<
+  string,
+  ReadonlySet<string>
+>(
+  DENTAL_REQUIRED_SUBTYPE_CATEGORY_GROUPS.map(
+    ([aggregateCategoryId, subtypeCategoryIds]) => [
+      aggregateCategoryId,
+      new Set<string>(subtypeCategoryIds),
+    ],
+  ),
+);
+const DENTAL_SUBTYPE_TO_AGGREGATE_CATEGORY_ID = new Map<string, string>(
+  DENTAL_REQUIRED_SUBTYPE_CATEGORY_GROUPS.flatMap(
+    ([aggregateCategoryId, subtypeCategoryIds]) =>
+      subtypeCategoryIds.map(
+        (subtypeCategoryId) =>
+          [subtypeCategoryId, aggregateCategoryId] as const,
+      ),
+  ),
+);
+const DENTAL_LINKED_APPLICABILITY_CATEGORY_IDS = new Map<
+  string,
+  readonly string[]
+>(
+  DENTAL_LINKED_APPLICABILITY_CATEGORY_GROUPS.flatMap(
+    (categoryIds) =>
+      categoryIds.map(
+        (categoryId) =>
+          [
+            categoryId,
+            categoryIds.filter((candidateId) => candidateId !== categoryId),
+          ] as const,
+      ),
+  ),
+);
+const DENTAL_AGGREGATE_PARENT_CATEGORY_ID_SET = new Set<string>(
+  DENTAL_AGGREGATE_PARENT_CATEGORY_IDS,
+);
+const DENTAL_CHECKPOINT_RULE_CATEGORY_ID_SET = new Set<string>(
+  DENTAL_CHECKPOINT_RULE_CATEGORY_IDS,
+);
+const DENTAL_CHECKPOINT_RULE_CATEGORY_IDS_SQL =
+  DENTAL_CHECKPOINT_RULE_CATEGORY_IDS.map(
+    (categoryId) => `'${categoryId.replaceAll("'", "''")}'`,
+  ).join(", ");
 const PHARMACIST_RENEWAL_TASK_COPY = new Map<
   string,
   readonly [review: string, progress: string, submission: string]
@@ -181,6 +294,15 @@ const NURSING_RENEWAL_TASK_COPY = new Map<
       [ruleSetId, [review, progress, submission] as const] as const,
   ),
 );
+const DENTAL_RENEWAL_TASK_COPY = new Map<
+  string,
+  readonly [review: string, progress: string, submission: string]
+>(
+  DENTAL_RENEWAL_TASK_COPY_BINDINGS.map(
+    ([ruleSetId, review, progress, submission]) =>
+      [ruleSetId, [review, progress, submission] as const] as const,
+  ),
+);
 const CARRYOVER_REVIEW_TASK_TITLES = new Map([
   [
     CFP_2027_RULE_SET_ID,
@@ -214,13 +336,24 @@ const CARRYOVER_REVIEW_TASK_TITLES = new Map([
     "nj-lpn-2026-v1",
     "Confirm Board-eligible New Jersey LPN carryover, then record only evidence-backed credit",
   ],
+  [
+    "nj-dentist-2026-v1",
+    "Confirm Board-eligible New Jersey dentist carryover, then record only evidence-backed general credit",
+  ],
+  [
+    "tx-dentist-2026-v1",
+    "Confirm Texas classroom carryover from the one-year lookback, then record only evidence-backed credit",
+  ],
+  [
+    "tx-dental-hygienist-2026-v1",
+    "Confirm Texas classroom carryover from the one-year lookback, then record only evidence-backed credit",
+  ],
 ]);
 const REQUIREMENT_INCOMPATIBILITY_VALUES_SQL =
-  REQUIREMENT_INCOMPATIBILITIES.map(() => "(?, ?)").join(", ");
-const REQUIREMENT_INCOMPATIBILITY_BINDINGS =
-  REQUIREMENT_INCOMPATIBILITIES.flatMap(
-    ({ categoryIds }) => categoryIds,
-  );
+  REQUIREMENT_INCOMPATIBILITIES.map(
+    ({ categoryIds: [firstCategoryId, secondCategoryId] }) =>
+      `('${firstCategoryId.replaceAll("'", "''")}', '${secondCategoryId.replaceAll("'", "''")}')`,
+  ).join(", ");
 
 class RequestError extends Error {
   constructor(
@@ -330,6 +463,22 @@ function expectedRevisionField(payload: JsonRecord) {
   ) {
     throw new RequestError(
       "expectedRevision must be a positive integer",
+      400,
+      "invalid_revision",
+    );
+  }
+  return revision;
+}
+
+function expectedCheckpointRevisionField(payload: JsonRecord) {
+  const revision = payload.expectedRevision;
+  if (
+    typeof revision !== "number" ||
+    !Number.isInteger(revision) ||
+    revision < 0
+  ) {
+    throw new RequestError(
+      "expectedRevision must be a non-negative integer",
       400,
       "invalid_revision",
     );
@@ -1007,6 +1156,40 @@ function assertActivityDateFitsCredential(
     }
     return;
   }
+  const dentalAnnualWindow = requirements
+    .map((requirement) =>
+      requirement.ruleCategoryId
+        ? DENTAL_ANNUAL_REQUIREMENT_YEAR_WINDOWS.get(
+            requirement.ruleCategoryId,
+          )
+        : undefined,
+    )
+    .find(Boolean);
+  if (dentalAnnualWindow) {
+    const windowStart = monthsAfter(
+      credential.cycleStart,
+      dentalAnnualWindow.startsAfterMonths,
+    );
+    const windowEndExclusive = monthsAfter(
+      credential.cycleStart,
+      dentalAnnualWindow.endsAfterMonths,
+    );
+    const windowEndInclusive =
+      credential.deadline <= windowEndExclusive
+        ? credential.deadline
+        : daysBefore(windowEndExclusive, 1);
+    if (
+      completionDate < windowStart ||
+      completionDate > windowEndInclusive
+    ) {
+      throw new RequestError(
+        `This annual Texas dentist pain-management requirement accepts activity from ${windowStart} through ${windowEndInclusive}.`,
+        409,
+        "dental_annual_requirement_outside_year",
+      );
+    }
+    return;
+  }
   if (
     completionDate < credential.cycleStart ||
     completionDate > credential.deadline
@@ -1077,6 +1260,13 @@ function isManagedNursingCredential(
   return profession === "Nursing" && Boolean(ruleSetId);
 }
 
+function isManagedDentalCredential(
+  profession: string,
+  ruleSetId: string | null,
+) {
+  return profession === "Dental" && Boolean(ruleSetId);
+}
+
 function adjustedFloridaNursingTotal(
   ruleSetId: string | null,
   catalogTotal: number,
@@ -1104,6 +1294,31 @@ function adjustedFloridaNursingTotal(
   );
 }
 
+function adjustedDentalTotal(
+  ruleSetId: string | null,
+  catalogTotal: number,
+  requirements: Array<{
+    ruleCategoryId: string | null;
+    requiredUnits: number;
+    applicabilityStatus: ApplicabilityStatus;
+  }>,
+) {
+  if (!ruleSetId) return catalogTotal;
+  const additionalCategoryId =
+    DENTAL_ADDITIONAL_CATEGORY_BY_RULE_SET.get(ruleSetId);
+  if (!additionalCategoryId) return catalogTotal;
+  const additionalRequirement = requirements.find(
+    (requirement) =>
+      requirement.ruleCategoryId === additionalCategoryId,
+  );
+  return (
+    catalogTotal +
+    (additionalRequirement?.applicabilityStatus === "applies"
+      ? Number(additionalRequirement.requiredUnits)
+      : 0)
+  );
+}
+
 function nextTemplateFamily(ruleSetId: string | null) {
   if (ruleSetId?.startsWith(FLORIDA_INSURANCE_RULE_SET_PREFIX)) {
     return "florida_insurance" as const;
@@ -1125,7 +1340,11 @@ function renewalTaskSpecs(
   const nursingTaskCopy = ruleSetId
     ? NURSING_RENEWAL_TASK_COPY.get(ruleSetId)
     : null;
-  const managedTaskCopy = pharmacistTaskCopy ?? nursingTaskCopy;
+  const dentalTaskCopy = ruleSetId
+    ? DENTAL_RENEWAL_TASK_COPY.get(ruleSetId)
+    : null;
+  const managedTaskCopy =
+    pharmacistTaskCopy ?? nursingTaskCopy ?? dentalTaskCopy;
   if (managedTaskCopy) {
     const isTexasNursing =
       ruleSetId === "tx-rn-2026-v1" ||
@@ -2116,9 +2335,14 @@ function matchesFullCycleWindow(
   cycleMonths: number,
 ) {
   const nextCycleBoundary = monthsAfter(cycleStart, cycleMonths);
+  const fixedFebruary28LeapCycle =
+    nextCycleBoundary.endsWith("-03-01") &&
+    daysBefore(nextCycleBoundary, 1).endsWith("-02-29") &&
+    deadline === daysBefore(nextCycleBoundary, 2);
   return (
     deadline === nextCycleBoundary ||
-    deadline === daysBefore(nextCycleBoundary, 1)
+    deadline === daysBefore(nextCycleBoundary, 1) ||
+    fixedFebruary28LeapCycle
   );
 }
 
@@ -2285,6 +2509,21 @@ async function validateRequirementTags(
   if (
     selectedRequirements.some(
       (requirement) =>
+        requirement.ruleCategoryId !== null &&
+        DENTAL_CHECKPOINT_RULE_CATEGORY_ID_SET.has(
+          requirement.ruleCategoryId,
+        ),
+    )
+  ) {
+    throw new RequestError(
+      "Complete dental checkpoints in the checklist. Do not use them as CE activity tags; record any separately countable course hours under the applicable credit classifications.",
+      409,
+      "dental_checkpoint_activity_tag_not_allowed",
+    );
+  }
+  if (
+    selectedRequirements.some(
+      (requirement) =>
         requirement.ruleCategoryId === CFP_2027_GENERAL_CATEGORY_ID ||
         (requirement.ruleCategoryId?.startsWith("cfp-professional-2027-") &&
           !CFP_2027_ACTIVITY_TYPE_CATEGORY_IDS.has(
@@ -2296,6 +2535,21 @@ async function validateRequirementTags(
       "Classify every CFP CE activity as Principal Topics, Practice Management, or Ethics. Tagging the General CE parent directly is not allowed.",
       409,
       "cfp_activity_type_required",
+    );
+  }
+  if (
+    selectedRequirements.some(
+      (requirement) =>
+        requirement.ruleCategoryId !== null &&
+        DENTAL_AGGREGATE_PARENT_CATEGORY_ID_SET.has(
+          requirement.ruleCategoryId,
+        ),
+    )
+  ) {
+    throw new RequestError(
+      "Classify Texas pain-management credit to the first or second renewal year. The four-hour biennial parent is calculated automatically from those annual entries.",
+      409,
+      "dental_annual_child_category_required",
     );
   }
   const incompatibility = findRequirementIncompatibility(selectedRequirements);
@@ -2363,6 +2617,268 @@ async function validateRequirementTags(
   return selectedRequirements;
 }
 
+function assertDentalPerActivityRequirements(
+  selectedRequirements: readonly {
+    ruleCategoryId: string | null;
+  }[],
+  allocatedUnits: number,
+) {
+  const selectedCategoryIds = new Set(
+    selectedRequirements.flatMap((requirement) =>
+      requirement.ruleCategoryId ? [requirement.ruleCategoryId] : [],
+    ),
+  );
+  for (const [
+    aggregateCategoryId,
+    subtypeCategoryIds,
+  ] of DENTAL_REQUIRED_SUBTYPES_BY_AGGREGATE_CATEGORY_ID) {
+    const aggregateSelected = selectedCategoryIds.has(aggregateCategoryId);
+    const selectedSubtypeIds = [...subtypeCategoryIds].filter(
+      (subtypeCategoryId) =>
+        selectedCategoryIds.has(subtypeCategoryId),
+    );
+    if (aggregateSelected && selectedSubtypeIds.length !== 1) {
+      throw new RequestError(
+        "Choose exactly one New York cardiopulmonary course subtype with the combined CPR/BLS/ACLS/PALS classification.",
+        409,
+        "dental_cardiopulmonary_subtype_required",
+      );
+    }
+    if (!aggregateSelected && selectedSubtypeIds.length > 0) {
+      throw new RequestError(
+        "A New York cardiopulmonary course subtype must also use the combined CPR/BLS/ACLS/PALS classification.",
+        409,
+        "dental_cardiopulmonary_aggregate_required",
+      );
+    }
+    const perActivityLimit = selectedSubtypeIds
+      .map((subtypeCategoryId) =>
+        DENTAL_PER_ACTIVITY_UNIT_LIMIT_BY_CATEGORY_ID.get(
+          subtypeCategoryId,
+        ),
+      )
+      .find((limit) => limit !== undefined);
+    if (
+      perActivityLimit !== undefined &&
+      allocatedUnits > perActivityLimit
+    ) {
+      throw new RequestError(
+        `This New York cardiopulmonary course subtype may contribute no more than ${perActivityLimit} hours from one course record. Preserve the full activity total, but reduce the amount allocated to this credential.`,
+        409,
+        "dental_per_activity_unit_limit_exceeded",
+      );
+    }
+  }
+  for (const selectedCategoryId of selectedCategoryIds) {
+    const aggregateCategoryId =
+      DENTAL_SUBTYPE_TO_AGGREGATE_CATEGORY_ID.get(selectedCategoryId);
+    if (
+      aggregateCategoryId &&
+      !selectedCategoryIds.has(aggregateCategoryId)
+    ) {
+      throw new RequestError(
+        "A New York cardiopulmonary course subtype must also use the combined CPR/BLS/ACLS/PALS classification.",
+        409,
+        "dental_cardiopulmonary_aggregate_required",
+      );
+    }
+  }
+}
+
+async function assertDentalDailyUnitLimit(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+  ruleSetId: string | null | undefined,
+  completionDate: string,
+  proposedAllocatedUnits: number,
+  excludeActivityId?: string,
+) {
+  const resolvedRuleSetId =
+    ruleSetId === undefined
+      ? (
+          await query(
+            database,
+            `SELECT rule_set_id AS ruleSetId
+             FROM credentials
+             WHERE id = ? AND user_id = ?`,
+            [credentialId, identity.userId],
+          ).first<{ ruleSetId: string | null }>()
+        )?.ruleSetId ?? null
+      : ruleSetId;
+  const dailyLimit = resolvedRuleSetId
+    ? DENTAL_DAILY_UNIT_LIMIT_BY_RULE_SET.get(resolvedRuleSetId)
+    : undefined;
+  if (dailyLimit === undefined) return;
+  const existing = await query(
+    database,
+    `SELECT COALESCE(SUM(allocation.allocated_units), 0) AS allocatedUnits
+     FROM activity_allocations allocation
+     JOIN activities activity
+       ON activity.id = allocation.activity_id
+       AND activity.user_id = ?
+       AND activity.archived_at IS NULL
+     JOIN credentials credential
+       ON credential.id = allocation.credential_id
+       AND credential.user_id = activity.user_id
+     WHERE allocation.credential_id = ?
+       AND activity.completion_date = ?
+       AND (? IS NULL OR activity.id <> ?)`,
+    [
+      identity.userId,
+      credentialId,
+      completionDate,
+      excludeActivityId ?? null,
+      excludeActivityId ?? null,
+    ],
+  ).first<{ allocatedUnits: number }>();
+  const alreadyAllocated = Number(existing?.allocatedUnits ?? 0);
+  if (
+    alreadyAllocated + proposedAllocatedUnits <=
+    dailyLimit + DENTAL_DAILY_UNIT_LIMIT_EPSILON
+  ) {
+    return;
+  }
+  const remaining = Math.max(
+    0,
+    Math.round((dailyLimit - alreadyAllocated) * 100) / 100,
+  );
+  throw new RequestError(
+    `California permits no more than ${dailyLimit} countable CE units on one completion date. Preserve the full learning record, but allocate no more than ${remaining} additional units to this credential for ${completionDate}.`,
+    409,
+    "dental_daily_unit_limit_exceeded",
+  );
+}
+
+async function assertDentalDailyTotalsWithinLimit(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+  ruleSetId: string | null,
+) {
+  const dailyLimit = ruleSetId
+    ? DENTAL_DAILY_UNIT_LIMIT_BY_RULE_SET.get(ruleSetId)
+    : undefined;
+  if (dailyLimit === undefined) return;
+  const violation = await query(
+    database,
+    `SELECT
+      activity.completion_date AS completionDate,
+      SUM(allocation.allocated_units) AS allocatedUnits
+     FROM activity_allocations allocation
+     JOIN activities activity
+       ON activity.id = allocation.activity_id
+       AND activity.user_id = ?
+       AND activity.archived_at IS NULL
+     JOIN credentials credential
+       ON credential.id = allocation.credential_id
+       AND credential.user_id = activity.user_id
+     WHERE allocation.credential_id = ?
+     GROUP BY activity.completion_date
+     HAVING SUM(allocation.allocated_units) > ? + ?
+     ORDER BY activity.completion_date
+     LIMIT 1`,
+    [
+      identity.userId,
+      credentialId,
+      dailyLimit,
+      DENTAL_DAILY_UNIT_LIMIT_EPSILON,
+    ],
+  ).first<{ completionDate: string; allocatedUnits: number }>();
+  if (!violation) return;
+  throw new RequestError(
+    `Only ${dailyLimit} California CE units may count on ${violation.completionDate}; ${Number(violation.allocatedUnits)} are currently allocated. Reduce the countable allocation while preserving the full learning record.`,
+    409,
+    "dental_daily_unit_limit_exceeded",
+  );
+}
+
+async function assertDentalPerActivityClassificationsReady(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+  ruleSetId: string | null,
+) {
+  if (!ruleSetId?.startsWith("ny-dent")) return;
+  const rows = await query(
+    database,
+    `WITH selected_requirement AS (
+       SELECT
+         match.allocation_id AS allocation_id,
+         requirement.rule_category_id AS rule_category_id
+       FROM activity_requirement_matches match
+       JOIN credential_requirements requirement
+         ON requirement.id = match.requirement_id
+       JOIN activity_allocations allocation
+         ON allocation.id = match.allocation_id
+       WHERE allocation.credential_id = ?
+         AND match.user_id = ?
+       UNION
+       SELECT
+         allocation.id AS allocation_id,
+         requirement.rule_category_id AS rule_category_id
+       FROM activity_allocations allocation
+       JOIN credential_requirements requirement
+         ON requirement.id = allocation.requirement_id
+       WHERE allocation.credential_id = ?
+         AND NOT EXISTS (
+           SELECT 1
+           FROM activity_requirement_matches existing_match
+           WHERE existing_match.allocation_id = allocation.id
+             AND existing_match.user_id = ?
+         )
+     )
+     SELECT
+       allocation.id AS allocationId,
+       allocation.allocated_units AS allocatedUnits,
+       selected_requirement.rule_category_id AS ruleCategoryId
+     FROM activity_allocations allocation
+     JOIN activities activity
+       ON activity.id = allocation.activity_id
+       AND activity.user_id = ?
+       AND activity.archived_at IS NULL
+     LEFT JOIN selected_requirement
+       ON selected_requirement.allocation_id = allocation.id
+     WHERE allocation.credential_id = ?
+     ORDER BY allocation.id, selected_requirement.rule_category_id`,
+    [
+      credentialId,
+      identity.userId,
+      credentialId,
+      identity.userId,
+      identity.userId,
+      credentialId,
+    ],
+  ).all<{
+    allocationId: string;
+    allocatedUnits: number;
+    ruleCategoryId: string | null;
+  }>();
+  const byAllocation = new Map<
+    string,
+    { allocatedUnits: number; categoryIds: Set<string> }
+  >();
+  for (const row of rows.results) {
+    const allocation =
+      byAllocation.get(row.allocationId) ?? {
+        allocatedUnits: Number(row.allocatedUnits),
+        categoryIds: new Set<string>(),
+      };
+    if (row.ruleCategoryId) {
+      allocation.categoryIds.add(row.ruleCategoryId);
+    }
+    byAllocation.set(row.allocationId, allocation);
+  }
+  for (const allocation of byAllocation.values()) {
+    assertDentalPerActivityRequirements(
+      [...allocation.categoryIds].map((ruleCategoryId) => ({
+        ruleCategoryId,
+      })),
+      allocation.allocatedUnits,
+    );
+  }
+}
+
 function assertActivityDateAllowedForRequirements(
   completionDate: string,
   cycleStart: string,
@@ -2400,13 +2916,36 @@ function assertActivityDateAllowedForRequirements(
           requirement.ruleCategoryId ?? "",
         ),
     );
+  const selectedDentalCarryoverCategoryId =
+    selectedRequirements.find(
+      (requirement) =>
+        requirement.ruleCategoryId !== null &&
+        DENTAL_CARRYOVER_OVERLAY_IDS.has(requirement.ruleCategoryId),
+    )?.ruleCategoryId ?? null;
+  const dentalCarryoverOverlayIds = selectedDentalCarryoverCategoryId
+    ? DENTAL_CARRYOVER_OVERLAY_IDS.get(selectedDentalCarryoverCategoryId)
+    : null;
+  const isSupportedDentalCarryoverSelection = Boolean(
+    selectedDentalCarryoverCategoryId &&
+      dentalCarryoverOverlayIds &&
+      carryoverSelectionCount === 1 &&
+      selectedRequirements.every(
+        (requirement) =>
+          requirement.ruleCategoryId ===
+            selectedDentalCarryoverCategoryId ||
+          dentalCarryoverOverlayIds.has(
+            requirement.ruleCategoryId ?? "",
+          ),
+      ),
+  );
   if (
     carryoverSelectionCount > 0 &&
     carryoverSelectionCount !== selectedRequirements.length &&
-    !isNewJerseyPharmacistCarryoverSelection
+    !isNewJerseyPharmacistCarryoverSelection &&
+    !isSupportedDentalCarryoverSelection
   ) {
     throw new RequestError(
-      "A portal-confirmed carryover entry cannot be mixed with current-period requirement tags.",
+      "An evidence-backed carryover entry cannot be mixed with current-period requirements except its required classification tags.",
       409,
       "mixed_carryover_requirement_tags",
     );
@@ -2414,14 +2953,14 @@ function assertActivityDateAllowedForRequirements(
   if (carryoverSelectionCount === 0) {
     if (completionDate >= cycleStart) return;
     throw new RequestError(
-      `The activity date must fall within the target renewal cycle (${cycleStart} through ${deadline}). A prior-period date is allowed only when every selected requirement is a portal-confirmed carryover category.`,
+      `The activity date must fall within the target renewal cycle (${cycleStart} through ${deadline}). A prior-period date is allowed only with the evidence-backed carryover source and its compatible classification tags.`,
       409,
       "activity_outside_cycle",
     );
   }
   if (completionDate >= cycleStart) {
     throw new RequestError(
-      "Portal-confirmed carryover must use the actual eligible prior-period completion date, not a date inside the current cycle.",
+      "Evidence-backed carryover must use the actual eligible prior-period completion date, not a date inside the current cycle.",
       409,
       "carryover_requires_prior_period_date",
     );
@@ -2439,21 +2978,21 @@ function assertActivityDateAllowedForRequirements(
   );
   if (completionDate < earliestEligibleDate) {
     throw new RequestError(
-      `This portal-confirmed carryover must have been earned between ${earliestEligibleDate} and ${daysBefore(cycleStart, 1)}. Use the actual prior-period date and only the amount posted for this consecutive cycle.`,
+      `This carryover must have been earned between ${earliestEligibleDate} and ${daysBefore(cycleStart, 1)}. Use the actual prior-period date and only the regulator-eligible amount for this consecutive cycle.`,
       409,
       "carryover_outside_eligible_lookback",
     );
   }
   if (!options.portalCarryoverAttested) {
     throw new RequestError(
-      "Confirm that the issuing portal posted this carryover into the current consecutive period before saving the prior-period activity.",
+      "Confirm that the issuing authority permits this carryover and that the recorded amount, date, and source are eligible for the current consecutive period.",
       409,
       "portal_carryover_attestation_required",
     );
   }
   if (options.evidenceStatus === "not_required") {
     throw new RequestError(
-      "Portal-confirmed carryover requires a portal reference or uploaded proof before the cycle can be completed.",
+      "Evidence-backed carryover requires an authority reference or uploaded proof before the cycle can be completed.",
       409,
       "portal_carryover_evidence_required",
     );
@@ -2502,7 +3041,7 @@ async function assertPortalCarryoverEvidenceReady(
   ).first<{ id: string }>();
   if (missingEvidence) {
     throw new RequestError(
-      "Add the issuing portal reference or upload the portal record for every prior-period carryover activity before completing this cycle.",
+      "Add an issuing-authority reference or upload supporting proof for every prior-period carryover activity before completing this cycle.",
       409,
       "portal_carryover_evidence_required",
     );
@@ -3059,6 +3598,18 @@ export async function getWorkspace(
     earnedUnits: number;
     remainingUnits: number | null;
     progressPercent: number | null;
+    isDentalCheckpoint: boolean;
+    checkpointStatus: "pending" | "completed" | null;
+    checkpointCompletedAt: string | null;
+    checkpointEvidenceNote: string | null;
+    checkpointRevision: number;
+  };
+  type DentalCheckpointStateRow = {
+    requirementId: string;
+    status: "pending" | "completed";
+    completedAt: string | null;
+    evidenceNote: string | null;
+    revision: number;
   };
   type TaskRow = {
     id: string;
@@ -3116,6 +3667,7 @@ export async function getWorkspace(
     categoryResult,
     credentialResult,
     requirementResult,
+    dentalCheckpointStateResult,
     taskResult,
     activityResult,
     activityMatchResult,
@@ -3272,6 +3824,25 @@ export async function getWorkspace(
     query(
       database,
       `SELECT
+        checkpoint.requirement_id AS requirementId,
+        checkpoint.status,
+        checkpoint.completed_at AS completedAt,
+        checkpoint.evidence_note AS evidenceNote,
+        checkpoint.revision
+      FROM dental_checkpoint_states checkpoint
+      JOIN credentials credential
+        ON credential.id = checkpoint.credential_id
+      JOIN credential_requirements requirement
+        ON requirement.id = checkpoint.requirement_id
+        AND requirement.credential_id = checkpoint.credential_id
+      WHERE checkpoint.user_id = ?
+        AND credential.user_id = checkpoint.user_id
+      ORDER BY checkpoint.credential_id, requirement.sort_order`,
+      [identity.userId],
+    ).all<DentalCheckpointStateRow>(),
+    query(
+      database,
+      `SELECT
         id,
         credential_id AS credentialId,
         title,
@@ -3407,6 +3978,12 @@ export async function getWorkspace(
     requirementResult.results.map((requirement) => [
       requirement.id,
       requirement,
+    ]),
+  );
+  const dentalCheckpointStateByRequirementId = new Map(
+    dentalCheckpointStateResult.results.map((checkpoint) => [
+      checkpoint.requirementId,
+      checkpoint,
     ]),
   );
   type ClassificationIssue = {
@@ -3773,6 +4350,15 @@ export async function getWorkspace(
       requiredUnits > 0
         ? Math.min(100, Math.round((countableEarned / requiredUnits) * 100))
         : null;
+    const isDentalCheckpoint = Boolean(
+      requirement.ruleCategoryId &&
+        DENTAL_CHECKPOINT_RULE_CATEGORY_ID_SET.has(
+          requirement.ruleCategoryId,
+        ),
+    );
+    const checkpoint = isDentalCheckpoint
+      ? dentalCheckpointStateByRequirementId.get(requirement.id)
+      : null;
     existing.push({
       ...requirement,
       requiredUnits,
@@ -3783,6 +4369,13 @@ export async function getWorkspace(
       earnedUnits: countableEarned,
       remainingUnits,
       progressPercent,
+      isDentalCheckpoint,
+      checkpointStatus: isDentalCheckpoint
+        ? checkpoint?.status ?? "pending"
+        : null,
+      checkpointCompletedAt: checkpoint?.completedAt ?? null,
+      checkpointEvidenceNote: checkpoint?.evidenceNote ?? null,
+      checkpointRevision: checkpoint ? Number(checkpoint.revision) : 0,
     });
     requirementsByCredential.set(requirement.credentialId, existing);
   }
@@ -4251,6 +4844,16 @@ async function createCredential(
       );
     }
     if (
+      rule.profession === "Dental" &&
+      payload.templateEligibilityAttested !== true
+    ) {
+      throw new RequestError(
+        "Confirm that the official record matches this standard full dental renewal or registration period and that no initial, shortened, inactive, retired, prorated, exempt, or other adjusted-status path applies.",
+        409,
+        "dental_template_eligibility_required",
+      );
+    }
+    if (
       rule.profession === "Pharmacy" &&
       !matchesFullCycleWindow(
         cycleStart,
@@ -4276,6 +4879,20 @@ async function createCredential(
         `This nursing template requires a standard full ${rule.cycleMonths}-month period. Use the exact regulator dates or create a custom plan for an initial, shortened, or adjusted period.`,
         409,
         "nursing_standard_cycle_dates_required",
+      );
+    }
+    if (
+      rule.profession === "Dental" &&
+      !matchesFullCycleWindow(
+        cycleStart,
+        deadline,
+        Number(rule.cycleMonths),
+      )
+    ) {
+      throw new RequestError(
+        `This dental template requires a standard full ${rule.cycleMonths}-month period. Use the exact regulator dates or create a custom plan for an initial, shortened, or adjusted period.`,
+        409,
+        "dental_standard_cycle_dates_required",
       );
     }
     if (
@@ -4324,6 +4941,32 @@ async function createCredential(
         );
       }
     }
+    for (const linkedCategoryIds of DENTAL_LINKED_APPLICABILITY_CATEGORY_GROUPS) {
+      if (
+        !linkedCategoryIds.every((categoryId) =>
+          knownCategoryIds.has(categoryId),
+        )
+      ) {
+        continue;
+      }
+      const explicitStatuses = linkedCategoryIds.flatMap((categoryId) => {
+        const status = applicabilityChoices.get(categoryId);
+        return status ? [status] : [];
+      });
+      if (new Set(explicitStatuses).size > 1) {
+        throw new RequestError(
+          "The Texas direct-patient-care pain-management aggregate and both annual requirements must use the same applicability choice.",
+          409,
+          "dental_linked_applicability_conflict",
+        );
+      }
+      const synchronizedStatus = explicitStatuses[0];
+      if (synchronizedStatus) {
+        for (const categoryId of linkedCategoryIds) {
+          applicabilityChoices.set(categoryId, synchronizedStatus);
+        }
+      }
+    }
     categories = ruleCategories.results.map((category, index) => {
       const applicability = category.applicability;
       const applicabilityStatus = normalizedApplicabilityStatus(
@@ -4350,6 +4993,11 @@ async function createCredential(
     totalRequired = adjustedFloridaNursingTotal(
       ruleSetId,
       Number(rule.totalUnits),
+      categories,
+    );
+    totalRequired = adjustedDentalTotal(
+      ruleSetId,
+      totalRequired,
       categories,
     );
   } else {
@@ -4723,6 +5371,18 @@ async function addActivity(
     selectedRequirements,
     "completion date",
   );
+  assertDentalPerActivityRequirements(
+    selectedRequirements,
+    allocatedUnits,
+  );
+  await assertDentalDailyUnitLimit(
+    database,
+    identity,
+    credentialId,
+    undefined,
+    completionDate,
+    allocatedUnits,
+  );
 
   const activityId = crypto.randomUUID();
   const allocationId = crypto.randomUUID();
@@ -5057,11 +5717,15 @@ async function validateActivityMutationAllocations(
     allocations.map(async (allocation) => {
       const proposedTotalUnits =
         options.proposedTotalUnits ?? options.currentTotalUnits;
-      const proposedAllocatedUnits = Math.min(
-        allocation.allocatedUnits,
-        proposedTotalUnits,
-      );
       const isNremt = isNremtRuleSet(allocation.ruleSetId);
+      const proposedAllocatedUnits =
+        !isNremt &&
+        unitsEqual(
+          allocation.allocatedUnits,
+          options.currentTotalUnits,
+        )
+          ? proposedTotalUnits
+          : Math.min(allocation.allocatedUnits, proposedTotalUnits);
       if (
         isNremt &&
         !unitsEqual(proposedAllocatedUnits, allocation.allocatedUnits)
@@ -5108,6 +5772,19 @@ async function validateActivityMutationAllocations(
         allocation,
         selectedRequirements,
         "activity date",
+      );
+      assertDentalPerActivityRequirements(
+        selectedRequirements,
+        proposedAllocatedUnits,
+      );
+      await assertDentalDailyUnitLimit(
+        database,
+        identity,
+        allocation.credentialId,
+        allocation.ruleSetId,
+        completionDate,
+        proposedAllocatedUnits,
+        activityId,
       );
     }),
   );
@@ -5249,102 +5926,110 @@ async function updateActivity(
             OR guarded_credential.status NOT IN ('active', 'submitted')
           )
       )`;
-  const statements: D1PreparedStatement[] = [
-    query(
-      database,
-      `UPDATE activity_allocations
-       SET allocated_units = CASE
-         WHEN EXISTS (
-           SELECT 1
-           FROM credentials allocation_credential
-           WHERE allocation_credential.id =
-             activity_allocations.credential_id
-             AND allocation_credential.rule_set_id LIKE 'nremt-%'
-         ) THEN MIN(allocated_units, ?)
-         WHEN allocated_units = ? THEN ?
-         ELSE MIN(allocated_units, ?)
-       END
-       WHERE activity_id = ?
-         AND EXISTS (${mutableActivityExists})`,
-      [
-        totalUnits,
-        Number(activity!.totalUnits),
-        totalUnits,
-        totalUnits,
-        activityId,
-        activityId,
-        identity.userId,
-        expectedRevision,
-      ],
-    ),
-    query(
-      database,
-      `UPDATE activity_requirement_matches
-       SET matched_units = (
-         SELECT allocation.allocated_units
-         FROM activity_allocations allocation
-         WHERE allocation.id =
-           activity_requirement_matches.allocation_id
-       )
-       WHERE user_id = ?
-         AND allocation_id IN (
-           SELECT activity_allocations.id
-           FROM activity_allocations
-           JOIN credentials
-             ON credentials.id = activity_allocations.credential_id
-           WHERE activity_allocations.activity_id = ?
-             AND (
-               credentials.rule_set_id IS NULL
-               OR credentials.rule_set_id NOT LIKE 'nremt-%'
-             )
-             AND EXISTS (${mutableActivityExists})
-         )`,
-      [
-        identity.userId,
-        activityId,
-        activityId,
-        identity.userId,
-        expectedRevision,
-      ],
-    ),
-    query(
-      database,
-      `UPDATE activities
-       SET
-         title = ?,
-         provider = ?,
-         completion_date = ?,
-         total_units = ?,
-         revision = revision + 1,
-         updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?
-         AND user_id = ?
-         AND revision = ?
-         AND archived_at IS NULL
-         AND NOT EXISTS (
-           SELECT 1
-           FROM activity_allocations guarded_allocation
-           JOIN credentials guarded_credential
-             ON guarded_credential.id = guarded_allocation.credential_id
-           WHERE guarded_allocation.activity_id = activities.id
-             AND (
-               guarded_credential.user_id <> activities.user_id
-               OR guarded_credential.status NOT IN ('active', 'submitted')
-             )
-         )`,
-      [
-        title,
-        provider,
-        completionDate,
-        totalUnits,
-        activityId,
-        identity.userId,
-        expectedRevision,
-      ],
-    ),
-  ];
+  const movesBeforeAllocationIncrease =
+    completionDate !== activity!.completionDate &&
+    totalUnits > Number(activity!.totalUnits);
+  const allocationExpectedRevision = movesBeforeAllocationIncrease
+    ? expectedRevision + 1
+    : expectedRevision;
+  const allocationStatement = query(
+    database,
+    `UPDATE activity_allocations
+     SET allocated_units = CASE
+       WHEN EXISTS (
+         SELECT 1
+         FROM credentials allocation_credential
+         WHERE allocation_credential.id =
+           activity_allocations.credential_id
+           AND allocation_credential.rule_set_id LIKE 'nremt-%'
+       ) THEN MIN(allocated_units, ?)
+       WHEN allocated_units = ? THEN ?
+       ELSE MIN(allocated_units, ?)
+     END
+     WHERE activity_id = ?
+       AND EXISTS (${mutableActivityExists})`,
+    [
+      totalUnits,
+      Number(activity!.totalUnits),
+      totalUnits,
+      totalUnits,
+      activityId,
+      activityId,
+      identity.userId,
+      allocationExpectedRevision,
+    ],
+  );
+  const matchStatement = query(
+    database,
+    `UPDATE activity_requirement_matches
+     SET matched_units = (
+       SELECT allocation.allocated_units
+       FROM activity_allocations allocation
+       WHERE allocation.id =
+         activity_requirement_matches.allocation_id
+     )
+     WHERE user_id = ?
+       AND allocation_id IN (
+         SELECT activity_allocations.id
+         FROM activity_allocations
+         JOIN credentials
+           ON credentials.id = activity_allocations.credential_id
+         WHERE activity_allocations.activity_id = ?
+           AND (
+             credentials.rule_set_id IS NULL
+             OR credentials.rule_set_id NOT LIKE 'nremt-%'
+           )
+           AND EXISTS (${mutableActivityExists})
+       )`,
+    [
+      identity.userId,
+      activityId,
+      activityId,
+      identity.userId,
+      allocationExpectedRevision,
+    ],
+  );
+  const activityStatement = query(
+    database,
+    `UPDATE activities
+     SET
+       title = ?,
+       provider = ?,
+       completion_date = ?,
+       total_units = ?,
+       revision = revision + 1,
+       updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?
+       AND user_id = ?
+       AND revision = ?
+       AND archived_at IS NULL
+       AND NOT EXISTS (
+         SELECT 1
+         FROM activity_allocations guarded_allocation
+         JOIN credentials guarded_credential
+           ON guarded_credential.id = guarded_allocation.credential_id
+         WHERE guarded_allocation.activity_id = activities.id
+           AND (
+             guarded_credential.user_id <> activities.user_id
+             OR guarded_credential.status NOT IN ('active', 'submitted')
+           )
+       )`,
+    [
+      title,
+      provider,
+      completionDate,
+      totalUnits,
+      activityId,
+      identity.userId,
+      expectedRevision,
+    ],
+  );
+  const statements: D1PreparedStatement[] = movesBeforeAllocationIncrease
+    ? [activityStatement, allocationStatement, matchStatement]
+    : [allocationStatement, matchStatement, activityStatement];
   const results = await database.batch(statements);
-  if (Number(results[2]?.meta?.changes ?? Number.NaN) !== 1) {
+  const activityResult = results[movesBeforeAllocationIncrease ? 0 : 2];
+  if (Number(activityResult?.meta?.changes ?? Number.NaN) !== 1) {
     return diagnoseActivityMutationFailure(
       database,
       identity,
@@ -5403,7 +6088,39 @@ async function setActivityArchivedState(
        AND archived_at IS ${restore ? "NOT NULL" : "NULL"}
        ${
          restore
-           ? ""
+           ? `AND NOT EXISTS (
+         SELECT 1
+         FROM activity_allocations restore_direct_allocation
+         LEFT JOIN credential_requirements restore_direct_requirement
+           ON restore_direct_requirement.id =
+             restore_direct_allocation.requirement_id
+         WHERE restore_direct_allocation.activity_id = activities.id
+           AND restore_direct_allocation.requirement_id IS NOT NULL
+           AND (
+             restore_direct_requirement.id IS NULL
+             OR restore_direct_requirement.credential_id <>
+               restore_direct_allocation.credential_id
+             OR restore_direct_requirement.is_active <> 1
+             OR restore_direct_requirement.applicability_status <> 'applies'
+           )
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM activity_allocations restore_allocation
+         JOIN activity_requirement_matches restore_match
+           ON restore_match.allocation_id = restore_allocation.id
+         LEFT JOIN credential_requirements restore_requirement
+           ON restore_requirement.id = restore_match.requirement_id
+         WHERE restore_allocation.activity_id = activities.id
+           AND (
+             restore_match.user_id <> activities.user_id
+             OR restore_requirement.id IS NULL
+             OR restore_requirement.credential_id <>
+               restore_allocation.credential_id
+             OR restore_requirement.is_active <> 1
+             OR restore_requirement.applicability_status <> 'applies'
+           )
+       )`
            : `AND NOT EXISTS (
          SELECT 1
          FROM evidence_files deleting_evidence
@@ -6058,6 +6775,45 @@ async function toggleTask(
   return taskId;
 }
 
+async function assertDentalCheckpointsComplete(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+) {
+  const pending = await query(
+    database,
+    `SELECT requirement.name
+     FROM credential_requirements requirement
+     JOIN credentials credential
+       ON credential.id = requirement.credential_id
+     LEFT JOIN dental_checkpoint_states checkpoint
+       ON checkpoint.requirement_id = requirement.id
+       AND checkpoint.credential_id = credential.id
+       AND checkpoint.user_id = credential.user_id
+     WHERE requirement.credential_id = ?
+       AND credential.user_id = ?
+       AND credential.profession = 'Dental'
+       AND requirement.rule_category_id IN (
+         ${DENTAL_CHECKPOINT_RULE_CATEGORY_IDS_SQL}
+       )
+       AND requirement.kind = 'informational'
+       AND requirement.required_units = 0
+       AND requirement.is_active = 1
+       AND requirement.applicability_status = 'applies'
+       AND COALESCE(checkpoint.status, 'pending') <> 'completed'
+     ORDER BY requirement.sort_order, requirement.name`,
+    [credentialId, identity.userId],
+  ).all<{ name: string }>();
+  if (pending.results.length === 0) return;
+  throw new RequestError(
+    `Complete every applicable dental checkpoint before submitting. Still pending: ${pending.results
+      .map((requirement) => requirement.name)
+      .join(", ")}.`,
+    409,
+    "dental_checkpoint_incomplete",
+  );
+}
+
 async function markSubmitted(
   database: D1Database,
   identity: RequestIdentity,
@@ -6138,6 +6894,23 @@ async function markSubmitted(
     identity,
     credentialId,
   );
+  await assertDentalCheckpointsComplete(
+    database,
+    identity,
+    credentialId,
+  );
+  await assertDentalDailyTotalsWithinLimit(
+    database,
+    identity,
+    credentialId,
+    credential.ruleSetId,
+  );
+  await assertDentalPerActivityClassificationsReady(
+    database,
+    identity,
+    credentialId,
+    credential.ruleSetId,
+  );
   if (isNremtSubmission) {
     const nremtCycle = await query(
       database,
@@ -6194,7 +6967,26 @@ async function markSubmitted(
        SET status = 'submitted', updated_at = CURRENT_TIMESTAMP
        WHERE id = ?
          AND user_id = ?
-         AND status IN ('active', 'submitted')`,
+         AND status IN ('active', 'submitted')
+         AND NOT EXISTS (
+           SELECT 1
+           FROM credential_requirements checkpoint_requirement
+           LEFT JOIN dental_checkpoint_states checkpoint_state
+             ON checkpoint_state.requirement_id = checkpoint_requirement.id
+             AND checkpoint_state.credential_id = credentials.id
+             AND checkpoint_state.user_id = credentials.user_id
+           WHERE checkpoint_requirement.credential_id = credentials.id
+             AND credentials.profession = 'Dental'
+             AND checkpoint_requirement.rule_category_id IN (
+               ${DENTAL_CHECKPOINT_RULE_CATEGORY_IDS_SQL}
+             )
+             AND checkpoint_requirement.kind = 'informational'
+             AND checkpoint_requirement.required_units = 0
+             AND checkpoint_requirement.is_active = 1
+             AND checkpoint_requirement.applicability_status = 'applies'
+             AND COALESCE(checkpoint_state.status, 'pending') <>
+               'completed'
+         )`,
       [credentialId, identity.userId],
     ),
     query(
@@ -6326,6 +7118,11 @@ async function markSubmitted(
       identity,
       credentialId,
       closedCycleMessage,
+    );
+    await assertDentalCheckpointsComplete(
+      database,
+      identity,
+      credentialId,
     );
   }
   const persistedSubmission = await query(
@@ -6507,6 +7304,18 @@ async function addActivityAllocation(
     selectedRequirements,
     "activity date",
   );
+  assertDentalPerActivityRequirements(
+    selectedRequirements,
+    allocatedUnits,
+  );
+  await assertDentalDailyUnitLimit(
+    database,
+    identity,
+    credentialId,
+    undefined,
+    activity.completionDate,
+    allocatedUnits,
+  );
 
   const allocationId = crypto.randomUUID();
   const statements: D1PreparedStatement[] = [
@@ -6675,6 +7484,10 @@ async function updateActivityAllocationRequirements(
     required: true,
     max: 160,
   })!;
+  const requestedAllocatedUnits = positiveNumber(
+    payload,
+    "allocatedUnits",
+  );
   const legacyRequirementIds = requirementIdsField(payload);
 
   const allocation = await query(
@@ -6686,6 +7499,7 @@ async function updateActivityAllocationRequirements(
       activity.id AS activityId,
       activity.revision AS activityRevision,
       activity.completion_date AS completionDate,
+      activity.total_units AS totalUnits,
       activity.evidence_status AS evidenceStatus,
       activity.archived_at AS archivedAt,
       credential.status,
@@ -6705,6 +7519,7 @@ async function updateActivityAllocationRequirements(
     activityId: string;
     activityRevision: number;
     completionDate: string;
+    totalUnits: number;
     evidenceStatus: string;
     archivedAt: string | null;
     status: string;
@@ -6738,6 +7553,30 @@ async function updateActivityAllocationRequirements(
     identity,
     allocation.credentialId,
   );
+  if (
+    isNremt &&
+    requestedAllocatedUnits !== null &&
+    !unitsEqual(
+      requestedAllocatedUnits,
+      Number(allocation.allocatedUnits),
+    )
+  ) {
+    throw new RequestError(
+      "National Registry component and topic amounts must stay exact. Archive this record and log the corrected replacement with its precise component and topic split.",
+      409,
+      "nremt_allocation_revision_required",
+    );
+  }
+  const updatesAllocatedUnits =
+    !isNremt && requestedAllocatedUnits !== null;
+  const allocatedUnits = updatesAllocatedUnits
+    ? requestedAllocatedUnits
+    : Number(allocation.allocatedUnits);
+  if (allocatedUnits > Number(allocation.totalUnits)) {
+    throw new RequestError(
+      "allocatedUnits cannot exceed the activity total for one credential",
+    );
+  }
   const nremtMatches = isNremt
     ? requirementMatchesField(payload, { required: true })
     : [];
@@ -6761,7 +7600,7 @@ async function updateActivityAllocationRequirements(
         identity,
         allocation.credentialId,
         nremtMatches,
-        Number(allocation.allocatedUnits),
+        allocatedUnits,
       )
     : await validateRequirementTags(
         database,
@@ -6773,7 +7612,7 @@ async function updateActivityAllocationRequirements(
     ? nremtMatches
     : legacyRequirementIds.map((requirementId) => ({
         requirementId,
-        matchedUnits: Number(allocation.allocatedUnits),
+        matchedUnits: allocatedUnits,
       }));
   const primaryRequirementId =
     selectedRequirements.find((requirement) =>
@@ -6798,12 +7637,29 @@ async function updateActivityAllocationRequirements(
     selectedRequirements,
     "activity date",
   );
+  assertDentalPerActivityRequirements(
+    selectedRequirements,
+    allocatedUnits,
+  );
+  if (updatesAllocatedUnits) {
+    await assertDentalDailyUnitLimit(
+      database,
+      identity,
+      allocation.credentialId,
+      undefined,
+      allocation.completionDate,
+      allocatedUnits,
+      allocation.activityId,
+    );
+  }
 
   const statements: D1PreparedStatement[] = [
     query(
       database,
       `UPDATE activity_allocations
-       SET requirement_id = ?
+       SET
+         requirement_id = ?
+         ${updatesAllocatedUnits ? ", allocated_units = ?" : ""}
        WHERE id = ? AND credential_id = ?
          AND EXISTS (
            SELECT 1
@@ -6819,6 +7675,7 @@ async function updateActivityAllocationRequirements(
          )`,
       [
         primaryRequirementId,
+        ...(updatesAllocatedUnits ? [allocatedUnits] : []),
         allocationId,
         allocation.credentialId,
         Number(allocation.activityRevision),
@@ -7161,19 +8018,25 @@ async function markRenewalAccepted(
     credential.profession,
     credential.ruleSetId,
   );
+  const isManagedDentalRenewal = isManagedDentalCredential(
+    credential.profession,
+    credential.ruleSetId,
+  );
   const requiresOfficialNextPeriodAttestation =
     isIsc2AutomaticRenewal ||
     isCompliancePeriod ||
     replacementTemplateFamily === "florida_mental_health" ||
     isNremtRenewal ||
     isManagedPharmacistRenewal ||
-    isManagedNursingRenewal;
+    isManagedNursingRenewal ||
+    isManagedDentalRenewal;
   const requiresNonOverlappingNextPeriod =
     isIsc2AutomaticRenewal ||
     isCompliancePeriod ||
     replacementTemplateFamily === "florida_mental_health" ||
     isManagedPharmacistRenewal ||
-    isManagedNursingRenewal;
+    isManagedNursingRenewal ||
+    isManagedDentalRenewal;
   if (
     requiresOfficialNextPeriodAttestation &&
     payload.officialDatesAttested !== true
@@ -7244,6 +8107,16 @@ async function markRenewalAccepted(
       "nursing_next_template_eligibility_required",
     );
   }
+  if (
+    isManagedDentalRenewal &&
+    payload.templateEligibilityAttested !== true
+  ) {
+    throw new RequestError(
+      "Confirm that the official next-period record matches a standard full dental renewal or registration period and that no initial, shortened, inactive, retired, prorated, exempt, or other adjusted-status path applies.",
+      409,
+      "dental_next_template_eligibility_required",
+    );
+  }
   if (isIsc2AutomaticRenewal && acceptedAt < credential.deadline) {
     throw new RequestError(
       "ISC2 renewal cannot be confirmed before the current certification cycle ends.",
@@ -7259,6 +8132,16 @@ async function markRenewalAccepted(
       "The next period must start after the current period ends.",
       409,
       "next_cycle_overlaps_current_period",
+    );
+  }
+  if (
+    isManagedDentalRenewal &&
+    nextCycleStart !== daysAfter(credential.deadline, 1)
+  ) {
+    throw new RequestError(
+      `A standard dental renewal must begin immediately after the current period, on ${daysAfter(credential.deadline, 1)}. Create a custom plan if the regulator assigned a gap, reinstatement, or adjusted period.`,
+      409,
+      "dental_next_cycle_must_be_consecutive",
     );
   }
   let selectedNextRule: NextRuleTemplate | null = null;
@@ -7380,11 +8263,12 @@ async function markRenewalAccepted(
        JOIN rule_sets current_rule
          ON current_rule.stable_key = prior_rule.stable_key
        WHERE prior_rule.id = ?
+         AND prior_rule.stable_key IS ?
          AND current_rule.is_current = 1
          AND current_rule.profession = 'Pharmacy'
        ORDER BY current_rule.version DESC
        LIMIT 1`,
-      [credential.ruleSetId],
+      [credential.ruleSetId, credential.ruleStableKey],
     ).first<NextRuleTemplate>();
     if (!selectedNextRule) {
       throw new RequestError(
@@ -7429,11 +8313,12 @@ async function markRenewalAccepted(
        JOIN rule_sets current_rule
          ON current_rule.stable_key = prior_rule.stable_key
        WHERE prior_rule.id = ?
+         AND prior_rule.stable_key IS ?
          AND current_rule.is_current = 1
          AND current_rule.profession = 'Nursing'
        ORDER BY current_rule.version DESC
        LIMIT 1`,
-      [credential.ruleSetId],
+      [credential.ruleSetId, credential.ruleStableKey],
     ).first<NextRuleTemplate>();
     if (!selectedNextRule) {
       throw new RequestError(
@@ -7453,6 +8338,56 @@ async function markRenewalAccepted(
         `The next nursing plan must use the official standard ${selectedNextRule.cycleMonths}-month period. Create a custom plan if the regulator assigned an initial, shortened, or adjusted cycle.`,
         409,
         "nursing_next_cycle_dates_required",
+      );
+    }
+  } else if (isManagedDentalRenewal) {
+    if (requestedNextRuleSetId) {
+      throw new RequestError(
+        "Dental renewals automatically use the latest current version of the same official template.",
+        400,
+        "dental_next_template_not_selectable",
+      );
+    }
+    selectedNextRule = await query(
+      database,
+      `SELECT
+        current_rule.id,
+        current_rule.credential_name AS credentialName,
+        current_rule.profession,
+        current_rule.jurisdiction,
+        current_rule.issuer,
+        current_rule.total_units AS totalUnits,
+        current_rule.unit_label AS unitLabel,
+        current_rule.cycle_months AS cycleMonths
+       FROM rule_sets prior_rule
+       JOIN rule_sets current_rule
+         ON current_rule.stable_key = prior_rule.stable_key
+       WHERE prior_rule.id = ?
+         AND prior_rule.stable_key IS ?
+         AND current_rule.is_current = 1
+         AND current_rule.profession = 'Dental'
+       ORDER BY current_rule.version DESC
+       LIMIT 1`,
+      [credential.ruleSetId, credential.ruleStableKey],
+    ).first<NextRuleTemplate>();
+    if (!selectedNextRule) {
+      throw new RequestError(
+        "The current dental template is unavailable. Review the official rule and create the next plan manually.",
+        409,
+        "dental_current_template_unavailable",
+      );
+    }
+    if (
+      !matchesFullCycleWindow(
+        nextCycleStart,
+        nextDeadline,
+        Number(selectedNextRule.cycleMonths),
+      )
+    ) {
+      throw new RequestError(
+        `The next dental plan must use the official standard ${selectedNextRule.cycleMonths}-month period. Create a custom plan if the regulator assigned an initial, shortened, or adjusted cycle.`,
+        409,
+        "dental_next_cycle_dates_required",
       );
     }
   } else if (requestedNextRuleSetId) {
@@ -7505,8 +8440,36 @@ async function markRenewalAccepted(
           WHERE selected_rule.id = ?
             AND selected_rule.is_current = 1
             ${
-              isNremtRenewal
+              isManagedPharmacistRenewal ||
+              isManagedNursingRenewal ||
+              isManagedDentalRenewal
+                ? `AND NOT EXISTS (
+                    SELECT 1
+                    FROM rule_sets newer_rule
+                    WHERE newer_rule.stable_key = selected_rule.stable_key
+                      AND newer_rule.is_current = 1
+                      AND newer_rule.version > selected_rule.version
+                  )`
+                : ""
+            }
+            ${
+              isNremtRenewal ||
+              isManagedPharmacistRenewal ||
+              isManagedNursingRenewal ||
+              isManagedDentalRenewal
                 ? "AND selected_rule.stable_key IS ?"
+                : ""
+            }
+            ${
+              isManagedPharmacistRenewal ||
+              isManagedNursingRenewal ||
+              isManagedDentalRenewal
+                ? `AND EXISTS (
+                    SELECT 1
+                    FROM rule_sets prior_rule_snapshot
+                    WHERE prior_rule_snapshot.id = ?
+                      AND prior_rule_snapshot.stable_key IS ?
+                  )`
                 : ""
             }
             AND selected_rule.credential_name IS ?
@@ -7571,7 +8534,21 @@ async function markRenewalAccepted(
         )`,
         bindings: [
           selectedNextRule.id,
-          ...(isNremtRenewal ? [credential.ruleStableKey] : []),
+          ...(
+            isNremtRenewal ||
+            isManagedPharmacistRenewal ||
+            isManagedNursingRenewal ||
+            isManagedDentalRenewal
+              ? [credential.ruleStableKey]
+              : []
+          ),
+          ...(
+            isManagedPharmacistRenewal ||
+            isManagedNursingRenewal ||
+            isManagedDentalRenewal
+              ? [credential.ruleSetId, credential.ruleStableKey]
+              : []
+          ),
           selectedNextRule.credentialName,
           selectedNextRule.profession,
           selectedNextRule.jurisdiction,
@@ -7601,6 +8578,8 @@ async function markRenewalAccepted(
         ? "The current pharmacist template changed while the next renewal period was being created. Review the current template and try again."
         : isManagedNursingRenewal
           ? "The current nursing template changed while the next renewal period was being created. Review the current template and try again."
+          : isManagedDentalRenewal
+            ? "The current dental template changed while the next renewal period was being created. Review the current template and try again."
         : isNremtRenewal
         ? "The selected National Registry template changed while the next cycle was being created. Review the current dashboard model and catalog template, then try again."
         : replacementTemplateFamily === "florida_mental_health"
@@ -7611,6 +8590,8 @@ async function markRenewalAccepted(
         ? "pharmacist_current_template_changed"
         : isManagedNursingRenewal
           ? "nursing_current_template_changed"
+          : isManagedDentalRenewal
+            ? "dental_current_template_changed"
         : isNremtRenewal
         ? "nremt_next_template_changed"
         : replacementTemplateFamily === "florida_mental_health"
@@ -7727,6 +8708,25 @@ async function markRenewalAccepted(
     database,
     identity,
     credentialId,
+  );
+  if (isManagedDentalRenewal) {
+    await assertDentalCheckpointsComplete(
+      database,
+      identity,
+      credentialId,
+    );
+  }
+  await assertDentalDailyTotalsWithinLimit(
+    database,
+    identity,
+    credentialId,
+    credential.ruleSetId,
+  );
+  await assertDentalPerActivityClassificationsReady(
+    database,
+    identity,
+    credentialId,
+    credential.ruleSetId,
   );
   if (isNremtRenewal) {
     const nremtSubmissionState = await query(
@@ -7893,6 +8893,28 @@ async function markRenewalAccepted(
             AND guarded_submission.user_id = credentials.user_id
             AND substr(guarded_submission.submitted_at, 1, 10) <= ?
         )
+        AND (
+          credentials.profession <> 'Dental'
+          OR NOT EXISTS (
+            SELECT 1
+            FROM credential_requirements checkpoint_requirement
+            LEFT JOIN dental_checkpoint_states checkpoint_state
+              ON checkpoint_state.requirement_id =
+                checkpoint_requirement.id
+              AND checkpoint_state.credential_id = credentials.id
+              AND checkpoint_state.user_id = credentials.user_id
+            WHERE checkpoint_requirement.credential_id = credentials.id
+              AND checkpoint_requirement.rule_category_id IN (
+                ${DENTAL_CHECKPOINT_RULE_CATEGORY_IDS_SQL}
+              )
+              AND checkpoint_requirement.kind = 'informational'
+              AND checkpoint_requirement.required_units = 0
+              AND checkpoint_requirement.is_active = 1
+              AND checkpoint_requirement.applicability_status = 'applies'
+              AND COALESCE(checkpoint_state.status, 'pending') <>
+                'completed'
+          )
+        )
         AND ${linkedActivitySnapshotCondition}
         ${
           nextCatalogSnapshotGuard
@@ -8011,7 +9033,6 @@ async function markRenewalAccepted(
         NJ_LCSW_RULE_SET_ID,
         FLORIDA_MENTAL_HEALTH_CREDIT_BUCKET_GROUP,
         `${FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX}%`,
-        ...REQUIREMENT_INCOMPATIBILITY_BINDINGS,
         credentialId,
         identity.userId,
         submission.id,
@@ -8373,6 +9394,13 @@ async function markRenewalAccepted(
       identity,
       credentialId,
     );
+    if (isManagedDentalRenewal) {
+      await assertDentalCheckpointsComplete(
+        database,
+        identity,
+        credentialId,
+      );
+    }
     await assertLinkedActivitySnapshotStillMatches();
     await assertSubmissionStillAcceptable();
     throw error;
@@ -8408,6 +9436,13 @@ async function markRenewalAccepted(
       identity,
       credentialId,
     );
+    if (isManagedDentalRenewal) {
+      await assertDentalCheckpointsComplete(
+        database,
+        identity,
+        credentialId,
+      );
+    }
     await assertLinkedActivitySnapshotStillMatches();
     await assertSubmissionStillAcceptable();
     throw new RequestError(
@@ -8536,6 +9571,41 @@ async function updateRequirementApplicability(
       ),
     );
   }
+  const requirementByCategoryId = new Map(
+    requirementResult.results.flatMap((requirement) =>
+      requirement.ruleCategoryId
+        ? [[requirement.ruleCategoryId, requirement] as const]
+        : [],
+    ),
+  );
+  for (const [requirementId, status] of [...normalizedChoices]) {
+    const requirement = requirementsById.get(requirementId);
+    const linkedCategoryIds = requirement?.ruleCategoryId
+      ? DENTAL_LINKED_APPLICABILITY_CATEGORY_IDS.get(
+          requirement.ruleCategoryId,
+        )
+      : undefined;
+    if (!linkedCategoryIds) continue;
+    for (const linkedCategoryId of linkedCategoryIds) {
+      const linkedRequirement =
+        requirementByCategoryId.get(linkedCategoryId);
+      if (!linkedRequirement) continue;
+      const linkedStatus = normalizedApplicabilityStatus(
+        linkedRequirement.applicability,
+        status,
+        `status for ${linkedRequirement.name}`,
+      );
+      const explicitStatus = normalizedChoices.get(linkedRequirement.id);
+      if (explicitStatus && explicitStatus !== linkedStatus) {
+        throw new RequestError(
+          "The Texas direct-patient-care pain-management aggregate and both annual requirements must use the same applicability choice.",
+          409,
+          "dental_linked_applicability_conflict",
+        );
+      }
+      normalizedChoices.set(linkedRequirement.id, linkedStatus);
+    }
+  }
   const deactivatingRequirementIds = [...normalizedChoices]
     .filter(([, status]) => status !== "applies")
     .map(([requirementId]) => requirementId);
@@ -8628,6 +9698,23 @@ async function updateRequirementApplicability(
     floridaNursingDomesticViolenceStatus
       ? floridaNursingDomesticViolenceStatus === "applies"
         ? Number(floridaNursingDomesticViolenceRequirement.requiredUnits)
+        : 0
+      : null;
+  const dentalAdditionalRequirement =
+    [...requirementsById.values()].find(
+      (requirement) =>
+        requirement.ruleCategoryId !== null &&
+        DENTAL_ADDITIONAL_CATEGORY_IDS.has(requirement.ruleCategoryId),
+    ) ?? null;
+  const dentalAdditionalCategoryId =
+    dentalAdditionalRequirement?.ruleCategoryId ?? null;
+  const dentalAdditionalStatus = dentalAdditionalRequirement
+    ? effectiveStatus(dentalAdditionalRequirement.id)
+    : null;
+  const dentalAdditionalUnits =
+    dentalAdditionalRequirement && dentalAdditionalStatus
+      ? dentalAdditionalStatus === "applies"
+        ? Number(dentalAdditionalRequirement.requiredUnits)
         : 0
       : null;
 
@@ -8850,6 +9937,72 @@ async function updateRequirementApplicability(
       ),
     );
   }
+  let dentalAdjustedTotalResultIndex: number | null = null;
+  if (
+    dentalAdditionalUnits !== null &&
+    dentalAdditionalRequirement &&
+    dentalAdditionalCategoryId &&
+    dentalAdditionalStatus
+  ) {
+    dentalAdjustedTotalResultIndex = statements.length;
+    statements.push(
+      query(
+        database,
+        `UPDATE credentials
+         SET
+           total_required = (
+             SELECT catalog_rule.total_units + ?
+             FROM rule_sets catalog_rule
+             WHERE catalog_rule.id = credentials.rule_set_id
+           ),
+           updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+           AND user_id = ?
+           AND status IN ('active', 'submitted')
+           AND EXISTS (
+             SELECT 1
+             FROM rule_sets catalog_rule
+             WHERE catalog_rule.id = credentials.rule_set_id
+               AND catalog_rule.profession = 'Dental'
+           )
+           AND EXISTS (
+             SELECT 1
+             FROM credential_requirements requirement
+             WHERE requirement.id = ?
+               AND requirement.credential_id = credentials.id
+               AND requirement.rule_category_id = ?
+               AND requirement.applicability_status = ?
+           )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM json_each(?) requested_choice
+             WHERE NOT EXISTS (
+               SELECT 1
+               FROM credential_requirements applied_requirement
+               WHERE applied_requirement.credential_id = credentials.id
+                 AND applied_requirement.id =
+                   json_extract(
+                     requested_choice.value,
+                     '$.requirementId'
+                   )
+                 AND applied_requirement.applicability_status =
+                   json_extract(requested_choice.value, '$.status')
+                 AND applied_requirement.is_active =
+                   json_extract(requested_choice.value, '$.isActive')
+             )
+           )`,
+        [
+          dentalAdditionalUnits,
+          credentialId,
+          identity.userId,
+          dentalAdditionalRequirement.id,
+          dentalAdditionalCategoryId,
+          dentalAdditionalStatus,
+          normalizedChoicesJson,
+        ],
+      ),
+    );
+  }
   let results: D1Result[];
   try {
     results = await database.batch(statements);
@@ -8869,7 +10022,9 @@ async function updateRequirementApplicability(
     (Number.isFinite(applicabilityChangeCount) &&
       applicabilityChangeCount !== normalizedChoices.size) ||
     (adjustedTotalResultIndex !== null &&
-      Number(results[adjustedTotalResultIndex]?.meta?.changes) === 0)
+      Number(results[adjustedTotalResultIndex]?.meta?.changes) === 0) ||
+    (dentalAdjustedTotalResultIndex !== null &&
+      Number(results[dentalAdjustedTotalResultIndex]?.meta?.changes) === 0)
   ) {
     const racedAllocatedDeactivation = await findAllocatedDeactivation();
     if (racedAllocatedDeactivation) {
@@ -8892,6 +10047,196 @@ async function updateRequirementApplicability(
     );
   }
   return credentialId;
+}
+
+async function saveDentalCheckpoint(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  const credentialId = textField(payload, "credentialId", {
+    required: true,
+    max: 160,
+  })!;
+  const requirementId = textField(payload, "requirementId", {
+    required: true,
+    max: 160,
+  })!;
+  const expectedRevision = expectedCheckpointRevisionField(payload);
+  if (typeof payload.completed !== "boolean") {
+    throw new RequestError("completed must be a boolean");
+  }
+  const completed = payload.completed;
+  const evidenceNote = textField(payload, "evidenceNote", { max: 500 });
+  if (completed && !evidenceNote) {
+    throw new RequestError(
+      "Add a concise certificate, portal, card, or assessment reference before completing this checkpoint.",
+      409,
+      "dental_checkpoint_evidence_required",
+    );
+  }
+
+  const checkpointId = crypto.randomUUID();
+  let result: D1Result;
+  try {
+    result = await query(
+      database,
+      `INSERT INTO dental_checkpoint_states (
+        id, user_id, credential_id, requirement_id, status, completed_at,
+        evidence_note, revision
+      )
+      SELECT
+        ?, credential.user_id, credential.id, requirement.id, ?,
+        CASE WHEN ? = 'completed' THEN CURRENT_TIMESTAMP ELSE NULL END,
+        ?, 1
+      FROM credential_requirements requirement
+      JOIN credentials credential
+        ON credential.id = requirement.credential_id
+      WHERE credential.id = ?
+        AND credential.user_id = ?
+        AND credential.status IN ('active', 'submitted')
+        AND credential.profession = 'Dental'
+        AND requirement.id = ?
+        AND requirement.rule_category_id IN (
+          ${DENTAL_CHECKPOINT_RULE_CATEGORY_IDS_SQL}
+        )
+        AND requirement.kind = 'informational'
+        AND requirement.required_units = 0
+        AND (
+          ? = 'pending'
+          OR (
+            requirement.is_active = 1
+            AND requirement.applicability_status = 'applies'
+          )
+        )
+      ON CONFLICT(user_id, credential_id, requirement_id) DO UPDATE SET
+        status = excluded.status,
+        completed_at = CASE
+          WHEN excluded.status = 'completed'
+            THEN COALESCE(
+              dental_checkpoint_states.completed_at,
+              CURRENT_TIMESTAMP
+            )
+          ELSE NULL
+        END,
+        evidence_note = COALESCE(
+          excluded.evidence_note,
+          dental_checkpoint_states.evidence_note
+        ),
+        revision = dental_checkpoint_states.revision + 1,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE dental_checkpoint_states.revision = ?`,
+      [
+        checkpointId,
+        completed ? "completed" : "pending",
+        completed ? "completed" : "pending",
+        evidenceNote,
+        credentialId,
+        identity.userId,
+        requirementId,
+        completed ? "completed" : "pending",
+        expectedRevision,
+      ],
+    ).run();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("dental_checkpoint_not_mutable")) {
+      return rethrowClosedCycleWrite(
+        database,
+        identity,
+        credentialId,
+        "This renewal cycle is closed and its dental checkpoints are frozen.",
+        error,
+      );
+    }
+    throw error;
+  }
+  if (Number(result.meta?.changes ?? Number.NaN) > 0) {
+    return requirementId;
+  }
+
+  const current = await query(
+    database,
+    `SELECT
+      credential.status AS credentialStatus,
+      credential.profession,
+      requirement.rule_category_id AS ruleCategoryId,
+      requirement.kind,
+      requirement.required_units AS requiredUnits,
+      requirement.is_active AS isActive,
+      requirement.applicability_status AS applicabilityStatus,
+      checkpoint.revision
+    FROM credential_requirements requirement
+    JOIN credentials credential
+      ON credential.id = requirement.credential_id
+    LEFT JOIN dental_checkpoint_states checkpoint
+      ON checkpoint.requirement_id = requirement.id
+      AND checkpoint.credential_id = credential.id
+      AND checkpoint.user_id = credential.user_id
+    WHERE requirement.id = ?
+      AND requirement.credential_id = ?
+      AND credential.user_id = ?`,
+    [requirementId, credentialId, identity.userId],
+  ).first<{
+    credentialStatus: string;
+    profession: string;
+    ruleCategoryId: string | null;
+    kind: string;
+    requiredUnits: number;
+    isActive: number;
+    applicabilityStatus: string;
+    revision: number | null;
+  }>();
+  if (!current) {
+    throw new RequestError(
+      "Dental checkpoint not found for this credential.",
+      404,
+      "dental_checkpoint_not_found",
+    );
+  }
+  if (!["active", "submitted"].includes(current.credentialStatus)) {
+    throw new RequestError(
+      "This renewal cycle is closed and its dental checkpoints are frozen.",
+      409,
+      "cycle_closed",
+    );
+  }
+  if (
+    current.profession !== "Dental" ||
+    !current.ruleCategoryId ||
+    !DENTAL_CHECKPOINT_RULE_CATEGORY_ID_SET.has(current.ruleCategoryId) ||
+    current.kind !== "informational" ||
+    Number(current.requiredUnits) !== 0
+  ) {
+    throw new RequestError(
+      "This requirement is not a dental completion checkpoint.",
+      409,
+      "not_dental_checkpoint",
+    );
+  }
+  if (
+    completed &&
+    (!Boolean(current.isActive) ||
+      current.applicabilityStatus !== "applies")
+  ) {
+    throw new RequestError(
+      "Confirm that this checkpoint applies to the current cycle before completing it.",
+      409,
+      "dental_checkpoint_not_applicable",
+    );
+  }
+  if (Number(current.revision ?? 0) !== expectedRevision) {
+    throw new RequestError(
+      "This dental checkpoint changed in another session. Refresh and try again.",
+      409,
+      "dental_checkpoint_state_changed",
+    );
+  }
+  throw new RequestError(
+    "The dental checkpoint could not be saved. Refresh and try again.",
+    409,
+    "dental_checkpoint_state_changed",
+  );
 }
 
 async function updateWeeklyGoal(
@@ -9775,6 +11120,13 @@ export async function POST(request: Request) {
           body.payload,
         );
         break;
+      case "saveDentalCheckpoint":
+        id = await saveDentalCheckpoint(
+          database,
+          identity,
+          body.payload,
+        );
+        break;
       case "updateWeeklyGoal":
         id = await updateWeeklyGoal(database, identity, body.payload);
         break;
@@ -9818,6 +11170,16 @@ function errorResponse(error: unknown) {
     );
   }
   const message = error instanceof Error ? error.message : "Unexpected error";
+  if (message.includes("dental_daily_unit_limit_exceeded")) {
+    return json(
+      {
+        error:
+          "California permits no more than eight countable CE units on one completion date. Another entry changed that day while this record was saving; review the day and reduce the countable allocation.",
+        code: "dental_daily_unit_limit_exceeded",
+      },
+      { status: 409 },
+    );
+  }
   console.error("CEU workspace API error", message);
   return json(
     {
