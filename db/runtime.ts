@@ -412,8 +412,116 @@ const RICH_RULE_INDEX_STATEMENTS = [
 
 const RULE_SET_ID = "nj-lcsw-sample-v1";
 const RULE_GENERAL_ID = "nj-lcsw-sample-v1-general";
+const RULE_CLINICAL_ID = "nj-lcsw-sample-v1-clinical";
 const RULE_ETHICS_ID = "nj-lcsw-sample-v1-ethics";
 const RULE_CULTURAL_ID = "nj-lcsw-sample-v1-cultural";
+const RULE_OPIOID_ID = "nj-lcsw-sample-v1-opioid";
+const NJ_LCSW_CREDIT_CATEGORY_GROUP = "New Jersey LCSW credit category";
+
+const NJ_LCSW_RULE_SET_REFRESH_SQL = `UPDATE rule_sets
+SET stable_key = ?, version = ?, profession = ?, credential_name = ?,
+    jurisdiction = ?, issuer = ?, total_units = ?, unit_label = ?,
+    cycle_months = ?, source_url = ?, source_title = ?, effective_date = ?,
+    last_verified_at = ?, review_status = ?, is_current = ?
+WHERE id = ?`;
+
+const NJ_LCSW_RULE_SET_REFRESH_BINDINGS = [
+  "nj-lcsw",
+  1,
+  "Social Work",
+  "Licensed Clinical Social Worker",
+  "New Jersey",
+  "New Jersey State Board of Social Work Examiners",
+  40,
+  "credits",
+  24,
+  "https://www.njconsumeraffairs.gov/regulations/Chapter-44G-State-Board-of-Social-Work-Examiners.pdf",
+  "N.J.A.C. 13:44G-6.2 (last revised April 15, 2024) — standard full biennial LCSW renewal. Allocate each credit once among General Social Work, Clinical Practice, Ethics, or Social and Cultural Competence; the opioid topic may overlap that allocation. Up to 8 surplus credits may carry into the next biennium, but License Lantern does not carry them automatically: record only Board-confirmed carryover manually with evidence. A license first issued in the second year is prorated to at least 20 total credits, including 10 clinical, 3 ethics, and 2 social/cultural; use a custom prorated cycle and confirm the opioid requirement with the Board.",
+  "2020-03-02",
+  "2026-07-26",
+  "source_linked_check_conditions",
+  1,
+  RULE_SET_ID,
+] as const;
+
+const NJ_LCSW_CATEGORY_INSERT_SQL = `INSERT OR IGNORE INTO rule_categories (
+  id, rule_set_id, name, required_units, kind, relation, parent_category_id,
+  applicability, condition_note, exclusive_group, sort_order
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+const NJ_LCSW_CATEGORY_REFRESH_SQL = `UPDATE rule_categories
+SET rule_set_id = ?, name = ?, required_units = ?, kind = ?, relation = ?,
+    parent_category_id = ?, applicability = ?, condition_note = ?,
+    exclusive_group = ?, sort_order = ?
+WHERE id = ?`;
+
+const NJ_LCSW_CATEGORY_BINDINGS = [
+  [
+    RULE_GENERAL_ID,
+    RULE_SET_ID,
+    "General Social Work",
+    0,
+    "informational",
+    "independent",
+    null,
+    "optional",
+    "Catchall for eligible social-work credit not allocated to Clinical Practice, Ethics, or Social and Cultural Competence. Choose exactly one of those four categories for every credited time block.",
+    NJ_LCSW_CREDIT_CATEGORY_GROUP,
+    0,
+  ],
+  [
+    RULE_CLINICAL_ID,
+    RULE_SET_ID,
+    "Clinical Practice",
+    20,
+    "minimum",
+    "independent",
+    null,
+    "always",
+    "At least 20 of the 40 credits must be directly related to clinical practice. The same time block cannot also be allocated to General Social Work, Ethics, or Social and Cultural Competence.",
+    NJ_LCSW_CREDIT_CATEGORY_GROUP,
+    1,
+  ],
+  [
+    RULE_ETHICS_ID,
+    RULE_SET_ID,
+    "Ethics",
+    5,
+    "minimum",
+    "independent",
+    null,
+    "always",
+    "Allocate five credits to ethics. The same time block cannot also be allocated to General Social Work, Clinical Practice, or Social and Cultural Competence.",
+    NJ_LCSW_CREDIT_CATEGORY_GROUP,
+    2,
+  ],
+  [
+    RULE_CULTURAL_ID,
+    RULE_SET_ID,
+    "Social and Cultural Competence",
+    3,
+    "minimum",
+    "independent",
+    null,
+    "always",
+    "Allocate three credits to social and cultural competence. The same time block cannot also be allocated to General Social Work, Clinical Practice, or Ethics.",
+    NJ_LCSW_CREDIT_CATEGORY_GROUP,
+    3,
+  ],
+  [
+    RULE_OPIOID_ID,
+    RULE_SET_ID,
+    "Prescription Opioid Drugs",
+    1,
+    "minimum",
+    "overlapping",
+    null,
+    "always",
+    "At least one prescribed credit must concern prescription opioid drugs, including risks and signs of abuse, addiction, and diversion. This topic tag may overlap the one substantive credit-category allocation for the same time block.",
+    null,
+    4,
+  ],
+] as const;
 
 const RICH_RULE_CATEGORY_INSERT_SQL = `INSERT OR IGNORE INTO rule_categories (
   id, rule_set_id, name, required_units, kind, relation, parent_category_id,
@@ -1748,10 +1856,287 @@ const RETIRED_ATTORNEY_RULE_CATEGORY_BINDINGS = [
 const RETIRE_ATTORNEY_CREDENTIAL_REQUIREMENT_SQL = `UPDATE credential_requirements
 SET applicability_status = 'not_applicable', is_active = 0,
     condition_note = ?
-WHERE rule_category_id = ?`;
+WHERE rule_category_id = ?
+  AND credential_id IN (
+    SELECT credential.id
+    FROM credentials credential
+    WHERE credential.status = 'active'
+  )`;
 
 const DELETE_RETIRED_ATTORNEY_RULE_CATEGORY_SQL = `DELETE FROM rule_categories
 WHERE id = ?`;
+
+const ATTORNEY_CREDENTIAL_REQUIREMENT_SYNC_RULE_SET_IDS = [
+  "ca-attorney-active-2026-v1",
+  "tx-attorney-active-2026-v1",
+  "ny-attorney-experienced-2026-v1",
+] as const;
+
+const BACKFILL_ATTORNEY_CREDENTIAL_REQUIREMENTS_SQL = `INSERT INTO credential_requirements (
+  id, credential_id, rule_category_id, name, required_units, kind, relation,
+  parent_requirement_id, applicability, applicability_status, condition_note,
+  exclusive_group, is_active, sort_order
+)
+SELECT
+  'catalog-sync:' || credential.id || ':' || category.id,
+  credential.id,
+  category.id,
+  category.name,
+  category.required_units,
+  category.kind,
+  category.relation,
+  NULL,
+  category.applicability,
+  CASE
+    WHEN category.applicability = 'conditional' THEN 'needs_confirmation'
+    ELSE 'applies'
+  END,
+  category.condition_note,
+  category.exclusive_group,
+  CASE WHEN category.applicability = 'conditional' THEN 0 ELSE 1 END,
+  category.sort_order
+FROM credentials credential
+JOIN rule_categories category
+  ON category.rule_set_id = credential.rule_set_id
+WHERE credential.rule_set_id IN (?, ?, ?)
+  AND credential.status = 'active'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM credential_requirements existing
+    WHERE existing.credential_id = credential.id
+      AND existing.rule_category_id = category.id
+  )
+ORDER BY credential.id, category.sort_order, category.id`;
+
+const SYNC_ATTORNEY_CREDENTIAL_REQUIREMENTS_SQL = `UPDATE credential_requirements
+SET
+  name = (
+    SELECT category.name
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  required_units = (
+    SELECT category.required_units
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  kind = (
+    SELECT category.kind
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  relation = (
+    SELECT category.relation
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  parent_requirement_id = (
+    SELECT parent_requirement.id
+    FROM rule_categories category
+    JOIN credential_requirements parent_requirement
+      ON parent_requirement.credential_id =
+        credential_requirements.credential_id
+      AND parent_requirement.rule_category_id =
+        category.parent_category_id
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  applicability = (
+    SELECT category.applicability
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  condition_note = (
+    SELECT category.condition_note
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  exclusive_group = (
+    SELECT category.exclusive_group
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  sort_order = (
+    SELECT category.sort_order
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  )
+WHERE credential_id IN (
+  SELECT credential.id
+  FROM credentials credential
+  WHERE credential.rule_set_id IN (?, ?, ?)
+    AND credential.status = 'active'
+)
+  AND rule_category_id IN (
+    SELECT category.id
+    FROM rule_categories category
+    WHERE category.rule_set_id IN (?, ?, ?)
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM rule_categories category
+    LEFT JOIN credential_requirements parent_requirement
+      ON parent_requirement.credential_id =
+        credential_requirements.credential_id
+      AND parent_requirement.rule_category_id =
+        category.parent_category_id
+    WHERE category.id = credential_requirements.rule_category_id
+      AND (
+        credential_requirements.name IS NOT category.name
+        OR credential_requirements.required_units IS NOT category.required_units
+        OR credential_requirements.kind IS NOT category.kind
+        OR credential_requirements.relation IS NOT category.relation
+        OR credential_requirements.parent_requirement_id IS NOT
+          parent_requirement.id
+        OR credential_requirements.applicability IS NOT category.applicability
+        OR credential_requirements.condition_note IS NOT category.condition_note
+        OR credential_requirements.exclusive_group IS NOT category.exclusive_group
+        OR credential_requirements.sort_order IS NOT category.sort_order
+      )
+  )`;
+
+const BACKFILL_NJ_LCSW_CREDENTIAL_REQUIREMENTS_SQL = `INSERT INTO credential_requirements (
+  id, credential_id, rule_category_id, name, required_units, kind, relation,
+  parent_requirement_id, applicability, applicability_status, condition_note,
+  exclusive_group, is_active, sort_order
+)
+SELECT
+  'nj-lcsw-sync:' || credential.id || ':' || category.id,
+  credential.id,
+  category.id,
+  category.name,
+  category.required_units,
+  category.kind,
+  category.relation,
+  NULL,
+  category.applicability,
+  CASE
+    WHEN category.applicability = 'conditional' THEN 'needs_confirmation'
+    ELSE 'applies'
+  END,
+  category.condition_note,
+  category.exclusive_group,
+  CASE WHEN category.applicability = 'conditional' THEN 0 ELSE 1 END,
+  category.sort_order
+FROM credentials credential
+JOIN rule_categories category
+  ON category.rule_set_id = credential.rule_set_id
+WHERE credential.rule_set_id = ?
+  AND credential.status = 'active'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM credential_requirements existing
+    WHERE existing.credential_id = credential.id
+      AND existing.rule_category_id = category.id
+  )
+ORDER BY credential.id, category.sort_order, category.id`;
+
+const SYNC_NJ_LCSW_CREDENTIAL_REQUIREMENTS_SQL = `UPDATE credential_requirements
+SET
+  name = (
+    SELECT category.name
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  required_units = (
+    SELECT category.required_units
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  kind = (
+    SELECT category.kind
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  relation = (
+    SELECT category.relation
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  parent_requirement_id = NULL,
+  applicability = (
+    SELECT category.applicability
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  condition_note = (
+    SELECT category.condition_note
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  exclusive_group = (
+    SELECT category.exclusive_group
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  sort_order = (
+    SELECT category.sort_order
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  )
+WHERE credential_id IN (
+  SELECT credential.id
+  FROM credentials credential
+  WHERE credential.rule_set_id = ?
+    AND credential.status = 'active'
+)
+  AND rule_category_id IN (
+    SELECT category.id
+    FROM rule_categories category
+    WHERE category.rule_set_id = ?
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+      AND (
+        credential_requirements.name IS NOT category.name
+        OR credential_requirements.required_units IS NOT category.required_units
+        OR credential_requirements.kind IS NOT category.kind
+        OR credential_requirements.relation IS NOT category.relation
+        OR credential_requirements.parent_requirement_id IS NOT NULL
+        OR credential_requirements.applicability IS NOT category.applicability
+        OR credential_requirements.condition_note IS NOT category.condition_note
+        OR credential_requirements.exclusive_group IS NOT category.exclusive_group
+        OR credential_requirements.sort_order IS NOT category.sort_order
+      )
+  )`;
+
+const BACKFILL_TEXAS_ETHICS_MATCHES_SQL = `INSERT OR IGNORE INTO activity_requirement_matches (
+  id, user_id, allocation_id, requirement_id, matched_units
+)
+SELECT
+  'catalog-sync-match:' || source_match.allocation_id || ':' ||
+    target_requirement.id,
+  source_match.user_id,
+  source_match.allocation_id,
+  target_requirement.id,
+  source_match.matched_units
+FROM activity_requirement_matches source_match
+JOIN credential_requirements source_requirement
+  ON source_requirement.id = source_match.requirement_id
+JOIN credentials credential
+  ON credential.id = source_requirement.credential_id
+JOIN credential_requirements target_requirement
+  ON target_requirement.credential_id = credential.id
+  AND target_requirement.is_active = 1
+WHERE credential.rule_set_id = 'tx-attorney-active-2026-v1'
+  AND credential.status = 'active'
+  AND (
+    (
+      source_requirement.rule_category_id =
+        'tx-attorney-active-2026-accredited-ethics'
+      AND target_requirement.rule_category_id =
+        'tx-attorney-active-2026-ethics'
+    )
+    OR (
+      source_requirement.rule_category_id =
+        'tx-attorney-active-2026-self-study-ethics'
+      AND target_requirement.rule_category_id IN (
+        'tx-attorney-active-2026-ethics',
+        'tx-attorney-active-2026-self-study'
+      )
+    )
+  )`;
 
 const GLOBAL_SEED_STATEMENTS = [
   {
@@ -2685,14 +3070,14 @@ const CATALOG_2026_RULE_SET_SEED_BINDINGS = [
     "cfp-professional-pre-2027",
     1,
     "Financial Planning",
-    "CFP® Professional — cycle beginning before Q1 2027",
+    "CFP® Professional — cycle beginning before April 1, 2027",
     "United States",
     "CFP Board",
     30,
     "CE hours",
     24,
     "https://www.cfp.net/for-cfp-pros/continuing-education/continuing-education-requirements",
-    "CFP Board's 30-hour standard applies only to certification periods beginning before Q1 2027. Periods beginning in Q1 2027 or later require 40 hours, including 2 ethics hours, and may use up to 10 carryover hours. Initial-cycle proration and annual certification steps are separate.",
+    "CFP Board's 30-hour standard applies to certification periods beginning before April 1, 2027. The first full two-year cycles beginning after Q1 2027 use the 40-hour standard. No hours carry into this 30-hour cycle. For a later eligible cycle, only CFP Board-confirmed excess general CE may carry from the immediately preceding cycle, up to 10 hours; Ethics CE never carries. Confirm the assigned cycle dates and any carryover in the CFP Board account. Initial-cycle proration and annual certification steps are separate.",
     null,
     "2026-07-26",
     "transition_rule_check_assigned_cycle",
@@ -2703,15 +3088,15 @@ const CATALOG_2026_RULE_SET_SEED_BINDINGS = [
     "cfp-professional-2027",
     1,
     "Financial Planning",
-    "CFP® Professional — cycle beginning Q1 2027 or later",
+    "CFP® Professional — cycle beginning April 1, 2027 or later",
     "United States",
     "CFP Board",
     40,
     "CE hours",
     24,
     "https://www.cfp.net/for-cfp-pros/continuing-education/continuing-education-requirements",
-    "CFP Board's 40-hour standard for certification periods beginning in Q1 2027 or later: 38 general hours and 2 ethics hours. Up to 10 eligible excess hours may carry over, but License Lantern does not apply prior-cycle activities automatically; confirm eligibility in the CFP Board account before relying on carryover.",
-    "2027-01-01",
+    "CFP Board's 40-hour standard applies to the first full two-year certification period beginning after Q1 2027, implemented here as a cycle start on or after April 1, 2027: 38 general hours and 2 Ethics CE hours. No more than 5 of the general hours may be Practice Management. Up to 10 excess general CE hours from the immediately preceding cycle may carry only when CFP Board confirms them; Ethics CE cannot carry. License Lantern never copies prior-cycle credit automatically, so confirm the assigned cycle and eligible amount in the CFP Board account before manually recording carryover with supporting evidence.",
+    "2027-04-01",
     "2026-07-26",
     "source_linked_check_conditions",
     0,
@@ -2841,6 +3226,19 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
     1,
   ],
   [
+    "arrt-rt-standard-2026-other-eligible-ce",
+    "arrt-rt-standard-2026-v1",
+    "Other Eligible Category A or A+ CE",
+    0,
+    "informational",
+    "independent",
+    null,
+    "optional",
+    "Use this activity-type classifier for eligible Category A or A+ credit that is neither facility-delivered applications training nor an advanced-level life-support certification. These credits remain subject only to the overall biennial total.",
+    "ARRT capped activity type",
+    2,
+  ],
+  [
     "cfp-professional-pre-2027-general",
     "cfp-professional-pre-2027-v1",
     "General CE",
@@ -2849,7 +3247,7 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
     "independent",
     null,
     "always",
-    "Twenty-eight general hours plus two CFP Board-approved ethics hours make up the 30-hour requirement for this pre-Q1-2027 cycle version.",
+    "Twenty-eight general hours plus two CFP Board-approved Ethics CE hours make up the 30-hour requirement for a cycle beginning before April 1, 2027.",
     "CFP CE type",
     0,
   ],
@@ -2862,7 +3260,7 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
     "independent",
     null,
     "always",
-    "Complete the current two-hour CFP Board-approved ethics program; these two hours are separate from the 28 general hours.",
+    "Complete the current two-hour CFP Board-approved Ethics CE program; these hours are separate from the 28 general hours and cannot carry to another cycle.",
     "CFP CE type",
     1,
   ],
@@ -2875,9 +3273,35 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
     "independent",
     null,
     "always",
-    "Thirty-eight general hours plus two CFP Board-approved ethics hours make up the 40-hour requirement for cycles beginning in Q1 2027 or later.",
-    "CFP CE type",
+    "Complete 38 general CE hours. Classify every general activity under the Principal Topics or Practice Management child category rather than tagging this parent directly. License Lantern does not copy prior-cycle credit; manually record only CFP Board-confirmed eligible carryover and retain the confirmation.",
+    null,
     0,
+  ],
+  [
+    "cfp-professional-2027-principal-topics",
+    "cfp-professional-2027-v1",
+    "General CE — Principal Topics Other Than Practice Management",
+    33,
+    "minimum",
+    "nested",
+    "cfp-professional-2027-general",
+    "always",
+    "At least 33 of the 38 general CE hours must cover CFP Board Principal Topics other than Practice Management. This derived floor enforces the five-hour Practice Management cap; tag each non-Practice-Management general activity here.",
+    "CFP CE activity type",
+    1,
+  ],
+  [
+    "cfp-professional-2027-practice-management",
+    "cfp-professional-2027-v1",
+    "Practice Management General CE",
+    5,
+    "maximum",
+    "nested",
+    "cfp-professional-2027-general",
+    "optional",
+    "No more than 5 of the 38 general CE hours may focus on Practice Management. Tag every Practice Management activity here so excess hours cannot count toward the 40-hour total.",
+    "CFP CE activity type",
+    2,
   ],
   [
     "cfp-professional-2027-ethics",
@@ -2888,9 +3312,9 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
     "independent",
     null,
     "always",
-    "Complete the current two-hour CFP Board-approved ethics program; these two hours are separate from the 38 general hours.",
-    "CFP CE type",
-    1,
+    "Complete the current two-hour CFP Board-approved Ethics CE program. Ethics CE is separate from the 38 general hours and cannot carry over from another certification period.",
+    "CFP CE activity type",
+    3,
   ],
   [
     "tx-real-estate-2026-legal-i",
@@ -2997,6 +3421,19 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
     0,
   ],
   [
+    "nj-physician-2026-non-volunteer-credit",
+    "nj-physician-2026-v1",
+    "Non-Volunteer CME Credit",
+    0,
+    "informational",
+    "independent",
+    null,
+    "optional",
+    "Use this credit-source classifier for eligible CME that is not claimed from qualifying volunteer medical care. Select any applicable Category I or subject tags separately.",
+    "New Jersey physician credit source",
+    6,
+  ],
+  [
     "ptcb-cpht-2026-technician-specific",
     "ptcb-cpht-2026-v1",
     "Technician-Specific CE",
@@ -3014,11 +3451,11 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
     "ptcb-cpht-2026-v1",
     "Pharmacist-Specific CE",
     5,
-    "maximum",
+    "informational",
     "overlapping",
     null,
     "optional",
-    "At most 5 pharmacist-specific hours within the PTCE Content Outline may count toward ordinary CPhT renewal.",
+    "Classification tag for accepted pharmacist-specific CE. The separate 15-hour Technician-Specific CE minimum safely limits pharmacist-specific credit to no more than 5 of the 20 counted hours, so no second maximum deduction is applied.",
     "PTCB provider audience",
     1,
   ],
@@ -3075,6 +3512,19 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
     5,
   ],
   [
+    "ptcb-cpht-2026-other-eligible-activity",
+    "ptcb-cpht-2026-v1",
+    "Other Eligible PTCB CE Activity",
+    0,
+    "informational",
+    "independent",
+    null,
+    "optional",
+    "Use this activity-type classifier for eligible PTCB CE that is neither relevant college coursework nor BLS, CPR, or AED training. Select technician/pharmacist audience and law or patient-safety tags separately when applicable.",
+    "PTCB capped activity type",
+    6,
+  ],
+  [
     "asha-ccc-2026-ethics",
     "asha-ccc-2026-v1",
     "Ethics",
@@ -3101,6 +3551,458 @@ const CATALOG_2026_CATEGORY_SEED_BINDINGS = [
     1,
   ],
 ] as const;
+
+const MAXIMUM_CLASSIFICATION_CATEGORY_REFRESH_SQL = `UPDATE rule_categories SET
+  required_units = ?,
+  kind = ?,
+  relation = ?,
+  parent_category_id = ?,
+  applicability = ?,
+  condition_note = ?,
+  exclusive_group = ?,
+  sort_order = ?
+WHERE id = ?`;
+
+const MAXIMUM_CLASSIFICATION_CATEGORY_REFRESH_BINDINGS = [
+  [
+    35,
+    "minimum",
+    "independent",
+    null,
+    "always",
+    "At least 35 of the 60 PDUs must be Education PDUs. Select this activity-type classifier for Education and add any applicable Talent Triangle child tags separately.",
+    "PMI PDU activity type",
+    0,
+    "pmi-pmp-2026-education",
+  ],
+  [
+    25,
+    "maximum",
+    "independent",
+    null,
+    "optional",
+    "Optional; at most 25 PDUs may be credited in Giving Back. Select this activity type for Giving Back other than Working as a Professional.",
+    "PMI PDU activity type",
+    4,
+    "pmi-pmp-2026-giving-back",
+  ],
+  [
+    8,
+    "maximum",
+    "nested",
+    "pmi-pmp-2026-giving-back",
+    "optional",
+    "Optional subset of Giving Back; at most 8 PDUs, claimable once per cycle, and these PDUs cannot carry over. Select this leaf instead of the Giving Back parent so the same units roll up once.",
+    "PMI PDU activity type",
+    5,
+    "pmi-pmp-2026-working-professional",
+  ],
+  [
+    10,
+    "maximum",
+    "independent",
+    null,
+    "optional",
+    "Up to 10 credits per biennium, earned at one CME credit per two qualifying volunteer-care hours; these credits do not count toward the Category I minimum. Use the Non-Volunteer CME Credit classifier for every other activity.",
+    "New Jersey physician credit source",
+    5,
+    "nj-physician-2026-volunteer-care",
+  ],
+  [
+    5,
+    "informational",
+    "overlapping",
+    null,
+    "optional",
+    "Classification tag for accepted pharmacist-specific CE. The separate 15-hour Technician-Specific CE minimum safely limits pharmacist-specific credit to no more than 5 of the 20 counted hours, so no second maximum deduction is applied.",
+    "PTCB provider audience",
+    1,
+    "ptcb-cpht-2026-pharmacist-specific",
+  ],
+] as const;
+
+const MAXIMUM_CLASSIFICATION_RULE_SET_IDS = [
+  "tx-attorney-active-2026-v1",
+  "pa-attorney-active-2026-v1",
+  "pmi-pmp-2026-v1",
+  "nj-physician-2026-v1",
+  "arrt-rt-standard-2026-v1",
+  "ptcb-cpht-2026-v1",
+  "cfp-professional-2027-v1",
+] as const;
+
+const MAXIMUM_CLASSIFICATION_RULE_SET_PLACEHOLDERS =
+  MAXIMUM_CLASSIFICATION_RULE_SET_IDS.map(() => "?").join(", ");
+
+const BACKFILL_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL = `INSERT INTO credential_requirements (
+  id, credential_id, rule_category_id, name, required_units, kind, relation,
+  parent_requirement_id, applicability, applicability_status, condition_note,
+  exclusive_group, is_active, sort_order
+)
+SELECT
+  'maximum-classification:' || credential.id || ':' || category.id,
+  credential.id,
+  category.id,
+  category.name,
+  category.required_units,
+  category.kind,
+  category.relation,
+  NULL,
+  category.applicability,
+  CASE
+    WHEN category.applicability = 'conditional' THEN 'needs_confirmation'
+    ELSE 'applies'
+  END,
+  category.condition_note,
+  category.exclusive_group,
+  CASE WHEN category.applicability = 'conditional' THEN 0 ELSE 1 END,
+  category.sort_order
+FROM credentials credential
+JOIN rule_categories category
+  ON category.rule_set_id = credential.rule_set_id
+WHERE credential.rule_set_id IN (${MAXIMUM_CLASSIFICATION_RULE_SET_PLACEHOLDERS})
+  AND credential.status = 'active'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM credential_requirements existing
+    WHERE existing.credential_id = credential.id
+      AND existing.rule_category_id = category.id
+  )
+ORDER BY credential.id, category.sort_order, category.id`;
+
+const SYNC_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL = `UPDATE credential_requirements
+SET
+  name = (
+    SELECT category.name
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  required_units = (
+    SELECT category.required_units
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  kind = (
+    SELECT category.kind
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  relation = (
+    SELECT category.relation
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  parent_requirement_id = (
+    SELECT parent_requirement.id
+    FROM rule_categories category
+    JOIN credential_requirements parent_requirement
+      ON parent_requirement.credential_id =
+        credential_requirements.credential_id
+      AND parent_requirement.rule_category_id =
+        category.parent_category_id
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  applicability = (
+    SELECT category.applicability
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  condition_note = (
+    SELECT category.condition_note
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  exclusive_group = (
+    SELECT category.exclusive_group
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  ),
+  sort_order = (
+    SELECT category.sort_order
+    FROM rule_categories category
+    WHERE category.id = credential_requirements.rule_category_id
+  )
+WHERE credential_id IN (
+  SELECT credential.id
+  FROM credentials credential
+  WHERE credential.rule_set_id IN (${MAXIMUM_CLASSIFICATION_RULE_SET_PLACEHOLDERS})
+    AND credential.status = 'active'
+)
+  AND rule_category_id IN (
+    SELECT category.id
+    FROM rule_categories category
+    WHERE category.rule_set_id IN (${MAXIMUM_CLASSIFICATION_RULE_SET_PLACEHOLDERS})
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM rule_categories category
+    LEFT JOIN credential_requirements parent_requirement
+      ON parent_requirement.credential_id =
+        credential_requirements.credential_id
+      AND parent_requirement.rule_category_id =
+        category.parent_category_id
+    WHERE category.id = credential_requirements.rule_category_id
+      AND (
+        credential_requirements.name IS NOT category.name
+        OR credential_requirements.required_units IS NOT category.required_units
+        OR credential_requirements.kind IS NOT category.kind
+        OR credential_requirements.relation IS NOT category.relation
+        OR credential_requirements.parent_requirement_id IS NOT
+          parent_requirement.id
+        OR credential_requirements.applicability IS NOT category.applicability
+        OR credential_requirements.condition_note IS NOT category.condition_note
+        OR credential_requirements.exclusive_group IS NOT category.exclusive_group
+        OR credential_requirements.sort_order IS NOT category.sort_order
+      )
+  )`;
+
+const MERGE_CFP_BOUNDARY_GENERAL_MATCHES_SQL = `INSERT INTO activity_requirement_matches (
+  id, user_id, allocation_id, requirement_id, matched_units, created_at
+)
+SELECT
+  'cfp-boundary-general:' || source_match.allocation_id,
+  source_match.user_id,
+  source_match.allocation_id,
+  target_requirement.id,
+  MAX(source_match.matched_units),
+  MIN(source_match.created_at)
+FROM activity_requirement_matches source_match
+JOIN credential_requirements source_requirement
+  ON source_requirement.id = source_match.requirement_id
+JOIN credentials credential
+  ON credential.id = source_requirement.credential_id
+JOIN credential_requirements target_requirement
+  ON target_requirement.credential_id = credential.id
+  AND target_requirement.rule_category_id =
+    'cfp-professional-2027-general'
+WHERE credential.rule_set_id = 'cfp-professional-2027-v1'
+  AND credential.status = 'active'
+  AND credential.cycle_start >= '2027-01-01'
+  AND credential.cycle_start < '2027-04-01'
+  AND source_requirement.rule_category_id IN (
+    'cfp-professional-2027-principal-topics',
+    'cfp-professional-2027-practice-management'
+  )
+GROUP BY
+  source_match.user_id,
+  source_match.allocation_id,
+  target_requirement.id
+ON CONFLICT(allocation_id, requirement_id) DO UPDATE SET
+  matched_units = MAX(
+    activity_requirement_matches.matched_units,
+    excluded.matched_units
+  ),
+  created_at = MIN(
+    activity_requirement_matches.created_at,
+    excluded.created_at
+  )`;
+
+const REPOINT_CFP_BOUNDARY_ALLOCATIONS_SQL = `UPDATE activity_allocations
+SET requirement_id = (
+  SELECT target_requirement.id
+  FROM credential_requirements source_requirement
+  JOIN credentials credential
+    ON credential.id = source_requirement.credential_id
+  JOIN credential_requirements target_requirement
+    ON target_requirement.credential_id = credential.id
+    AND target_requirement.rule_category_id =
+      'cfp-professional-2027-general'
+  WHERE source_requirement.id = activity_allocations.requirement_id
+    AND credential.rule_set_id = 'cfp-professional-2027-v1'
+    AND credential.status = 'active'
+    AND credential.cycle_start >= '2027-01-01'
+    AND credential.cycle_start < '2027-04-01'
+    AND source_requirement.rule_category_id IN (
+      'cfp-professional-2027-principal-topics',
+      'cfp-professional-2027-practice-management'
+    )
+)
+WHERE requirement_id IN (
+  SELECT source_requirement.id
+  FROM credential_requirements source_requirement
+  JOIN credentials credential
+    ON credential.id = source_requirement.credential_id
+  WHERE credential.rule_set_id = 'cfp-professional-2027-v1'
+    AND credential.status = 'active'
+    AND credential.cycle_start >= '2027-01-01'
+    AND credential.cycle_start < '2027-04-01'
+    AND source_requirement.rule_category_id IN (
+      'cfp-professional-2027-principal-topics',
+      'cfp-professional-2027-practice-management'
+    )
+)`;
+
+const DELETE_CFP_BOUNDARY_SOURCE_MATCHES_SQL = `DELETE FROM activity_requirement_matches
+WHERE requirement_id IN (
+  SELECT source_requirement.id
+  FROM credential_requirements source_requirement
+  JOIN credentials credential
+    ON credential.id = source_requirement.credential_id
+  WHERE credential.rule_set_id = 'cfp-professional-2027-v1'
+    AND credential.status = 'active'
+    AND credential.cycle_start >= '2027-01-01'
+    AND credential.cycle_start < '2027-04-01'
+    AND source_requirement.rule_category_id IN (
+      'cfp-professional-2027-principal-topics',
+      'cfp-professional-2027-practice-management'
+    )
+)`;
+
+const DELETE_CFP_BOUNDARY_OBSOLETE_REQUIREMENTS_SQL = `DELETE FROM credential_requirements
+WHERE rule_category_id IN (
+  'cfp-professional-2027-principal-topics',
+  'cfp-professional-2027-practice-management'
+)
+  AND credential_id IN (
+    SELECT credential.id
+    FROM credentials credential
+    WHERE credential.rule_set_id = 'cfp-professional-2027-v1'
+      AND credential.status = 'active'
+      AND credential.cycle_start >= '2027-01-01'
+      AND credential.cycle_start < '2027-04-01'
+  )`;
+
+const SYNC_CFP_BOUNDARY_GENERAL_REQUIREMENT_SQL = `UPDATE credential_requirements
+SET
+  rule_category_id = 'cfp-professional-pre-2027-general',
+  name = (
+    SELECT category.name
+    FROM rule_categories category
+    WHERE category.id = 'cfp-professional-pre-2027-general'
+  ),
+  required_units = 28,
+  kind = 'minimum',
+  relation = 'independent',
+  parent_requirement_id = NULL,
+  applicability = 'always',
+  applicability_status = 'applies',
+  condition_note = (
+    SELECT category.condition_note
+    FROM rule_categories category
+    WHERE category.id = 'cfp-professional-pre-2027-general'
+  ),
+  exclusive_group = 'CFP CE type',
+  is_active = 1,
+  sort_order = 0
+WHERE rule_category_id = 'cfp-professional-2027-general'
+  AND credential_id IN (
+    SELECT credential.id
+    FROM credentials credential
+    WHERE credential.rule_set_id = 'cfp-professional-2027-v1'
+      AND credential.status = 'active'
+      AND credential.cycle_start >= '2027-01-01'
+      AND credential.cycle_start < '2027-04-01'
+  )`;
+
+const SYNC_CFP_BOUNDARY_ETHICS_REQUIREMENT_SQL = `UPDATE credential_requirements
+SET
+  rule_category_id = 'cfp-professional-pre-2027-ethics',
+  name = (
+    SELECT category.name
+    FROM rule_categories category
+    WHERE category.id = 'cfp-professional-pre-2027-ethics'
+  ),
+  required_units = 2,
+  kind = 'minimum',
+  relation = 'independent',
+  parent_requirement_id = NULL,
+  applicability = 'always',
+  applicability_status = 'applies',
+  condition_note = (
+    SELECT category.condition_note
+    FROM rule_categories category
+    WHERE category.id = 'cfp-professional-pre-2027-ethics'
+  ),
+  exclusive_group = 'CFP CE type',
+  is_active = 1,
+  sort_order = 1
+WHERE rule_category_id = 'cfp-professional-2027-ethics'
+  AND credential_id IN (
+    SELECT credential.id
+    FROM credentials credential
+    WHERE credential.rule_set_id = 'cfp-professional-2027-v1'
+      AND credential.status = 'active'
+      AND credential.cycle_start >= '2027-01-01'
+      AND credential.cycle_start < '2027-04-01'
+  )`;
+
+const RETITLE_CFP_BOUNDARY_REVIEW_TASK_SQL = `UPDATE checklist_tasks
+SET
+  title = 'Review this corrected pre-April CFP cycle and remove any carryover entered for it',
+  updated_at = CURRENT_TIMESTAMP
+WHERE kind = 'review'
+  AND status = 'pending'
+  AND title =
+    'Confirm CFP Board carryover, then manually record only approved general CE'
+  AND credential_id IN (
+    SELECT credential.id
+    FROM credentials credential
+    WHERE credential.rule_set_id = 'cfp-professional-2027-v1'
+      AND credential.status = 'active'
+      AND credential.cycle_start >= '2027-01-01'
+      AND credential.cycle_start < '2027-04-01'
+  )`;
+
+const INSERT_CFP_BOUNDARY_REVIEW_TASK_SQL = `INSERT OR IGNORE INTO checklist_tasks (
+  id, user_id, credential_id, title, kind, status, due_date, sort_order
+)
+SELECT
+  'cfp-boundary-review:' || credential.id,
+  credential.user_id,
+  credential.id,
+  'Review this corrected pre-April CFP cycle and remove any carryover entered for it',
+  'review',
+  'pending',
+  DATE(credential.deadline, '-120 days'),
+  0
+FROM credentials credential
+WHERE credential.rule_set_id = 'cfp-professional-2027-v1'
+  AND credential.status = 'active'
+  AND credential.cycle_start >= '2027-01-01'
+  AND credential.cycle_start < '2027-04-01'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM checklist_tasks task
+    WHERE task.credential_id = credential.id
+      AND task.status = 'pending'
+      AND task.title =
+        'Review this corrected pre-April CFP cycle and remove any carryover entered for it'
+  )`;
+
+const UPDATE_CFP_BOUNDARY_CREDENTIAL_SQL = `UPDATE credentials
+SET
+  rule_set_id = 'cfp-professional-pre-2027-v1',
+  credential_name =
+    'CFP® Professional — cycle beginning before April 1, 2027',
+  total_required = 30,
+  updated_at = CURRENT_TIMESTAMP
+WHERE rule_set_id = 'cfp-professional-2027-v1'
+  AND status = 'active'
+  AND cycle_start >= '2027-01-01'
+  AND cycle_start < '2027-04-01'`;
+
+const CFP_TRANSITION_RULE_SET_REFRESH_SQL = `UPDATE rule_sets SET
+  credential_name = ?,
+  total_units = ?,
+  source_url = ?,
+  source_title = ?,
+  effective_date = ?,
+  last_verified_at = ?,
+  review_status = ?,
+  is_current = ?
+WHERE id = ?`;
+
+const CFP_TRANSITION_CATEGORY_REFRESH_SQL = `UPDATE rule_categories SET
+  name = ?,
+  required_units = ?,
+  kind = ?,
+  relation = ?,
+  parent_category_id = ?,
+  applicability = ?,
+  condition_note = ?,
+  exclusive_group = ?,
+  sort_order = ?
+WHERE id = ?`;
 
 let initializationPromise: Promise<void> | null = null;
 
@@ -3142,6 +4044,26 @@ export async function initializeDatabase(database: D1Database): Promise<void> {
           statement(database, seed.sql, seed.bindings),
         ),
       );
+      await database.batch([
+        statement(
+          database,
+          NJ_LCSW_RULE_SET_REFRESH_SQL,
+          NJ_LCSW_RULE_SET_REFRESH_BINDINGS,
+        ),
+      ]);
+      await database.batch(
+        NJ_LCSW_CATEGORY_BINDINGS.map((bindings) =>
+          statement(database, NJ_LCSW_CATEGORY_INSERT_SQL, bindings),
+        ),
+      );
+      await database.batch(
+        NJ_LCSW_CATEGORY_BINDINGS.map((bindings) =>
+          statement(database, NJ_LCSW_CATEGORY_REFRESH_SQL, [
+            ...bindings.slice(1),
+            bindings[0],
+          ]),
+        ),
+      );
       await database.batch(
         CATALOG_2026_RULE_SET_SEED_BINDINGS.map((bindings) =>
           statement(database, CATALOG_2026_RULE_SET_INSERT_SQL, bindings),
@@ -3163,26 +4085,47 @@ export async function initializeDatabase(database: D1Database): Promise<void> {
         ),
       );
       await database.batch(
+        CATALOG_2026_RULE_SET_SEED_BINDINGS.filter(
+          (bindings) =>
+            bindings[0] === "cfp-professional-pre-2027-v1" ||
+            bindings[0] === "cfp-professional-2027-v1",
+        ).map((bindings) =>
+          statement(database, CFP_TRANSITION_RULE_SET_REFRESH_SQL, [
+            bindings[4],
+            bindings[7],
+            bindings[10],
+            bindings[11],
+            bindings[12],
+            bindings[13],
+            bindings[14],
+            bindings[15],
+            bindings[0],
+          ]),
+        ),
+      );
+      await database.batch(
+        CATALOG_2026_CATEGORY_SEED_BINDINGS.filter(
+          (bindings) =>
+            bindings[1] === "cfp-professional-pre-2027-v1" ||
+            bindings[1] === "cfp-professional-2027-v1",
+        ).map((bindings) =>
+          statement(database, CFP_TRANSITION_CATEGORY_REFRESH_SQL, [
+            bindings[2],
+            bindings[3],
+            bindings[4],
+            bindings[5],
+            bindings[6],
+            bindings[7],
+            bindings[8],
+            bindings[9],
+            bindings[10],
+            bindings[0],
+          ]),
+        ),
+      );
+      await database.batch(
         RICH_RULE_CATEGORY_UPDATE_BINDINGS.map((bindings) =>
           statement(database, RICH_RULE_CATEGORY_UPDATE_SQL, bindings),
-        ),
-      );
-      await database.batch(
-        RETIRED_ATTORNEY_RULE_CATEGORY_BINDINGS.map((bindings) =>
-          statement(
-            database,
-            RETIRE_ATTORNEY_CREDENTIAL_REQUIREMENT_SQL,
-            bindings,
-          ),
-        ),
-      );
-      await database.batch(
-        RETIRED_ATTORNEY_RULE_CATEGORY_BINDINGS.map((bindings) =>
-          statement(
-            database,
-            DELETE_RETIRED_ATTORNEY_RULE_CATEGORY_SQL,
-            [bindings[1]],
-          ),
         ),
       );
       await database.batch(
@@ -3190,6 +4133,66 @@ export async function initializeDatabase(database: D1Database): Promise<void> {
           statement(database, ATTORNEY_RULE_CATEGORY_REFRESH_SQL, bindings),
         ),
       );
+      await database.batch(
+        MAXIMUM_CLASSIFICATION_CATEGORY_REFRESH_BINDINGS.map((bindings) =>
+          statement(
+            database,
+            MAXIMUM_CLASSIFICATION_CATEGORY_REFRESH_SQL,
+            bindings,
+          ),
+        ),
+      );
+      await database.batch([
+        statement(database, BACKFILL_NJ_LCSW_CREDENTIAL_REQUIREMENTS_SQL, [
+          RULE_SET_ID,
+        ]),
+        statement(database, SYNC_NJ_LCSW_CREDENTIAL_REQUIREMENTS_SQL, [
+          RULE_SET_ID,
+          RULE_SET_ID,
+        ]),
+        statement(
+          database,
+          BACKFILL_ATTORNEY_CREDENTIAL_REQUIREMENTS_SQL,
+          ATTORNEY_CREDENTIAL_REQUIREMENT_SYNC_RULE_SET_IDS,
+        ),
+        statement(database, SYNC_ATTORNEY_CREDENTIAL_REQUIREMENTS_SQL, [
+          ...ATTORNEY_CREDENTIAL_REQUIREMENT_SYNC_RULE_SET_IDS,
+          ...ATTORNEY_CREDENTIAL_REQUIREMENT_SYNC_RULE_SET_IDS,
+        ]),
+        statement(
+          database,
+          BACKFILL_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL,
+          MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+        ),
+        statement(database, SYNC_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL, [
+          ...MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+          ...MAXIMUM_CLASSIFICATION_RULE_SET_IDS,
+        ]),
+        statement(database, MERGE_CFP_BOUNDARY_GENERAL_MATCHES_SQL),
+        statement(database, REPOINT_CFP_BOUNDARY_ALLOCATIONS_SQL),
+        statement(database, DELETE_CFP_BOUNDARY_SOURCE_MATCHES_SQL),
+        statement(database, DELETE_CFP_BOUNDARY_OBSOLETE_REQUIREMENTS_SQL),
+        statement(database, SYNC_CFP_BOUNDARY_GENERAL_REQUIREMENT_SQL),
+        statement(database, SYNC_CFP_BOUNDARY_ETHICS_REQUIREMENT_SQL),
+        statement(database, RETITLE_CFP_BOUNDARY_REVIEW_TASK_SQL),
+        statement(database, INSERT_CFP_BOUNDARY_REVIEW_TASK_SQL),
+        statement(database, UPDATE_CFP_BOUNDARY_CREDENTIAL_SQL),
+        statement(database, BACKFILL_TEXAS_ETHICS_MATCHES_SQL),
+        ...RETIRED_ATTORNEY_RULE_CATEGORY_BINDINGS.map((bindings) =>
+          statement(
+            database,
+            RETIRE_ATTORNEY_CREDENTIAL_REQUIREMENT_SQL,
+            bindings,
+          ),
+        ),
+        ...RETIRED_ATTORNEY_RULE_CATEGORY_BINDINGS.map((bindings) =>
+          statement(
+            database,
+            DELETE_RETIRED_ATTORNEY_RULE_CATEGORY_SQL,
+            [bindings[1]],
+          ),
+        ),
+      ]);
     })().catch((error) => {
       initializationPromise = null;
       throw error;
@@ -3291,8 +4294,10 @@ async function ensureDemoWorkspace(database: D1Database, userId: string) {
     `demo-${label}-${userId.slice(-12)}`;
   const credentialId = demoId("nj-lcsw-2026");
   const reqGeneralId = demoId("nj-lcsw-general");
+  const reqClinicalId = demoId("nj-lcsw-clinical");
   const reqEthicsId = demoId("nj-lcsw-ethics");
   const reqCulturalId = demoId("nj-lcsw-cultural");
+  const reqOpioidId = demoId("nj-lcsw-opioid");
   const activityId = demoId("ethics-symposium");
   const allocationId = demoId("ethics-allocation");
   const proofTaskId = demoId("task-proof");
@@ -3324,29 +4329,116 @@ async function ensureDemoWorkspace(database: D1Database, userId: string) {
     statement(
       database,
       `INSERT OR IGNORE INTO credential_requirements
-        (id, credential_id, rule_category_id, name, required_units, sort_order)
-        VALUES (?, ?, ?, ?, ?, ?)`,
-      [reqGeneralId, credentialId, RULE_GENERAL_ID, "General", 32, 0],
+        (id, credential_id, rule_category_id, name, required_units, kind,
+        relation, applicability, applicability_status, condition_note,
+        exclusive_group, is_active, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        reqGeneralId,
+        credentialId,
+        RULE_GENERAL_ID,
+        "General Social Work",
+        0,
+        "informational",
+        "independent",
+        "optional",
+        "applies",
+        NJ_LCSW_CATEGORY_BINDINGS[0][8],
+        NJ_LCSW_CREDIT_CATEGORY_GROUP,
+        1,
+        0,
+      ],
     ),
     statement(
       database,
       `INSERT OR IGNORE INTO credential_requirements
-        (id, credential_id, rule_category_id, name, required_units, sort_order)
-        VALUES (?, ?, ?, ?, ?, ?)`,
-      [reqEthicsId, credentialId, RULE_ETHICS_ID, "Ethics", 5, 1],
+        (id, credential_id, rule_category_id, name, required_units, kind,
+        relation, applicability, applicability_status, condition_note,
+        exclusive_group, is_active, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        reqClinicalId,
+        credentialId,
+        RULE_CLINICAL_ID,
+        "Clinical Practice",
+        20,
+        "minimum",
+        "independent",
+        "always",
+        "applies",
+        NJ_LCSW_CATEGORY_BINDINGS[1][8],
+        NJ_LCSW_CREDIT_CATEGORY_GROUP,
+        1,
+        1,
+      ],
     ),
     statement(
       database,
       `INSERT OR IGNORE INTO credential_requirements
-        (id, credential_id, rule_category_id, name, required_units, sort_order)
-        VALUES (?, ?, ?, ?, ?, ?)`,
+        (id, credential_id, rule_category_id, name, required_units, kind,
+        relation, applicability, applicability_status, condition_note,
+        exclusive_group, is_active, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        reqEthicsId,
+        credentialId,
+        RULE_ETHICS_ID,
+        "Ethics",
+        5,
+        "minimum",
+        "independent",
+        "always",
+        "applies",
+        NJ_LCSW_CATEGORY_BINDINGS[2][8],
+        NJ_LCSW_CREDIT_CATEGORY_GROUP,
+        1,
+        2,
+      ],
+    ),
+    statement(
+      database,
+      `INSERT OR IGNORE INTO credential_requirements
+        (id, credential_id, rule_category_id, name, required_units, kind,
+        relation, applicability, applicability_status, condition_note,
+        exclusive_group, is_active, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         reqCulturalId,
         credentialId,
         RULE_CULTURAL_ID,
-        "Social and cultural competence",
+        "Social and Cultural Competence",
         3,
-        2,
+        "minimum",
+        "independent",
+        "always",
+        "applies",
+        NJ_LCSW_CATEGORY_BINDINGS[3][8],
+        NJ_LCSW_CREDIT_CATEGORY_GROUP,
+        1,
+        3,
+      ],
+    ),
+    statement(
+      database,
+      `INSERT OR IGNORE INTO credential_requirements
+        (id, credential_id, rule_category_id, name, required_units, kind,
+        relation, applicability, applicability_status, condition_note,
+        exclusive_group, is_active, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        reqOpioidId,
+        credentialId,
+        RULE_OPIOID_ID,
+        "Prescription Opioid Drugs",
+        1,
+        "minimum",
+        "overlapping",
+        "always",
+        "applies",
+        NJ_LCSW_CATEGORY_BINDINGS[4][8],
+        null,
+        1,
+        4,
       ],
     ),
     statement(

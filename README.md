@@ -24,7 +24,7 @@ rewards meaningful record-keeping without punitive daily streaks.
 - activity CSV export
 - durable levels, weekly quests, gentle one-week-grace momentum, XP, and badges
 - installable phone companion with a privacy-safe offline fallback
-- account-scoped, text-only activity drafts that recover on the same device
+- account-scoped, text-only activity drafts that recover in the same browser
 - responsive dashboard with home-screen and standalone-app support
 - server-derived ownership from authenticated workspace identity
 

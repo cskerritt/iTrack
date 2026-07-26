@@ -15,8 +15,14 @@ export type ActivityDraftInput = Omit<
 
 const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1_000;
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const DRAFT_NAMESPACE_PATTERN = /^draft_[0-9a-f]{64}$/;
+const MAX_RECOVERABLE_TEXT_LENGTH = 10_000;
+const MAX_RECOVERABLE_SHORT_FIELD_LENGTH = 160;
+export const ACTIVITY_DRAFT_TITLE_MAX_LENGTH = 180;
+export const ACTIVITY_DRAFT_PROVIDER_MAX_LENGTH = 180;
+export const ACTIVITY_DRAFT_MAX_UNITS = 10_000;
 
-function stableFingerprint(value: string) {
+function legacyStableFingerprint(value: string) {
   let hash = 0x811c9dc5;
   for (const character of value.trim().toLowerCase()) {
     hash ^= character.codePointAt(0) ?? 0;
@@ -25,8 +31,17 @@ function stableFingerprint(value: string) {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
-export function activityDraftStorageKey(ownerEmail: string) {
-  return `license-lantern:activity-draft:v1:${stableFingerprint(ownerEmail)}`;
+export function legacyActivityDraftStorageKey(ownerEmail: string) {
+  return `license-lantern:activity-draft:v1:${legacyStableFingerprint(
+    ownerEmail,
+  )}`;
+}
+
+export function activityDraftStorageKey(draftStorageNamespace: string) {
+  if (!DRAFT_NAMESPACE_PATTERN.test(draftStorageNamespace)) {
+    throw new Error("The activity draft namespace is invalid.");
+  }
+  return `license-lantern:activity-draft:v1:${draftStorageNamespace}`;
 }
 
 export function hasMeaningfulActivityDraft(
@@ -48,8 +63,35 @@ function validDate(value: string) {
   );
 }
 
-function validString(value: unknown, maximumLength: number) {
-  return typeof value === "string" && value.length <= maximumLength;
+function recoverString(value: unknown, maximumLength: number) {
+  return typeof value === "string" && value.length <= maximumLength
+    ? value
+    : "";
+}
+
+function boundedString(value: unknown, maximumLength: number) {
+  return typeof value === "string" ? value.slice(0, maximumLength) : "";
+}
+
+function recoverDate(value: unknown) {
+  if (value === "") return "";
+  return typeof value === "string" && validDate(value) ? value : "";
+}
+
+function recoverUnits(value: unknown) {
+  if (value === "") return "";
+  if (
+    typeof value !== "string" ||
+    value.length > MAX_RECOVERABLE_SHORT_FIELD_LENGTH
+  ) {
+    return "";
+  }
+  const numericUnits = Number(value);
+  return Number.isFinite(numericUnits) &&
+    numericUnits > 0 &&
+    numericUnits <= ACTIVITY_DRAFT_MAX_UNITS
+    ? value
+    : "";
 }
 
 export function serializeActivityDraft(
@@ -62,11 +104,14 @@ export function serializeActivityDraft(
   const payload: SavedActivityDraft = {
     version: 1,
     savedAt: savedAt.toISOString(),
-    credentialId: value.credentialId.slice(0, 160),
-    title: value.title.slice(0, 180),
-    completionDate: value.completionDate,
-    totalUnits: value.totalUnits.slice(0, 24),
-    provider: value.provider.slice(0, 120),
+    credentialId: boundedString(
+      value.credentialId,
+      MAX_RECOVERABLE_SHORT_FIELD_LENGTH,
+    ),
+    title: boundedString(value.title, MAX_RECOVERABLE_TEXT_LENGTH),
+    completionDate: recoverDate(value.completionDate),
+    totalUnits: recoverUnits(value.totalUnits),
+    provider: boundedString(value.provider, MAX_RECOVERABLE_TEXT_LENGTH),
   };
   return JSON.stringify(payload);
 }
@@ -90,34 +135,41 @@ export function parseActivityDraft(
     candidate.version !== 1 ||
     Number.isNaN(savedAt.getTime()) ||
     savedAt.getTime() < now.getTime() - THIRTY_DAYS ||
-    savedAt.getTime() > now.getTime() + 5 * 60 * 1_000 ||
-    !validString(candidate.credentialId, 160) ||
-    !validString(candidate.title, 180) ||
-    !validString(candidate.provider, 120) ||
-    !validString(candidate.totalUnits, 24) ||
-    typeof candidate.completionDate !== "string" ||
-    !validDate(candidate.completionDate)
+    savedAt.getTime() > now.getTime() + 5 * 60 * 1_000
   ) {
     return null;
   }
-  const numericUnits = candidate.totalUnits
-    ? Number(candidate.totalUnits)
-    : null;
-  if (
-    numericUnits !== null &&
-    (!Number.isFinite(numericUnits) || numericUnits <= 0 || numericUnits > 1_000)
-  ) {
-    return null;
-  }
+
+  const recovered: SavedActivityDraft = {
+    version: 1,
+    savedAt: savedAt.toISOString(),
+    credentialId: recoverString(
+      candidate.credentialId,
+      MAX_RECOVERABLE_SHORT_FIELD_LENGTH,
+    ),
+    // Recovery keeps over-limit text intact so the user can shorten it; the
+    // form and API enforce the tighter submission limits for new input.
+    title: recoverString(candidate.title, MAX_RECOVERABLE_TEXT_LENGTH),
+    completionDate: recoverDate(candidate.completionDate),
+    totalUnits: recoverUnits(candidate.totalUnits),
+    provider: recoverString(candidate.provider, MAX_RECOVERABLE_TEXT_LENGTH),
+  };
   if (
     !hasMeaningfulActivityDraft({
-      title: candidate.title ?? "",
-      totalUnits: candidate.totalUnits ?? "",
-      provider: candidate.provider ?? "",
+      title: recovered.title,
+      totalUnits: recovered.totalUnits,
+      provider: recovered.provider,
     })
   ) {
     return null;
   }
 
-  return candidate as SavedActivityDraft;
+  return recovered;
+}
+
+export function activityDraftShouldBePurged(
+  serialized: string | null,
+  now = new Date(),
+) {
+  return Boolean(serialized && !parseActivityDraft(serialized, now));
 }

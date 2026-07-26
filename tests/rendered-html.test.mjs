@@ -54,6 +54,12 @@ function isRequirementTagLookup(sql) {
   );
 }
 
+function isRequiredMaximumGroupLookup(sql) {
+  return /SELECT DISTINCT requirement\.exclusive_group AS exclusiveGroup FROM credential_requirements requirement JOIN credentials credential[\s\S]*?requirement\.kind = 'maximum'[\s\S]*?requirement\.exclusive_group IS NOT NULL/i.test(
+    sql,
+  );
+}
+
 function isApplicabilityRequirementsLookup(sql) {
   return /SELECT requirement\.id, requirement\.name, requirement\.relation, requirement\.parent_requirement_id AS parentRequirementId, requirement\.applicability, requirement\.applicability_status AS applicabilityStatus FROM credential_requirements requirement JOIN credentials credential/i.test(
     sql,
@@ -124,6 +130,74 @@ class FakeDatabase {
     this.batches.push(snapshot);
     this.calls.push(...snapshot);
     return snapshot.map(() => ({ success: true, results: [], meta: {} }));
+  }
+}
+
+class SQLiteD1Statement {
+  constructor(database, sql) {
+    this.database = database;
+    this.sql = sql;
+    this.bindings = [];
+  }
+
+  bind(...bindings) {
+    this.bindings = bindings;
+    return this;
+  }
+
+  statement() {
+    return this.database.raw.prepare(this.sql);
+  }
+
+  async first() {
+    return this.statement().get(...this.bindings) ?? null;
+  }
+
+  async all() {
+    return { results: this.statement().all(...this.bindings) };
+  }
+
+  async run() {
+    return this.runSync();
+  }
+
+  runSync() {
+    const result = this.statement().run(...this.bindings);
+    return {
+      success: true,
+      results: [],
+      meta: {
+        changes: Number(result.changes),
+        last_row_id: Number(result.lastInsertRowid),
+      },
+    };
+  }
+}
+
+class SQLiteD1Database {
+  constructor(DatabaseSync) {
+    this.raw = new DatabaseSync(":memory:");
+    this.raw.exec("PRAGMA foreign_keys = ON");
+  }
+
+  prepare(sql) {
+    return new SQLiteD1Statement(this, sql);
+  }
+
+  async batch(statements) {
+    this.raw.exec("BEGIN IMMEDIATE");
+    try {
+      const results = statements.map((statement) => statement.runSync());
+      this.raw.exec("COMMIT");
+      return results;
+    } catch (error) {
+      this.raw.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  close() {
+    this.raw.close();
   }
 }
 
@@ -237,6 +311,18 @@ async function expectedStableUserId(email) {
     byte.toString(16).padStart(2, "0"),
   ).join("");
   return `usr_${hex}`;
+}
+
+async function expectedDraftStorageNamespace(email) {
+  const userId = await expectedStableUserId(email);
+  const bytes = new TextEncoder().encode(
+    `license-lantern:activity-draft:v1:${userId}`,
+  );
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hex = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return `draft_${hex}`;
 }
 
 function shiftIsoDate(isoDate, days) {
@@ -515,7 +601,7 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
-    "round-trips owner-scoped device drafts without private fields and expires them",
+    "round-trips opaque owner-scoped drafts, salvages fields, and expires them",
     async () => {
       const draftSource = await readFile(
         new URL("../app/lib/activityDraft.ts", import.meta.url),
@@ -544,22 +630,35 @@ test("License Lantern product contract", async (t) => {
         },
       );
 
-      const ownerKey = draftModule.activityDraftStorageKey(
-        " Owner@Example.com ",
-      );
+      const ownerNamespace = `draft_${"a".repeat(64)}`;
+      const ownerKey = draftModule.activityDraftStorageKey(ownerNamespace);
       assert.equal(
         ownerKey,
-        draftModule.activityDraftStorageKey("owner@example.com"),
+        draftModule.activityDraftStorageKey(ownerNamespace),
       );
       assert.notEqual(
         ownerKey,
-        draftModule.activityDraftStorageKey("other@example.com"),
+        draftModule.activityDraftStorageKey(`draft_${"b".repeat(64)}`),
       );
       assert.match(
         ownerKey,
+        /^license-lantern:activity-draft:v1:draft_[0-9a-f]{64}$/,
+      );
+      assert.throws(
+        () => draftModule.activityDraftStorageKey("owner@example.com"),
+        /namespace is invalid/i,
+      );
+      const legacyOwnerKey =
+        draftModule.legacyActivityDraftStorageKey(" Owner@Example.com ");
+      assert.equal(
+        legacyOwnerKey,
+        draftModule.legacyActivityDraftStorageKey("owner@example.com"),
+      );
+      assert.match(
+        legacyOwnerKey,
         /^license-lantern:activity-draft:v1:[0-9a-f]{8}$/,
       );
-      assert.doesNotMatch(ownerKey, /owner|example|@/i);
+      assert.doesNotMatch(legacyOwnerKey, /owner|example|@/i);
 
       const boundaryDraft = draftModule.serializeActivityDraft(
         input,
@@ -579,6 +678,13 @@ test("License Lantern product contract", async (t) => {
         ),
         null,
       );
+      assert.equal(
+        draftModule.activityDraftShouldBePurged(
+          boundaryDraft,
+          new Date("2026-01-31T00:00:00.001Z"),
+        ),
+        true,
+      );
 
       const futureDraft = draftModule.serializeActivityDraft(
         input,
@@ -587,6 +693,91 @@ test("License Lantern product contract", async (t) => {
       assert.equal(
         draftModule.parseActivityDraft(futureDraft, savedAt),
         null,
+      );
+
+      const incompleteDraft = {
+        ...input,
+        completionDate: "",
+        totalUnits: "",
+        provider: "P".repeat(180),
+      };
+      const serializedIncomplete = draftModule.serializeActivityDraft(
+        incompleteDraft,
+        savedAt,
+      );
+      assert.deepEqual(
+        draftModule.parseActivityDraft(serializedIncomplete, savedAt),
+        {
+          version: 1,
+          savedAt: savedAt.toISOString(),
+          ...incompleteDraft,
+        },
+      );
+      assert.equal(
+        draftModule.activityDraftShouldBePurged(serializedIncomplete, savedAt),
+        false,
+      );
+
+      const maximumUnitsDraft = draftModule.serializeActivityDraft(
+        { ...input, totalUnits: "10000" },
+        savedAt,
+      );
+      assert.equal(
+        draftModule.parseActivityDraft(maximumUnitsDraft, savedAt).totalUnits,
+        "10000",
+      );
+
+      const losslessLongFields = {
+        ...input,
+        title: "T".repeat(181),
+        provider: "P".repeat(181),
+      };
+      assert.deepEqual(
+        draftModule.parseActivityDraft(
+          draftModule.serializeActivityDraft(losslessLongFields, savedAt),
+          savedAt,
+        ),
+        {
+          version: 1,
+          savedAt: savedAt.toISOString(),
+          ...losslessLongFields,
+        },
+      );
+      const boundedDraft = JSON.parse(
+        draftModule.serializeActivityDraft(
+          {
+            ...input,
+            credentialId: "C".repeat(161),
+            title: "T".repeat(10_001),
+            provider: "P".repeat(10_001),
+          },
+          savedAt,
+        ),
+      );
+      assert.equal(boundedDraft.credentialId.length, 160);
+      assert.equal(boundedDraft.title.length, 10_000);
+      assert.equal(boundedDraft.provider.length, 10_000);
+
+      const partiallyInvalid = JSON.stringify({
+        version: 1,
+        savedAt: savedAt.toISOString(),
+        credentialId: 42,
+        title: input.title,
+        completionDate: "not-a-date",
+        totalUnits: "10000.1",
+        provider: input.provider,
+      });
+      assert.deepEqual(
+        draftModule.parseActivityDraft(partiallyInvalid, savedAt),
+        {
+          version: 1,
+          savedAt: savedAt.toISOString(),
+          credentialId: "",
+          title: input.title,
+          completionDate: "",
+          totalUnits: "",
+          provider: input.provider,
+        },
       );
 
       const serializedWithPrivateExtras =
@@ -615,6 +806,170 @@ test("License Lantern product contract", async (t) => {
       assert.doesNotMatch(
         serializedWithPrivateExtras,
         /owner@example|private-certificate|private-binary|private OCR|private-requirement/i,
+      );
+    },
+  );
+
+  await t.test(
+    "replaces incompatible requirement tags without blocking valid overlays",
+    async () => {
+      const [compatibilitySource, clientSource] = await Promise.all([
+        readFile(
+          new URL(
+            "../app/lib/requirementCompatibility.ts",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+        readFile(
+          new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+          "utf8",
+        ),
+      ]);
+      const compatibilityModule =
+        await importTypeScriptModule(compatibilitySource);
+      const college = {
+        id: "requirement-college",
+        name: "Relevant College Coursework",
+        ruleCategoryId: "ptcb-cpht-2026-college-coursework",
+        exclusiveGroup: "PTCB capped activity type",
+      };
+      const patientSafety = {
+        id: "requirement-patient-safety",
+        name: "Patient Safety",
+        ruleCategoryId: "ptcb-cpht-2026-patient-safety",
+        exclusiveGroup: null,
+      };
+      const bls = {
+        id: "requirement-bls",
+        name: "Eligible BLS, CPR, or AED Training",
+        ruleCategoryId: "ptcb-cpht-2026-bls-cpr-aed",
+        exclusiveGroup: "PTCB capped activity type",
+      };
+      const available = [college, patientSafety, bls];
+
+      assert.equal(
+        compatibilityModule.requirementsAreIncompatible(bls, patientSafety),
+        true,
+      );
+      assert.equal(
+        compatibilityModule.requirementsAreIncompatible(
+          college,
+          patientSafety,
+        ),
+        false,
+      );
+      assert.match(
+        compatibilityModule.requirementIncompatibilityMessage(
+          patientSafety,
+          available,
+        ),
+        /BLS, CPR, or AED training cannot satisfy Patient Safety/i,
+      );
+      assert.deepEqual(
+        compatibilityModule.nextRequirementSelection(
+          [college.id],
+          patientSafety,
+          available,
+          true,
+        ),
+        [college.id, patientSafety.id],
+        "College Coursework and Patient Safety remain a valid overlay",
+      );
+      assert.deepEqual(
+        compatibilityModule.nextRequirementSelection(
+          [patientSafety.id],
+          bls,
+          available,
+          true,
+        ),
+        [bls.id],
+        "selecting BLS replaces Patient Safety",
+      );
+      assert.deepEqual(
+        compatibilityModule.nextRequirementSelection(
+          [bls.id],
+          patientSafety,
+          available,
+          true,
+        ),
+        [patientSafety.id],
+        "selecting Patient Safety replaces BLS",
+      );
+      const technicianSpecific = {
+        id: "requirement-technician-specific",
+        name: "Technician-Specific CE",
+        ruleCategoryId: "ptcb-cpht-2026-technician-specific",
+      };
+      const volunteerCare = {
+        id: "requirement-volunteer-care",
+        name: "Qualifying Volunteer Medical Care",
+        ruleCategoryId: "nj-physician-2026-volunteer-care",
+      };
+      const opioids = {
+        id: "requirement-opioids",
+        name: "Prescription Opioid Drugs",
+        ruleCategoryId: "nj-physician-2026-opioids",
+      };
+      const givingBack = {
+        id: "requirement-giving-back",
+        name: "Giving Back to the Profession",
+        ruleCategoryId: "pmi-pmp-2026-giving-back",
+      };
+      const waysOfWorking = {
+        id: "requirement-ways-of-working",
+        name: "Ways of Working",
+        ruleCategoryId: "pmi-pmp-2026-ways-of-working",
+      };
+      for (const [classifier, disallowedTag, messagePattern] of [
+        [
+          bls,
+          technicianSpecific,
+          /cannot satisfy Technician-Specific CE/i,
+        ],
+        [
+          volunteerCare,
+          opioids,
+          /volunteer medical care credit cannot satisfy Category I/i,
+        ],
+        [
+          givingBack,
+          waysOfWorking,
+          /Giving Back PDUs[\s\S]*?cannot satisfy Talent Triangle Education/i,
+        ],
+      ]) {
+        assert.equal(
+          compatibilityModule.requirementsAreIncompatible(
+            classifier,
+            disallowedTag,
+          ),
+          true,
+        );
+        assert.match(
+          compatibilityModule.requirementIncompatibilityMessage(
+            classifier,
+            [classifier, disallowedTag],
+          ),
+          messagePattern,
+        );
+        assert.deepEqual(
+          compatibilityModule.nextRequirementSelection(
+            [disallowedTag.id],
+            classifier,
+            [classifier, disallowedTag],
+            true,
+          ),
+          [classifier.id],
+          `${classifier.name} replaces the disallowed minimum tag`,
+        );
+      }
+      assert.match(
+        clientSource,
+        /nextRequirementSelection\(current,\s*requirement,\s*selectable,\s*checked\)/,
+      );
+      assert.match(
+        clientSource,
+        /requirementIncompatibilityMessage\(\s*requirement,\s*selectable,\s*\)/,
       );
     },
   );
@@ -899,7 +1254,16 @@ test("License Lantern product contract", async (t) => {
       assert.match(workerSource, /\\bno-store\\b/);
 
       for (const source of [clientSource, builtClientSource]) {
-        assert.match(source, /Recovered on this device/);
+        assert.match(source, /Saved in this browser/);
+        assert.match(source, /Saving in this browser/);
+        assert.match(source, /Browser draft unavailable/);
+        assert.match(source, /stored unencrypted in this browser/);
+        assert.match(source, /OCR-derived suggestions/);
+        assert.match(source, /raw OCR text/);
+        assert.doesNotMatch(
+          source,
+          /Draft protected on this device|device-only course draft|scan results are never stored/,
+        );
         assert.match(source, /Offline — your cloud record is protected/);
         assert.match(source, /Reconnect to save/);
         assert.match(source, /Install on this device/);
@@ -908,8 +1272,45 @@ test("License Lantern product contract", async (t) => {
       }
       assert.match(
         clientSource,
+        /activityDraftStorageKey\(workspace\.user\.draftStorageNamespace\)/,
+      );
+      assert.doesNotMatch(
+        clientSource,
+        /activityDraftStorageKey\(workspace\.user\.email\)/,
+      );
+      assert.match(
+        clientSource,
+        /legacyActivityDraftStorageKey\(workspace\.user\.email\)/,
+      );
+      assert.match(
+        clientSource,
+        /localStorage\.setItem\(draftStorageKey, legacySerialized\)[\s\S]*?localStorage\.removeItem\(legacyDraftStorageKey\)/,
+      );
+      assert.match(
+        clientSource,
+        /activityDraftShouldBePurged\(serialized\)[\s\S]*?localStorage\.removeItem\(draftStorageKey\)/,
+      );
+      assert.match(
+        clientSource,
+        /localStorage\.setItem\([\s\S]*?setActivityDraftPersistenceStatus\("saved"\)[\s\S]*?catch[\s\S]*?setActivityDraftPersistenceStatus\("unavailable"\)/,
+      );
+      assert.match(
+        clientSource,
+        /const draftPersisted = persistActivityDraftNow\(\);[\s\S]*?if \(!draftPersisted\)[\s\S]*?couldn’t save your draft[\s\S]*?return;[\s\S]*?setActivityOpen\(false\)/,
+      );
+      assert.match(
+        clientSource,
         /parseActivityDraft\(serialized\)[\s\S]*?setActivityDraftRestored\(true\)/,
       );
+      assert.match(
+        clientSource,
+        /maxLength=\{ACTIVITY_DRAFT_TITLE_MAX_LENGTH\}/,
+      );
+      assert.match(
+        clientSource,
+        /maxLength=\{ACTIVITY_DRAFT_PROVIDER_MAX_LENGTH\}/,
+      );
+      assert.match(clientSource, /max=\{ACTIVITY_DRAFT_MAX_UNITS\}/);
       assert.match(
         clientSource,
         /navigator\.serviceWorker[\s\S]*?register\("\/sw\.js"/,
@@ -957,6 +1358,18 @@ test("License Lantern product contract", async (t) => {
       assert.match(
         stylesSource,
         /mobile-nav[\s\S]*?safe-area-inset-right[\s\S]*?safe-area-inset-bottom[\s\S]*?safe-area-inset-left/,
+      );
+      assert.match(
+        stylesSource,
+        /\.capture-privacy\s*\{[^}]*font-size:\s*11px/,
+      );
+      assert.match(
+        stylesSource,
+        /\.draft-safety-note small\s*\{[^}]*font-size:\s*11px/,
+      );
+      assert.match(
+        stylesSource,
+        /\.draft-safety-note button\s*\{[^}]*min-height:\s*44px/,
       );
       assert.match(
         clientSource,
@@ -1415,6 +1828,18 @@ test("License Lantern product contract", async (t) => {
       );
       assert.equal(response.status, 200);
       const workspace = await response.json();
+      assert.equal(
+        workspace.user.draftStorageNamespace,
+        await expectedDraftStorageNamespace("owner@example.com"),
+      );
+      assert.match(
+        workspace.user.draftStorageNamespace,
+        /^draft_[0-9a-f]{64}$/,
+      );
+      assert.doesNotMatch(
+        workspace.user.draftStorageNamespace,
+        /owner|example|@/i,
+      );
       assert.deepEqual(workspace.profile, {
         xp: 480,
         weekActions: 3,
@@ -2151,7 +2576,7 @@ test("License Lantern product contract", async (t) => {
           "cfp-professional-pre-2027-v1",
           "cfp-professional-pre-2027",
           "Financial Planning",
-          "CFP® Professional — cycle beginning before Q1 2027",
+          "CFP® Professional — cycle beginning before April 1, 2027",
           "United States",
           "CFP Board",
           30,
@@ -2243,8 +2668,8 @@ test("License Lantern product contract", async (t) => {
       );
       assert.equal(
         [...categorySource.matchAll(/\n  \[\n    "/g)].length,
-        22,
-        "twenty current categories plus two hidden CFP transition categories are expected",
+        27,
+        "twenty-three current categories plus four hidden CFP transition categories are expected",
       );
       assert.equal(
         [...globalSeedSource.matchAll(/INSERT OR IGNORE INTO rule_sets/g)]
@@ -2296,12 +2721,15 @@ test("License Lantern product contract", async (t) => {
           "cfp-professional-2027-v1",
           "cfp-professional-2027",
           40,
-          "2027-01-01",
+          "2027-04-01",
           "source_linked_check_conditions",
           0,
         ],
       );
-      assert.match(futureCfp[11], /38 general[\s\S]*?10 eligible[\s\S]*?does not apply/i);
+      assert.match(
+        futureCfp[11],
+        /after Q1 2027[\s\S]*?April 1, 2027[\s\S]*?5[\s\S]*?Practice Management[\s\S]*?10 excess general[\s\S]*?Ethics CE cannot carry[\s\S]*?never copies/i,
+      );
 
       const expectedCategories = [
         [
@@ -2318,6 +2746,15 @@ test("License Lantern product contract", async (t) => {
           "arrt-rt-standard-2026-v1",
           6,
           "maximum",
+          "independent",
+          "optional",
+          "ARRT capped activity type",
+        ],
+        [
+          "arrt-rt-standard-2026-other-eligible-ce",
+          "arrt-rt-standard-2026-v1",
+          0,
+          "informational",
           "independent",
           "optional",
           "ARRT capped activity type",
@@ -2413,6 +2850,15 @@ test("License Lantern product contract", async (t) => {
           null,
         ],
         [
+          "nj-physician-2026-non-volunteer-credit",
+          "nj-physician-2026-v1",
+          0,
+          "informational",
+          "independent",
+          "optional",
+          "New Jersey physician credit source",
+        ],
+        [
           "ptcb-cpht-2026-technician-specific",
           "ptcb-cpht-2026-v1",
           15,
@@ -2425,7 +2871,7 @@ test("License Lantern product contract", async (t) => {
           "ptcb-cpht-2026-pharmacist-specific",
           "ptcb-cpht-2026-v1",
           5,
-          "maximum",
+          "informational",
           "overlapping",
           "optional",
           "PTCB provider audience",
@@ -2467,6 +2913,15 @@ test("License Lantern product contract", async (t) => {
           "PTCB capped activity type",
         ],
         [
+          "ptcb-cpht-2026-other-eligible-activity",
+          "ptcb-cpht-2026-v1",
+          0,
+          "informational",
+          "independent",
+          "optional",
+          "PTCB capped activity type",
+        ],
+        [
           "asha-ccc-2026-ethics",
           "asha-ccc-2026-v1",
           1,
@@ -2500,11 +2955,19 @@ test("License Lantern product contract", async (t) => {
         ]),
         expectedCategories,
       );
-      assert.equal(new Set(categoryRows.map((category) => category[0])).size, 20);
+      assert.equal(new Set(categoryRows.map((category) => category[0])).size, 23);
       const futureCfpCategories = [
         sourceLiteralArrayAround(
           categorySource,
           "cfp-professional-2027-general",
+        ),
+        sourceLiteralArrayAround(
+          categorySource,
+          "cfp-professional-2027-principal-topics",
+        ),
+        sourceLiteralArrayAround(
+          categorySource,
+          "cfp-professional-2027-practice-management",
         ),
         sourceLiteralArrayAround(
           categorySource,
@@ -2516,13 +2979,62 @@ test("License Lantern product contract", async (t) => {
           category[1],
           category[3],
           category[4],
+          category[5],
+          category[6],
+          category[7],
           category[9],
           category[10],
         ]),
         [
-          ["cfp-professional-2027-v1", 38, "minimum", "CFP CE type", 0],
-          ["cfp-professional-2027-v1", 2, "minimum", "CFP CE type", 1],
+          [
+            "cfp-professional-2027-v1",
+            38,
+            "minimum",
+            "independent",
+            null,
+            "always",
+            null,
+            0,
+          ],
+          [
+            "cfp-professional-2027-v1",
+            33,
+            "minimum",
+            "nested",
+            "cfp-professional-2027-general",
+            "always",
+            "CFP CE activity type",
+            1,
+          ],
+          [
+            "cfp-professional-2027-v1",
+            5,
+            "maximum",
+            "nested",
+            "cfp-professional-2027-general",
+            "optional",
+            "CFP CE activity type",
+            2,
+          ],
+          [
+            "cfp-professional-2027-v1",
+            2,
+            "minimum",
+            "independent",
+            null,
+            "always",
+            "CFP CE activity type",
+            3,
+          ],
         ],
+      );
+      assert.match(
+        futureCfpCategories[1][8],
+        /33[\s\S]*?five-hour Practice Management cap/i,
+      );
+      assert.match(
+        futureCfpCategories[2][8],
+        /No more than 5[\s\S]*?Practice Management[\s\S]*?Tag every/i,
       );
       for (const rule of expectedRules) {
         const rows = categoryRows.filter((category) => category[1] === rule[0]);
@@ -2538,7 +3050,7 @@ test("License Lantern product contract", async (t) => {
       assert.doesNotMatch(ruleSource, /NASM|HRCI|SHRM/i);
       assert.match(
         sourceLiteralArrayAround(ruleSource, "cfp-professional-pre-2027-v1")[11],
-        /Q1 2027[\s\S]*?40 hours[\s\S]*?10 carryover/i,
+        /before April 1, 2027[\s\S]*?after Q1 2027[\s\S]*?10 hours[\s\S]*?Ethics CE never carries/i,
       );
       assert.match(
         sourceLiteralArrayAround(categorySource, "ptcb-cpht-2026-bls-cpr-aed")[8],
@@ -2547,6 +3059,579 @@ test("License Lantern product contract", async (t) => {
       assert.match(
         sourceLiteralArrayAround(ruleSource, "asha-ccc-2026-v1")[11],
         /Split a dual-topic course[\s\S]*?same time block cannot satisfy both/i,
+      );
+      const activeSnapshotRefreshSource = runtimeSource.slice(
+        runtimeSource.indexOf(
+          "const MAXIMUM_CLASSIFICATION_RULE_SET_IDS",
+        ),
+        runtimeSource.indexOf("const CFP_TRANSITION_RULE_SET_REFRESH_SQL"),
+      );
+      assert.match(
+        activeSnapshotRefreshSource,
+        /MAXIMUM_CLASSIFICATION_RULE_SET_IDS[\s\S]*?"cfp-professional-2027-v1"/,
+      );
+      assert.match(
+        activeSnapshotRefreshSource,
+        /BACKFILL_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL[\s\S]*?credential\.status = 'active'/,
+      );
+      assert.match(
+        activeSnapshotRefreshSource,
+        /SYNC_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL[\s\S]*?credential\.status = 'active'[\s\S]*?AND EXISTS \([\s\S]*?credential_requirements\.kind IS NOT category\.kind/,
+      );
+      assert.doesNotMatch(
+        activeSnapshotRefreshSource,
+        /(?:credential\.)?status (?:!= 'renewed'|IN \('active', 'submitted'\))/,
+      );
+    },
+  );
+
+  await t.test(
+    "atomically corrects active January-to-March 2027 CFP cycles without losing credit and preserves submitted snapshots",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const bootstrapRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __cfpBoundaryTestNonce = "bootstrap";`,
+      );
+      await bootstrapRuntime.initializeDatabase(database);
+
+      const raw = database.raw;
+      raw
+        .prepare(
+          `INSERT INTO users (id, email, display_name, is_demo)
+           VALUES (?, ?, ?, 0)`,
+        )
+        .run("user-cfp-boundary", "cfp@example.com", "CFP Test");
+      raw
+        .prepare(
+          `INSERT INTO credentials (
+             id, user_id, rule_set_id, credential_name, profession,
+             jurisdiction, issuer, cycle_start, deadline, total_required,
+             unit_label, status
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "credential-cfp-boundary",
+          "user-cfp-boundary",
+          "cfp-professional-2027-v1",
+          "CFP® Professional — cycle beginning April 1, 2027 or later",
+          "Financial Planning",
+          "United States",
+          "CFP Board",
+          "2027-02-01",
+          "2029-02-01",
+          40,
+          "CE hours",
+          "active",
+        );
+      raw
+        .prepare(
+          `INSERT INTO credentials (
+             id, user_id, rule_set_id, credential_name, profession,
+             jurisdiction, issuer, cycle_start, deadline, total_required,
+             unit_label, status
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "credential-cfp-submitted",
+          "user-cfp-boundary",
+          "cfp-professional-2027-v1",
+          "CFP® Professional — cycle beginning April 1, 2027 or later",
+          "Financial Planning",
+          "United States",
+          "CFP Board",
+          "2027-02-01",
+          "2029-02-01",
+          40,
+          "CE hours",
+          "submitted",
+        );
+      const insertRequirement = raw.prepare(
+        `INSERT INTO credential_requirements (
+           id, credential_id, rule_category_id, name, required_units, kind,
+           relation, parent_requirement_id, applicability,
+           applicability_status, condition_note, exclusive_group, is_active,
+           sort_order
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insertRequirement.run(
+        "requirement-cfp-general",
+        "credential-cfp-boundary",
+        "cfp-professional-2027-general",
+        "General CE",
+        38,
+        "minimum",
+        "independent",
+        null,
+        "always",
+        "applies",
+        "Legacy future-cycle General CE.",
+        null,
+        1,
+        0,
+      );
+      insertRequirement.run(
+        "requirement-cfp-principal",
+        "credential-cfp-boundary",
+        "cfp-professional-2027-principal-topics",
+        "General CE — Principal Topics Other Than Practice Management",
+        33,
+        "minimum",
+        "nested",
+        "requirement-cfp-general",
+        "always",
+        "applies",
+        "Legacy future-cycle Principal Topics.",
+        "CFP CE activity type",
+        1,
+        1,
+      );
+      insertRequirement.run(
+        "requirement-cfp-practice",
+        "credential-cfp-boundary",
+        "cfp-professional-2027-practice-management",
+        "Practice Management General CE",
+        5,
+        "maximum",
+        "nested",
+        "requirement-cfp-general",
+        "optional",
+        "applies",
+        "Legacy future-cycle Practice Management.",
+        "CFP CE activity type",
+        1,
+        2,
+      );
+      insertRequirement.run(
+        "requirement-cfp-ethics",
+        "credential-cfp-boundary",
+        "cfp-professional-2027-ethics",
+        "CFP Board-Approved Ethics CE",
+        2,
+        "minimum",
+        "independent",
+        null,
+        "always",
+        "applies",
+        "Legacy future-cycle Ethics CE.",
+        "CFP CE activity type",
+        1,
+        3,
+      );
+      insertRequirement.run(
+        "requirement-cfp-custom",
+        "credential-cfp-boundary",
+        null,
+        "Personal audit note",
+        0,
+        "informational",
+        "independent",
+        null,
+        "optional",
+        "applies",
+        "User-created note that must survive.",
+        null,
+        1,
+        4,
+      );
+      const insertActivity = raw.prepare(
+        `INSERT INTO activities (
+           id, user_id, title, provider, completion_date, total_units,
+           evidence_status
+         ) VALUES (?, ?, ?, ?, ?, ?, 'attached')`,
+      );
+      insertActivity.run(
+        "activity-cfp-general",
+        "user-cfp-boundary",
+        "Practice management workshop",
+        "CFP Test Provider",
+        "2027-03-01",
+        3,
+      );
+      insertActivity.run(
+        "activity-cfp-ethics",
+        "user-cfp-boundary",
+        "CFP ethics program",
+        "CFP Test Provider",
+        "2027-03-15",
+        2,
+      );
+      const insertAllocation = raw.prepare(
+        `INSERT INTO activity_allocations (
+           id, activity_id, credential_id, requirement_id, allocated_units
+         ) VALUES (?, ?, ?, ?, ?)`,
+      );
+      insertAllocation.run(
+        "allocation-cfp-general",
+        "activity-cfp-general",
+        "credential-cfp-boundary",
+        "requirement-cfp-practice",
+        3,
+      );
+      insertAllocation.run(
+        "allocation-cfp-ethics",
+        "activity-cfp-ethics",
+        "credential-cfp-boundary",
+        "requirement-cfp-ethics",
+        2,
+      );
+      const insertMatch = raw.prepare(
+        `INSERT INTO activity_requirement_matches (
+           id, user_id, allocation_id, requirement_id, matched_units,
+           created_at
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      );
+      insertMatch.run(
+        "match-cfp-general-parent",
+        "user-cfp-boundary",
+        "allocation-cfp-general",
+        "requirement-cfp-general",
+        2,
+        "2027-03-01 09:00:00",
+      );
+      insertMatch.run(
+        "match-cfp-practice",
+        "user-cfp-boundary",
+        "allocation-cfp-general",
+        "requirement-cfp-practice",
+        3,
+        "2027-03-01 09:05:00",
+      );
+      insertMatch.run(
+        "match-cfp-ethics",
+        "user-cfp-boundary",
+        "allocation-cfp-ethics",
+        "requirement-cfp-ethics",
+        2,
+        "2027-03-15 09:00:00",
+      );
+      raw
+        .prepare(
+          `INSERT INTO checklist_tasks (
+             id, user_id, credential_id, title, kind, status, due_date,
+             sort_order
+           ) VALUES (?, ?, ?, ?, 'review', 'pending', ?, 0)`,
+        )
+        .run(
+          "task-cfp-carryover",
+          "user-cfp-boundary",
+          "credential-cfp-boundary",
+          "Confirm CFP Board carryover, then manually record only approved general CE",
+          "2028-10-04",
+        );
+
+      const migrationRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __cfpBoundaryTestNonce = "migration";`,
+      );
+      await migrationRuntime.initializeDatabase(database);
+
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 rule_set_id AS ruleSetId,
+                 credential_name AS credentialName,
+                 total_required AS totalRequired,
+                 cycle_start AS cycleStart,
+                 deadline,
+                 status
+               FROM credentials
+               WHERE id = 'credential-cfp-boundary'`,
+            )
+            .get(),
+        },
+        {
+          ruleSetId: "cfp-professional-pre-2027-v1",
+          credentialName:
+            "CFP® Professional — cycle beginning before April 1, 2027",
+          totalRequired: 30,
+          cycleStart: "2027-02-01",
+          deadline: "2029-02-01",
+          status: "active",
+        },
+      );
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare(
+              `SELECT
+                 rule_set_id AS ruleSetId,
+                 credential_name AS credentialName,
+                 total_required AS totalRequired,
+                 status
+               FROM credentials
+               WHERE id = 'credential-cfp-submitted'`,
+            )
+            .get(),
+        },
+        {
+          ruleSetId: "cfp-professional-2027-v1",
+          credentialName:
+            "CFP® Professional — cycle beginning April 1, 2027 or later",
+          totalRequired: 40,
+          status: "submitted",
+        },
+      );
+      assert.deepEqual(
+        raw
+          .prepare(
+            `SELECT id, rule_category_id AS ruleCategoryId, required_units AS requiredUnits
+             FROM credential_requirements
+             WHERE credential_id = 'credential-cfp-boundary'
+             ORDER BY sort_order, id`,
+          )
+          .all()
+          .map((row) => ({ ...row })),
+        [
+          {
+            id: "requirement-cfp-general",
+            ruleCategoryId: "cfp-professional-pre-2027-general",
+            requiredUnits: 28,
+          },
+          {
+            id: "requirement-cfp-ethics",
+            ruleCategoryId: "cfp-professional-pre-2027-ethics",
+            requiredUnits: 2,
+          },
+          {
+            id: "requirement-cfp-custom",
+            ruleCategoryId: null,
+            requiredUnits: 0,
+          },
+        ],
+      );
+      assert.deepEqual(
+        raw
+          .prepare(
+            `SELECT
+               allocation_id AS allocationId,
+               requirement_id AS requirementId,
+               matched_units AS matchedUnits
+             FROM activity_requirement_matches
+             ORDER BY allocation_id, requirement_id`,
+          )
+          .all()
+          .map((row) => ({ ...row })),
+        [
+          {
+            allocationId: "allocation-cfp-ethics",
+            requirementId: "requirement-cfp-ethics",
+            matchedUnits: 2,
+          },
+          {
+            allocationId: "allocation-cfp-general",
+            requirementId: "requirement-cfp-general",
+            matchedUnits: 3,
+          },
+        ],
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT requirement_id AS requirementId
+             FROM activity_allocations
+             WHERE id = 'allocation-cfp-general'`,
+          )
+          .get().requirementId,
+        "requirement-cfp-general",
+      );
+      assert.equal(
+        raw
+          .prepare(
+            `SELECT title
+             FROM checklist_tasks
+             WHERE id = 'task-cfp-carryover'`,
+          )
+          .get().title,
+        "Review this corrected pre-April CFP cycle and remove any carryover entered for it",
+      );
+
+      const stableSnapshot = JSON.stringify({
+        credential: raw
+          .prepare(
+            `SELECT * FROM credentials
+             WHERE id = 'credential-cfp-boundary'`,
+          )
+          .get(),
+        requirements: raw
+          .prepare(
+            `SELECT * FROM credential_requirements
+             WHERE credential_id = 'credential-cfp-boundary'
+             ORDER BY sort_order, id`,
+          )
+          .all(),
+        allocations: raw
+          .prepare(
+            `SELECT * FROM activity_allocations
+             WHERE credential_id = 'credential-cfp-boundary'
+             ORDER BY id`,
+          )
+          .all(),
+        matches: raw
+          .prepare(
+            `SELECT * FROM activity_requirement_matches
+             ORDER BY allocation_id, requirement_id`,
+          )
+          .all(),
+        tasks: raw
+          .prepare(
+            `SELECT * FROM checklist_tasks
+             WHERE credential_id = 'credential-cfp-boundary'
+             ORDER BY id`,
+          )
+          .all(),
+      });
+      const repeatRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __cfpBoundaryTestNonce = "repeat";`,
+      );
+      await repeatRuntime.initializeDatabase(database);
+      assert.equal(
+        JSON.stringify({
+          credential: raw
+            .prepare(
+              `SELECT * FROM credentials
+               WHERE id = 'credential-cfp-boundary'`,
+            )
+            .get(),
+          requirements: raw
+            .prepare(
+              `SELECT * FROM credential_requirements
+               WHERE credential_id = 'credential-cfp-boundary'
+               ORDER BY sort_order, id`,
+            )
+            .all(),
+          allocations: raw
+            .prepare(
+              `SELECT * FROM activity_allocations
+               WHERE credential_id = 'credential-cfp-boundary'
+               ORDER BY id`,
+            )
+            .all(),
+          matches: raw
+            .prepare(
+              `SELECT * FROM activity_requirement_matches
+               ORDER BY allocation_id, requirement_id`,
+            )
+            .all(),
+          tasks: raw
+            .prepare(
+              `SELECT * FROM checklist_tasks
+               WHERE credential_id = 'credential-cfp-boundary'
+               ORDER BY id`,
+            )
+            .all(),
+        }),
+        stableSnapshot,
+      );
+      database.close();
+    },
+  );
+
+  await t.test(
+    "refreshes the official New Jersey LCSW rule without upgrading historical General credit",
+    async () => {
+      const [runtimeSource, routeSource] = await Promise.all([
+        readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
+        readFile(
+          new URL("../app/api/workspace/route.ts", import.meta.url),
+          "utf8",
+        ),
+      ]);
+      const modelSource = runtimeSource.slice(
+        runtimeSource.indexOf('const RULE_SET_ID = "nj-lcsw-sample-v1"'),
+        runtimeSource.indexOf("const RICH_RULE_CATEGORY_INSERT_SQL"),
+      );
+      assert.match(
+        modelSource,
+        /RULE_GENERAL_ID = "nj-lcsw-sample-v1-general"/,
+      );
+      assert.match(
+        modelSource,
+        /RULE_CLINICAL_ID = "nj-lcsw-sample-v1-clinical"/,
+      );
+      assert.match(
+        modelSource,
+        /RULE_OPIOID_ID = "nj-lcsw-sample-v1-opioid"/,
+      );
+      assert.match(
+        modelSource,
+        /NJ_LCSW_RULE_SET_REFRESH_BINDINGS[\s\S]*?40,[\s\S]*?"credits"[\s\S]*?24,[\s\S]*?13:44G-6\.2[\s\S]*?8 surplus credits[\s\S]*?does not carry them automatically[\s\S]*?second year[\s\S]*?20 total credits[\s\S]*?10 clinical[\s\S]*?3 ethics[\s\S]*?2 social\/cultural/i,
+      );
+      assert.match(
+        modelSource,
+        /RULE_GENERAL_ID,[\s\S]*?"General Social Work",[\s\S]*?0,[\s\S]*?"informational"[\s\S]*?NJ_LCSW_CREDIT_CATEGORY_GROUP/,
+      );
+      assert.match(
+        modelSource,
+        /RULE_CLINICAL_ID,[\s\S]*?"Clinical Practice",[\s\S]*?20,[\s\S]*?"minimum"[\s\S]*?NJ_LCSW_CREDIT_CATEGORY_GROUP/,
+      );
+      assert.match(
+        modelSource,
+        /RULE_ETHICS_ID,[\s\S]*?"Ethics",[\s\S]*?5,[\s\S]*?"minimum"[\s\S]*?NJ_LCSW_CREDIT_CATEGORY_GROUP/,
+      );
+      assert.match(
+        modelSource,
+        /RULE_CULTURAL_ID,[\s\S]*?"Social and Cultural Competence",[\s\S]*?3,[\s\S]*?"minimum"[\s\S]*?NJ_LCSW_CREDIT_CATEGORY_GROUP/,
+      );
+      assert.match(
+        modelSource,
+        /RULE_OPIOID_ID,[\s\S]*?"Prescription Opioid Drugs",[\s\S]*?1,[\s\S]*?"minimum",[\s\S]*?"overlapping"[\s\S]*?null,[\s\S]*?4,/,
+      );
+
+      const snapshotSource = runtimeSource.slice(
+        runtimeSource.indexOf(
+          "const BACKFILL_NJ_LCSW_CREDENTIAL_REQUIREMENTS_SQL",
+        ),
+        runtimeSource.indexOf("const BACKFILL_TEXAS_ETHICS_MATCHES_SQL"),
+      );
+      assert.match(
+        snapshotSource,
+        /BACKFILL_NJ_LCSW_CREDENTIAL_REQUIREMENTS_SQL[\s\S]*?credential\.status = 'active'[\s\S]*?NOT EXISTS/,
+      );
+      assert.match(
+        snapshotSource,
+        /SYNC_NJ_LCSW_CREDENTIAL_REQUIREMENTS_SQL[\s\S]*?credential\.status = 'active'[\s\S]*?credential_requirements\.exclusive_group IS NOT category\.exclusive_group/,
+      );
+      assert.doesNotMatch(
+        snapshotSource,
+        /status (?:!= 'renewed'|IN \('active', 'submitted'\))/,
+      );
+      const syncSet = snapshotSource.slice(
+        snapshotSource.indexOf(
+          "const SYNC_NJ_LCSW_CREDENTIAL_REQUIREMENTS_SQL",
+        ),
+        snapshotSource.indexOf("WHERE credential_id IN"),
+      );
+      assert.doesNotMatch(syncSet, /applicability_status\s*=/);
+      assert.doesNotMatch(syncSet, /is_active\s*=/);
+      assert.doesNotMatch(
+        runtimeSource,
+        /RULE_GENERAL_ID[\s\S]{0,120}RULE_CLINICAL_ID[\s\S]{0,120}(UPDATE|INSERT)[\s\S]{0,120}activity_requirement_matches/i,
+        "historical General matches must not be promoted to Clinical Practice",
+      );
+
+      const demoSource = runtimeSource.slice(
+        runtimeSource.indexOf("async function ensureDemoWorkspace"),
+        runtimeSource.indexOf("export async function getProgression"),
+      );
+      for (const categoryId of [
+        "RULE_GENERAL_ID",
+        "RULE_CLINICAL_ID",
+        "RULE_ETHICS_ID",
+        "RULE_CULTURAL_ID",
+        "RULE_OPIOID_ID",
+      ]) {
+        assert.match(demoSource, new RegExp(`\\b${categoryId}\\b`));
+      }
+      assert.match(
+        routeSource,
+        /c\.rule_set_id AS ruleSetId[\s\S]*?credential\.ruleSetId !== NJ_LCSW_RULE_SET_ID[\s\S]*?groups\.add\(NJ_LCSW_CREDIT_CATEGORY_GROUP\)/,
+        "legacy unclassified LCSW allocations must be excluded from progress",
       );
     },
   );
@@ -3163,17 +4248,55 @@ test("License Lantern product contract", async (t) => {
             /^UPDATE rule_categories SET rule_set_id = \?/i.test(sql),
           ),
       );
-      const retiredRequirementBatch = staleDatabase.batches.find(
+      const snapshotMigrationBatch = staleDatabase.batches.find(
         (batch) =>
-          batch.length === 1 &&
-          /^UPDATE credential_requirements SET applicability_status = 'not_applicable'/i.test(
-            batch[0].sql,
+          batch.some(({ sql }) =>
+            /'catalog-sync:' \|\| credential\.id \|\| ':' \|\| category\.id/i.test(
+              sql,
+            ),
+          ) &&
+          batch.some(({ sql }) =>
+            /'catalog-sync-match:' \|\| source_match\.allocation_id/i.test(
+              sql,
+            ),
           ),
       );
-      const retiredCategoryBatch = staleDatabase.batches.find(
-        (batch) =>
-          batch.length === 1 &&
-          /^DELETE FROM rule_categories WHERE id = \?/i.test(batch[0].sql),
+      const oneStatement = (predicate) => {
+        const found = snapshotMigrationBatch?.find(predicate);
+        return found ? [found] : undefined;
+      };
+      const retiredRequirementBatch = oneStatement(({ sql }) =>
+        /^UPDATE credential_requirements SET applicability_status = 'not_applicable'/i.test(
+          sql,
+        ),
+      );
+      const retiredCategoryBatch = oneStatement(({ sql }) =>
+        /^DELETE FROM rule_categories WHERE id = \?/i.test(sql),
+      );
+      const attorneyRequirementBackfillBatch = oneStatement(
+        ({ sql }) =>
+          /^INSERT INTO credential_requirements \(/i.test(sql) &&
+          /'catalog-sync:' \|\| credential\.id \|\| ':' \|\| category\.id/i.test(
+            sql,
+          ),
+      );
+      const attorneyRequirementSyncBatch = oneStatement(
+        ({ sql }) =>
+          /^UPDATE credential_requirements SET name = \( SELECT category\.name/i.test(
+            sql,
+          ) &&
+          /parent_requirement\.rule_category_id = category\.parent_category_id/i.test(
+            sql,
+          ),
+      );
+      const texasEthicsMatchBackfillBatch = oneStatement(
+        ({ sql }) =>
+          /^INSERT OR IGNORE INTO activity_requirement_matches \(/i.test(
+            sql,
+          ) &&
+          /'catalog-sync-match:' \|\| source_match\.allocation_id/i.test(
+            sql,
+          ),
       );
       assert.ok(ruleRefreshBatch, "attorney rule-set refresh batch did not run");
       assert.ok(
@@ -3181,10 +4304,26 @@ test("License Lantern product contract", async (t) => {
         "attorney category refresh batch did not run",
       );
       assert.ok(
+        snapshotMigrationBatch,
+        "credential snapshot migrations did not run atomically",
+      );
+      assert.ok(
         retiredRequirementBatch,
         "retired Texas requirements were not disabled",
       );
       assert.ok(retiredCategoryBatch, "retired Texas category was not deleted");
+      assert.ok(
+        attorneyRequirementBackfillBatch,
+        "existing attorney cycles did not receive missing safe requirements",
+      );
+      assert.ok(
+        attorneyRequirementSyncBatch,
+        "existing attorney requirement snapshots were not synchronized",
+      );
+      assert.ok(
+        texasEthicsMatchBackfillBatch,
+        "existing Texas ethics allocations were not preserved",
+      );
       assert.equal(
         retiredRequirementBatch[0].bindings[1],
         "tx-attorney-active-2026-self-study-ethics",
@@ -3192,6 +4331,61 @@ test("License Lantern product contract", async (t) => {
       assert.deepEqual(retiredCategoryBatch[0].bindings, [
         "tx-attorney-active-2026-self-study-ethics",
       ]);
+      const synchronizedAttorneyRuleIds = [
+        "ca-attorney-active-2026-v1",
+        "tx-attorney-active-2026-v1",
+        "ny-attorney-experienced-2026-v1",
+      ];
+      assert.deepEqual(
+        attorneyRequirementBackfillBatch[0].bindings,
+        synchronizedAttorneyRuleIds,
+      );
+      assert.deepEqual(attorneyRequirementSyncBatch[0].bindings, [
+        ...synchronizedAttorneyRuleIds,
+        ...synchronizedAttorneyRuleIds,
+      ]);
+      assert.match(
+        attorneyRequirementBackfillBatch[0].sql,
+        /NOT EXISTS \( SELECT 1 FROM credential_requirements existing/i,
+      );
+      assert.match(
+        attorneyRequirementBackfillBatch[0].sql,
+        /credential\.status = 'active'/i,
+      );
+      assert.match(
+        attorneyRequirementSyncBatch[0].sql,
+        /exclusive_group = \( SELECT category\.exclusive_group/i,
+      );
+      assert.match(
+        attorneyRequirementSyncBatch[0].sql,
+        /credential\.status = 'active'/i,
+      );
+      assert.match(
+        attorneyRequirementSyncBatch[0].sql,
+        /AND EXISTS \( SELECT 1 FROM rule_categories category[\s\S]*?credential_requirements\.name IS NOT category\.name/i,
+        "attorney snapshot sync must skip already-current rows",
+      );
+      assert.doesNotMatch(
+        attorneyRequirementSyncBatch[0].sql,
+        /applicability_status\s*=|is_active\s*=/i,
+        "snapshot sync must preserve user-confirmed applicability state",
+      );
+      assert.match(
+        retiredRequirementBatch[0].sql,
+        /credential\.status = 'active'/i,
+      );
+      assert.match(
+        texasEthicsMatchBackfillBatch[0].sql,
+        /source_requirement\.rule_category_id = 'tx-attorney-active-2026-accredited-ethics'[\s\S]*?target_requirement\.rule_category_id = 'tx-attorney-active-2026-ethics'/i,
+      );
+      assert.match(
+        texasEthicsMatchBackfillBatch[0].sql,
+        /source_requirement\.rule_category_id = 'tx-attorney-active-2026-self-study-ethics'[\s\S]*?target_requirement\.rule_category_id IN \( 'tx-attorney-active-2026-ethics', 'tx-attorney-active-2026-self-study' \)/i,
+      );
+      assert.match(
+        texasEthicsMatchBackfillBatch[0].sql,
+        /credential\.status = 'active'/i,
+      );
       assert.deepEqual(
         ruleRefreshBatch.map(({ bindings }) => bindings),
         expectedRuleRows,
@@ -3219,10 +4413,18 @@ test("License Lantern product contract", async (t) => {
         staleDatabase.batches.indexOf(ruleRefreshBatch);
       const categoryRefreshBatchIndex =
         staleDatabase.batches.indexOf(categoryRefreshBatch);
+      const snapshotMigrationBatchIndex =
+        staleDatabase.batches.indexOf(snapshotMigrationBatch);
+      const attorneyRequirementBackfillBatchIndex =
+        snapshotMigrationBatch.indexOf(attorneyRequirementBackfillBatch[0]);
+      const attorneyRequirementSyncBatchIndex =
+        snapshotMigrationBatch.indexOf(attorneyRequirementSyncBatch[0]);
+      const texasEthicsMatchBackfillBatchIndex =
+        snapshotMigrationBatch.indexOf(texasEthicsMatchBackfillBatch[0]);
       const retiredRequirementBatchIndex =
-        staleDatabase.batches.indexOf(retiredRequirementBatch);
+        snapshotMigrationBatch.indexOf(retiredRequirementBatch[0]);
       const retiredCategoryBatchIndex =
-        staleDatabase.batches.indexOf(retiredCategoryBatch);
+        snapshotMigrationBatch.indexOf(retiredCategoryBatch[0]);
       assert.ok(
         staleDatabase.batches
           .slice(0, ruleRefreshBatchIndex)
@@ -3241,8 +4443,21 @@ test("License Lantern product contract", async (t) => {
             ),
           ),
       );
+      assert.ok(
+        categoryRefreshBatchIndex < snapshotMigrationBatchIndex,
+      );
+      assert.ok(
+        attorneyRequirementBackfillBatchIndex <
+          attorneyRequirementSyncBatchIndex,
+      );
+      assert.ok(
+        attorneyRequirementSyncBatchIndex <
+          texasEthicsMatchBackfillBatchIndex,
+      );
+      assert.ok(
+        texasEthicsMatchBackfillBatchIndex < retiredRequirementBatchIndex,
+      );
       assert.ok(retiredRequirementBatchIndex < retiredCategoryBatchIndex);
-      assert.ok(retiredCategoryBatchIndex < categoryRefreshBatchIndex);
     },
   );
 
@@ -3284,6 +4499,11 @@ test("License Lantern product contract", async (t) => {
         clientSource,
         /selectedRequirementIds[\s\S]*?exclusiveGroup[\s\S]*?Choose only one activity type from this group/,
       );
+      assert.match(
+        clientSource,
+        /allocation\.classificationMessage[\s\S]*?excluded from progress/,
+      );
+      assert.match(clientSource, /Historical cycle is frozen/);
       assert.match(
         styles,
         /\.source-card p\s*\{[\s\S]*?font-size:\s*11px[\s\S]*?line-height:\s*1\.5/,
@@ -3718,47 +4938,320 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
-    "blocks the retired CFP template for cycles beginning in 2027",
+    "requires one New Jersey LCSW credit category while allowing the opioid topic overlay",
     async () => {
-      const database = new FakeDatabase({
+      const requirements = [
+        {
+          id: "requirement-lcsw-general",
+          name: "General Social Work",
+          ruleCategoryId: "nj-lcsw-sample-v1-general",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: "New Jersey LCSW credit category",
+        },
+        {
+          id: "requirement-lcsw-clinical",
+          name: "Clinical Practice",
+          ruleCategoryId: "nj-lcsw-sample-v1-clinical",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: "New Jersey LCSW credit category",
+        },
+        {
+          id: "requirement-lcsw-opioid",
+          name: "Prescription Opioid Drugs",
+          ruleCategoryId: "nj-lcsw-sample-v1-opioid",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: null,
+        },
+      ];
+      const makeDatabase = () =>
+        new FakeDatabase({
+          resolveFirst(call) {
+            if (isOwnedCredentialCycleLookup(call.sql)) {
+              return {
+                id: "credential-lcsw",
+                status: "active",
+                cycleStart: "2026-09-01",
+                deadline: "2028-08-31",
+              };
+            }
+            if (isOwnedActivityCycleLookup(call.sql)) {
+              return {
+                id: "activity-lcsw",
+                totalUnits: 1,
+                completionDate: "2027-02-15",
+              };
+            }
+            if (
+              /SELECT rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+                call.sql,
+              )
+            ) {
+              return { ruleSetId: "nj-lcsw-sample-v1" };
+            }
+            return null;
+          },
+          resolveAll(call) {
+            if (isRequirementTagLookup(call.sql)) {
+              const requestedIds = new Set(call.bindings.slice(2));
+              return requirements.filter((requirement) =>
+                requestedIds.has(requirement.id),
+              );
+            }
+            return [];
+          },
+        });
+      const baseActivity = {
+        title: "Clinical opioid-risk training",
+        completionDate: "2027-02-15",
+        totalUnits: 1,
+        credentialId: "credential-lcsw",
+        evidenceStatus: "missing",
+      };
+
+      const untaggedDatabase = makeDatabase();
+      testCloudflareEnv.DB = untaggedDatabase;
+      const untaggedResponse = await postWorkspace("addActivity", {
+        ...baseActivity,
+        requirementIds: [],
+      });
+      assert.equal(untaggedResponse.status, 409);
+      assert.equal(
+        (await untaggedResponse.json()).code,
+        "nj_lcsw_credit_category_required",
+      );
+
+      const allocationDatabase = makeDatabase();
+      testCloudflareEnv.DB = allocationDatabase;
+      const allocationResponse = await postWorkspace(
+        "addActivityAllocation",
+        {
+          activityId: "activity-lcsw",
+          credentialId: "credential-lcsw",
+          allocatedUnits: 1,
+          requirementIds: [],
+        },
+      );
+      assert.equal(allocationResponse.status, 409);
+      assert.equal(
+        (await allocationResponse.json()).code,
+        "nj_lcsw_credit_category_required",
+      );
+
+      const overlayOnlyDatabase = makeDatabase();
+      testCloudflareEnv.DB = overlayOnlyDatabase;
+      const overlayOnlyResponse = await postWorkspace("addActivity", {
+        ...baseActivity,
+        requirementIds: ["requirement-lcsw-opioid"],
+      });
+      assert.equal(overlayOnlyResponse.status, 409);
+      assert.equal(
+        (await overlayOnlyResponse.json()).code,
+        "nj_lcsw_credit_category_required",
+      );
+
+      const validDatabase = makeDatabase();
+      testCloudflareEnv.DB = validDatabase;
+      const validResponse = await postWorkspace("addActivity", {
+        ...baseActivity,
+        requirementIds: [
+          "requirement-lcsw-clinical",
+          "requirement-lcsw-opioid",
+        ],
+      });
+      assert.equal(validResponse.status, 200);
+      assert.equal(
+        flattenedStatements(validDatabase).filter((statement) =>
+          /^INSERT INTO activity_requirement_matches \(/i.test(statement.sql),
+        ).length,
+        2,
+      );
+
+      const conflictDatabase = makeDatabase();
+      testCloudflareEnv.DB = conflictDatabase;
+      const conflictResponse = await postWorkspace("addActivity", {
+        ...baseActivity,
+        requirementIds: [
+          "requirement-lcsw-general",
+          "requirement-lcsw-clinical",
+        ],
+      });
+      assert.equal(conflictResponse.status, 409);
+      assert.equal(
+        (await conflictResponse.json()).code,
+        "exclusive_requirement_conflict",
+      );
+    },
+  );
+
+  await t.test(
+    "uses April 1, 2027 as the exact CFP 30-to-40-hour boundary",
+    async () => {
+      const ruleRow = {
+        id: "cfp-professional-pre-2027-v1",
+        credentialName:
+          "CFP® Professional — cycle beginning before April 1, 2027",
+        profession: "Financial Planning",
+        jurisdiction: "United States",
+        issuer: "CFP Board",
+        totalUnits: 30,
+        unitLabel: "CE hours",
+        cycleMonths: 24,
+      };
+      const beforeBoundaryDatabase = new FakeDatabase({
         resolveFirst(call) {
           if (
             /FROM rule_sets WHERE id = \? AND is_current = 1/i.test(call.sql)
           ) {
-            return {
-              id: "cfp-professional-pre-2027-v1",
-              credentialName:
-                "CFP® Professional — cycle beginning before Q1 2027",
-              profession: "Financial Planning",
-              jurisdiction: "United States",
-              issuer: "CFP Board",
-              totalUnits: 30,
-              unitLabel: "CE hours",
-              cycleMonths: 24,
-            };
+            return ruleRow;
           }
           return null;
         },
       });
-      testCloudflareEnv.DB = database;
+      testCloudflareEnv.DB = beforeBoundaryDatabase;
+      const beforeBoundaryResponse = await postWorkspace("createCredential", {
+        ruleSetId: "cfp-professional-pre-2027-v1",
+        cycleStart: "2027-03-31",
+        deadline: "2029-03-30",
+      });
+      assert.equal(beforeBoundaryResponse.status, 200);
+
+      const boundaryDatabase = new FakeDatabase({
+        resolveFirst(call) {
+          if (
+            /FROM rule_sets WHERE id = \? AND is_current = 1/i.test(call.sql)
+          ) {
+            return ruleRow;
+          }
+          return null;
+        },
+      });
+      testCloudflareEnv.DB = boundaryDatabase;
       const response = await postWorkspace("createCredential", {
         ruleSetId: "cfp-professional-pre-2027-v1",
-        cycleStart: "2027-01-01",
-        deadline: "2028-12-31",
+        cycleStart: "2027-04-01",
+        deadline: "2029-03-31",
       });
       assert.equal(response.status, 409);
       assert.deepEqual(await response.json(), {
         error:
-          "This CFP template is only for certification periods beginning before Q1 2027. Enter the newer 40-hour requirement as a custom plan while its carryover eligibility is confirmed.",
+          "This 30-hour CFP template is only for certification periods beginning before April 1, 2027. Use the 40-hour CFP requirement for a later cycle, and record carryover only after CFP Board confirms the eligible general CE amount.",
         code: "rule_transition_outside_template",
       });
       assert.equal(
-        flattenedStatements(database).some((statement) =>
+        flattenedStatements(boundaryDatabase).some((statement) =>
           /^INSERT INTO (credentials|credential_requirements|checklist_tasks) \(/i.test(
             statement.sql,
           ),
         ),
         false,
+      );
+    },
+  );
+
+  await t.test(
+    "requires an auditable CFP activity type and accepts Practice Management tagging",
+    async () => {
+      const activityPayload = {
+        title: "Practice operations workshop",
+        provider: "CFP CE Sponsor",
+        completionDate: "2027-06-15",
+        totalUnits: 2,
+        credentialId: "credential-cfp-2027",
+        evidenceStatus: "missing",
+      };
+      const makeDatabase = (requirementRows = []) =>
+        new FakeDatabase({
+          resolveFirst(call) {
+            if (isOwnedCredentialCycleLookup(call.sql)) {
+              return {
+                id: "credential-cfp-2027",
+                status: "active",
+                cycleStart: "2027-04-01",
+                deadline: "2029-03-31",
+              };
+            }
+            if (
+              /SELECT rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+                call.sql,
+              )
+            ) {
+              return { ruleSetId: "cfp-professional-2027-v1" };
+            }
+            return null;
+          },
+          resolveAll(call) {
+            if (!isRequirementTagLookup(call.sql)) return [];
+            const requestedIds = new Set(call.bindings.slice(2));
+            return requirementRows.filter((row) => requestedIds.has(row.id));
+          },
+        });
+
+      const untaggedDatabase = makeDatabase();
+      testCloudflareEnv.DB = untaggedDatabase;
+      const untaggedResponse = await postWorkspace("addActivity", {
+        ...activityPayload,
+        requirementIds: [],
+      });
+      assert.equal(untaggedResponse.status, 409);
+      assert.deepEqual(await untaggedResponse.json(), {
+        error:
+          "Classify every CFP CE activity as Principal Topics, Practice Management, or Ethics. General CE cannot be left unclassified.",
+        code: "cfp_activity_type_required",
+      });
+
+      const parentDatabase = makeDatabase([
+        {
+          id: "requirement-cfp-general",
+          name: "General CE",
+          ruleCategoryId: "cfp-professional-2027-general",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: null,
+        },
+      ]);
+      testCloudflareEnv.DB = parentDatabase;
+      const parentResponse = await postWorkspace("addActivity", {
+        ...activityPayload,
+        requirementIds: ["requirement-cfp-general"],
+      });
+      assert.equal(parentResponse.status, 409);
+      assert.deepEqual(await parentResponse.json(), {
+        error:
+          "Classify every CFP CE activity as Principal Topics, Practice Management, or Ethics. Tagging the General CE parent directly is not allowed.",
+        code: "cfp_activity_type_required",
+      });
+
+      const practiceDatabase = makeDatabase([
+        {
+          id: "requirement-cfp-practice",
+          name: "Practice Management General CE",
+          ruleCategoryId: "cfp-professional-2027-practice-management",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: "CFP CE activity type",
+        },
+      ]);
+      testCloudflareEnv.DB = practiceDatabase;
+      const practiceResponse = await postWorkspace("addActivity", {
+        ...activityPayload,
+        requirementIds: ["requirement-cfp-practice"],
+      });
+      assert.equal(practiceResponse.status, 200);
+      const practiceStatements = flattenedStatements(practiceDatabase);
+      assert.equal(
+        practiceStatements.filter((statement) =>
+          /^INSERT INTO activity_requirement_matches \(/i.test(statement.sql),
+        ).length,
+        1,
+      );
+      assert.equal(
+        practiceStatements.find((statement) =>
+          /^INSERT INTO activity_allocations \(/i.test(statement.sql),
+        )?.bindings[3],
+        "requirement-cfp-practice",
       );
     },
   );
@@ -4400,6 +5893,489 @@ test("License Lantern product contract", async (t) => {
   );
 
   await t.test(
+    "requires a capped activity classification before either write path and accepts the catch-all",
+    async () => {
+      const requirementRows = [
+        {
+          id: "requirement-facility",
+          name: "Facility Applications Training",
+          ruleCategoryId:
+            "arrt-rt-standard-2026-applications-training",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: "ARRT capped activity type",
+        },
+        {
+          id: "requirement-other",
+          name: "Other Eligible Category A or A+ CE",
+          ruleCategoryId:
+            "arrt-rt-standard-2026-other-eligible-ce",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: "ARRT capped activity type",
+        },
+      ];
+      const makeDatabase = () =>
+        new FakeDatabase({
+          resolveFirst(call) {
+            if (isOwnedActivityCycleLookup(call.sql)) {
+              return {
+                id: call.bindings[0],
+                totalUnits: 2,
+                completionDate: "2027-05-20",
+              };
+            }
+            if (isOwnedCredentialCycleLookup(call.sql)) {
+              return {
+                id: call.bindings[0],
+                status: "active",
+                cycleStart: "2027-01-01",
+                deadline: "2027-12-31",
+              };
+            }
+            return null;
+          },
+          resolveAll(call) {
+            if (isRequiredMaximumGroupLookup(call.sql)) {
+              return [
+                { exclusiveGroup: "ARRT capped activity type" },
+              ];
+            }
+            if (isRequirementTagLookup(call.sql)) {
+              const requestedIds = new Set(call.bindings.slice(2));
+              return requirementRows.filter((row) =>
+                requestedIds.has(row.id),
+              );
+            }
+            return [];
+          },
+        });
+      const hasActivityWrite = (database) =>
+        flattenedStatements(database).some((statement) =>
+          /^(?:INSERT INTO activities|INSERT INTO activity_allocations|INSERT INTO activity_requirement_matches) \(/i.test(
+            statement.sql,
+          ),
+        );
+
+      const directDatabase = makeDatabase();
+      testCloudflareEnv.DB = directDatabase;
+      const directResponse = await postWorkspace("addActivity", {
+        title: "Unclassified imaging seminar",
+        completionDate: "2027-05-20",
+        totalUnits: 2,
+        credentialId: "credential-arrt",
+        requirementIds: [],
+        evidenceStatus: "missing",
+      });
+      assert.equal(directResponse.status, 409);
+      assert.deepEqual(await directResponse.json(), {
+        error:
+          "Choose one ARRT capped activity type option for this activity so capped credit can be counted safely.",
+        code: "maximum_classification_required",
+      });
+      assert.equal(hasActivityWrite(directDatabase), false);
+
+      const allocationDatabase = makeDatabase();
+      testCloudflareEnv.DB = allocationDatabase;
+      const allocationResponse = await postWorkspace(
+        "addActivityAllocation",
+        {
+          activityId: "activity-arrt",
+          credentialId: "credential-arrt",
+          requirementIds: [],
+          allocatedUnits: 2,
+        },
+      );
+      assert.equal(allocationResponse.status, 409);
+      assert.deepEqual(await allocationResponse.json(), {
+        error:
+          "Choose one ARRT capped activity type option for this activity so capped credit can be counted safely.",
+        code: "maximum_classification_required",
+      });
+      assert.equal(hasActivityWrite(allocationDatabase), false);
+
+      const catchAllDatabase = makeDatabase();
+      testCloudflareEnv.DB = catchAllDatabase;
+      const catchAllResponse = await postWorkspace("addActivity", {
+        title: "Other eligible Category A seminar",
+        completionDate: "2027-05-20",
+        totalUnits: 2,
+        credentialId: "credential-arrt",
+        requirementIds: ["requirement-other"],
+        evidenceStatus: "missing",
+      });
+      assert.equal(catchAllResponse.status, 200);
+      const catchAllMatches = flattenedStatements(
+        catchAllDatabase,
+      ).filter((statement) =>
+        /^INSERT INTO activity_requirement_matches \(/i.test(
+          statement.sql,
+        ),
+      );
+      assert.equal(catchAllMatches.length, 1);
+      assert.equal(catchAllMatches[0].bindings[3], "requirement-other");
+    },
+  );
+
+  await t.test(
+    "repairs a legacy unclassified allocation without changing its units",
+    async () => {
+      const userId = await expectedStableUserId("owner@example.com");
+      const makeDatabase = () =>
+        new FakeDatabase({
+          resolveFirst(call) {
+            if (
+              /FROM activity_allocations allocation JOIN activities activity ON activity\.id = allocation\.activity_id JOIN credentials credential ON credential\.id = allocation\.credential_id WHERE allocation\.id = \?/i.test(
+                call.sql,
+              )
+            ) {
+              return {
+                id: "allocation-legacy",
+                credentialId: "credential-arrt",
+                allocatedUnits: 4,
+                status: "active",
+              };
+            }
+            return null;
+          },
+          resolveAll(call) {
+            if (isRequiredMaximumGroupLookup(call.sql)) {
+              return [
+                { exclusiveGroup: "ARRT capped activity type" },
+              ];
+            }
+            if (isRequirementTagLookup(call.sql)) {
+              return [
+                {
+                  id: "requirement-other",
+                  name: "Other Eligible Category A or A+ CE",
+                  ruleCategoryId:
+                    "arrt-rt-standard-2026-other-eligible-ce",
+                  isActive: 1,
+                  applicabilityStatus: "applies",
+                  exclusiveGroup: "ARRT capped activity type",
+                },
+              ];
+            }
+            return [];
+          },
+        });
+
+      const rejectedDatabase = makeDatabase();
+      testCloudflareEnv.DB = rejectedDatabase;
+      const rejectedResponse = await postWorkspace(
+        "updateActivityAllocationRequirements",
+        {
+          allocationId: "allocation-legacy",
+          requirementIds: [],
+        },
+      );
+      assert.equal(rejectedResponse.status, 409);
+      assert.equal(
+        flattenedStatements(rejectedDatabase).some((statement) =>
+          /^(?:UPDATE activity_allocations|DELETE FROM activity_requirement_matches)/i.test(
+            statement.sql,
+          ),
+        ),
+        false,
+      );
+
+      const repairedDatabase = makeDatabase();
+      testCloudflareEnv.DB = repairedDatabase;
+      const repairedResponse = await postWorkspace(
+        "updateActivityAllocationRequirements",
+        {
+          allocationId: "allocation-legacy",
+          requirementIds: ["requirement-other"],
+        },
+      );
+      assert.equal(repairedResponse.status, 200);
+      assert.deepEqual(await repairedResponse.json(), {
+        ok: true,
+        action: "updateActivityAllocationRequirements",
+        id: "allocation-legacy",
+      });
+      const statements = flattenedStatements(repairedDatabase);
+      const allocationUpdate = statements.find((statement) =>
+        /^UPDATE activity_allocations SET requirement_id = \?/i.test(
+          statement.sql,
+        ),
+      );
+      const priorMatchDelete = statements.find((statement) =>
+        /^DELETE FROM activity_requirement_matches/i.test(statement.sql),
+      );
+      const replacementMatch = statements.find((statement) =>
+        /^INSERT INTO activity_requirement_matches \(/i.test(
+          statement.sql,
+        ),
+      );
+      assert.ok(allocationUpdate);
+      assert.ok(priorMatchDelete);
+      assert.ok(replacementMatch);
+      assert.deepEqual(allocationUpdate.bindings, [
+        "requirement-other",
+        "allocation-legacy",
+        "credential-arrt",
+      ]);
+      assert.deepEqual(priorMatchDelete.bindings, [
+        "allocation-legacy",
+        userId,
+      ]);
+      assert.deepEqual(replacementMatch.bindings.slice(1), [
+        userId,
+        "allocation-legacy",
+        "requirement-other",
+        4,
+      ]);
+    },
+  );
+
+  await t.test(
+    "rejects incompatible PTCB tags before either activity write path",
+    async () => {
+      const requirementRows = [
+        {
+          id: "requirement-patient-safety",
+          name: "Patient Safety",
+          ruleCategoryId: "ptcb-cpht-2026-patient-safety",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: null,
+        },
+        {
+          id: "requirement-bls",
+          name: "Eligible BLS, CPR, or AED Training",
+          ruleCategoryId: "ptcb-cpht-2026-bls-cpr-aed",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: "PTCB capped activity type",
+        },
+        {
+          id: "requirement-college",
+          name: "Relevant College Coursework",
+          ruleCategoryId: "ptcb-cpht-2026-college-coursework",
+          isActive: 1,
+          applicabilityStatus: "applies",
+          exclusiveGroup: "PTCB capped activity type",
+        },
+      ];
+      const makeDatabase = () =>
+        new FakeDatabase({
+          resolveFirst(call) {
+            if (isOwnedActivityCycleLookup(call.sql)) {
+              return {
+                id: call.bindings[0],
+                totalUnits: 2,
+                completionDate: "2027-05-20",
+              };
+            }
+            if (isOwnedCredentialCycleLookup(call.sql)) {
+              return {
+                id: call.bindings[0],
+                status: "active",
+                cycleStart: "2027-01-01",
+                deadline: "2027-12-31",
+              };
+            }
+            return null;
+          },
+          resolveAll(call) {
+            if (!isRequirementTagLookup(call.sql)) return [];
+            const requestedIds = new Set(call.bindings.slice(2));
+            return requirementRows.filter((row) => requestedIds.has(row.id));
+          },
+        });
+      const assertNoActivityWrites = (database) => {
+        assert.equal(
+          flattenedStatements(database).some((statement) =>
+            /^INSERT INTO (activities|activity_allocations|activity_requirement_matches) \(/i.test(
+              statement.sql,
+            ),
+          ),
+          false,
+        );
+      };
+
+      const directDatabase = makeDatabase();
+      testCloudflareEnv.DB = directDatabase;
+      const directResponse = await postWorkspace("addActivity", {
+        title: "CPR patient-safety conflict",
+        completionDate: "2027-05-20",
+        totalUnits: 2,
+        credentialId: "credential-ptcb",
+        requirementIds: [
+          "requirement-bls",
+          "requirement-patient-safety",
+        ],
+        evidenceStatus: "missing",
+      });
+      assert.equal(directResponse.status, 409);
+      assert.deepEqual(await directResponse.json(), {
+        error:
+          "BLS, CPR, or AED training cannot satisfy Patient Safety for the same activity. Choose only one of those tags.",
+        code: "incompatible_requirement_conflict",
+      });
+      assertNoActivityWrites(directDatabase);
+
+      const allocationDatabase = makeDatabase();
+      testCloudflareEnv.DB = allocationDatabase;
+      const allocationResponse = await postWorkspace(
+        "addActivityAllocation",
+        {
+          activityId: "activity-ptcb",
+          credentialId: "credential-ptcb",
+          requirementIds: [
+            "requirement-patient-safety",
+            "requirement-bls",
+          ],
+          allocatedUnits: 2,
+        },
+      );
+      assert.equal(allocationResponse.status, 409);
+      assert.deepEqual(await allocationResponse.json(), {
+        error:
+          "BLS, CPR, or AED training cannot satisfy Patient Safety for the same activity. Choose only one of those tags.",
+        code: "incompatible_requirement_conflict",
+      });
+      assertNoActivityWrites(allocationDatabase);
+
+      const overlayDatabase = makeDatabase();
+      testCloudflareEnv.DB = overlayDatabase;
+      const overlayResponse = await postWorkspace("addActivity", {
+        title: "College patient-safety course",
+        completionDate: "2027-05-20",
+        totalUnits: 1,
+        credentialId: "credential-ptcb",
+        requirementIds: [
+          "requirement-college",
+          "requirement-patient-safety",
+        ],
+        evidenceStatus: "missing",
+      });
+      assert.equal(overlayResponse.status, 200);
+      assert.equal(
+        flattenedStatements(overlayDatabase).filter((statement) =>
+          /^INSERT INTO activity_requirement_matches \(/i.test(statement.sql),
+        ).length,
+        2,
+      );
+      const validationLookup = overlayDatabase.calls.find(
+        (call) => call.method === "all" && isRequirementTagLookup(call.sql),
+      );
+      assert.ok(validationLookup);
+      assert.match(
+        validationLookup.sql,
+        /requirement\.rule_category_id AS ruleCategoryId/i,
+      );
+    },
+  );
+
+  await t.test(
+    "rejects capped service and exception credit from unrelated minimum tags",
+    async () => {
+      const cases = [
+        {
+          credentialId: "credential-ptcb",
+          left: {
+            id: "requirement-bls",
+            name: "Eligible BLS, CPR, or AED Training",
+            ruleCategoryId: "ptcb-cpht-2026-bls-cpr-aed",
+            exclusiveGroup: "PTCB capped activity type",
+          },
+          right: {
+            id: "requirement-technician",
+            name: "Technician-Specific CE",
+            ruleCategoryId: "ptcb-cpht-2026-technician-specific",
+            exclusiveGroup: "PTCB provider audience",
+          },
+          error:
+            "BLS, CPR, or AED training cannot satisfy Technician-Specific CE, Pharmacist-Specific CE, or Pharmacy Law for the same activity. Choose the BLS activity type without those tags.",
+        },
+        {
+          credentialId: "credential-nj-physician",
+          left: {
+            id: "requirement-volunteer",
+            name: "Qualifying Volunteer Medical Care",
+            ruleCategoryId: "nj-physician-2026-volunteer-care",
+            exclusiveGroup: "New Jersey physician credit source",
+          },
+          right: {
+            id: "requirement-opioids",
+            name: "Prescription Opioid Drugs",
+            ruleCategoryId: "nj-physician-2026-opioids",
+            exclusiveGroup: null,
+          },
+          error:
+            "Qualifying volunteer medical care credit cannot satisfy Category I or a nested Category I subject for the same activity. Choose the volunteer-care classifier without those tags.",
+        },
+        {
+          credentialId: "credential-pmi",
+          left: {
+            id: "requirement-working",
+            name: "Working as a Professional",
+            ruleCategoryId: "pmi-pmp-2026-working-professional",
+            exclusiveGroup: "PMI PDU activity type",
+          },
+          right: {
+            id: "requirement-power-skills",
+            name: "Power Skills",
+            ruleCategoryId: "pmi-pmp-2026-power-skills",
+            exclusiveGroup: null,
+          },
+          error:
+            "Giving Back PDUs, including Working as a Professional, cannot satisfy Talent Triangle Education minimums for the same activity. Choose the Giving Back activity type without Education child tags.",
+        },
+      ];
+
+      for (const testCase of cases) {
+        const database = new FakeDatabase({
+          resolveFirst(call) {
+            if (isOwnedCredentialCycleLookup(call.sql)) {
+              return {
+                id: call.bindings[0],
+                status: "active",
+                cycleStart: "2027-01-01",
+                deadline: "2027-12-31",
+              };
+            }
+            return null;
+          },
+          resolveAll(call) {
+            if (!isRequirementTagLookup(call.sql)) return [];
+            return [testCase.left, testCase.right].map((requirement) => ({
+              ...requirement,
+              isActive: 1,
+              applicabilityStatus: "applies",
+            }));
+          },
+        });
+        testCloudflareEnv.DB = database;
+        const response = await postWorkspace("addActivity", {
+          title: "Incompatible allocation",
+          completionDate: "2027-05-20",
+          totalUnits: 1,
+          credentialId: testCase.credentialId,
+          requirementIds: [testCase.left.id, testCase.right.id],
+          evidenceStatus: "missing",
+        });
+        assert.equal(response.status, 409);
+        assert.deepEqual(await response.json(), {
+          error: testCase.error,
+          code: "incompatible_requirement_conflict",
+        });
+        assert.equal(
+          flattenedStatements(database).some((statement) =>
+            /^(?:INSERT INTO activities|INSERT INTO activity_allocations|INSERT INTO activity_requirement_matches) \(/i.test(
+              statement.sql,
+            ),
+          ),
+          false,
+        );
+      }
+    },
+  );
+
+  await t.test(
     "rejects activity dates outside the target renewal cycle before writing",
     async () => {
       const directActivityDatabase = new FakeDatabase({
@@ -4863,6 +6839,380 @@ test("License Lantern product contract", async (t) => {
       assert.equal(taskReminder.urgency, "soon");
       assert.equal(deadlineReminder.urgency, "soon");
       assert.equal(acceptanceReminder.urgency, "overdue");
+    },
+  );
+
+  await t.test(
+    "applies caps while excluding missing and incompatible legacy classifications",
+    async () => {
+      const credentialId = "credential-arrt-dual-caps";
+      const ptcbCredentialId = "credential-ptcb-legacy-conflict";
+      const requirementRows = [
+        {
+          id: "requirement-facility",
+          credentialId,
+          ruleCategoryId:
+            "arrt-rt-standard-2026-applications-training",
+          name: "Facility Applications Training",
+          requiredUnits: 8,
+          kind: "maximum",
+          relation: "independent",
+          parentRequirementId: null,
+          applicability: "optional",
+          applicabilityStatus: "applies",
+          conditionNote: null,
+          exclusiveGroup: "ARRT capped activity type",
+          isActive: 1,
+          rawEarned: 10,
+        },
+        {
+          id: "requirement-als",
+          credentialId,
+          ruleCategoryId:
+            "arrt-rt-standard-2026-advanced-life-support",
+          name: "Advanced Life Support",
+          requiredUnits: 6,
+          kind: "maximum",
+          relation: "independent",
+          parentRequirementId: null,
+          applicability: "optional",
+          applicabilityStatus: "applies",
+          conditionNote: null,
+          exclusiveGroup: "ARRT capped activity type",
+          isActive: 1,
+          rawEarned: 8,
+        },
+        {
+          id: "requirement-other",
+          credentialId,
+          ruleCategoryId:
+            "arrt-rt-standard-2026-other-eligible-ce",
+          name: "Other Eligible Category A or A+ CE",
+          requiredUnits: 0,
+          kind: "informational",
+          relation: "independent",
+          parentRequirementId: null,
+          applicability: "optional",
+          applicabilityStatus: "applies",
+          conditionNote: null,
+          exclusiveGroup: "ARRT capped activity type",
+          isActive: 1,
+          rawEarned: 10,
+        },
+        {
+          id: "requirement-ptcb-bls",
+          credentialId: ptcbCredentialId,
+          ruleCategoryId: "ptcb-cpht-2026-bls-cpr-aed",
+          name: "Eligible BLS, CPR, or AED Training",
+          requiredUnits: 2,
+          kind: "maximum",
+          relation: "independent",
+          parentRequirementId: null,
+          applicability: "optional",
+          applicabilityStatus: "applies",
+          conditionNote: null,
+          exclusiveGroup: "PTCB capped activity type",
+          isActive: 1,
+          rawEarned: 1,
+        },
+        {
+          id: "requirement-ptcb-patient-safety",
+          credentialId: ptcbCredentialId,
+          ruleCategoryId: "ptcb-cpht-2026-patient-safety",
+          name: "Patient Safety",
+          requiredUnits: 1,
+          kind: "minimum",
+          relation: "overlapping",
+          parentRequirementId: null,
+          applicability: "always",
+          applicabilityStatus: "applies",
+          conditionNote: null,
+          exclusiveGroup: null,
+          isActive: 1,
+          rawEarned: 1,
+        },
+      ];
+      const activityRows = [
+        ...[
+        [
+          "facility",
+          "Facility applications series",
+          10,
+          "requirement-facility",
+          "Facility Applications Training",
+        ],
+        [
+          "als",
+          "Advanced life support series",
+          8,
+          "requirement-als",
+          "Advanced Life Support",
+        ],
+        [
+          "other",
+          "Other Category A series",
+          10,
+          "requirement-other",
+          "Other Eligible Category A or A+ CE",
+        ],
+        [
+          "legacy",
+          "Legacy unclassified series",
+          4,
+          null,
+          null,
+        ],
+        ].map(
+        (
+          [suffix, title, units, requirementId, categoryName],
+          index,
+        ) => ({
+          id: `activity-${suffix}`,
+          title,
+          provider: "ARRT Test Provider",
+          completionDate: `2027-0${index + 2}-01`,
+          totalUnits: units,
+          evidenceStatus: "attached",
+          evidenceReference: null,
+          evidenceCount: 1,
+          allocationId: `allocation-${suffix}`,
+          credentialId,
+          credentialName: "ARRT Registered Technologist",
+          requirementId,
+          categoryName,
+          allocatedUnits: units,
+        }),
+      ),
+        {
+          id: "activity-ptcb-conflict",
+          title: "Legacy CPR safety entry",
+          provider: "Legacy PTCB Provider",
+          completionDate: "2027-06-15",
+          totalUnits: 1,
+          evidenceStatus: "attached",
+          evidenceReference: null,
+          evidenceCount: 1,
+          allocationId: "allocation-ptcb-conflict",
+          credentialId: ptcbCredentialId,
+          credentialName: "PTCB CPhT",
+          requirementId: "requirement-ptcb-bls",
+          categoryName: "Eligible BLS, CPR, or AED Training",
+          allocatedUnits: 1,
+        },
+      ];
+      const activityMatchRows = activityRows
+        .filter((activity) => activity.requirementId)
+        .map((activity) => ({
+          id: `${activity.allocationId}-match`,
+          activityId: activity.id,
+          allocationId: activity.allocationId,
+          credentialId: activity.credentialId,
+          requirementId: activity.requirementId,
+          categoryName: activity.categoryName,
+          matchedUnits: activity.allocatedUnits,
+        }));
+      activityMatchRows.push({
+        id: "allocation-ptcb-conflict-patient-safety",
+        activityId: "activity-ptcb-conflict",
+        allocationId: "allocation-ptcb-conflict",
+        credentialId: ptcbCredentialId,
+        requirementId: "requirement-ptcb-patient-safety",
+        categoryName: "Patient Safety",
+        matchedUnits: 1,
+      });
+      const database = new FakeDatabase({
+        resolveFirst(call) {
+          if (/FROM profiles p WHERE p\.user_id = \?/i.test(call.sql)) {
+            return { weeklyGoal: 4, xp: 0, weekActions: 0 };
+          }
+          return null;
+        },
+        resolveAll(call) {
+          if (/FROM credentials c LEFT JOIN rule_sets rs/i.test(call.sql)) {
+            return [
+              {
+                id: credentialId,
+                credentialName: "ARRT Registered Technologist",
+                profession: "Radiologic Technology",
+                jurisdiction: "National",
+                issuer: "ARRT",
+                deadline: "2027-12-31",
+                cycleStart: "2027-01-01",
+                totalRequired: 24,
+                unitLabel: "credits",
+                cycleMonths: 24,
+                seriesId: credentialId,
+                previousCredentialId: null,
+                status: "active",
+                submittedAt: null,
+                confirmationNumber: null,
+                submissionProof: null,
+                acceptedAt: null,
+                acceptanceReference: null,
+                nextCredentialId: null,
+                sourceUrl: null,
+                sourceTitle: null,
+                ruleReviewStatus: "verified",
+                totalEarned: 32,
+              },
+              {
+                id: ptcbCredentialId,
+                credentialName: "PTCB CPhT",
+                profession: "Pharmacy Technician",
+                jurisdiction: "United States",
+                issuer: "PTCB",
+                deadline: "2027-12-31",
+                cycleStart: "2027-01-01",
+                totalRequired: 20,
+                unitLabel: "CE hours",
+                cycleMonths: 24,
+                seriesId: ptcbCredentialId,
+                previousCredentialId: null,
+                status: "submitted",
+                submittedAt: "2027-12-20T12:00:00.000Z",
+                confirmationNumber: "PTCB-SUBMITTED",
+                submissionProof: null,
+                acceptedAt: null,
+                acceptanceReference: null,
+                nextCredentialId: null,
+                sourceUrl: null,
+                sourceTitle: null,
+                ruleReviewStatus: "verified",
+                totalEarned: 1,
+              },
+            ];
+          }
+          if (
+            /FROM credential_requirements req JOIN credentials c/i.test(
+              call.sql,
+            )
+          ) {
+            return requirementRows;
+          }
+          if (
+            /FROM activities a LEFT JOIN activity_allocations alloc/i.test(
+              call.sql,
+            )
+          ) {
+            return activityRows;
+          }
+          if (
+            /FROM activity_requirement_matches match JOIN activity_allocations allocation/i.test(
+              call.sql,
+            )
+          ) {
+            return activityMatchRows;
+          }
+          return [];
+        },
+      });
+      testCloudflareEnv.DB = database;
+
+      const response = await fetchWorker(
+        "https://license-lantern.example/api/workspace",
+        { headers: authHeaders() },
+      );
+      assert.equal(response.status, 200);
+      const workspace = await response.json();
+      const credential = workspace.credentials.find(
+        (candidate) => candidate.id === credentialId,
+      );
+      assert.ok(credential);
+      assert.deepEqual(
+        {
+          totalLoggedUnits: credential.totalLoggedUnits,
+          unclassifiedUnits: credential.unclassifiedUnits,
+          totalRawEarned: credential.totalRawEarned,
+          totalExcessUnits: credential.totalExcessUnits,
+          totalEarned: credential.totalEarned,
+        },
+        {
+          totalLoggedUnits: 32,
+          unclassifiedUnits: 4,
+          totalRawEarned: 28,
+          totalExcessUnits: 4,
+          totalEarned: 24,
+        },
+      );
+      assert.deepEqual(credential.classificationIssues, [
+        {
+          allocationId: "allocation-legacy",
+          activityId: "activity-legacy",
+          activityTitle: "Legacy unclassified series",
+          unresolvedExclusiveGroups: ["ARRT capped activity type"],
+          allocatedUnits: 4,
+        },
+      ]);
+      const progressById = new Map(
+        credential.requirements.map((requirement) => [
+          requirement.id,
+          requirement,
+        ]),
+      );
+      assert.deepEqual(
+        [
+          "requirement-facility",
+          "requirement-als",
+        ].map((requirementId) => ({
+          raw: progressById.get(requirementId).rawEarned,
+          countable: progressById.get(requirementId).countableEarned,
+          excess: progressById.get(requirementId).excessUnits,
+        })),
+        [
+          { raw: 10, countable: 8, excess: 2 },
+          { raw: 8, countable: 6, excess: 2 },
+        ],
+      );
+      const legacyAllocation = workspace.activities
+        .find((activity) => activity.id === "activity-legacy")
+        .allocations[0];
+      assert.equal(
+        legacyAllocation.classificationStatus,
+        "needs_classification",
+      );
+      assert.deepEqual(legacyAllocation.unresolvedExclusiveGroups, [
+        "ARRT capped activity type",
+      ]);
+      const ptcbCredential = workspace.credentials.find(
+        (candidate) => candidate.id === ptcbCredentialId,
+      );
+      assert.ok(ptcbCredential);
+      assert.deepEqual(
+        {
+          totalLoggedUnits: ptcbCredential.totalLoggedUnits,
+          unclassifiedUnits: ptcbCredential.unclassifiedUnits,
+          totalRawEarned: ptcbCredential.totalRawEarned,
+          totalEarned: ptcbCredential.totalEarned,
+        },
+        {
+          totalLoggedUnits: 1,
+          unclassifiedUnits: 1,
+          totalRawEarned: 0,
+          totalEarned: 0,
+        },
+      );
+      assert.deepEqual(ptcbCredential.classificationIssues, [
+        {
+          allocationId: "allocation-ptcb-conflict",
+          activityId: "activity-ptcb-conflict",
+          activityTitle: "Legacy CPR safety entry",
+          unresolvedExclusiveGroups: [],
+          allocatedUnits: 1,
+          classificationMessage:
+            "BLS, CPR, or AED training cannot satisfy Patient Safety for the same activity. Choose only one of those tags.",
+        },
+      ]);
+      const ptcbAllocation = workspace.activities
+        .find((activity) => activity.id === "activity-ptcb-conflict")
+        .allocations[0];
+      assert.equal(
+        ptcbAllocation.classificationStatus,
+        "needs_classification",
+      );
+      assert.equal(
+        ptcbAllocation.classificationMessage,
+        ptcbCredential.classificationIssues[0].classificationMessage,
+      );
     },
   );
 
@@ -5690,7 +8040,7 @@ test("License Lantern product contract", async (t) => {
               id: "credential-cfp-prior",
               ruleSetId: "cfp-professional-pre-2027-v1",
               credentialName:
-                "CFP® Professional — cycle beginning before Q1 2027",
+                "CFP® Professional — cycle beginning before April 1, 2027",
               profession: "Financial Planning",
               jurisdiction: "United States",
               issuer: "CFP Board",
@@ -5754,10 +8104,10 @@ test("License Lantern product contract", async (t) => {
       testCloudflareEnv.DB = database;
       const response = await postWorkspace("markRenewalAccepted", {
         credentialId: "credential-cfp-prior",
-        acceptedAt: "2026-12-22",
+        acceptedAt: "2027-03-25",
         reference: "CFP-ACCEPTED",
-        nextCycleStart: "2027-01-01",
-        nextDeadline: "2028-12-31",
+        nextCycleStart: "2027-04-01",
+        nextDeadline: "2029-03-31",
       });
       assert.equal(response.status, 200);
       const nextCredentialId = (await response.json()).id;
@@ -5770,12 +8120,12 @@ test("License Lantern product contract", async (t) => {
         nextCredentialId,
         await expectedStableUserId("owner@example.com"),
         "cfp-professional-2027-v1",
-        "CFP® Professional — cycle beginning Q1 2027 or later",
+        "CFP® Professional — cycle beginning April 1, 2027 or later",
         "Financial Planning",
         "United States",
         "CFP Board",
-        "2027-01-01",
-        "2028-12-31",
+        "2027-04-01",
+        "2029-03-31",
         40,
         "CE hours",
       ]);
@@ -5794,7 +8144,51 @@ test("License Lantern product contract", async (t) => {
           snapshotByName.get("General CE")?.bindings[4],
           snapshotByName.get("General CE")?.bindings[11],
         ],
-        ["cfp-professional-2027-general", 38, "CFP CE type"],
+        ["cfp-professional-2027-general", 38, null],
+      );
+      assert.deepEqual(
+        [
+          snapshotByName.get(
+            "General CE — Principal Topics Other Than Practice Management",
+          )?.bindings[2],
+          snapshotByName.get(
+            "General CE — Principal Topics Other Than Practice Management",
+          )?.bindings[4],
+          snapshotByName.get(
+            "General CE — Principal Topics Other Than Practice Management",
+          )?.bindings[5],
+          snapshotByName.get(
+            "General CE — Principal Topics Other Than Practice Management",
+          )?.bindings[6],
+          snapshotByName.get(
+            "General CE — Principal Topics Other Than Practice Management",
+          )?.bindings[11],
+        ],
+        [
+          "cfp-professional-2027-principal-topics",
+          33,
+          "minimum",
+          "nested",
+          "CFP CE activity type",
+        ],
+      );
+      assert.deepEqual(
+        [
+          snapshotByName.get("Practice Management General CE")?.bindings[2],
+          snapshotByName.get("Practice Management General CE")?.bindings[4],
+          snapshotByName.get("Practice Management General CE")?.bindings[5],
+          snapshotByName.get("Practice Management General CE")?.bindings[6],
+          snapshotByName.get("Practice Management General CE")?.bindings[8],
+          snapshotByName.get("Practice Management General CE")?.bindings[11],
+        ],
+        [
+          "cfp-professional-2027-practice-management",
+          5,
+          "maximum",
+          "nested",
+          "optional",
+          "CFP CE activity type",
+        ],
       );
       assert.deepEqual(
         [
@@ -5802,13 +8196,24 @@ test("License Lantern product contract", async (t) => {
           snapshotByName.get("CFP Board-Approved Ethics CE")?.bindings[4],
           snapshotByName.get("CFP Board-Approved Ethics CE")?.bindings[11],
         ],
-        ["cfp-professional-2027-ethics", 2, "CFP CE type"],
+        ["cfp-professional-2027-ethics", 2, "CFP CE activity type"],
+      );
+      assert.equal(requirementSnapshots.length, 4);
+      assert.equal(
+        snapshotByName.get(
+          "General CE — Principal Topics Other Than Practice Management",
+        )?.bindings[7],
+        snapshotByName.get("General CE")?.bindings[0],
+      );
+      assert.equal(
+        snapshotByName.get("Practice Management General CE")?.bindings[7],
+        snapshotByName.get("General CE")?.bindings[0],
       );
       const reviewTask = statements.find(
         (statement) =>
           /^INSERT INTO checklist_tasks \(/i.test(statement.sql) &&
           statement.bindings[3] ===
-            "Confirm CFP Board carryover eligibility for the 40-hour cycle",
+            "Confirm CFP Board carryover, then manually record only approved general CE",
       );
       assert.ok(reviewTask);
       assert.equal(

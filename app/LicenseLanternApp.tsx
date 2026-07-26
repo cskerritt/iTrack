@@ -14,8 +14,13 @@ import {
   scanCertificateImage,
 } from "./lib/certificateOcr";
 import {
+  ACTIVITY_DRAFT_MAX_UNITS,
+  ACTIVITY_DRAFT_PROVIDER_MAX_LENGTH,
+  ACTIVITY_DRAFT_TITLE_MAX_LENGTH,
   activityDraftStorageKey,
+  activityDraftShouldBePurged,
   hasMeaningfulActivityDraft,
+  legacyActivityDraftStorageKey,
   parseActivityDraft,
   serializeActivityDraft,
 } from "./lib/activityDraft";
@@ -23,9 +28,14 @@ import {
   CalendarInviteEvent,
   offerCalendarInvite,
 } from "./lib/calendarInvite";
+import {
+  nextRequirementSelection,
+  requirementIncompatibilityMessage,
+} from "./lib/requirementCompatibility";
 
 type Requirement = {
   id: string;
+  ruleCategoryId?: string | null;
   name: string;
   requiredUnits: number;
   earnedUnits: number;
@@ -75,6 +85,16 @@ type Credential = {
   totalEarned: number;
   totalRawEarned?: number;
   totalExcessUnits?: number;
+  totalLoggedUnits?: number;
+  unclassifiedUnits?: number;
+  classificationIssues?: Array<{
+    allocationId: string;
+    activityId: string;
+    activityTitle: string;
+    unresolvedExclusiveGroups: string[];
+    allocatedUnits: number;
+    classificationMessage?: string;
+  }>;
   requirements: Requirement[];
   tasks: RenewalTask[];
 };
@@ -117,6 +137,9 @@ type ActivityAllocation = {
   requirementIds?: string[];
   categoryNames?: string[];
   allocatedUnits: number;
+  classificationStatus?: "classified" | "needs_classification";
+  unresolvedExclusiveGroups?: string[];
+  classificationMessage?: string;
 };
 
 type Activity = {
@@ -199,6 +222,7 @@ type Workspace = {
     displayName: string;
     email: string;
     isDemo?: boolean;
+    draftStorageNamespace: string;
   };
   profile: {
     xp: number;
@@ -254,6 +278,9 @@ type InstallPromptEvent = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
 };
+
+const CFP_2027_GENERAL_CATEGORY_ID = "cfp-professional-2027-general";
+const NJ_LCSW_CREDIT_CATEGORY_GROUP = "New Jersey LCSW credit category";
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
@@ -438,9 +465,12 @@ function readinessScore(credential: Credential) {
     (item) => item.status === "completed",
   ).length;
   const taskProgress = taskCount === 0 ? 1 : completedTasks / taskCount;
-  return clampPercent(
+  const score = clampPercent(
     unitProgress * 70 + requirementProgressValue * 15 + taskProgress * 15,
   );
+  return credential.classificationIssues?.length
+    ? Math.min(99, score)
+    : score;
 }
 
 type GuidedAction = {
@@ -487,6 +517,20 @@ function bestNextAction(
       title: `Confirm whether ${unresolvedRequirement.name} applies this cycle`,
       body: "Your readiness score stays cautious until this rule is resolved.",
       buttonLabel: "Review conditions",
+    };
+  }
+
+  const classificationIssueCount = credential.classificationIssues?.length ?? 0;
+  if (classificationIssueCount > 0) {
+    return {
+      kind: "records",
+      title: `Classify ${classificationIssueCount} learning ${
+        classificationIssueCount === 1 ? "record" : "records"
+      }`,
+      body: `${compactNumber(
+        credential.unclassifiedUnits ?? 0,
+      )} ${credential.unitLabel} are preserved but excluded until each classification conflict is resolved.`,
+      buttonLabel: "Review records",
     };
   }
 
@@ -593,6 +637,10 @@ export function LicenseLanternApp() {
   const [allocationActivity, setAllocationActivity] =
     useState<Activity | null>(null);
   const [allocationCredentialId, setAllocationCredentialId] = useState("");
+  const [classificationRepair, setClassificationRepair] = useState<{
+    activity: Activity;
+    allocation: ActivityAllocation;
+  } | null>(null);
   const [evidenceActivity, setEvidenceActivity] = useState<Activity | null>(
     null,
   );
@@ -621,6 +669,8 @@ export function LicenseLanternApp() {
   const [activityDraftRestored, setActivityDraftRestored] = useState(false);
   const [activityDraftCredentialWarning, setActivityDraftCredentialWarning] =
     useState("");
+  const [activityDraftPersistenceStatus, setActivityDraftPersistenceStatus] =
+    useState<"idle" | "saving" | "saved" | "unavailable">("idle");
   const [isOnline, setIsOnline] = useState(true);
   const [workspaceLoadFailed, setWorkspaceLoadFailed] = useState(false);
   const [workspaceLoadFailureStatus, setWorkspaceLoadFailureStatus] = useState<
@@ -634,8 +684,15 @@ export function LicenseLanternApp() {
   const activityDraftPersistenceGeneration = useRef(0);
   const draftStorageKey = useMemo(
     () =>
+      workspace?.user.draftStorageNamespace
+        ? activityDraftStorageKey(workspace.user.draftStorageNamespace)
+        : null,
+    [workspace?.user.draftStorageNamespace],
+  );
+  const legacyDraftStorageKey = useMemo(
+    () =>
       workspace?.user.email
-        ? activityDraftStorageKey(workspace.user.email)
+        ? legacyActivityDraftStorageKey(workspace.user.email)
         : null,
     [workspace?.user.email],
   );
@@ -657,14 +714,18 @@ export function LicenseLanternApp() {
     });
     setActivityDraftRestored(false);
     setActivityDraftCredentialWarning("");
+    setActivityDraftPersistenceStatus("idle");
   }, []);
 
   const persistActivityDraftNow = useCallback(() => {
-    if (!activityDraftPersistenceEnabled.current || !draftStorageKey) return;
+    if (!activityDraftPersistenceEnabled.current || !draftStorageKey) {
+      return true;
+    }
     try {
       if (!hasMeaningfulActivityDraft(activityDraft)) {
         window.localStorage.removeItem(draftStorageKey);
-        return;
+        setActivityDraftPersistenceStatus("idle");
+        return true;
       }
       window.localStorage.setItem(
         draftStorageKey,
@@ -673,8 +734,11 @@ export function LicenseLanternApp() {
           ...activityDraft,
         }),
       );
+      setActivityDraftPersistenceStatus("saved");
+      return true;
     } catch {
-      // The form remains usable when device-local storage is unavailable.
+      setActivityDraftPersistenceStatus("unavailable");
+      return false;
     }
   }, [activityDraft, draftStorageKey, selectedCredentialId]);
 
@@ -715,6 +779,7 @@ export function LicenseLanternApp() {
             suggestions: {},
           });
           setActivityDraftRestored(true);
+          setActivityDraftPersistenceStatus("saved");
           restored = true;
         } else if (serialized) {
           window.localStorage.removeItem(draftStorageKey);
@@ -728,7 +793,14 @@ export function LicenseLanternApp() {
   }, [draftStorageKey, resetActivityEntry, workspace]);
 
   const closeActivityEntry = useCallback(() => {
-    persistActivityDraftNow();
+    const draftPersisted = persistActivityDraftNow();
+    if (!draftPersisted) {
+      setToast({
+        message:
+          "This browser couldn’t save your draft. Keep this form open or finish logging the activity before leaving.",
+      });
+      return;
+    }
     activityDraftPersistenceEnabled.current = false;
     activityDraftPersistenceGeneration.current += 1;
     setActivityOpen(false);
@@ -844,14 +916,52 @@ export function LicenseLanternApp() {
   }, []);
 
   useEffect(() => {
+    if (!draftStorageKey) return;
+    try {
+      let serialized = window.localStorage.getItem(draftStorageKey);
+      if (activityDraftShouldBePurged(serialized)) {
+        window.localStorage.removeItem(draftStorageKey);
+        serialized = null;
+      }
+
+      if (legacyDraftStorageKey && legacyDraftStorageKey !== draftStorageKey) {
+        const legacySerialized =
+          window.localStorage.getItem(legacyDraftStorageKey);
+        const legacyDraft = parseActivityDraft(legacySerialized);
+        if (!serialized && legacySerialized && legacyDraft) {
+          window.localStorage.setItem(draftStorageKey, legacySerialized);
+          serialized = legacySerialized;
+        }
+        if (serialized || (legacySerialized && !legacyDraft)) {
+          window.localStorage.removeItem(legacyDraftStorageKey);
+        }
+      }
+    } catch {
+      // Browser storage restrictions should not block the workspace.
+    }
+  }, [draftStorageKey, legacyDraftStorageKey]);
+
+  useEffect(() => {
     if (!activityOpen || !draftStorageKey) return;
+    const hasDraft = hasMeaningfulActivityDraft(activityDraft);
     const generation = activityDraftPersistenceGeneration.current;
+    const statusTimeout = window.setTimeout(() => {
+      setActivityDraftPersistenceStatus(hasDraft ? "saving" : "idle");
+    }, 0);
     const timeout = window.setTimeout(() => {
       if (generation !== activityDraftPersistenceGeneration.current) return;
       persistActivityDraftNow();
     }, 250);
-    return () => window.clearTimeout(timeout);
-  }, [activityOpen, draftStorageKey, persistActivityDraftNow]);
+    return () => {
+      window.clearTimeout(statusTimeout);
+      window.clearTimeout(timeout);
+    };
+  }, [
+    activityDraft,
+    activityOpen,
+    draftStorageKey,
+    persistActivityDraftNow,
+  ]);
 
   useEffect(() => {
     if (!activityOpen) return;
@@ -875,6 +985,7 @@ export function LicenseLanternApp() {
       setAcceptanceOpen(false);
       setRemindersOpen(false);
       setAllocationActivity(null);
+      setClassificationRepair(null);
       setEvidenceActivity(null);
     };
     window.addEventListener("keydown", closeOnEscape);
@@ -950,6 +1061,11 @@ export function LicenseLanternApp() {
     ) ??
     eligibleAllocationCredentials[0] ??
     null;
+  const classificationCredential =
+    workspace?.credentials.find(
+      (credential) =>
+        credential.id === classificationRepair?.allocation.credentialId,
+    ) ?? null;
 
   const activityCredentials =
     workspace?.credentials.filter(
@@ -969,7 +1085,7 @@ export function LicenseLanternApp() {
     if (!window.navigator.onLine) {
       setIsOnline(false);
       setError(
-        "You’re offline. Your course draft stays on this device; reconnect before saving changes.",
+        "You’re offline. Your course draft stays in this browser; reconnect before saving changes.",
       );
       return null;
     }
@@ -1005,27 +1121,41 @@ export function LicenseLanternApp() {
   }
 
   function clearSavedActivityDraft() {
-    if (!draftStorageKey) return;
+    if (!draftStorageKey) return true;
     try {
       window.localStorage.removeItem(draftStorageKey);
+      if (legacyDraftStorageKey) {
+        window.localStorage.removeItem(legacyDraftStorageKey);
+      }
+      return true;
     } catch {
-      // Storage restrictions should not affect the cloud record.
+      return false;
     }
   }
 
   function discardActivityDraft() {
     activityDraftPersistenceGeneration.current += 1;
-    clearSavedActivityDraft();
+    const cleared = clearSavedActivityDraft();
     resetActivityEntry();
-    setToast({ message: "The device-only course draft was cleared." });
+    setToast({
+      message: cleared
+        ? "The browser-saved course draft was cleared."
+        : "The form was cleared, but this browser would not remove its saved draft. Clear License Lantern site data to remove it.",
+    });
   }
 
   function finishSavedActivityEntry() {
     activityDraftPersistenceEnabled.current = false;
     activityDraftPersistenceGeneration.current += 1;
-    clearSavedActivityDraft();
+    const cleared = clearSavedActivityDraft();
     setActivityOpen(false);
     resetActivityEntry();
+    if (!cleared) {
+      setToast({
+        message:
+          "Activity saved, but this browser would not clear its local draft. Clear License Lantern site data to remove it.",
+      });
+    }
   }
 
   async function handleInstallApp() {
@@ -1615,6 +1745,26 @@ export function LicenseLanternApp() {
     }
   }
 
+  async function handleClassificationRepair(
+    event: FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (!classificationRepair) return;
+    const form = new FormData(event.currentTarget);
+    const result = await runAction(
+      "updateActivityAllocationRequirements",
+      {
+        allocationId: classificationRepair.allocation.id,
+        requirementIds: form
+          .getAll("requirementIds")
+          .map((value) => String(value))
+          .filter(Boolean),
+      },
+      "Activity classification updated and credit recalculated.",
+    );
+    if (result) setClassificationRepair(null);
+  }
+
   async function setRequirementApplicability(
     credentialId: string,
     requirement: Requirement,
@@ -1704,8 +1854,8 @@ export function LicenseLanternApp() {
               <div>
                 <strong>Offline — your cloud record is protected</strong>
                 <small>
-                  Course text can stay in a device-only draft. Reconnect to
-                  save changes or upload proof.
+                  Course text can remain in a browser-saved draft. Reconnect
+                  to save changes or upload proof.
                 </small>
               </div>
             </div>
@@ -1809,6 +1959,9 @@ export function LicenseLanternApp() {
                 setAllocationCredentialId(firstEligible?.id ?? "");
                 setAllocationActivity(activity);
               }}
+              onClassify={(activity, allocation) =>
+                setClassificationRepair({ activity, allocation })
+              }
             />
           ) : (
             <AccountView
@@ -1895,30 +2048,37 @@ export function LicenseLanternApp() {
                   </label>
                 </div>
                 <p className="capture-privacy">
-                  Private scan: the reader and English model load from License
-                  Lantern, and the certificate stays on this device until you
-                  tap Save activity.
+                  On-device scan: the reader and English model load from
+                  License Lantern. The proof uploads only after Save activity;
+                  suggested field values may be saved unencrypted in this
+                  browser draft.
                 </p>
                 {activityDraftRestored ||
                 hasMeaningfulActivityDraft(activityDraft) ? (
                   <div
                     className={`draft-safety-note ${
                       activityDraftRestored ? "restored" : ""
-                    }`}
-                    role={activityDraftRestored ? "status" : undefined}
+                    } ${activityDraftPersistenceStatus}`}
+                    role="status"
+                    aria-live="polite"
                   >
                     <span aria-hidden="true">
                       {activityDraftRestored ? "↺" : "▣"}
                     </span>
                     <div>
                       <strong>
-                        {activityDraftRestored
-                          ? "Recovered on this device"
-                          : "Draft protected on this device"}
+                        {activityDraftPersistenceStatus === "saved"
+                          ? "Saved in this browser"
+                          : activityDraftPersistenceStatus === "unavailable"
+                            ? "Browser draft unavailable"
+                            : "Saving in this browser"}
                       </strong>
                       <small>
-                        Text fields are kept for up to 30 days. Proof files and
-                        scan results are never stored in the browser.
+                        {activityDraftPersistenceStatus === "unavailable"
+                          ? "This browser blocked local draft storage. Keep the form open until you can save to the cloud; proof files and raw OCR text were not placed in browser storage."
+                          : activityDraftPersistenceStatus === "saved"
+                            ? "Draft fields—including OCR-derived suggestions placed into them—are stored unencrypted in this browser. Proof files and raw OCR text are not saved there. Drafts are cleared on save or discard; drafts older than 30 days are cleared when this workspace next loads."
+                            : "Draft fields are being written unencrypted to this browser. Proof files and raw OCR text are not included."}
                       </small>
                     </div>
                     <button
@@ -1992,6 +2152,7 @@ export function LicenseLanternApp() {
                   name="title"
                   placeholder="e.g., Ethics in clinical practice"
                   value={activityDraft.title}
+                  maxLength={ACTIVITY_DRAFT_TITLE_MAX_LENGTH}
                   disabled={scanningActivityEvidence}
                   onChange={(event) =>
                     setActivityDraft((current) => ({
@@ -2053,6 +2214,7 @@ export function LicenseLanternApp() {
                     name="totalUnits"
                     type="number"
                     min="0.1"
+                    max={ACTIVITY_DRAFT_MAX_UNITS}
                     step="0.1"
                     inputMode="decimal"
                     placeholder="1.0"
@@ -2125,6 +2287,7 @@ export function LicenseLanternApp() {
                   name="provider"
                   placeholder="Organization or conference name"
                   value={activityDraft.provider}
+                  maxLength={ACTIVITY_DRAFT_PROVIDER_MAX_LENGTH}
                   disabled={scanningActivityEvidence}
                   onChange={(event) =>
                     setActivityDraft((current) => ({
@@ -2795,6 +2958,83 @@ export function LicenseLanternApp() {
         </Modal>
       ) : null}
 
+      {classificationRepair ? (
+        <Modal
+          title={
+            classificationRepair.allocation.classificationStatus ===
+            "needs_classification"
+              ? "Classify this activity"
+              : "Edit requirement tags"
+          }
+          eyebrow={classificationRepair.activity.title}
+          onClose={() => setClassificationRepair(null)}
+        >
+          {classificationCredential ? (
+            <form
+              className="form-stack"
+              onSubmit={handleClassificationRepair}
+            >
+              <div className="advisory-note">
+                <span aria-hidden="true">i</span>
+                {classificationRepair.allocation.classificationStatus ===
+                "needs_classification" ? (
+                  <p>
+                    This record is preserved, but its{" "}
+                    {compactNumber(
+                      classificationRepair.allocation.allocatedUnits,
+                    )}{" "}
+                    credits stay outside progress until you resolve its
+                    classification.{" "}
+                    {classificationRepair.allocation.classificationMessage ??
+                      `Choose exactly one option for ${
+                        classificationRepair.allocation.unresolvedExclusiveGroups?.join(
+                          " and ",
+                        ) || "the required activity type"
+                      }.`}
+                  </p>
+                ) : (
+                  <p>
+                    Update which requirements this preserved activity
+                    satisfies. Its date, proof, and credit amount will not
+                    change.
+                  </p>
+                )}
+              </div>
+              <RequirementPicker
+                key={classificationRepair.allocation.id}
+                credential={classificationCredential}
+                initialRequirementIds={
+                  classificationRepair.allocation.requirementIds
+                }
+              />
+              <div className="form-actions">
+                <button
+                  className="button button-ghost"
+                  type="button"
+                  onClick={() => setClassificationRepair(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="button button-primary"
+                  type="submit"
+                  disabled={pending}
+                >
+                  {pending ? "Updating…" : "Update classification"}
+                </button>
+              </div>
+            </form>
+          ) : (
+            <EmptyModalState
+              title="Credential unavailable"
+              body="This activity’s credential could not be opened for classification."
+              action="Close"
+              onAction={() => setClassificationRepair(null)}
+            />
+          )}
+        </Modal>
+      ) : null}
+
       {evidenceActivity ? (
         <Modal
           title="Proof and certificates"
@@ -3375,6 +3615,13 @@ function TodayView({
                 category limit and are excluded from the overall count.
               </p>
             ) : null}
+            {Number(credential.unclassifiedUnits ?? 0) > 0 ? (
+              <p className="total-excess-note">
+                {compactNumber(credential.unclassifiedUnits ?? 0)}{" "}
+                {credential.unitLabel} are preserved but excluded until their
+                required activity type is classified.
+              </p>
+            ) : null}
             {credential.requirements.map((requirement) => (
               <ProgressRow
                 key={requirement.id}
@@ -3846,6 +4093,13 @@ function CredentialsView({
                   category limit.
                 </p>
               ) : null}
+              {Number(selected.unclassifiedUnits ?? 0) > 0 ? (
+                <p className="total-excess-note">
+                  {compactNumber(selected.unclassifiedUnits ?? 0)}{" "}
+                  {selected.unitLabel} are preserved but excluded until their
+                  required activity type is classified.
+                </p>
+              ) : null}
               {selected.requirements.map((requirement) => (
                 <ProgressRow
                   key={requirement.id}
@@ -3967,13 +4221,21 @@ function RecordsView({
   onAdd,
   onEvidence,
   onAllocate,
+  onClassify,
 }: {
   activities: Activity[];
   credentials: Credential[];
   onAdd: () => void;
   onEvidence: (activity: Activity) => void;
   onAllocate: (activity: Activity) => void;
+  onClassify: (
+    activity: Activity,
+    allocation: ActivityAllocation,
+  ) => void;
 }) {
+  const credentialStatusById = new Map(
+    credentials.map((credential) => [credential.id, credential.status]),
+  );
   const total = activities.reduce(
     (sum, activity) =>
       sum +
@@ -4070,6 +4332,47 @@ function RecordsView({
                           {allocationCategoryLabel(allocation)} ·{" "}
                           {compactNumber(allocation.allocatedUnits)}
                         </small>
+                        {allocation.classificationStatus ===
+                        "needs_classification" ? (
+                          <>
+                            <small>
+                              {allocation.classificationMessage ??
+                                `Needs ${
+                                  allocation.unresolvedExclusiveGroups?.join(
+                                    " and ",
+                                  ) || "activity-type"
+                                } classification`}
+                              {" · excluded from progress"}
+                            </small>
+                            {credentialStatusById.get(
+                              allocation.credentialId,
+                            ) !== "renewed" ? (
+                              <button
+                                className="proof-action allocation-action"
+                                type="button"
+                                onClick={() =>
+                                  onClassify(activity, allocation)
+                                }
+                              >
+                                Classify activity
+                              </button>
+                            ) : (
+                              <small>Historical cycle is frozen</small>
+                            )}
+                          </>
+                        ) : credentials.some(
+                            (credential) =>
+                              credential.id === allocation.credentialId &&
+                              credential.status !== "renewed",
+                          ) ? (
+                          <button
+                            className="proof-action allocation-action"
+                            type="button"
+                            onClick={() => onClassify(activity, allocation)}
+                          >
+                            Edit requirement tags
+                          </button>
+                        ) : null}
                       </span>
                     ))}
                   </span>
@@ -4451,17 +4754,40 @@ function ProgressRow({
 
 function RequirementPicker({
   credential,
+  initialRequirementIds = [],
 }: {
   credential: Credential | null;
+  initialRequirementIds?: string[];
 }) {
   const [selectedRequirementIds, setSelectedRequirementIds] = useState<
     string[]
-  >([]);
+  >(() => [...new Set(initialRequirementIds)]);
+  const requiresCfpActivityType =
+    credential?.requirements.some(
+      (requirement) =>
+        requirement.ruleCategoryId === CFP_2027_GENERAL_CATEGORY_ID,
+    ) ?? false;
+  const requiresMaximumClassification =
+    credential?.requirements.some(
+      (requirement) =>
+        requirementKind(requirement) === "maximum" &&
+        Boolean(requirement.exclusiveGroup) &&
+        requirementStatus(requirement) === "applies" &&
+        requirement.isActive !== false,
+    ) ?? false;
+  const requiresLcswCreditCategory =
+    credential?.requirements.some(
+      (requirement) =>
+        requirement.exclusiveGroup === NJ_LCSW_CREDIT_CATEGORY_GROUP &&
+        requirementStatus(requirement) === "applies" &&
+        requirement.isActive !== false,
+    ) ?? false;
   const selectable =
     credential?.requirements.filter(
       (requirement) =>
         requirementStatus(requirement) === "applies" &&
-        requirement.isActive !== false,
+        requirement.isActive !== false &&
+        requirement.ruleCategoryId !== CFP_2027_GENERAL_CATEGORY_ID,
     ) ?? [];
   const unresolved =
     credential?.requirements.filter(
@@ -4470,27 +4796,22 @@ function RequirementPicker({
     ).length ?? 0;
 
   const toggleRequirement = (requirement: Requirement, checked: boolean) => {
-    setSelectedRequirementIds((current) => {
-      if (!checked) {
-        return current.filter((id) => id !== requirement.id);
-      }
-      const withoutRequirement = current.filter(
-        (id) => id !== requirement.id,
-      );
-      const withoutAlternative = requirement.exclusiveGroup
-        ? withoutRequirement.filter((id) => {
-            const selected = selectable.find((item) => item.id === id);
-            return selected?.exclusiveGroup !== requirement.exclusiveGroup;
-          })
-        : withoutRequirement;
-      return [...withoutAlternative, requirement.id];
-    });
+    setSelectedRequirementIds((current) =>
+      nextRequirementSelection(current, requirement, selectable, checked),
+    );
   };
 
   return (
     <fieldset className="requirement-picker">
       <legend>
-        Requirements this activity satisfies <em>Optional</em>
+        Requirements this activity satisfies{" "}
+        <em>
+          {requiresCfpActivityType ||
+          requiresMaximumClassification ||
+          requiresLcswCreditCategory
+            ? "Activity type required"
+            : "Optional"}
+        </em>
       </legend>
       {selectable.length ? (
         <div className="requirement-choice-list">
@@ -4518,22 +4839,26 @@ function RequirementPicker({
               <span>
                 <strong>{requirement.name}</strong>
                 <small>
-                  {requirementKind(requirement) === "maximum" &&
-                  requirement.relation === "nested"
-                    ? `Counts up to ${compactNumber(
-                        requirement.requiredUnits,
-                      )} ${credential?.unitLabel ?? "units"} and rolls up to its parent cap; select any other subject tags too`
-                    : requirementKind(requirement) === "maximum"
-                    ? `Counts up to ${compactNumber(
-                        requirement.requiredUnits,
-                      )} ${credential?.unitLabel ?? "units"}`
-                    : requirement.relation === "nested"
-                      ? "Also rolls up to its parent requirement"
-                      : requirement.relation === "overlapping"
-                        ? "May overlap another selected requirement"
-                        : requirement.exclusiveGroup
-                          ? "Choose only one activity type from this group"
-                          : "Counts within the overall total"}
+                  {requirementIncompatibilityMessage(
+                    requirement,
+                    selectable,
+                  ) ??
+                    (requirementKind(requirement) === "maximum" &&
+                    requirement.relation === "nested"
+                      ? `Counts up to ${compactNumber(
+                          requirement.requiredUnits,
+                        )} ${credential?.unitLabel ?? "units"} and rolls up to its parent cap; select any other subject tags too`
+                      : requirementKind(requirement) === "maximum"
+                        ? `Counts up to ${compactNumber(
+                            requirement.requiredUnits,
+                          )} ${credential?.unitLabel ?? "units"}`
+                        : requirement.relation === "nested"
+                          ? "Also rolls up to its parent requirement"
+                          : requirement.relation === "overlapping"
+                            ? "May overlap another selected requirement"
+                            : requirement.exclusiveGroup
+                              ? "Choose only one activity type from this group"
+                              : "Counts within the overall total")}
                 </small>
               </span>
             </label>
@@ -4541,12 +4866,17 @@ function RequirementPicker({
         </div>
       ) : (
         <p className="requirement-picker-empty">
-          Save without a tag and it will count toward the overall total.
+          {requiresCfpActivityType
+            ? "Choose a CFP activity type before saving."
+            : "Save without a tag and it will count toward the overall total."}
         </p>
       )}
       <small className="requirement-picker-hint">
-        Select every rule this learning genuinely satisfies. Overall credits
-        are still counted only once.
+        {requiresCfpActivityType
+          ? "Choose Principal Topics, Practice Management, or Ethics. General CE is calculated from the selected activity type."
+          : requiresMaximumClassification
+            ? "Choose exactly one option from each capped activity-type group, plus every other rule this learning genuinely satisfies."
+            : "Select every rule this learning genuinely satisfies. Overall credits are still counted only once."}
         {unresolved
           ? ` Confirm ${unresolved} conditional ${
               unresolved === 1 ? "rule" : "rules"

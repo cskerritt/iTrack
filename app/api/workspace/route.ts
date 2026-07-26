@@ -4,6 +4,7 @@ import {
   resolveRequestIdentity,
 } from "@/db/identity";
 import { ensureUser, initializeDatabase } from "@/db/runtime";
+import { findRequirementIncompatibility } from "../../lib/requirementCompatibility";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +37,17 @@ const APPLICABILITY_STATUSES = new Set<ApplicabilityStatus>([
   "not_applicable",
   "needs_confirmation",
 ]);
+const CFP_2027_CYCLE_START = "2027-04-01";
+const CFP_PRE_2027_RULE_SET_ID = "cfp-professional-pre-2027-v1";
+const CFP_2027_RULE_SET_ID = "cfp-professional-2027-v1";
+const CFP_2027_GENERAL_CATEGORY_ID = "cfp-professional-2027-general";
+const CFP_2027_ACTIVITY_TYPE_CATEGORY_IDS = new Set([
+  "cfp-professional-2027-principal-topics",
+  "cfp-professional-2027-practice-management",
+  "cfp-professional-2027-ethics",
+]);
+const NJ_LCSW_RULE_SET_ID = "nj-lcsw-sample-v1";
+const NJ_LCSW_CREDIT_CATEGORY_GROUP = "New Jersey LCSW credit category";
 
 class RequestError extends Error {
   constructor(
@@ -59,6 +71,17 @@ function json(data: unknown, init?: ResponseInit) {
   const headers = new Headers(init?.headers);
   headers.set("Cache-Control", "no-store");
   return Response.json(data, { ...init, headers });
+}
+
+async function createDraftStorageNamespace(userId: string) {
+  const bytes = new TextEncoder().encode(
+    `license-lantern:activity-draft:v1:${userId}`,
+  );
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hex = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return `draft_${hex}`;
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -992,10 +1015,63 @@ async function validateRequirementTags(
   credentialId: string,
   requirementIds: string[],
 ) {
-  if (requirementIds.length === 0) return [];
+  type RequiredMaximumGroupRow = {
+    exclusiveGroup: string;
+  };
+  const getRequiredMaximumGroups = () =>
+    query(
+      database,
+      `SELECT DISTINCT
+        requirement.exclusive_group AS exclusiveGroup
+      FROM credential_requirements requirement
+      JOIN credentials credential
+        ON credential.id = requirement.credential_id
+      WHERE requirement.credential_id = ?
+        AND credential.user_id = ?
+        AND requirement.kind = 'maximum'
+        AND requirement.is_active = 1
+        AND requirement.applicability_status = 'applies'
+        AND requirement.exclusive_group IS NOT NULL
+      ORDER BY requirement.exclusive_group`,
+      [credentialId, identity.userId],
+    ).all<RequiredMaximumGroupRow>();
+  const credential = await query(
+    database,
+    `SELECT rule_set_id AS ruleSetId
+     FROM credentials
+     WHERE id = ? AND user_id = ?`,
+    [credentialId, identity.userId],
+  ).first<{ ruleSetId: string | null }>();
+  if (requirementIds.length === 0) {
+    if (credential?.ruleSetId === CFP_2027_RULE_SET_ID) {
+      throw new RequestError(
+        "Classify every CFP CE activity as Principal Topics, Practice Management, or Ethics. General CE cannot be left unclassified.",
+        409,
+        "cfp_activity_type_required",
+      );
+    }
+    if (credential?.ruleSetId === NJ_LCSW_RULE_SET_ID) {
+      throw new RequestError(
+        "Choose exactly one New Jersey LCSW credit category—General Social Work, Clinical Practice, Ethics, or Social and Cultural Competence—for every credited time block.",
+        409,
+        "nj_lcsw_credit_category_required",
+      );
+    }
+    const requiredMaximumGroups = await getRequiredMaximumGroups();
+    const missingGroup = requiredMaximumGroups.results[0]?.exclusiveGroup;
+    if (missingGroup) {
+      throw new RequestError(
+        `Choose one ${missingGroup} option for this activity so capped credit can be counted safely.`,
+        409,
+        "maximum_classification_required",
+      );
+    }
+    return [];
+  }
   type RequirementTagRow = {
     id: string;
     name: string;
+    ruleCategoryId: string | null;
     isActive: number;
     applicabilityStatus: string;
     exclusiveGroup: string | null;
@@ -1006,6 +1082,7 @@ async function validateRequirementTags(
     `SELECT
       requirement.id,
       requirement.name,
+      requirement.rule_category_id AS ruleCategoryId,
       requirement.is_active AS isActive,
       requirement.applicability_status AS applicabilityStatus,
       requirement.exclusive_group AS exclusiveGroup
@@ -1038,6 +1115,33 @@ async function validateRequirementTags(
       );
     }
   }
+  const selectedRequirements = requirementIds.map(
+    (requirementId) => byId.get(requirementId)!,
+  );
+  if (
+    selectedRequirements.some(
+      (requirement) =>
+        requirement.ruleCategoryId === CFP_2027_GENERAL_CATEGORY_ID ||
+        (requirement.ruleCategoryId?.startsWith("cfp-professional-2027-") &&
+          !CFP_2027_ACTIVITY_TYPE_CATEGORY_IDS.has(
+            requirement.ruleCategoryId,
+          )),
+    )
+  ) {
+    throw new RequestError(
+      "Classify every CFP CE activity as Principal Topics, Practice Management, or Ethics. Tagging the General CE parent directly is not allowed.",
+      409,
+      "cfp_activity_type_required",
+    );
+  }
+  const incompatibility = findRequirementIncompatibility(selectedRequirements);
+  if (incompatibility) {
+    throw new RequestError(
+      incompatibility.incompatibility.message,
+      409,
+      "incompatible_requirement_conflict",
+    );
+  }
   const selectedExclusiveGroups = new Map<string, string>();
   for (const requirementId of requirementIds) {
     const requirement = byId.get(requirementId)!;
@@ -1055,7 +1159,28 @@ async function validateRequirementTags(
       requirement.name,
     );
   }
-  return requirementIds.map((requirementId) => byId.get(requirementId)!);
+  if (
+    credential?.ruleSetId === NJ_LCSW_RULE_SET_ID &&
+    !selectedExclusiveGroups.has(NJ_LCSW_CREDIT_CATEGORY_GROUP)
+  ) {
+    throw new RequestError(
+      "Choose exactly one New Jersey LCSW credit category—General Social Work, Clinical Practice, Ethics, or Social and Cultural Competence—for every credited time block.",
+      409,
+      "nj_lcsw_credit_category_required",
+    );
+  }
+  const requiredMaximumGroups = await getRequiredMaximumGroups();
+  const missingGroup = requiredMaximumGroups.results.find(
+    (group) => !selectedExclusiveGroups.has(group.exclusiveGroup),
+  )?.exclusiveGroup;
+  if (missingGroup) {
+    throw new RequestError(
+      `Choose one ${missingGroup} option for this activity so capped credit can be counted safely.`,
+      409,
+      "maximum_classification_required",
+    );
+  }
+  return selectedRequirements;
 }
 
 async function getWorkspace(
@@ -1092,6 +1217,7 @@ async function getWorkspace(
   };
   type CredentialRow = {
     id: string;
+    ruleSetId: string | null;
     credentialName: string;
     profession: string;
     jurisdiction: string;
@@ -1118,6 +1244,7 @@ async function getWorkspace(
   type RequirementRow = {
     id: string;
     credentialId: string;
+    ruleCategoryId: string | null;
     name: string;
     requiredUnits: number;
     kind: RequirementKind;
@@ -1235,6 +1362,7 @@ async function getWorkspace(
       database,
       `SELECT
         c.id,
+        c.rule_set_id AS ruleSetId,
         c.credential_name AS credentialName,
         c.profession,
         c.jurisdiction,
@@ -1279,6 +1407,7 @@ async function getWorkspace(
       `SELECT
         req.id,
         req.credential_id AS credentialId,
+        req.rule_category_id AS ruleCategoryId,
         req.name,
         req.required_units AS requiredUnits,
         req.kind,
@@ -1435,10 +1564,164 @@ async function getWorkspace(
       requirement,
     ]),
   );
+  type ClassificationIssue = {
+    allocationId: string;
+    activityId: string;
+    activityTitle: string;
+    unresolvedExclusiveGroups: string[];
+    allocatedUnits: number;
+    classificationMessage?: string;
+  };
+  const matchesByAllocation = new Map<string, ActivityMatchRow[]>();
+  const selectedGroupCountsByAllocation = new Map<
+    string,
+    Map<string, number>
+  >();
+  for (const match of activityMatchResult.results) {
+    const normalizedMatch = {
+      ...match,
+      matchedUnits: Number(match.matchedUnits),
+    };
+    const existing = matchesByAllocation.get(match.allocationId) ?? [];
+    existing.push(normalizedMatch);
+    matchesByAllocation.set(match.allocationId, existing);
+
+    const requirement = requirementMetadataById.get(match.requirementId);
+    if (
+      !requirement?.exclusiveGroup ||
+      !Boolean(requirement.isActive) ||
+      requirement.applicabilityStatus !== "applies"
+    ) {
+      continue;
+    }
+    const groupCounts =
+      selectedGroupCountsByAllocation.get(match.allocationId) ??
+      new Map<string, number>();
+    groupCounts.set(
+      requirement.exclusiveGroup,
+      (groupCounts.get(requirement.exclusiveGroup) ?? 0) + 1,
+    );
+    selectedGroupCountsByAllocation.set(match.allocationId, groupCounts);
+  }
+  const requiredMaximumGroupsByCredential = new Map<string, Set<string>>();
+  const trackedCredentialIds = new Set(
+    credentialResult.results.map((credential) => credential.id),
+  );
+  for (const requirement of requirementResult.results) {
+    if (
+      !trackedCredentialIds.has(requirement.credentialId) ||
+      requirement.kind !== "maximum" ||
+      !requirement.exclusiveGroup ||
+      !Boolean(requirement.isActive) ||
+      requirement.applicabilityStatus !== "applies"
+    ) {
+      continue;
+    }
+    const groups =
+      requiredMaximumGroupsByCredential.get(requirement.credentialId) ??
+      new Set<string>();
+    groups.add(requirement.exclusiveGroup);
+    requiredMaximumGroupsByCredential.set(requirement.credentialId, groups);
+  }
+  for (const credential of credentialResult.results) {
+    if (
+      credential.status !== "active" ||
+      credential.ruleSetId !== NJ_LCSW_RULE_SET_ID
+    ) {
+      continue;
+    }
+    const groups =
+      requiredMaximumGroupsByCredential.get(credential.id) ??
+      new Set<string>();
+    groups.add(NJ_LCSW_CREDIT_CATEGORY_GROUP);
+    requiredMaximumGroupsByCredential.set(credential.id, groups);
+  }
+  const classificationIssueByAllocation = new Map<
+    string,
+    ClassificationIssue
+  >();
+  const classificationIssuesByCredential = new Map<
+    string,
+    ClassificationIssue[]
+  >();
+  const unclassifiedUnitsByCredential = new Map<string, number>();
+  for (const activity of activityResult.results) {
+    if (
+      !activity.allocationId ||
+      !activity.credentialId ||
+      classificationIssueByAllocation.has(activity.allocationId)
+    ) {
+      continue;
+    }
+    const requiredGroups = [
+      ...(requiredMaximumGroupsByCredential.get(activity.credentialId) ??
+        new Set<string>()),
+    ];
+    if (requiredGroups.length === 0) continue;
+    const selectedGroupCounts = selectedGroupCountsByAllocation.get(
+      activity.allocationId,
+    );
+    const unresolvedExclusiveGroups = requiredGroups.filter(
+      (group) => (selectedGroupCounts?.get(group) ?? 0) !== 1,
+    );
+    const matchedRequirements = (
+      matchesByAllocation.get(activity.allocationId) ?? []
+    )
+      .map((match) => requirementMetadataById.get(match.requirementId))
+      .filter(
+        (requirement): requirement is RequirementRow =>
+          Boolean(requirement?.isActive) &&
+          requirement?.applicabilityStatus === "applies",
+      );
+    const incompatibility =
+      findRequirementIncompatibility(matchedRequirements);
+    if (unresolvedExclusiveGroups.length === 0 && !incompatibility) continue;
+    const issue = {
+      allocationId: activity.allocationId,
+      activityId: activity.id,
+      activityTitle: activity.title,
+      unresolvedExclusiveGroups,
+      allocatedUnits: Number(activity.allocatedUnits),
+      ...(incompatibility
+        ? {
+            classificationMessage:
+              incompatibility.incompatibility.message,
+          }
+        : {}),
+    };
+    classificationIssueByAllocation.set(activity.allocationId, issue);
+    const credentialIssues =
+      classificationIssuesByCredential.get(activity.credentialId) ?? [];
+    credentialIssues.push(issue);
+    classificationIssuesByCredential.set(
+      activity.credentialId,
+      credentialIssues,
+    );
+    unclassifiedUnitsByCredential.set(
+      activity.credentialId,
+      (unclassifiedUnitsByCredential.get(activity.credentialId) ?? 0) +
+        issue.allocatedUnits,
+    );
+  }
   const unitsByRequirementAllocation = new Map<
     string,
     Map<string, number>
   >();
+  const requirementsWithAllocationMatches = new Set<string>();
+  for (const match of activityMatchResult.results) {
+    let current = requirementMetadataById.get(match.requirementId);
+    const visited = new Set<string>();
+    while (
+      current &&
+      current.credentialId === match.credentialId &&
+      !visited.has(current.id)
+    ) {
+      visited.add(current.id);
+      requirementsWithAllocationMatches.add(current.id);
+      if (current.relation !== "nested" || !current.parentRequirementId) break;
+      current = requirementMetadataById.get(current.parentRequirementId);
+    }
+  }
   const addMatchedUnits = (
     requirementId: string,
     allocationId: string,
@@ -1453,6 +1736,7 @@ async function getWorkspace(
     unitsByRequirementAllocation.set(requirementId, byAllocation);
   };
   for (const match of activityMatchResult.results) {
+    if (classificationIssueByAllocation.has(match.allocationId)) continue;
     const directRequirement = requirementMetadataById.get(match.requirementId);
     if (
       !directRequirement ||
@@ -1490,7 +1774,9 @@ async function getWorkspace(
           (sum, matchedUnits) => sum + matchedUnits,
           0,
         )
-      : Number(requirement.rawEarned);
+      : requirementsWithAllocationMatches.has(requirement.id)
+        ? 0
+        : Number(requirement.rawEarned);
     const isActive =
       Boolean(requirement.isActive) &&
       requirement.applicabilityStatus === "applies";
@@ -1572,16 +1858,6 @@ async function getWorkspace(
     tasksByCredential.set(task.credentialId, existing);
   }
 
-  const matchesByAllocation = new Map<string, ActivityMatchRow[]>();
-  for (const match of activityMatchResult.results) {
-    const existing = matchesByAllocation.get(match.allocationId) ?? [];
-    existing.push({
-      ...match,
-      matchedUnits: Number(match.matchedUnits),
-    });
-    matchesByAllocation.set(match.allocationId, existing);
-  }
-
   const activitiesById = new Map<
     string,
     Omit<ActivityRow, "allocationId"> & {
@@ -1600,6 +1876,9 @@ async function getWorkspace(
           matchedUnits: number;
         }>;
         allocatedUnits: number;
+        classificationStatus: "classified" | "needs_classification";
+        unresolvedExclusiveGroups: string[];
+        classificationMessage?: string;
       }>;
     }
   >();
@@ -1623,6 +1902,8 @@ async function getWorkspace(
     ) {
       const matches = matchesByAllocation.get(allocationId) ?? [];
       const firstMatch = matches[0];
+      const classificationIssue =
+        classificationIssueByAllocation.get(allocationId);
       grouped.allocations.push({
         id: allocationId,
         credentialId: activity.credentialId,
@@ -1646,17 +1927,32 @@ async function getWorkspace(
           matchedUnits: match.matchedUnits,
         })),
         allocatedUnits: Number(activity.allocatedUnits),
+        classificationStatus: classificationIssue
+          ? "needs_classification"
+          : "classified",
+        unresolvedExclusiveGroups:
+          classificationIssue?.unresolvedExclusiveGroups ?? [],
+        ...(classificationIssue?.classificationMessage
+          ? {
+              classificationMessage:
+                classificationIssue.classificationMessage,
+            }
+          : {}),
       });
     }
   }
 
-  const reminderData = await getReminderData(database, identity);
+  const [reminderData, draftStorageNamespace] = await Promise.all([
+    getReminderData(database, identity),
+    createDraftStorageNamespace(identity.userId),
+  ]);
 
   return {
     user: {
       displayName: identity.displayName,
       email: identity.email,
       isDemo: identity.isDemo,
+      draftStorageNamespace,
     },
     profile: {
       xp: progression.lifetimeXp,
@@ -1674,7 +1970,15 @@ async function getWorkspace(
     })),
     credentials: credentialResult.results.map((credential) => {
       const totalRequired = Number(credential.totalRequired);
-      const totalRawEarned = Number(credential.totalEarned);
+      const totalLoggedUnits = Number(credential.totalEarned);
+      const unclassifiedUnits = Math.min(
+        totalLoggedUnits,
+        unclassifiedUnitsByCredential.get(credential.id) ?? 0,
+      );
+      const totalRawEarned = Math.max(
+        0,
+        totalLoggedUnits - unclassifiedUnits,
+      );
       const totalExcessUnits = Math.min(
         totalRawEarned,
         maximumExcessByCredential.get(credential.id) ?? 0,
@@ -1683,6 +1987,10 @@ async function getWorkspace(
       return {
         ...credential,
         totalRequired,
+        totalLoggedUnits,
+        unclassifiedUnits,
+        classificationIssues:
+          classificationIssuesByCredential.get(credential.id) ?? [],
         totalRawEarned,
         totalExcessUnits,
         totalEarned,
@@ -1868,11 +2176,11 @@ async function createCredential(
       );
     }
     if (
-      ruleSetId === "cfp-professional-pre-2027-v1" &&
-      cycleStart >= "2027-01-01"
+      ruleSetId === CFP_PRE_2027_RULE_SET_ID &&
+      cycleStart >= CFP_2027_CYCLE_START
     ) {
       throw new RequestError(
-        "This CFP template is only for certification periods beginning before Q1 2027. Enter the newer 40-hour requirement as a custom plan while its carryover eligibility is confirmed.",
+        "This 30-hour CFP template is only for certification periods beginning before April 1, 2027. Use the 40-hour CFP requirement for a later cycle, and record carryover only after CFP Board confirms the eligible general CE amount.",
         409,
         "rule_transition_outside_template",
       );
@@ -2807,6 +3115,96 @@ async function addActivityAllocation(
   return allocationId;
 }
 
+async function updateActivityAllocationRequirements(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  const allocationId = textField(payload, "allocationId", {
+    required: true,
+    max: 160,
+  })!;
+  const requirementIds = requirementIdsField(payload);
+  const requirementId = requirementIds[0] ?? null;
+
+  const allocation = await query(
+    database,
+    `SELECT
+      allocation.id,
+      allocation.credential_id AS credentialId,
+      allocation.allocated_units AS allocatedUnits,
+      credential.status
+     FROM activity_allocations allocation
+     JOIN activities activity ON activity.id = allocation.activity_id
+     JOIN credentials credential ON credential.id = allocation.credential_id
+     WHERE allocation.id = ?
+       AND activity.user_id = ?
+       AND credential.user_id = ?`,
+    [allocationId, identity.userId, identity.userId],
+  ).first<{
+    id: string;
+    credentialId: string;
+    allocatedUnits: number;
+    status: string;
+  }>();
+  if (!allocation) {
+    throw new RequestError(
+      "Activity allocation not found.",
+      404,
+      "allocation_not_found",
+    );
+  }
+  if (allocation.status === "renewed") {
+    throw new RequestError(
+      "This renewal cycle is closed and cannot be changed.",
+      409,
+      "cycle_closed",
+    );
+  }
+
+  await validateRequirementTags(
+    database,
+    identity,
+    allocation.credentialId,
+    requirementIds,
+  );
+
+  const statements: D1PreparedStatement[] = [
+    query(
+      database,
+      `UPDATE activity_allocations
+       SET requirement_id = ?
+       WHERE id = ? AND credential_id = ?`,
+      [requirementId, allocationId, allocation.credentialId],
+    ),
+    query(
+      database,
+      `DELETE FROM activity_requirement_matches
+       WHERE allocation_id = ? AND user_id = ?`,
+      [allocationId, identity.userId],
+    ),
+  ];
+  for (const matchedRequirementId of requirementIds) {
+    statements.push(
+      query(
+        database,
+        `INSERT INTO activity_requirement_matches (
+          id, user_id, allocation_id, requirement_id, matched_units
+        ) VALUES (?, ?, ?, ?, ?)`,
+        [
+          crypto.randomUUID(),
+          identity.userId,
+          allocationId,
+          matchedRequirementId,
+          Number(allocation.allocatedUnits),
+        ],
+      ),
+    );
+  }
+  await database.batch(statements);
+  return allocationId;
+}
+
 async function markRenewalAccepted(
   database: D1Database,
   identity: RequestIdentity,
@@ -2937,17 +3335,18 @@ async function markRenewalAccepted(
   const nextCredentialId = crypto.randomUUID();
   const acceptanceId = crypto.randomUUID();
   const transitionsToFortyHourCfp =
-    credential.ruleSetId === "cfp-professional-pre-2027-v1" &&
-    nextCycleStart >= "2027-01-01";
+    credential.ruleSetId === CFP_PRE_2027_RULE_SET_ID &&
+    nextCycleStart >= CFP_2027_CYCLE_START;
   const nextCredentialName = transitionsToFortyHourCfp
-    ? "CFP® Professional — cycle beginning Q1 2027 or later"
+    ? "CFP® Professional — cycle beginning April 1, 2027 or later"
     : credential.credentialName;
   const nextRuleSetId = transitionsToFortyHourCfp
-    ? "cfp-professional-2027-v1"
+    ? CFP_2027_RULE_SET_ID
     : credential.ruleSetId;
   const nextTotalRequired = transitionsToFortyHourCfp
     ? 40
     : Number(credential.totalRequired);
+  const needsCfpCarryoverReview = nextRuleSetId === CFP_2027_RULE_SET_ID;
   const statements: D1PreparedStatement[] = [
     query(
       database,
@@ -3000,40 +3399,93 @@ async function markRenewalAccepted(
     ),
   ];
 
-  const rolloverDrafts: CredentialCategoryDraft[] = requirements.results.map(
-    (requirement) => {
-      const applicabilityStatus = defaultApplicabilityStatus(
-        requirement.applicability,
-      );
-      return {
-        key: requirement.id,
-        ruleCategoryId:
-          transitionsToFortyHourCfp &&
-          requirement.ruleCategoryId === "cfp-professional-pre-2027-general"
-            ? "cfp-professional-2027-general"
-            : transitionsToFortyHourCfp &&
-                requirement.ruleCategoryId ===
-                  "cfp-professional-pre-2027-ethics"
-              ? "cfp-professional-2027-ethics"
-              : requirement.ruleCategoryId,
-        name: requirement.name,
-        requiredUnits:
-          transitionsToFortyHourCfp &&
-          requirement.ruleCategoryId === "cfp-professional-pre-2027-general"
-            ? 38
-            : Number(requirement.requiredUnits),
-        kind: requirement.kind,
-        relation: requirement.relation,
-        parentKey: requirement.parentRequirementId,
-        applicability: requirement.applicability,
-        applicabilityStatus,
-        conditionNote: requirement.conditionNote,
-        exclusiveGroup: requirement.exclusiveGroup,
-        isActive: applicabilityStatus === "applies",
-        sortOrder: Number(requirement.sortOrder),
-      };
-    },
-  );
+  const rolloverDrafts: CredentialCategoryDraft[] = transitionsToFortyHourCfp
+    ? [
+        {
+          key: CFP_2027_GENERAL_CATEGORY_ID,
+          ruleCategoryId: CFP_2027_GENERAL_CATEGORY_ID,
+          name: "General CE",
+          requiredUnits: 38,
+          kind: "minimum",
+          relation: "independent",
+          parentKey: null,
+          applicability: "always",
+          applicabilityStatus: "applies",
+          conditionNote:
+            "Complete 38 general CE hours. Classify every general activity under the Principal Topics or Practice Management child category rather than tagging this parent directly. License Lantern does not copy prior-cycle credit; manually record only CFP Board-confirmed eligible carryover and retain the confirmation.",
+          exclusiveGroup: null,
+          isActive: true,
+          sortOrder: 0,
+        },
+        {
+          key: "cfp-professional-2027-principal-topics",
+          ruleCategoryId: "cfp-professional-2027-principal-topics",
+          name: "General CE — Principal Topics Other Than Practice Management",
+          requiredUnits: 33,
+          kind: "minimum",
+          relation: "nested",
+          parentKey: CFP_2027_GENERAL_CATEGORY_ID,
+          applicability: "always",
+          applicabilityStatus: "applies",
+          conditionNote:
+            "At least 33 of the 38 general CE hours must cover CFP Board Principal Topics other than Practice Management. This derived floor enforces the five-hour Practice Management cap; tag each non-Practice-Management general activity here.",
+          exclusiveGroup: "CFP CE activity type",
+          isActive: true,
+          sortOrder: 1,
+        },
+        {
+          key: "cfp-professional-2027-practice-management",
+          ruleCategoryId: "cfp-professional-2027-practice-management",
+          name: "Practice Management General CE",
+          requiredUnits: 5,
+          kind: "maximum",
+          relation: "nested",
+          parentKey: CFP_2027_GENERAL_CATEGORY_ID,
+          applicability: "optional",
+          applicabilityStatus: "applies",
+          conditionNote:
+            "No more than 5 of the 38 general CE hours may focus on Practice Management. Tag every Practice Management activity here so excess hours cannot count toward the 40-hour total.",
+          exclusiveGroup: "CFP CE activity type",
+          isActive: true,
+          sortOrder: 2,
+        },
+        {
+          key: "cfp-professional-2027-ethics",
+          ruleCategoryId: "cfp-professional-2027-ethics",
+          name: "CFP Board-Approved Ethics CE",
+          requiredUnits: 2,
+          kind: "minimum",
+          relation: "independent",
+          parentKey: null,
+          applicability: "always",
+          applicabilityStatus: "applies",
+          conditionNote:
+            "Complete the current two-hour CFP Board-approved Ethics CE program. Ethics CE is separate from the 38 general hours and cannot carry over from another certification period.",
+          exclusiveGroup: "CFP CE activity type",
+          isActive: true,
+          sortOrder: 3,
+        },
+      ]
+    : requirements.results.map((requirement) => {
+        const applicabilityStatus = defaultApplicabilityStatus(
+          requirement.applicability,
+        );
+        return {
+          key: requirement.id,
+          ruleCategoryId: requirement.ruleCategoryId,
+          name: requirement.name,
+          requiredUnits: Number(requirement.requiredUnits),
+          kind: requirement.kind,
+          relation: requirement.relation,
+          parentKey: requirement.parentRequirementId,
+          applicability: requirement.applicability,
+          applicabilityStatus,
+          conditionNote: requirement.conditionNote,
+          exclusiveGroup: requirement.exclusiveGroup,
+          isActive: applicabilityStatus === "applies",
+          sortOrder: Number(requirement.sortOrder),
+        };
+      });
   const nextRequirementIdByPriorId = new Map(
     rolloverDrafts.map((requirement) => [
       requirement.key,
@@ -3074,8 +3526,8 @@ async function markRenewalAccepted(
   }
   const taskSpecs = [
     {
-      title: transitionsToFortyHourCfp
-        ? "Confirm CFP Board carryover eligibility for the 40-hour cycle"
+      title: needsCfpCarryoverReview
+        ? "Confirm CFP Board carryover, then manually record only approved general CE"
         : "Review the renewal requirements",
       kind: "review",
       dueDate: daysBefore(nextDeadline, 120),
@@ -3565,6 +4017,13 @@ export async function POST(request: Request) {
         break;
       case "addActivityAllocation":
         id = await addActivityAllocation(database, identity, body.payload);
+        break;
+      case "updateActivityAllocationRequirements":
+        id = await updateActivityAllocationRequirements(
+          database,
+          identity,
+          body.payload,
+        );
         break;
       case "claimWeeklyQuest":
         id = await claimWeeklyQuest(database, identity, body.payload);
