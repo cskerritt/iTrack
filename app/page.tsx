@@ -1,7 +1,7 @@
-import { LicenseLanternApp } from "./LicenseLanternApp";
+import { VigiloApp } from "./VigiloApp";
 
 export const dynamic = "force-dynamic";
 
 export default function Home() {
-  return <LicenseLanternApp />;
+  return <VigiloApp />;
 }

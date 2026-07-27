@@ -309,7 +309,7 @@ function authHeaders(email = "owner@example.com") {
 }
 
 async function postWorkspace(action, payload, email = "owner@example.com") {
-  return fetchWorker("https://license-lantern.example/api/workspace", {
+  return fetchWorker("https://vigilo.example/api/workspace", {
     method: "POST",
     headers: authHeaders(email),
     body: JSON.stringify({ action, payload }),
@@ -319,7 +319,7 @@ async function postWorkspace(action, payload, email = "owner@example.com") {
 async function postEvidence(form, email = "owner@example.com") {
   const headers = authHeaders(email);
   delete headers["content-type"];
-  return fetchWorker("https://license-lantern.example/api/evidence", {
+  return fetchWorker("https://vigilo.example/api/evidence", {
     method: "POST",
     headers,
     body: form,
@@ -583,9 +583,9 @@ async function readBuiltClientAppSource() {
   );
   const appAsset = assets.find(
     (name) =>
-      name.startsWith("LicenseLanternApp-") && name.endsWith(".js"),
+      name.startsWith("VigiloApp-") && name.endsWith(".js"),
   );
-  assert.ok(appAsset, "missing built LicenseLanternApp client asset");
+  assert.ok(appAsset, "missing built VigiloApp client asset");
   return readFile(
     new URL(`../dist/client/assets/${appAsset}`, import.meta.url),
     "utf8",
@@ -600,7 +600,7 @@ function pngDimensions(contents) {
   };
 }
 
-test("License Lantern product contract", async (t) => {
+test("Vigilo product contract", async (t) => {
   await t.test("server-renders the product shell and metadata", async () => {
     const response = await fetchWorker("http://localhost/", {
       headers: { accept: "text/html" },
@@ -612,7 +612,7 @@ test("License Lantern product contract", async (t) => {
     const html = await response.text();
     assert.match(
       html,
-      /<title>License Lantern — A clear path to renewal<\/title>/i,
+      /<title>Vigilo — A clear path to renewal<\/title>/i,
     );
     assert.match(
       html,
@@ -620,19 +620,19 @@ test("License Lantern product contract", async (t) => {
     );
     assert.match(
       html,
-      /<meta name="application-name" content="License Lantern"\/>/i,
+      /<meta name="application-name" content="Vigilo"\/>/i,
     );
     assert.match(html, /<link rel="manifest"[^>]*manifest\.webmanifest/i);
     assert.match(html, /<meta name="theme-color" content="#163f36"\/>/i);
 
-    assert.match(html, /aria-label="License Lantern"/i);
+    assert.match(html, /aria-label="Vigilo"/i);
     assert.match(html, /Skip to content/i);
     assert.match(html, /aria-label="Primary navigation"/i);
     assert.match(html, />Today<\/span>/i);
     assert.match(html, />Credentials<\/span>/i);
     assert.match(html, />Records<\/span>/i);
     assert.match(html, />Account<\/span>/i);
-    assert.match(html, /aria-label="Loading License Lantern"/i);
+    assert.match(html, /aria-label="Loading Vigilo"/i);
     assert.match(html, /Loading your renewal workspace/i);
   });
 
@@ -675,7 +675,7 @@ test("License Lantern product contract", async (t) => {
         typescript,
       ] = await Promise.all([
         readFile(
-          new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+          new URL("../app/VigiloApp.tsx", import.meta.url),
           "utf8",
         ),
         readFile(
@@ -685,7 +685,7 @@ test("License Lantern product contract", async (t) => {
         readFile(new URL("../package.json", import.meta.url), "utf8"),
         readFile(
           new URL(
-            "../dist/server/ssr/assets/LicenseLanternApp-BvrpzBXC.js",
+            "../dist/server/ssr/assets/VigiloApp-BvrpzBXC.js",
             import.meta.url,
           ),
           "utf8",
@@ -694,7 +694,7 @@ test("License Lantern product contract", async (t) => {
             new URL("../dist/server/ssr/assets/", import.meta.url),
           );
           const appAsset = assets.find((name) =>
-            name.startsWith("LicenseLanternApp-"),
+            name.startsWith("VigiloApp-"),
           );
           assert.ok(appAsset);
           return readFile(
@@ -800,7 +800,7 @@ test("License Lantern product contract", async (t) => {
             "utf8",
           ),
           readFile(
-            new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+            new URL("../app/VigiloApp.tsx", import.meta.url),
             "utf8",
           ),
         ]);
@@ -1488,7 +1488,7 @@ test("License Lantern product contract", async (t) => {
           "utf8",
         ),
         readFile(
-          new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+          new URL("../app/VigiloApp.tsx", import.meta.url),
           "utf8",
         ),
         readFile(
@@ -1895,7 +1895,7 @@ test("License Lantern product contract", async (t) => {
             "utf8",
           ),
           readFile(
-            new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+            new URL("../app/VigiloApp.tsx", import.meta.url),
             "utf8",
           ),
         ]);
@@ -2556,7 +2556,7 @@ test("License Lantern product contract", async (t) => {
           "crcc_post_approval_proof_required",
         );
         const crcWorkspaceResponse = await fetchWorker(
-          "https://license-lantern.example/api/workspace",
+          "https://vigilo.example/api/workspace",
           { headers: authHeaders("rehabilitation@example.com") },
         );
         assert.equal(
@@ -3763,7 +3763,7 @@ export {
           "utf8",
         ),
         readFile(
-          new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+          new URL("../app/VigiloApp.tsx", import.meta.url),
           "utf8",
         ),
       ]);
@@ -5879,7 +5879,7 @@ export {
       );
 
       const workspaceResponse = await fetchWorker(
-        "https://license-lantern.example/api/workspace",
+        "https://vigilo.example/api/workspace",
         { headers: authHeaders() },
       );
       assert.equal(workspaceResponse.status, 200);
@@ -6255,7 +6255,7 @@ export {
           "utf8",
         ),
         readFile(
-          new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+          new URL("../app/VigiloApp.tsx", import.meta.url),
           "utf8",
         ),
       ]);
@@ -6812,7 +6812,7 @@ export {
       assert.match(allDayInvite, /\r\n$/);
       assert.match(
         allDayInvite,
-        /\r\nX-WR-CALNAME:License Lantern check-ins\r\n/,
+        /\r\nX-WR-CALNAME:Vigilo check-ins\r\n/,
       );
       assert.match(allDayInvite, /\r\nDTSTAMP:20260726T140506Z\r\n/);
       assert.match(
@@ -7093,7 +7093,7 @@ export {
       );
       assert.match(
         calendarSource,
-        /title: "License Lantern calendar check-ins"[\s\S]*?text: "Add these credential and compliance check-ins to your calendar\."/,
+        /title: "Vigilo calendar check-ins"[\s\S]*?text: "Add these credential and compliance check-ins to your calendar\."/,
       );
     },
   );
@@ -7117,7 +7117,7 @@ export {
         readFile(new URL("../app/manifest.ts", import.meta.url), "utf8"),
         readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
         readFile(
-          new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+          new URL("../app/VigiloApp.tsx", import.meta.url),
           "utf8",
         ),
         readBuiltClientAppSource(),
@@ -7145,9 +7145,9 @@ export {
       const manifest = await manifestResponse.json();
       assert.equal(
         manifest.name,
-        "License Lantern — CE & Renewal Tracker",
+        "Vigilo — CE & Renewal Tracker",
       );
-      assert.equal(manifest.short_name, "Lantern");
+      assert.equal(manifest.short_name, "Vigilo");
       assert.equal(manifest.start_url, "/");
       assert.equal(manifest.scope, "/");
       assert.equal(manifest.display, "standalone");
@@ -8602,7 +8602,7 @@ export {
       testCloudflareEnv.DB = database;
 
       const response = await fetchWorker(
-        "https://license-lantern.example/api/workspace",
+        "https://vigilo.example/api/workspace",
         { headers: authHeaders() },
       );
       assert.equal(response.status, 200);
@@ -8757,7 +8757,7 @@ export {
       testCloudflareEnv.DB = pendingDatabase;
 
       const pendingResponse = await fetchWorker(
-        "https://license-lantern.example/api/workspace",
+        "https://vigilo.example/api/workspace",
         { headers: authHeaders() },
       );
       assert.equal(pendingResponse.status, 200);
@@ -8876,7 +8876,7 @@ export {
     async () => {
       const [clientSource, stylesSource] = await Promise.all([
         readFile(
-          new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+          new URL("../app/VigiloApp.tsx", import.meta.url),
           "utf8",
         ),
         readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -10662,7 +10662,7 @@ export {
             "utf8",
           ),
           readFile(
-            new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+            new URL("../app/VigiloApp.tsx", import.meta.url),
             "utf8",
           ),
         ]);
@@ -13040,7 +13040,7 @@ export {
     async () => {
       const [clientSource, styles] = await Promise.all([
         readFile(
-          new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+          new URL("../app/VigiloApp.tsx", import.meta.url),
           "utf8",
         ),
         readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -13334,7 +13334,7 @@ export {
       testCloudflareEnv.EVIDENCE = closedBucket;
 
       const closedDelete = await fetchWorker(
-        `https://license-lantern.example/api/evidence/${evidenceId}`,
+        `https://vigilo.example/api/evidence/${evidenceId}`,
         {
           method: "DELETE",
           headers: authHeaders(),
@@ -13483,7 +13483,7 @@ export {
       testCloudflareEnv.EVIDENCE = deleteBucket;
 
       const deleteResponse = await fetchWorker(
-        `https://license-lantern.example/api/evidence/${evidenceId}`,
+        `https://vigilo.example/api/evidence/${evidenceId}`,
         { method: "DELETE", headers: authHeaders() },
       );
       assert.equal(deleteResponse.status, 409);
@@ -13548,7 +13548,7 @@ export {
 
       const evidenceId = "36d2e90b-a0e9-4f61-83a7-d14a5dd467a6";
       const downloadResponse = await fetchWorker(
-        `https://license-lantern.example/api/evidence/${evidenceId}/download`,
+        `https://vigilo.example/api/evidence/${evidenceId}/download`,
         { headers: authHeaders() },
       );
       assert.equal(downloadResponse.status, 404);
@@ -13574,7 +13574,7 @@ export {
     "requires server-derived identity and guards owned records",
     async () => {
       const anonymousResponse = await fetchWorker(
-        "https://license-lantern.example/api/workspace",
+        "https://vigilo.example/api/workspace",
         { headers: { accept: "application/json" } },
       );
       assert.equal(anonymousResponse.status, 401);
@@ -13585,7 +13585,7 @@ export {
       });
 
       const wrongContentTypeResponse = await fetchWorker(
-        "https://license-lantern.example/api/workspace",
+        "https://vigilo.example/api/workspace",
         {
           method: "POST",
           headers: {
@@ -13605,7 +13605,7 @@ export {
       });
 
       const crossOriginResponse = await fetchWorker(
-        "https://license-lantern.example/api/workspace",
+        "https://vigilo.example/api/workspace",
         {
           method: "POST",
           headers: {
@@ -16866,7 +16866,7 @@ export {
       assert.ok(credentialId);
 
       const workspaceResponse = await fetchWorker(
-        "https://license-lantern.example/api/workspace",
+        "https://vigilo.example/api/workspace",
         { headers: authHeaders() },
       );
       assert.equal(workspaceResponse.status, 200);
@@ -19316,7 +19316,7 @@ export {
       testCloudflareEnv.DB = database;
 
       const response = await fetchWorker(
-        "https://license-lantern.example/api/workspace",
+        "https://vigilo.example/api/workspace",
         { headers: authHeaders() },
       );
       assert.equal(response.status, 200);
@@ -19736,7 +19736,7 @@ export {
       testCloudflareEnv.DB = database;
 
       const response = await fetchWorker(
-        "https://license-lantern.example/api/workspace",
+        "https://vigilo.example/api/workspace",
         { headers: authHeaders() },
       );
       assert.equal(response.status, 200);
@@ -20110,7 +20110,7 @@ export {
       testCloudflareEnv.DB = database;
 
       const response = await fetchWorker(
-        "https://license-lantern.example/api/workspace",
+        "https://vigilo.example/api/workspace",
         { headers: authHeaders() },
       );
       assert.equal(response.status, 200);
@@ -20417,7 +20417,7 @@ export {
       testCloudflareEnv.DB = database;
 
       const response = await fetchWorker(
-        "https://license-lantern.example/api/workspace",
+        "https://vigilo.example/api/workspace",
         { headers: authHeaders() },
       );
       assert.equal(response.status, 200);
@@ -20835,7 +20835,7 @@ export {
       testCloudflareEnv.VAPID_PUBLIC_KEY = vapidPublicKey;
       testCloudflareEnv.VAPID_PRIVATE_KEY = vapidPrivateKey;
       testCloudflareEnv.VAPID_SUBJECT =
-        "https://license-lantern.example";
+        "https://vigilo.example";
 
       const subscriptionSecrets = new Map();
       const makeSubscription = async (endpoint) => {
@@ -20944,7 +20944,7 @@ export {
         .run(ownerId);
 
       const workspaceResponse = await fetchWorker(
-        "https://license-lantern.example/api/workspace",
+        "https://vigilo.example/api/workspace",
         { headers: authHeaders() },
       );
       assert.equal(workspaceResponse.status, 200);
@@ -21032,7 +21032,7 @@ export {
               ...runtimeEnvironment(),
               VAPID_PUBLIC_KEY: vapidPublicKey,
               VAPID_PRIVATE_KEY: vapidPrivateKey,
-              VAPID_SUBJECT: "https://license-lantern.example",
+              VAPID_SUBJECT: "https://vigilo.example",
             },
             {
               waitUntil(promise) {
@@ -21086,7 +21086,7 @@ export {
           subscriptionSecrets.get(firstSubscription.endpoint),
         );
         assert.deepEqual(decryptedPush, {
-          title: "License Lantern check-in",
+          title: "Vigilo check-in",
           body: "You have a renewal item that needs attention.",
           tag: `ll-${deliveryId}`,
           path: `/?view=today&delivery=${deliveryId}`,
@@ -21112,7 +21112,7 @@ export {
           1,
         );
         const resolvedLaunch = await fetchWorker(
-          `https://license-lantern.example/api/workspace?delivery=${deliveryId}`,
+          `https://vigilo.example/api/workspace?delivery=${deliveryId}`,
           { headers: authHeaders() },
         );
         assert.equal(resolvedLaunch.status, 200);
@@ -21123,7 +21123,7 @@ export {
           },
         });
         const crossOwnerLaunch = await fetchWorker(
-          `https://license-lantern.example/api/workspace?delivery=${deliveryId}`,
+          `https://vigilo.example/api/workspace?delivery=${deliveryId}`,
           { headers: authHeaders("other@example.com") },
         );
         assert.equal(crossOwnerLaunch.status, 404);
@@ -21138,7 +21138,7 @@ export {
           `delivery=${deliveryId}&delivery=${deliveryId}`,
         ]) {
           const invalidLaunch = await fetchWorker(
-            `https://license-lantern.example/api/workspace?${invalidDeliveryQuery}`,
+            `https://vigilo.example/api/workspace?${invalidDeliveryQuery}`,
             { headers: authHeaders() },
           );
           assert.equal(invalidLaunch.status, 404);
@@ -21156,7 +21156,7 @@ export {
           )
           .run(deliveryId);
         const ambiguousAcknowledgementLaunch = await fetchWorker(
-          `https://license-lantern.example/api/workspace?delivery=${deliveryId}`,
+          `https://vigilo.example/api/workspace?delivery=${deliveryId}`,
           { headers: authHeaders() },
         );
         assert.equal(ambiguousAcknowledgementLaunch.status, 200);
@@ -21365,7 +21365,7 @@ export {
         );
         assert.equal(deviceLimitResponse.status, 409);
         assert.deepEqual(await deviceLimitResponse.json(), {
-          error: "License Lantern supports up to 8 active alert devices.",
+          error: "Vigilo supports up to 8 active alert devices.",
           code: "push_device_limit",
         });
         assert.equal(
@@ -21445,7 +21445,7 @@ export {
           ),
           readFile(new URL("../public/sw.js", import.meta.url), "utf8"),
           readFile(
-            new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+            new URL("../app/VigiloApp.tsx", import.meta.url),
             "utf8",
           ),
           readFile(
@@ -21502,7 +21502,7 @@ export {
       const clientMessages = [];
       let focusCount = 0;
       const appClient = {
-        url: "https://license-lantern.example/",
+        url: "https://vigilo.example/",
         async navigate(path) {
           navigations.push(path);
           return null;
@@ -21515,7 +21515,7 @@ export {
         },
       };
       const serviceWorkerSelf = {
-        location: { origin: "https://license-lantern.example" },
+        location: { origin: "https://vigilo.example" },
         addEventListener(name, listener) {
           serviceWorkerListeners.set(name, listener);
         },
@@ -21700,7 +21700,7 @@ export {
             DB: database,
             VAPID_PUBLIC_KEY: vapidPublicKey,
             VAPID_PRIVATE_KEY: vapidPrivateKey,
-            VAPID_SUBJECT: "https://license-lantern.example",
+            VAPID_SUBJECT: "https://vigilo.example",
           },
           {
             waitUntil(promise) {
@@ -22396,7 +22396,7 @@ export {
           ],
         );
         const workspaceResponse = await fetchWorker(
-          "https://license-lantern.example/api/workspace",
+          "https://vigilo.example/api/workspace",
           { headers: authHeaders() },
         );
         assert.equal(workspaceResponse.status, 200);
@@ -23847,7 +23847,7 @@ export {
       testCloudflareEnv.DB = tombstoneDatabase;
       testCloudflareEnv.EVIDENCE = failingBucket;
       const failedResponse = await fetchWorker(
-        `https://license-lantern.example/api/evidence/${evidenceId}`,
+        `https://vigilo.example/api/evidence/${evidenceId}`,
         {
           method: "DELETE",
           headers: authHeaders(),
@@ -23893,7 +23893,7 @@ export {
       testCloudflareEnv.DB = retryDatabase;
       testCloudflareEnv.EVIDENCE = retryBucket;
       const retryResponse = await fetchWorker(
-        `https://license-lantern.example/api/evidence/${evidenceId}`,
+        `https://vigilo.example/api/evidence/${evidenceId}`,
         {
           method: "DELETE",
           headers: authHeaders(),
@@ -23939,7 +23939,7 @@ export {
         "utf8",
       );
       const appSource = await readFile(
-        new URL("../app/LicenseLanternApp.tsx", import.meta.url),
+        new URL("../app/VigiloApp.tsx", import.meta.url),
         "utf8",
       );
       assert.match(
@@ -24345,7 +24345,7 @@ export {
         );
 
         const response = await fetchWorker(
-          `https://license-lantern.example/api/export/packet?credentialId=${credentialId}`,
+          `https://vigilo.example/api/export/packet?credentialId=${credentialId}`,
           { headers: authHeaders() },
         );
         assert.equal(response.status, 200);
@@ -24525,7 +24525,7 @@ export {
       testCloudflareEnv.EVIDENCE = new FakeEvidenceBucket();
 
       const anonymous = await fetchWorker(
-        "https://license-lantern.example/api/export/packet?credentialId=credential-packet-owner",
+        "https://vigilo.example/api/export/packet?credentialId=credential-packet-owner",
         { headers: { accept: "application/json" } },
       );
       assert.equal(anonymous.status, 401);
@@ -24544,7 +24544,7 @@ export {
         `?credentialId=${"a".repeat(161)}`,
       ]) {
         const response = await fetchWorker(
-          `https://license-lantern.example/api/export/packet${suffix}`,
+          `https://vigilo.example/api/export/packet${suffix}`,
           { headers: authHeaders() },
         );
         assert.equal(response.status, 400);
@@ -24593,11 +24593,11 @@ export {
           .run(ownerId);
 
         const missing = await fetchWorker(
-          "https://license-lantern.example/api/export/packet?credentialId=credential-does-not-exist",
+          "https://vigilo.example/api/export/packet?credentialId=credential-does-not-exist",
           { headers: authHeaders() },
         );
         const foreign = await fetchWorker(
-          "https://license-lantern.example/api/export/packet?credentialId=credential-private-packet",
+          "https://vigilo.example/api/export/packet?credentialId=credential-private-packet",
           { headers: authHeaders("other@example.com") },
         );
         assert.equal(missing.status, 404);
@@ -24689,7 +24689,7 @@ export {
 
       try {
         const pendingWorkspaceResponse = await fetchWorker(
-          "https://license-lantern.example/api/workspace",
+          "https://vigilo.example/api/workspace",
           { headers: authHeaders(email) },
         );
         assert.equal(pendingWorkspaceResponse.status, 200);
@@ -26157,7 +26157,7 @@ export {
         }
 
         const workspaceResponse = await fetchWorker(
-          "https://license-lantern.example/api/workspace",
+          "https://vigilo.example/api/workspace",
           { headers: authHeaders(email) },
         );
         assert.equal(workspaceResponse.status, 200);
@@ -26321,7 +26321,7 @@ export {
         );
 
         const workspaceResponse = await fetchWorker(
-          "https://license-lantern.example/api/workspace",
+          "https://vigilo.example/api/workspace",
           { headers: authHeaders(email) },
         );
         assert.equal(workspaceResponse.status, 200);
@@ -26701,7 +26701,7 @@ export {
         assert.ok(firstYearActivityId);
 
         const workspaceResponse = await fetchWorker(
-          "https://license-lantern.example/api/workspace",
+          "https://vigilo.example/api/workspace",
           { headers: authHeaders(email) },
         );
         assert.equal(workspaceResponse.status, 200);
@@ -27296,7 +27296,7 @@ export {
       const raw = database.raw;
 
       const emptyWorkspaceResponse = await fetchWorker(
-        "https://license-lantern.example/api/workspace",
+        "https://vigilo.example/api/workspace",
         { headers: authHeaders() },
       );
       assert.equal(emptyWorkspaceResponse.status, 200);
@@ -27304,7 +27304,7 @@ export {
       assert.deepEqual(emptyWorkspace.catalog, []);
 
       const catalogResponse = await fetchWorker(
-        "https://license-lantern.example/api/catalog",
+        "https://vigilo.example/api/catalog",
         { headers: authHeaders() },
       );
       assert.equal(catalogResponse.status, 200);
@@ -27324,7 +27324,7 @@ export {
       );
 
       const revalidatedCatalog = await fetchWorker(
-        "https://license-lantern.example/api/catalog",
+        "https://vigilo.example/api/catalog",
         { headers: { ...authHeaders(), "if-none-match": entityTag } },
       );
       assert.equal(revalidatedCatalog.status, 304);
@@ -27332,7 +27332,7 @@ export {
       assert.equal(await revalidatedCatalog.text(), "");
 
       const anonymousCatalog = await fetchWorker(
-        "https://license-lantern.example/api/catalog",
+        "https://vigilo.example/api/catalog",
       );
       assert.equal(anonymousCatalog.status, 401);
       assert.deepEqual(await anonymousCatalog.json(), {
@@ -27359,7 +27359,7 @@ export {
         .run(ownerId);
 
       const scopedWorkspaceResponse = await fetchWorker(
-        "https://license-lantern.example/api/workspace",
+        "https://vigilo.example/api/workspace",
         { headers: authHeaders() },
       );
       assert.equal(scopedWorkspaceResponse.status, 200);

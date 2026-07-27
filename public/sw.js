@@ -25,7 +25,7 @@ const ALLOWED_LAUNCH_PARAMETERS = new Set([
   "view",
   "delivery",
 ]);
-const GENERIC_NOTIFICATION_TITLE = "License Lantern check-in";
+const GENERIC_NOTIFICATION_TITLE = "Vigilo check-in";
 const GENERIC_NOTIFICATION_BODY =
   "You have a renewal item that needs attention.";
 
@@ -225,7 +225,7 @@ self.addEventListener("fetch", (event) => {
         const fallback = await cache.match("/offline.html");
         return (
           fallback ||
-          new Response("License Lantern is offline. Reconnect and try again.", {
+          new Response("Vigilo is offline. Reconnect and try again.", {
             status: 503,
             headers: {
               "cache-control": "no-store",

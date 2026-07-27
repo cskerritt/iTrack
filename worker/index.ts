@@ -69,7 +69,7 @@ const worker = {
         return Response.json({ ok: true, result });
       } catch (error) {
         console.error(
-          "License Lantern internal scheduled run failed.",
+          "Vigilo internal scheduled run failed.",
           error instanceof Error ? (error.stack ?? error.message) : String(error),
         );
         return Response.json({ ok: false }, { status: 500 });
@@ -96,7 +96,7 @@ const worker = {
   ): Promise<void> {
     ctx.waitUntil(
       (async () => {
-        console.info("License Lantern scheduled push delivery started.");
+        console.info("Vigilo scheduled push delivery started.");
         try {
           await initializeDatabase(env.DB);
           const result = await runScheduledPushDelivery({
@@ -109,12 +109,12 @@ const worker = {
             },
           });
           console.info(
-            "License Lantern scheduled push delivery completed.",
+            "Vigilo scheduled push delivery completed.",
             JSON.stringify(result),
           );
         } catch (error) {
           console.error(
-            "License Lantern scheduled push delivery failed.",
+            "Vigilo scheduled push delivery failed.",
             error instanceof Error ? (error.stack ?? error.message) : String(error),
           );
           throw new Error("Scheduled push delivery failed.");

@@ -1,4 +1,4 @@
-// Railway entrypoint for License Lantern.
+// Railway entrypoint for Vigilo.
 //
 // The app is built for Cloudflare Workers, so this process supervises
 // wrangler's local runtime (workerd) serving the production build with
@@ -9,8 +9,9 @@
 //
 // Configuration (environment):
 //   PORT          public listen port (Railway sets this)
-//   LANTERN_USERS semicolon-separated "username:password:email[:Display Name]"
+//   VIGILO_USERS  semicolon-separated "username:password:email[:Display Name]"
 //                 entries; REQUIRED — the proxy fails closed without it
+//                 (LANTERN_USERS is accepted as a legacy fallback)
 //   PERSIST_DIR   durable state directory (default /data/wrangler-state);
 //                 mount a Railway volume at /data or all data is lost on deploy
 
@@ -31,7 +32,7 @@ function parseUsers(raw) {
     const [username, password, email, ...nameParts] = trimmed.split(":");
     if (!username || !password || !email || !email.includes("@")) {
       console.error(
-        "LANTERN_USERS entries must look like username:password:email[:Display Name]",
+        "VIGILO_USERS entries must look like username:password:email[:Display Name]",
       );
       process.exit(1);
     }
@@ -44,10 +45,12 @@ function parseUsers(raw) {
   return users;
 }
 
-const USERS = parseUsers(process.env.LANTERN_USERS);
+const USERS = parseUsers(
+  process.env.VIGILO_USERS ?? process.env.LANTERN_USERS,
+);
 if (USERS.size === 0) {
   console.error(
-    "Refusing to start: set LANTERN_USERS (username:password:email[:Display Name]; ...)",
+    "Refusing to start: set VIGILO_USERS (username:password:email[:Display Name]; ...)",
   );
   process.exit(1);
 }
@@ -189,7 +192,7 @@ const server = http.createServer((req, res) => {
   const user = authenticate(req.headers.authorization);
   if (!user) {
     res.writeHead(401, {
-      "www-authenticate": 'Basic realm="License Lantern", charset="UTF-8"',
+      "www-authenticate": 'Basic realm="Vigilo", charset="UTF-8"',
       "content-type": "text/plain",
     });
     res.end("Authentication required");
@@ -240,6 +243,6 @@ setInterval(fireCron, CRON_INTERVAL_MS);
 fireCron();
 server.listen(PUBLIC_PORT, "0.0.0.0", () => {
   console.log(
-    `License Lantern proxy listening on :${PUBLIC_PORT} (${USERS.size} user${USERS.size === 1 ? "" : "s"}), state in ${PERSIST_DIR}`,
+    `Vigilo proxy listening on :${PUBLIC_PORT} (${USERS.size} user${USERS.size === 1 ? "" : "s"}), state in ${PERSIST_DIR}`,
   );
 });

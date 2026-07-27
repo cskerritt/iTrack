@@ -1319,7 +1319,7 @@ function questActionKey(questKey: string) {
 
 const WEEKLY_GOAL_ACTION_KEY = "weeklyGoal";
 
-export function LicenseLanternApp() {
+export function VigiloApp() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [view, setView] = useState<ViewName>("today");
   const [selectedCredentialId, setSelectedCredentialId] = useState("");
@@ -2246,7 +2246,7 @@ export function LicenseLanternApp() {
     setToast({
       message: cleared
         ? "The browser-saved course draft was cleared."
-        : "The form was cleared, but this browser would not remove its saved draft. Clear License Lantern site data to remove it.",
+        : "The form was cleared, but this browser would not remove its saved draft. Clear Vigilo site data to remove it.",
     });
   }
 
@@ -2262,7 +2262,7 @@ export function LicenseLanternApp() {
     if (!cleared) {
       setToast({
         message:
-          "Activity saved, but this browser would not clear its local draft. Clear License Lantern site data to remove it.",
+          "Activity saved, but this browser would not clear its local draft. Clear Vigilo site data to remove it.",
       });
     }
   }
@@ -2277,7 +2277,7 @@ export function LicenseLanternApp() {
     setInstallPrompt(null);
     if (choice.outcome === "accepted") {
       setIsStandalone(true);
-      setToast({ message: "License Lantern was added to this device." });
+      setToast({ message: "Vigilo was added to this device." });
     }
   }
 
@@ -2436,7 +2436,7 @@ export function LicenseLanternApp() {
       });
       setToast({
         message:
-          "Test sent. Your device will show a private License Lantern check-in.",
+          "Test sent. Your device will show a private Vigilo check-in.",
       });
     } catch (pushError) {
       setError(
@@ -2515,7 +2515,7 @@ export function LicenseLanternApp() {
     }
     await deliverCalendarInvite(
       events,
-      "license-lantern-check-ins",
+      "vigilo-check-ins",
       `${events.length} calendar ${
         events.length === 1 ? "check-in" : "check-ins"
       } handed off with your reminder schedule.`,
@@ -3785,7 +3785,7 @@ export function LicenseLanternApp() {
           {activityCredentials.length === 0 ? (
             <EmptyModalState
               title="Add an active credential first"
-              body="Credits need an open renewal cycle so License Lantern knows where to count them."
+              body="Credits need an open renewal cycle so Vigilo knows where to count them."
               action="Set up credential"
               onAction={() => {
                 closeActivityEntry();
@@ -3807,7 +3807,7 @@ export function LicenseLanternApp() {
                       Start with the certificate
                     </strong>
                     <p>
-                      Take a photo and License Lantern will suggest the details
+                      Take a photo and Vigilo will suggest the details
                       it can read.
                     </p>
                   </div>
@@ -3842,7 +3842,7 @@ export function LicenseLanternApp() {
                 </div>
                 <p className="capture-privacy">
                   On-device scan: the reader and English model load from
-                  License Lantern. The proof uploads only after Save activity;
+                  Vigilo. The proof uploads only after Save activity;
                   suggested field values may be saved unencrypted in this
                   browser draft.
                 </p>
@@ -4770,7 +4770,7 @@ export function LicenseLanternApp() {
               <span aria-hidden="true">i</span>
               <p>
                 Confirm dates and requirements with your issuing organization.
-                License Lantern helps organize your records; it does not replace
+                Vigilo helps organize your records; it does not replace
                 official guidance.
               </p>
             </div>
@@ -5132,7 +5132,7 @@ export function LicenseLanternApp() {
                 <small>
                   {isFloridaMentalHealthPhaseCredential(selectedCredential)
                     ? "Florida alternates Ethics and Boundaries with Telehealth each biennium. Confirm the displayed opposite phase against CE Broker; the new cycle will reset every third-biennium and supervisor condition for review."
-                    : "Reconfirm both license line and tenure tier. License Lantern will seed the new period from this current official template."}
+                    : "Reconfirm both license line and tenure tier. Vigilo will seed the new period from this current official template."}
                 </small>
               </label>
             ) : null}
@@ -5417,7 +5417,7 @@ export function LicenseLanternApp() {
             <div className="advisory-note">
               <span aria-hidden="true">i</span>
               <p>
-                In-app check-ins stay inside License Lantern. Phone alerts use
+                In-app check-ins stay inside Vigilo. Phone alerts use
                 generic lock-screen copy and only reach devices you connect
                 from Account. Your calendar can alert on the lead days selected here;
                 your calendar controls final delivery.
@@ -5454,7 +5454,7 @@ export function LicenseLanternApp() {
 
       {installHelpOpen ? (
         <Modal
-          title="Add License Lantern to your phone"
+          title="Add Vigilo to your phone"
           eyebrow="Phone companion"
           onClose={() => setInstallHelpOpen(false)}
         >
@@ -5462,16 +5462,16 @@ export function LicenseLanternApp() {
             {isIosLike() ? (
               <>
                 <p>
-                  Apple enables web alerts only after License Lantern is opened
+                  Apple enables web alerts only after Vigilo is opened
                   from your Home Screen.
                 </p>
                 <ol>
-                  <li>Open License Lantern in Safari.</li>
+                  <li>Open Vigilo in Safari.</li>
                   <li>
                     Tap the Share button, then choose <strong>Add to Home Screen</strong>.
                   </li>
                   <li>
-                    Open the new Lantern icon and return to Account to turn on
+                    Open the new Vigilo icon and return to Account to turn on
                     phone alerts.
                   </li>
                 </ol>
@@ -5483,7 +5483,7 @@ export function LicenseLanternApp() {
                   or <strong>Add to Home Screen</strong>.
                 </p>
                 <p>
-                  Then open Lantern from its new icon for a focused,
+                  Then open Vigilo from its new icon for a focused,
                   full-screen workspace.
                 </p>
               </>
@@ -5491,7 +5491,7 @@ export function LicenseLanternApp() {
             <div className="advisory-note">
               <span aria-hidden="true">i</span>
               <p>
-                Installing does not turn on alerts. License Lantern asks for
+                Installing does not turn on alerts. Vigilo asks for
                 notification permission only after you tap the separate
                 phone-alert button.
               </p>
@@ -5941,11 +5941,11 @@ export function LicenseLanternApp() {
 
 function Brand() {
   return (
-    <div className="brand" aria-label="License Lantern">
+    <div className="brand" aria-label="Vigilo">
       <span className="brand-mark" aria-hidden="true">
-        L
+        V
       </span>
-      <span>License Lantern</span>
+      <span>Vigilo</span>
     </div>
   );
 }
@@ -6197,7 +6197,7 @@ function TodayView({
             </li>
           </ol>
         </section>
-        <section className="trust-strip" aria-label="License Lantern principles">
+        <section className="trust-strip" aria-label="Vigilo principles">
           <div>
             <span className="trust-mark">✓</span>
             <p><strong>Source-linked rules</strong> with review dates</p>
@@ -8348,7 +8348,7 @@ function AccountView({
     pushDeviceState === "checking"
       ? "Checking phone-alert support…"
       : pushDeviceState === "install_required"
-        ? "Add Lantern to your Home Screen first."
+        ? "Add Vigilo to your Home Screen first."
         : pushDeviceState === "unconfigured"
           ? "Phone alerts are being prepared."
           : pushDeviceState === "unsupported"
@@ -8372,7 +8372,7 @@ function AccountView({
         : pushDeviceState === "unsupported"
           ? "This browser cannot receive web push, but your phone calendar can still deliver the same lead-day schedule."
           : pushDeviceState === "denied"
-            ? "Allow notifications for License Lantern in your phone or browser settings, then check again."
+            ? "Allow notifications for Vigilo in your phone or browser settings, then check again."
             : pushDeviceState === "subscribed"
               ? workspace.reminderPreferences.pushEnabled
                 ? `Private check-ins arrive around ${
@@ -8422,7 +8422,7 @@ function AccountView({
             {workspace.progression.level.title}
           </h2>
           <p>
-            License Lantern rewards real compliance work—not opening the app or
+            Vigilo rewards real compliance work—not opening the app or
             protecting a fragile daily streak.
           </p>
           <div className="account-level">
@@ -8605,7 +8605,7 @@ function AccountView({
                     : "Private by default"}
               </strong>
               <small>
-                Alerts show “License Lantern check-in,” not credential or
+                Alerts show “Vigilo check-in,” not credential or
                 certificate details.
               </small>
             </p>
@@ -8688,7 +8688,7 @@ function AccountView({
           {!isStandalone && pushDeviceState !== "install_required" ? (
             <div className="install-companion-row">
               <p>
-                Install Lantern for a focused, full-screen workspace with a
+                Install Vigilo for a focused, full-screen workspace with a
                 protected offline fallback.
               </p>
               <button
@@ -8707,7 +8707,7 @@ function AccountView({
           <span className="section-kicker">A careful boundary</span>
           <h2>Organizer, not an issuing authority.</h2>
           <p>
-            License Lantern helps you track information and prepare for renewal. It
+            Vigilo helps you track information and prepare for renewal. It
             does not determine course eligibility, guarantee acceptance by a
             licensing board or certifying body, or replace official instructions.
           </p>
@@ -9965,7 +9965,7 @@ function EmptyModalState({
 
 function LoadingDashboard() {
   return (
-    <div className="view-stack" aria-busy="true" aria-label="Loading License Lantern">
+    <div className="view-stack" aria-busy="true" aria-label="Loading Vigilo">
       <div className="loading-heading">
         <span />
         <strong />
@@ -9998,7 +9998,7 @@ function OfflineWorkspace() {
       <span className="section-kicker">Connection paused</span>
       <h1>Your cloud record is still protected.</h1>
       <p>
-        License Lantern could not load this device’s signed-in workspace while
+        Vigilo could not load this device’s signed-in workspace while
         offline. Reconnect and it will retry automatically; no credential,
         certificate, or account data was cached here.
       </p>
@@ -10020,7 +10020,7 @@ function WorkspaceLoadFailure({
   const title = authenticationFailure
     ? "Your sign-in needs to be refreshed."
     : serviceFailure
-      ? "License Lantern is temporarily unavailable."
+      ? "Vigilo is temporarily unavailable."
       : "We couldn’t reach your workspace.";
   const body = authenticationFailure
     ? "Reload to continue through the protected sign-in flow. Your private renewal record remains in the cloud."

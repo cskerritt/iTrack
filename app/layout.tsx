@@ -25,7 +25,7 @@ export async function generateMetadata(): Promise<Metadata> {
       ? "http"
       : "https");
   const metadataBase = new URL(`${protocol}://${host}`);
-  const title = "License Lantern — A clear path to renewal";
+  const title = "Vigilo — A clear path to renewal";
   const description =
     "A calm continuing-education companion for tracking credits, proof, deadlines, and professional license or certification renewals.";
   const socialImage = new URL("/og.png", metadataBase).toString();
@@ -34,10 +34,10 @@ export async function generateMetadata(): Promise<Metadata> {
     metadataBase,
     title: {
       default: title,
-      template: "%s · License Lantern",
+      template: "%s · Vigilo",
     },
     description,
-    applicationName: "License Lantern",
+    applicationName: "Vigilo",
     manifest: "/manifest.webmanifest",
     icons: {
       icon: [
@@ -55,7 +55,7 @@ export async function generateMetadata(): Promise<Metadata> {
     appleWebApp: {
       capable: true,
       statusBarStyle: "default",
-      title: "Lantern",
+      title: "Vigilo",
     },
     formatDetection: {
       telephone: false,
@@ -67,9 +67,9 @@ export async function generateMetadata(): Promise<Metadata> {
       images: [
         {
           url: socialImage,
-          width: 1731,
-          height: 909,
-          alt: "License Lantern — A clear path to renewal",
+          width: 2400,
+          height: 1260,
+          alt: "Vigilo — A clear path to renewal",
         },
       ],
     },

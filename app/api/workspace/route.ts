@@ -3932,7 +3932,7 @@ async function assertNremtSubmissionComplete(
     Number(total.totalRequired)
   ) {
     throw new RequestError(
-      `License Lantern records ${Number(total.totalEarned)} of ${Number(total.totalRequired)} required National Registry credits. Complete the local total before submitting.`,
+      `Vigilo records ${Number(total.totalEarned)} of ${Number(total.totalRequired)} required National Registry credits. Complete the local total before submitting.`,
       409,
       "nremt_total_incomplete",
     );
@@ -10436,7 +10436,7 @@ async function markRenewalAccepted(
           applicability: "always",
           applicabilityStatus: "applies",
           conditionNote:
-            "Complete 38 general CE hours. Classify every general activity under the Principal Topics or Practice Management child category rather than tagging this parent directly. License Lantern does not copy prior-cycle credit; manually record only CFP Board-confirmed eligible carryover and retain the confirmation.",
+            "Complete 38 general CE hours. Classify every general activity under the Principal Topics or Practice Management child category rather than tagging this parent directly. Vigilo does not copy prior-cycle credit; manually record only CFP Board-confirmed eligible carryover and retain the confirmation.",
           exclusiveGroup: null,
           isActive: true,
           sortOrder: 0,
@@ -11799,7 +11799,7 @@ async function savePushSubscription(
       );
     }
     throw new RequestError(
-      `License Lantern supports up to ${MAX_PUSH_DEVICES} active alert devices.`,
+      `Vigilo supports up to ${MAX_PUSH_DEVICES} active alert devices.`,
       409,
       "push_device_limit",
     );
@@ -11966,7 +11966,7 @@ async function sendTestPush(
       },
       runtimeWebPushConfig(),
       {
-        title: "License Lantern check-in",
+        title: "Vigilo check-in",
         body: "Your private test alert is working.",
         tag: `ll-test-${subscription.id
           .replace(/[^A-Za-z0-9_-]/g, "")

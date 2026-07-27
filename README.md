@@ -1,6 +1,6 @@
-# License Lantern
+# Vigilo
 
-License Lantern is a cloud-based, phone-first companion for continuing
+Vigilo is a cloud-based, phone-first companion for continuing
 education and renewals of professional licenses or certifications. It turns
 requirements into a clear plan, keeps completed learning distinct from renewal
 submission, and rewards meaningful record-keeping without punitive daily
@@ -52,7 +52,7 @@ product reminds them to confirm requirements with the issuing authority.
 
 ## Product boundary
 
-License Lantern is an organizer, not an issuing authority. Rule templates
+Vigilo is an organizer, not an issuing authority. Rule templates
 include official source links and review metadata, but current instructions
 from the licensing board or certifying body control. Course eligibility,
 official acceptance, and credential status are never inferred from a checked

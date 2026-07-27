@@ -123,10 +123,10 @@ export function buildCalendarInvite(
   const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//License Lantern//Compliance Check-ins//EN",
+    "PRODID:-//Vigilo//Compliance Check-ins//EN",
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
-    "X-WR-CALNAME:License Lantern check-ins",
+    "X-WR-CALNAME:Vigilo check-ins",
   ];
 
   for (const event of events) {
@@ -171,12 +171,12 @@ function safeFileName(value: string) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
-  return `${base || "license-lantern-check-ins"}.ics`;
+  return `${base || "vigilo-check-ins"}.ics`;
 }
 
 export async function offerCalendarInvite(
   events: CalendarInviteEvent[],
-  fileName = "license-lantern-check-ins",
+  fileName = "vigilo-check-ins",
 ): Promise<CalendarInviteDelivery> {
   const contents = buildCalendarInvite(events);
   const resolvedFileName = safeFileName(fileName);
@@ -200,7 +200,7 @@ export async function offerCalendarInvite(
   if (canShareFile) {
     try {
       await navigator.share({
-        title: "License Lantern calendar check-ins",
+        title: "Vigilo calendar check-ins",
         text: "Add these credential and compliance check-ins to your calendar.",
         files: [file],
       });

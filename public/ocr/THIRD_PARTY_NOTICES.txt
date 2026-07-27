@@ -1,4 +1,4 @@
-License Lantern's on-device certificate reader includes:
+Vigilo's on-device certificate reader includes:
 
 - Tesseract.js 7.0.0, Apache License 2.0
   Copyright contributors to the Tesseract.js project
