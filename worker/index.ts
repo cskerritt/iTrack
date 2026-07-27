@@ -2,6 +2,7 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import { runScheduledPushDelivery } from "../app/lib/pushDelivery";
+import { initializeDatabase } from "../db/runtime";
 
 interface Env {
   ASSETS: Fetcher;
@@ -53,6 +54,9 @@ const worker = {
         return new Response("Not Found", { status: 404 });
       }
       try {
+        // A scheduled run can beat the first user request on a fresh
+        // database; make sure the schema exists before delivery reads it.
+        await initializeDatabase(env.DB);
         const result = await runScheduledPushDelivery({
           database: env.DB,
           scheduledTime: Date.now(),
@@ -94,6 +98,7 @@ const worker = {
       (async () => {
         console.info("License Lantern scheduled push delivery started.");
         try {
+          await initializeDatabase(env.DB);
           const result = await runScheduledPushDelivery({
             database: env.DB,
             scheduledTime: controller.scheduledTime,
