@@ -4421,6 +4421,9 @@ export {
         )
         .run(activityId);
 
+      // A deploy that ships a changed managed catalog no longer matches the
+      // recorded catalog fingerprint, so the next cold start replays the seed.
+      raw.exec("DELETE FROM schema_state");
       const upgradeRuntime = await importTypeScriptModule(
         `${runtimeSource}\nexport const __nursingLegacyUpgradeNonce = "upgrade";`,
       );
@@ -4845,6 +4848,9 @@ export {
         )
         .run();
 
+      // A deploy that ships a changed managed catalog no longer matches the
+      // recorded catalog fingerprint, so the next cold start replays the seed.
+      raw.exec("DELETE FROM schema_state");
       const refreshRuntime = await importTypeScriptModule(
         `${runtimeSource}\nexport const __nursingRefreshUpgradeNonce = "upgrade";`,
       );
@@ -5071,6 +5077,8 @@ export {
         expectedTaskTitles,
       );
 
+      // Force the full seed to replay so this run still proves it is idempotent.
+      raw.exec("DELETE FROM schema_state");
       const repeatRuntime = await importTypeScriptModule(
         `${runtimeSource}\nexport const __nursingRefreshRepeatNonce = "repeat";`,
       );
@@ -11112,6 +11120,9 @@ export {
         0,
       );
 
+      // A deploy that ships a changed managed catalog no longer matches the
+      // recorded catalog fingerprint, so the next cold start replays the seed.
+      raw.exec("DELETE FROM schema_state");
       const migrationRuntime = await importTypeScriptModule(
         `${runtimeSource}\nexport const __managedCatalogTestNonce = "migration";`,
       );
@@ -11262,6 +11273,8 @@ export {
           .all(),
       });
       const stableState = JSON.stringify(catalogState());
+      // Force the full seed to replay so this run still proves it is idempotent.
+      raw.exec("DELETE FROM schema_state");
       const repeatRuntime = await importTypeScriptModule(
         `${runtimeSource}\nexport const __managedCatalogTestNonce = "repeat";`,
       );
@@ -11348,6 +11361,88 @@ export {
   );
 
   await t.test(
+    "skips the managed catalog seed when the recorded fingerprint matches",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const bootstrapRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __catalogFingerprintNonce = "bootstrap";`,
+      );
+      await bootstrapRuntime.initializeDatabase(database);
+
+      const raw = database.raw;
+      const driftedRuleSetId = "comptia-datasys-plus-2026-v1";
+      const recordedFingerprint = raw
+        .prepare(`SELECT value FROM schema_state WHERE key = ?`)
+        .get("managed_catalog");
+      assert.ok(recordedFingerprint?.value);
+      const totalUnits = () =>
+        raw
+          .prepare(
+            `SELECT total_units AS totalUnits FROM rule_sets WHERE id = ?`,
+          )
+          .get(driftedRuleSetId).totalUnits;
+
+      raw
+        .prepare(`UPDATE rule_sets SET total_units = 999 WHERE id = ?`)
+        .run(driftedRuleSetId);
+      const warmRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __catalogFingerprintNonce = "warm";`,
+      );
+      await warmRuntime.initializeDatabase(database);
+      assert.equal(
+        totalUnits(),
+        999,
+        "an unchanged catalog must not replay its seed on every cold start",
+      );
+
+      raw.exec("DELETE FROM schema_state");
+      const deployRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __catalogFingerprintNonce = "deploy";`,
+      );
+      await deployRuntime.initializeDatabase(database);
+      assert.equal(
+        totalUnits(),
+        30,
+        "a database without the current fingerprint must be reseeded",
+      );
+      assert.equal(
+        raw
+          .prepare(`SELECT value FROM schema_state WHERE key = ?`)
+          .get("managed_catalog").value,
+        recordedFingerprint.value,
+      );
+
+      const seedSource = runtimeSource.slice(
+        runtimeSource.indexOf("async function seedManagedCatalog("),
+        runtimeSource.indexOf("export async function initializeDatabase("),
+      );
+      const fingerprintInputSource = runtimeSource.slice(
+        runtimeSource.indexOf("function managedCatalogSeedInputs("),
+        runtimeSource.indexOf("let managedCatalogFingerprintCache"),
+      );
+      const constantPattern = /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g;
+      const fingerprintInputs = new Set(
+        fingerprintInputSource.match(constantPattern) ?? [],
+      );
+      const seedConstants = [
+        ...new Set(seedSource.match(constantPattern) ?? []),
+      ];
+      assert.ok(seedConstants.length > 40);
+      assert.deepEqual(
+        seedConstants.filter((name) => !fingerprintInputs.has(name)),
+        [],
+        "every managed catalog seed input must feed the catalog fingerprint",
+      );
+      database.close();
+    },
+  );
+
+  await t.test(
     "adds lifecycle attestation columns to an existing database",
     async () => {
       const { DatabaseSync } = await import("node:sqlite");
@@ -11400,6 +11495,90 @@ export {
         ),
       );
       database.close();
+    },
+  );
+
+  await t.test(
+    "adds the push dispatch column to an existing database and tolerates concurrent column adds",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const bootstrapRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __pushLedgerMigrationNonce = "bootstrap";`,
+      );
+      await bootstrapRuntime.initializeDatabase(database);
+      // Databases provisioned before the dispatch column shipped keep the
+      // original ledger shape; CREATE TABLE IF NOT EXISTS cannot repair them.
+      database.raw.exec(
+        `ALTER TABLE push_delivery_ledger DROP COLUMN dispatched_at;`,
+      );
+      const ledgerColumns = () =>
+        database.raw
+          .prepare(`PRAGMA table_info(push_delivery_ledger)`)
+          .all()
+          .map((column) => column.name);
+      assert.equal(ledgerColumns().includes("dispatched_at"), false);
+
+      const upgradeRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __pushLedgerMigrationNonce = "upgrade";`,
+      );
+      await upgradeRuntime.initializeDatabase(database);
+      assert.ok(ledgerColumns().includes("dispatched_at"));
+      assert.doesNotThrow(() =>
+        database.raw
+          .prepare(
+            `UPDATE push_delivery_ledger
+             SET dispatched_at = COALESCE(dispatched_at, ?)
+             WHERE id = ?`,
+          )
+          .run("2026-07-27T12:00:00.000Z", "missing-delivery"),
+      );
+      database.close();
+
+      // Two isolates can read PRAGMA table_info before either ALTER commits,
+      // so the loser must treat `duplicate column name` as success.
+      const racedColumns = new Set();
+      const racingDatabase = new FakeDatabase({
+        resolveAll(call) {
+          if (/^PRAGMA table_info\(/i.test(call.sql)) {
+            return [...racedColumns].map((name) => ({ name }));
+          }
+          return [];
+        },
+        resolveRun(call) {
+          const added = /^ALTER TABLE \w+ ADD COLUMN (\w+)/i.exec(call.sql);
+          if (!added) return undefined;
+          racedColumns.add(added[1]);
+          throw new Error(
+            `D1_ERROR: duplicate column name: ${added[1]}: SQLITE_ERROR`,
+          );
+        },
+      });
+      const racingRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __pushLedgerMigrationNonce = "race";`,
+      );
+      await racingRuntime.initializeDatabase(racingDatabase);
+      assert.ok(racedColumns.has("dispatched_at"));
+
+      const failingDatabase = new FakeDatabase({
+        resolveRun(call) {
+          if (/^ALTER TABLE/i.test(call.sql)) {
+            throw new Error("D1_ERROR: no such table: activities");
+          }
+          return undefined;
+        },
+      });
+      const failingRuntime = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __pushLedgerMigrationNonce = "failure";`,
+      );
+      await assert.rejects(
+        failingRuntime.initializeDatabase(failingDatabase),
+        /no such table/,
+      );
     },
   );
 
@@ -11642,6 +11821,9 @@ export {
           "2028-10-04",
         );
 
+      // A deploy that ships a changed managed catalog no longer matches the
+      // recorded catalog fingerprint, so the next cold start replays the seed.
+      raw.exec("DELETE FROM schema_state");
       const migrationRuntime = await importTypeScriptModule(
         `${runtimeSource}\nexport const __cfpBoundaryTestNonce = "migration";`,
       );
@@ -11804,6 +11986,8 @@ export {
           )
           .all(),
       });
+      // Force the full seed to replay so this run still proves it is idempotent.
+      raw.exec("DELETE FROM schema_state");
       const repeatRuntime = await importTypeScriptModule(
         `${runtimeSource}\nexport const __cfpBoundaryTestNonce = "repeat";`,
       );
@@ -12942,7 +13126,7 @@ export {
         /^INSERT INTO evidence_files \(/i.test(statement.sql),
       );
       const activityUpdate = statements.find((statement) =>
-        /^UPDATE activities SET evidence_status = 'attached'/i.test(
+        /^UPDATE activities SET evidence_status = CASE WHEN evidence_status = 'not_required' THEN 'not_required' ELSE 'attached' END/i.test(
           statement.sql,
         ),
       );
@@ -21480,7 +21664,11 @@ export {
 
         pushStatus = 401;
         await runScheduled(start + 30 * 60_000);
-        assert.equal(pushEndpoints.length, 20);
+        assert.equal(
+          pushEndpoints.length,
+          24,
+          "an endpoint-scoped auth rejection must not halt the rest of the run",
+        );
         assert.deepEqual(
           {
             ...raw
@@ -21495,11 +21683,11 @@ export {
               .get(),
           },
           {
-            count: 4,
-            minimumAttemptCount: 0,
-            maximumAttemptCount: 0,
+            count: 8,
+            minimumAttemptCount: 1,
+            maximumAttemptCount: 1,
           },
-          "a configuration rejection must remain retryable without consuming an attempt",
+          "an auth rejection must consume an attempt so the row cannot retry forever",
         );
 
         pushStatus = 201;
@@ -21516,7 +21704,7 @@ export {
           await runScheduled(nextScheduledTime);
           nextScheduledTime += 15 * 60_000;
         }
-        assert.equal(pushEndpoints.length, 69);
+        assert.equal(pushEndpoints.length, 73);
         assert.equal(
           raw
             .prepare(
@@ -21554,6 +21742,49 @@ export {
             .get(retainedId).count,
           1,
           "active-device dedupe rows must not age out and resend",
+        );
+
+        const revivedId = raw
+          .prepare(
+            `SELECT id FROM push_delivery_ledger
+             WHERE subscription_id = 'scheduler-sub-002'
+               AND status = 'delivered'`,
+          )
+          .get().id;
+        raw
+          .prepare(
+            `UPDATE push_delivery_ledger
+             SET status = 'cancelled',
+                 error_code = 'subscription_removed',
+                 next_attempt_at = NULL,
+                 delivered_at = NULL
+             WHERE id = ?`,
+          )
+          .run(revivedId);
+        const ledgerRowsBeforeRevival = raw
+          .prepare(`SELECT COUNT(*) AS count FROM push_delivery_ledger`)
+          .get().count;
+        await runScheduled(nextScheduledTime);
+        nextScheduledTime += 15 * 60_000;
+        assert.deepEqual(
+          {
+            ...raw
+              .prepare(
+                `SELECT status, error_code AS errorCode
+                 FROM push_delivery_ledger
+                 WHERE id = ?`,
+              )
+              .get(revivedId),
+            ledgerRows: raw
+              .prepare(`SELECT COUNT(*) AS count FROM push_delivery_ledger`)
+              .get().count,
+          },
+          {
+            status: "delivered",
+            errorCode: null,
+            ledgerRows: ledgerRowsBeforeRevival,
+          },
+          "a cancelled occurrence must be re-materialized in place for a still-active device",
         );
 
         raw
@@ -22764,6 +22995,11 @@ export {
         allocationCorrection.sql,
         /SET allocated_units = CASE WHEN EXISTS \([\s\S]*?rule_set_id LIKE 'nremt-%'[\s\S]*?THEN MIN\(allocated_units, \?\) WHEN allocated_units = \? THEN \? ELSE MIN\(allocated_units, \?\) END/i,
       );
+      assert.match(
+        allocationCorrection.sql,
+        /activity\.completion_date = \? AND activity\.total_units = \?/i,
+        "a moves-first allocation increase must be guarded on the post-update activity values so it cannot fire when the activity statement no-ops",
+      );
       assert.deepEqual(allocationCorrection.bindings, [
         3,
         2,
@@ -22773,6 +23009,8 @@ export {
         activityId,
         userId,
         4,
+        "2027-05-21",
+        3,
       ]);
       assert.match(
         matchCorrection.sql,
@@ -26950,6 +27188,110 @@ export {
         (await raced.json()).code,
         "dental_current_template_changed",
       );
+    },
+  );
+
+  await t.test(
+    "keeps the global template catalog off the workspace read and behind a revalidatable endpoint",
+    async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new SQLiteD1Database(DatabaseSync);
+      const runtimeSource = await readFile(
+        new URL("../db/runtime.ts", import.meta.url),
+        "utf8",
+      );
+      const runtimeModule = await importTypeScriptModule(
+        `${runtimeSource}\nexport const __catalogEndpointNonce = "catalog-split";`,
+      );
+      await runtimeModule.initializeDatabase(database);
+      testCloudflareEnv.DB = database;
+      const raw = database.raw;
+
+      const emptyWorkspaceResponse = await fetchWorker(
+        "https://license-lantern.example/api/workspace",
+        { headers: authHeaders() },
+      );
+      assert.equal(emptyWorkspaceResponse.status, 200);
+      const emptyWorkspace = await emptyWorkspaceResponse.json();
+      assert.deepEqual(emptyWorkspace.catalog, []);
+
+      const catalogResponse = await fetchWorker(
+        "https://license-lantern.example/api/catalog",
+        { headers: authHeaders() },
+      );
+      assert.equal(catalogResponse.status, 200);
+      assert.match(
+        catalogResponse.headers.get("cache-control") ?? "",
+        /^private, max-age=\d+, must-revalidate$/,
+      );
+      const entityTag = catalogResponse.headers.get("etag") ?? "";
+      assert.match(entityTag, /^"[0-9a-f]{32}"$/);
+      const { catalog } = await catalogResponse.json();
+      assert.equal(catalog.length, 170);
+      assert.ok(catalog.every((rule) => Array.isArray(rule.categories)));
+      assert.equal(
+        catalog.some((rule) => rule.id === "cfp-professional-2027-v1"),
+        false,
+        "retired templates stay out of the catalog read",
+      );
+
+      const revalidatedCatalog = await fetchWorker(
+        "https://license-lantern.example/api/catalog",
+        { headers: { ...authHeaders(), "if-none-match": entityTag } },
+      );
+      assert.equal(revalidatedCatalog.status, 304);
+      assert.equal(revalidatedCatalog.headers.get("etag"), entityTag);
+      assert.equal(await revalidatedCatalog.text(), "");
+
+      const anonymousCatalog = await fetchWorker(
+        "https://license-lantern.example/api/catalog",
+      );
+      assert.equal(anonymousCatalog.status, 401);
+      assert.deepEqual(await anonymousCatalog.json(), {
+        error: "Sign in with ChatGPT to browse credential templates.",
+        code: "authentication_required",
+      });
+
+      // A credential pulls in its own template plus the sibling Florida phase
+      // the acceptance dialog offers for the next biennium — and nothing else.
+      const ownerId = await expectedStableUserId("owner@example.com");
+      raw
+        .prepare(
+          `INSERT INTO credentials (
+             id, user_id, rule_set_id, credential_name, profession,
+             jurisdiction, issuer, cycle_start, deadline, total_required,
+             unit_label, status
+           )
+           SELECT 'credential-catalog-scope', ?, id, credential_name,
+                  profession, jurisdiction, issuer, '2025-04-01', '2027-03-31',
+                  total_units, unit_label, 'active'
+           FROM rule_sets
+           WHERE id = 'fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-v1'`,
+        )
+        .run(ownerId);
+
+      const scopedWorkspaceResponse = await fetchWorker(
+        "https://license-lantern.example/api/workspace",
+        { headers: authHeaders() },
+      );
+      assert.equal(scopedWorkspaceResponse.status, 200);
+      const scopedWorkspaceBody = await scopedWorkspaceResponse.text();
+      const scopedWorkspace = JSON.parse(scopedWorkspaceBody);
+      assert.deepEqual(
+        scopedWorkspace.catalog.map((rule) => rule.id).sort(),
+        [
+          "fl-lcsw-lmft-lmhc-ethics-boundaries-phase-2026-v1",
+          "fl-lcsw-lmft-lmhc-telehealth-phase-2026-v1",
+        ],
+      );
+      assert.ok(
+        scopedWorkspace.catalog.every((rule) => rule.categories.length > 0),
+      );
+      assert.ok(
+        scopedWorkspaceBody.length < 100_000,
+        `workspace payload must not carry the catalog (${scopedWorkspaceBody.length} bytes)`,
+      );
+      database.close();
     },
   );
 });

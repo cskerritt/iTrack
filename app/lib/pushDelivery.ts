@@ -530,15 +530,29 @@ async function deliver(
     return "continue";
   }
   if (response.status === 401 || response.status === 403) {
-    await markConfigurationRetry(
+    if (claimed.attemptCount >= MAX_ATTEMPTS) {
+      await disableSubscription(
+        database,
+        claimed,
+        nowSql,
+        now.getTime(),
+        "vapid_rejected_attempts_exhausted",
+        response.status,
+      );
+      totals.expired += 1;
+      return "continue";
+    }
+    const retrying = await markRetry(
       database,
       claimed,
       now,
+      response,
       "vapid_rejected",
       response.status,
     );
-    totals.retried += 1;
-    return "stop";
+    if (retrying) totals.retried += 1;
+    else totals.failed += 1;
+    return "continue";
   }
   await markPermanentFailure(
     database,
@@ -772,6 +786,20 @@ export async function runScheduledPushDelivery({
              WHERE prior.subscription_id = ?
                AND prior.reminder_key = ?
                AND prior.scheduled_for >= ?
+               AND prior.status NOT IN ('cancelled', 'expired', 'failed')
+           )
+           ON CONFLICT (subscription_id, reminder_key, scheduled_for)
+           DO UPDATE SET
+             status = 'pending',
+             attempt_count = 0,
+             next_attempt_at = NULL,
+             http_status = NULL,
+             error_code = NULL,
+             updated_at = ?
+           WHERE push_delivery_ledger.status IN (
+             'cancelled',
+             'expired',
+             'failed'
            )`,
           [
             deliveryId,
@@ -782,6 +810,7 @@ export async function runScheduledPushDelivery({
             subscription.id,
             reminder.key,
             reminder.scheduledFor,
+            nowSql,
           ],
         ).run();
         totals.materialized += changes(inserted);

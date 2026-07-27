@@ -373,6 +373,11 @@ const DENTAL_SUBTYPE_CATEGORY_IDS_BY_AGGREGATE = new Map<
   ),
 );
 
+const pushSubscriptionIdentity = (
+  subscription: ReturnType<typeof serializePushSubscription>,
+) =>
+  `${subscription.endpoint}|${subscription.keys.p256dh}|${subscription.keys.auth}`;
+
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
 const nextYearIso = () => {
@@ -1316,6 +1321,10 @@ export function LicenseLanternApp() {
   const [customCredential, setCustomCredential] = useState(false);
   const [selectedRuleId, setSelectedRuleId] = useState("");
   const [catalogQuery, setCatalogQuery] = useState("");
+  const [catalogRules, setCatalogRules] = useState<CatalogRule[] | null>(null);
+  const [catalogStatus, setCatalogStatus] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >("idle");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -1357,9 +1366,12 @@ export function LicenseLanternApp() {
     useState<ReminderLaunchTarget | null>(null);
   const [highlightedReminderKey, setHighlightedReminderKey] = useState("");
   const pushRegistrationRef = useRef<ServiceWorkerRegistration | null>(null);
+  const savedPushSubscriptionRef = useRef<string | null>(null);
+  const selectionBeforeActivityEntry = useRef<string | null>(null);
   const activityScanSequence = useRef(0);
   const activityDraftPersistenceEnabled = useRef(false);
   const activityDraftPersistenceGeneration = useRef(0);
+  const catalogRequest = useRef<Promise<boolean> | null>(null);
   const draftStorageKey = useMemo(
     () =>
       workspace?.user.draftStorageNamespace
@@ -1442,6 +1454,9 @@ export function LicenseLanternApp() {
             allocatedUnits: saved.allocatedUnits || saved.totalUnits,
             provider: saved.provider,
           });
+          // The restored draft only re-targets the credential for this form;
+          // the app-wide selection is restored when the form closes unsaved.
+          selectionBeforeActivityEntry.current = selectedCredentialId;
           if (credential) {
             setSelectedCredentialId(credential.id);
             setActivityDraftCredentialWarning("");
@@ -1470,7 +1485,14 @@ export function LicenseLanternApp() {
     }
     if (!restored) resetActivityEntry();
     setActivityOpen(true);
-  }, [draftStorageKey, resetActivityEntry, workspace]);
+  }, [draftStorageKey, resetActivityEntry, selectedCredentialId, workspace]);
+
+  const restoreSelectionBeforeActivityEntry = useCallback(() => {
+    const previousSelection = selectionBeforeActivityEntry.current;
+    selectionBeforeActivityEntry.current = null;
+    if (previousSelection === null) return;
+    setSelectedCredentialId(previousSelection);
+  }, []);
 
   const closeActivityEntry = useCallback(() => {
     const draftPersisted = persistActivityDraftNow();
@@ -1483,9 +1505,14 @@ export function LicenseLanternApp() {
     }
     activityDraftPersistenceEnabled.current = false;
     activityDraftPersistenceGeneration.current += 1;
+    restoreSelectionBeforeActivityEntry();
     setActivityOpen(false);
     resetActivityEntry();
-  }, [persistActivityDraftNow, resetActivityEntry]);
+  }, [
+    persistActivityDraftNow,
+    resetActivityEntry,
+    restoreSelectionBeforeActivityEntry,
+  ]);
 
   const loadWorkspace = useCallback(async () => {
     setWorkspaceLoadFailed(false);
@@ -1530,6 +1557,51 @@ export function LicenseLanternApp() {
     }
   }, []);
 
+  // The searchable template catalog is global reference data, so it is fetched
+  // once per session — when the chooser first opens — instead of riding along
+  // on every workspace read. A failed attempt clears the cached request so the
+  // next open retries.
+  const loadCatalog = useCallback(async () => {
+    if (catalogRequest.current) return catalogRequest.current;
+    setCatalogStatus("loading");
+    const request = (async () => {
+      try {
+        const response = await fetch("/api/catalog", {
+          headers: { accept: "application/json" },
+        });
+        const data = (await response.json()) as {
+          catalog?: CatalogRule[];
+          error?: string;
+        };
+        if (!response.ok || !Array.isArray(data.catalog)) {
+          throw new Error(
+            data.error || "We couldn’t load the credential templates.",
+          );
+        }
+        setCatalogRules(data.catalog);
+        setCatalogStatus("ready");
+        return true;
+      } catch {
+        catalogRequest.current = null;
+        setCatalogStatus("error");
+        return false;
+      }
+    })();
+    catalogRequest.current = request;
+    return request;
+  }, []);
+
+  const openCredentialSetup = useCallback(() => {
+    setCredentialOpen(true);
+    void loadCatalog();
+  }, [loadCatalog]);
+
+  const workspaceLoaded = Boolean(workspace);
+  const webPushConfigured = Boolean(
+    workspace?.reminderPreferences.webPushConfigured,
+  );
+  const vapidPublicKey = workspace?.reminderPreferences.vapidPublicKey ?? null;
+
   const refreshPushDeviceState = useCallback(async () => {
     const capability = detectedPushCapability(isStandalone);
     if (capability !== "available") {
@@ -1537,14 +1609,11 @@ export function LicenseLanternApp() {
       setPushDeviceState(capability);
       return;
     }
-    if (!workspace) {
+    if (!workspaceLoaded) {
       setPushDeviceState("checking");
       return;
     }
-    if (
-      !workspace.reminderPreferences.webPushConfigured ||
-      !workspace.reminderPreferences.vapidPublicKey
-    ) {
+    if (!webPushConfigured || !vapidPublicKey) {
       setCurrentPushSubscription(null);
       setPushDeviceState("unconfigured");
       return;
@@ -1559,7 +1628,7 @@ export function LicenseLanternApp() {
         subscription &&
         !pushSubscriptionUsesApplicationServerKey(
           subscription,
-          workspace.reminderPreferences.vapidPublicKey,
+          vapidPublicKey,
         )
       ) {
         setCurrentPushSubscription(subscription);
@@ -1567,20 +1636,27 @@ export function LicenseLanternApp() {
         return;
       }
       if (subscription) {
-        const response = await fetch("/api/workspace", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            action: "savePushSubscription",
-            payload: {
-              subscription: serializePushSubscription(subscription),
-              deviceLabel: friendlyDeviceLabel(),
-              enableAccountPush: false,
-            },
-          }),
-        });
-        if (!response.ok) {
-          throw new Error("This device could not refresh its alert connection.");
+        const serializedSubscription = serializePushSubscription(subscription);
+        const identity = pushSubscriptionIdentity(serializedSubscription);
+        if (savedPushSubscriptionRef.current !== identity) {
+          const response = await fetch("/api/workspace", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              action: "savePushSubscription",
+              payload: {
+                subscription: serializedSubscription,
+                deviceLabel: friendlyDeviceLabel(),
+                enableAccountPush: false,
+              },
+            }),
+          });
+          if (!response.ok) {
+            throw new Error(
+              "This device could not refresh its alert connection.",
+            );
+          }
+          savedPushSubscriptionRef.current = identity;
         }
       }
       setCurrentPushSubscription(subscription);
@@ -1591,7 +1667,9 @@ export function LicenseLanternApp() {
     }
   }, [
     isStandalone,
-    workspace,
+    vapidPublicKey,
+    webPushConfigured,
+    workspaceLoaded,
   ]);
 
   useEffect(() => {
@@ -1905,17 +1983,23 @@ export function LicenseLanternApp() {
     [selectedCredential, workspace],
   );
 
+  // The workspace payload carries only the templates this user's credentials
+  // already reach; the chooser searches the lazily loaded global catalog and
+  // falls back to those owned templates until it arrives.
+  const catalogTemplates = useMemo(
+    () => catalogRules ?? workspace?.catalog ?? [],
+    [catalogRules, workspace],
+  );
+
   const selectedRule = useMemo(
-    () =>
-      workspace?.catalog.find((rule) => rule.id === selectedRuleId) ?? null,
-    [selectedRuleId, workspace],
+    () => catalogTemplates.find((rule) => rule.id === selectedRuleId) ?? null,
+    [catalogTemplates, selectedRuleId],
   );
 
   const catalogMatches = useMemo(() => {
-    if (!workspace) return [];
     const query = catalogQuery.trim().toLowerCase();
-    if (!query) return workspace.catalog;
-    return workspace.catalog.filter((rule) =>
+    if (!query) return catalogTemplates;
+    return catalogTemplates.filter((rule) =>
       [
         rule.profession,
         rule.credentialName,
@@ -1926,7 +2010,7 @@ export function LicenseLanternApp() {
         .toLowerCase()
         .includes(query),
     );
-  }, [catalogQuery, workspace]);
+  }, [catalogQuery, catalogTemplates]);
 
   const catalogGroups = useMemo(() => {
     const groups = new Map<string, CatalogRule[]>();
@@ -2108,6 +2192,9 @@ export function LicenseLanternApp() {
   function finishSavedActivityEntry() {
     activityDraftPersistenceEnabled.current = false;
     activityDraftPersistenceGeneration.current += 1;
+    // The saved activity used the credential shown in this form, so that
+    // selection stands instead of the one captured when the form opened.
+    selectionBeforeActivityEntry.current = null;
     const cleared = clearSavedActivityDraft();
     setActivityOpen(false);
     resetActivityEntry();
@@ -2191,12 +2278,16 @@ export function LicenseLanternApp() {
         });
         createdSubscription = subscription;
       }
+      const serializedSubscription = serializePushSubscription(subscription);
       await postPushAction("savePushSubscription", {
-        subscription: serializePushSubscription(subscription),
+        subscription: serializedSubscription,
         deviceLabel: friendlyDeviceLabel(),
         enableAccountPush: true,
       });
       savedOnServer = true;
+      savedPushSubscriptionRef.current = pushSubscriptionIdentity(
+        serializedSubscription,
+      );
       if (replacedEndpoint && replacedEndpoint !== subscription.endpoint) {
         await postPushAction("removePushSubscription", {
           endpoint: replacedEndpoint,
@@ -2245,6 +2336,7 @@ export function LicenseLanternApp() {
         });
         await subscription.unsubscribe();
       }
+      savedPushSubscriptionRef.current = null;
       setCurrentPushSubscription(null);
       setPushDeviceState("available");
       await loadWorkspace();
@@ -2720,7 +2812,8 @@ export function LicenseLanternApp() {
   async function handleEvidenceUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!evidenceActivity) return;
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     const file = form.get("file");
     if (!(file instanceof File) || file.size === 0) {
       setError("Choose a PDF or image to upload.");
@@ -2728,7 +2821,7 @@ export function LicenseLanternApp() {
     }
     const uploaded = await uploadEvidence(evidenceActivity.id, file);
     if (uploaded) {
-      event.currentTarget.reset();
+      formElement.reset();
       setToast({ message: "Proof saved securely." });
     }
   }
@@ -2777,7 +2870,7 @@ export function LicenseLanternApp() {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const rule =
-      workspace?.catalog.find(
+      catalogTemplates.find(
         (item) => item.id === String(form.get("ruleSetId") ?? ""),
       ) ?? null;
     const customCategoryUnits = Number(form.get("categoryUnits") ?? 0);
@@ -3456,7 +3549,7 @@ export function LicenseLanternApp() {
               isOnline={isOnline}
               highlightedReminderKey={highlightedReminderKey}
               onAddActivity={openActivityEntry}
-              onAddCredential={() => setCredentialOpen(true)}
+              onAddCredential={openCredentialSetup}
               onViewCredentials={() => setView("credentials")}
               onViewRecords={() => setView("records")}
               onSubmit={openSubmission}
@@ -3510,7 +3603,7 @@ export function LicenseLanternApp() {
               isOnline={isOnline}
               selectedId={selectedCredential?.id ?? ""}
               onSelect={(id) => setSelectedCredentialId(id)}
-              onAdd={() => setCredentialOpen(true)}
+              onAdd={openCredentialSetup}
               onSubmit={openSubmission}
               onAccept={openAcceptance}
               onReminders={() => setRemindersOpen(true)}
@@ -3618,7 +3711,7 @@ export function LicenseLanternApp() {
               action="Set up credential"
               onAction={() => {
                 closeActivityEntry();
-                setCredentialOpen(true);
+                openCredentialSetup();
               }}
             />
           ) : (
@@ -4056,15 +4149,22 @@ export function LicenseLanternApp() {
                 <button
                   className="button button-primary"
                   type="submit"
-                  disabled={pending || scanningActivityEvidence || !isOnline}
+                  disabled={
+                    pending ||
+                    evidencePending ||
+                    scanningActivityEvidence ||
+                    !isOnline
+                  }
                 >
                   {pending
                     ? "Saving…"
-                    : scanningActivityEvidence
-                      ? "Reading certificate…"
-                      : !isOnline
-                        ? "Reconnect to save"
-                        : "Save activity"}
+                    : evidencePending
+                      ? "Uploading proof…"
+                      : scanningActivityEvidence
+                        ? "Reading certificate…"
+                        : !isOnline
+                          ? "Reconnect to save"
+                          : "Save activity"}
                 </button>
               </div>
             </form>
@@ -4215,9 +4315,12 @@ export function LicenseLanternApp() {
                     }}
                     placeholder="Search profession, license, certification, or state"
                   />
-                  <small>
-                    {workspace.catalog.length} researched starting templates ·
-                    custom plans are always available
+                  <small aria-live="polite">
+                    {catalogStatus === "loading"
+                      ? "Loading researched starting templates · custom plans are always available"
+                      : catalogStatus === "error"
+                        ? "Templates couldn’t be loaded · custom plans are always available"
+                        : `${catalogTemplates.length} researched starting templates · custom plans are always available`}
                   </small>
                 </label>
                 <label className="field">
@@ -4247,7 +4350,18 @@ export function LicenseLanternApp() {
                     {catalogMatches.length === 1 ? "match" : "matches"}
                   </small>
                 </label>
-                {catalogMatches.length === 0 ? (
+                {catalogStatus === "error" ? (
+                  <button
+                    className="button button-outline catalog-custom-button"
+                    type="button"
+                    onClick={() => {
+                      void loadCatalog();
+                    }}
+                  >
+                    Templates didn’t load — try again
+                  </button>
+                ) : null}
+                {catalogStatus !== "loading" && catalogMatches.length === 0 ? (
                   <button
                     className="button button-outline catalog-custom-button"
                     type="button"
@@ -8963,6 +9077,14 @@ function RequirementPicker({
       const categoryId = requirement.ruleCategoryId ?? "";
       const aggregateCategoryId =
         DENTAL_AGGREGATE_BY_SUBTYPE_CATEGORY_ID.get(categoryId);
+      const categoryIdByRequirementId = new Map(
+        selectable.map((candidate) => [
+          candidate.id,
+          candidate.ruleCategoryId ?? "",
+        ]),
+      );
+      const categoryIdOf = (requirementId: string) =>
+        categoryIdByRequirementId.get(requirementId) ?? "";
       if (checked && aggregateCategoryId) {
         const aggregateRequirement = selectable.find(
           (candidate) =>
@@ -8972,25 +9094,51 @@ function RequirementPicker({
           aggregateRequirement &&
           !next.includes(aggregateRequirement.id)
         ) {
-          next = [...next, aggregateRequirement.id];
+          // The aggregate belongs to its own exclusive group, so add it the
+          // same way a direct click would; a raw append would leave two
+          // members of that group checked and the save would conflict.
+          next = nextRequirementSelection(
+            next,
+            aggregateRequirement,
+            selectable,
+            true,
+          );
         }
       }
-      if (!checked) {
+      if (!checked && aggregateCategoryId) {
+        // Clearing the last subtype orphans the aggregate that was added with
+        // it, and the server rejects an aggregate without a subtype.
         const subtypeCategoryIds =
-          DENTAL_SUBTYPE_CATEGORY_IDS_BY_AGGREGATE.get(categoryId);
-        if (subtypeCategoryIds) {
-          const subtypeRequirementIds = new Set(
-            selectable.flatMap((candidate) =>
-              subtypeCategoryIds.has(candidate.ruleCategoryId ?? "")
-                ? [candidate.id]
-                : [],
-            ),
-          );
+          DENTAL_SUBTYPE_CATEGORY_IDS_BY_AGGREGATE.get(aggregateCategoryId);
+        const keepsAnySubtype = next.some((requirementId) =>
+          Boolean(subtypeCategoryIds?.has(categoryIdOf(requirementId))),
+        );
+        if (!keepsAnySubtype) {
           next = next.filter(
             (requirementId) =>
-              !subtypeRequirementIds.has(requirementId),
+              categoryIdOf(requirementId) !== aggregateCategoryId,
           );
         }
+      }
+      // A subtype may only stay selected while its aggregate is. Unchecking
+      // the aggregate, or replacing it through its exclusive group, drops the
+      // subtypes the server would otherwise reject as orphaned.
+      for (const [
+        parentCategoryId,
+        subtypeCategoryIds,
+      ] of DENTAL_SUBTYPE_CATEGORY_IDS_BY_AGGREGATE) {
+        const aggregateOffered = selectable.some(
+          (candidate) => candidate.ruleCategoryId === parentCategoryId,
+        );
+        if (!aggregateOffered) continue;
+        const aggregateSelected = next.some(
+          (requirementId) => categoryIdOf(requirementId) === parentCategoryId,
+        );
+        if (aggregateSelected) continue;
+        next = next.filter(
+          (requirementId) =>
+            !subtypeCategoryIds.has(categoryIdOf(requirementId)),
+        );
       }
       return next;
     });

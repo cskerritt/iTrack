@@ -511,6 +511,11 @@ const TABLE_STATEMENTS = [
     ON badge_events (user_id, badge_id)`,
   `CREATE INDEX IF NOT EXISTS badge_events_user_created_idx
     ON badge_events (user_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS schema_state (
+    key TEXT PRIMARY KEY NOT NULL,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
 ] as const;
 
 const INTEGRITY_TRIGGER_STATEMENTS = [
@@ -1053,6 +1058,11 @@ const RICH_RULE_COLUMNS = [
     table: "reminder_preferences",
     name: "push_hour_local",
     definition: "push_hour_local INTEGER NOT NULL DEFAULT 9",
+  },
+  {
+    table: "push_delivery_ledger",
+    name: "dispatched_at",
+    definition: "dispatched_at TEXT",
   },
 ] as const;
 
@@ -5568,6 +5578,23 @@ function multiRowStatements(
   return statements;
 }
 
+function isDuplicateColumnError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (/duplicate column name/i.test(error.message)) return true;
+  const cause = error.cause;
+  return cause instanceof Error && /duplicate column name/i.test(cause.message);
+}
+
+async function tableColumnNames(
+  database: D1Database,
+  table: string,
+): Promise<Set<string>> {
+  const result = await database
+    .prepare(`PRAGMA table_info(${table})`)
+    .all<{ name: string }>();
+  return new Set(result.results.map((column) => column.name));
+}
+
 async function ensureRichRuleColumns(database: D1Database) {
   for (const table of [
     "rule_categories",
@@ -5577,18 +5604,344 @@ async function ensureRichRuleColumns(database: D1Database) {
     "activities",
     "checklist_tasks",
     "reminder_preferences",
+    "push_delivery_ledger",
   ] as const) {
-    const result = await database
-      .prepare(`PRAGMA table_info(${table})`)
-      .all<{ name: string }>();
-    const existing = new Set(result.results.map((column) => column.name));
+    const existing = await tableColumnNames(database, table);
     for (const column of RICH_RULE_COLUMNS) {
       if (column.table !== table || existing.has(column.name)) continue;
-      await database
-        .prepare(`ALTER TABLE ${table} ADD COLUMN ${column.definition}`)
-        .run();
+      try {
+        await database
+          .prepare(`ALTER TABLE ${table} ADD COLUMN ${column.definition}`)
+          .run();
+      } catch (error) {
+        // SQLite has no ADD COLUMN IF NOT EXISTS, and a concurrent isolate
+        // can commit the same ALTER between the PRAGMA read above and this
+        // statement. Treat the duplicate as success once the column is
+        // confirmed present; re-throw anything else.
+        if (!isDuplicateColumnError(error)) throw error;
+        const confirmed = await tableColumnNames(database, table);
+        if (!confirmed.has(column.name)) throw error;
+      }
     }
   }
+}
+
+const MANAGED_CATALOG_FINGERPRINT_KEY = "managed_catalog";
+
+const MANAGED_CATALOG_FINGERPRINT_SELECT_SQL = `SELECT value
+FROM schema_state
+WHERE key = ?`;
+
+const RECORD_MANAGED_CATALOG_FINGERPRINT_SQL = `INSERT INTO schema_state (
+  key, value, updated_at
+) VALUES (?, ?, CURRENT_TIMESTAMP)
+ON CONFLICT(key) DO UPDATE SET
+  value = excluded.value,
+  updated_at = CURRENT_TIMESTAMP`;
+
+type ManagedCatalogFingerprintState = {
+  fnv: number;
+  djb: number;
+  length: number;
+};
+
+function absorbFingerprintText(
+  state: ManagedCatalogFingerprintState,
+  text: string,
+): void {
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    state.fnv = Math.imul(state.fnv ^ code, 16777619) >>> 0;
+    state.djb = (Math.imul(state.djb, 33) + code) >>> 0;
+  }
+  state.length += text.length;
+}
+
+function absorbFingerprintValue(
+  state: ManagedCatalogFingerprintState,
+  value: unknown,
+): void {
+  if (Array.isArray(value)) {
+    absorbFingerprintText(state, "[");
+    for (const entry of value) absorbFingerprintValue(state, entry);
+    absorbFingerprintText(state, "]");
+    return;
+  }
+  if (value === null || value === undefined) {
+    absorbFingerprintText(state, "\u0000");
+    return;
+  }
+  if (typeof value === "object") {
+    throw new Error("Managed catalog fingerprint value must be a primitive.");
+  }
+  absorbFingerprintText(state, `\u0001${typeof value}:${String(value)}`);
+}
+
+// Every managed-catalog input `seedManagedCatalog` writes must be listed here,
+// otherwise a deploy that changes only the missing input would be skipped on
+// databases that already recorded a fingerprint. The "skips the managed catalog
+// seed when the recorded fingerprint matches" test enforces that.
+function managedCatalogSeedInputs(): readonly unknown[] {
+  return [
+    GLOBAL_SEED_STATEMENTS.map((seed) => [seed.sql, seed.bindings]),
+    NJ_LCSW_RULE_SET_REFRESH_SQL,
+    NJ_LCSW_RULE_SET_REFRESH_BINDINGS,
+    NJ_LCSW_CATEGORY_INSERT_SQL,
+    NJ_LCSW_CATEGORY_REFRESH_SQL,
+    NJ_LCSW_CATEGORY_BINDINGS,
+    CATALOG_2026_RULE_SET_INSERT_SQL,
+    CATALOG_2026_RULE_SET_SEED_BINDINGS,
+    ATTORNEY_RULE_SET_REFRESH_SQL,
+    ATTORNEY_RULE_SET_REFRESH_BINDINGS,
+    RICH_RULE_CATEGORY_INSERT_SQL,
+    RICH_RULE_CATEGORY_SEED_BINDINGS,
+    CATALOG_2026_CATEGORY_INSERT_SQL,
+    CATALOG_2026_CATEGORY_SEED_BINDINGS,
+    RETIRE_MISSING_MANAGED_RULE_SETS_SQL,
+    DEACTIVATE_MISSING_MANAGED_REQUIREMENTS_SQL,
+    DELETE_MISSING_MANAGED_CATEGORIES_SQL,
+    CFP_TRANSITION_RULE_SET_REFRESH_SQL,
+    CFP_TRANSITION_CATEGORY_REFRESH_SQL,
+    RICH_RULE_CATEGORY_UPDATE_SQL,
+    RICH_RULE_CATEGORY_UPDATE_BINDINGS,
+    ATTORNEY_RULE_CATEGORY_REFRESH_SQL,
+    ATTORNEY_RULE_CATEGORY_REFRESH_BINDINGS,
+    MAXIMUM_CLASSIFICATION_CATEGORY_REFRESH_SQL,
+    MAXIMUM_CLASSIFICATION_CATEGORY_REFRESH_BINDINGS,
+    BACKFILL_NJ_LCSW_CREDENTIAL_REQUIREMENTS_SQL,
+    SYNC_NJ_LCSW_CREDENTIAL_REQUIREMENTS_SQL,
+    RULE_SET_ID,
+    BACKFILL_ATTORNEY_CREDENTIAL_REQUIREMENTS_SQL,
+    SYNC_ATTORNEY_CREDENTIAL_REQUIREMENTS_SQL,
+    ATTORNEY_CREDENTIAL_REQUIREMENT_SYNC_RULE_SET_IDS,
+    BACKFILL_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL,
+    SYNC_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL,
+    SYNC_ACTIVE_FLORIDA_NURSING_TOTAL_SQL,
+    SYNC_ACTIVE_DENTAL_TOTAL_SQL,
+    MERGE_CFP_BOUNDARY_GENERAL_MATCHES_SQL,
+    REPOINT_CFP_BOUNDARY_ALLOCATIONS_SQL,
+    DELETE_CFP_BOUNDARY_SOURCE_MATCHES_SQL,
+    DELETE_CFP_BOUNDARY_OBSOLETE_REQUIREMENTS_SQL,
+    SYNC_CFP_BOUNDARY_GENERAL_REQUIREMENT_SQL,
+    SYNC_CFP_BOUNDARY_ETHICS_REQUIREMENT_SQL,
+    RETITLE_CFP_BOUNDARY_REVIEW_TASK_SQL,
+    INSERT_CFP_BOUNDARY_REVIEW_TASK_SQL,
+    UPDATE_CFP_BOUNDARY_CREDENTIAL_SQL,
+    BACKFILL_TEXAS_ETHICS_MATCHES_SQL,
+    RETIRE_ATTORNEY_CREDENTIAL_REQUIREMENT_SQL,
+    DELETE_RETIRED_ATTORNEY_RULE_CATEGORY_SQL,
+    RETIRED_ATTORNEY_RULE_CATEGORY_BINDINGS,
+    SYNC_MANAGED_DEFAULT_TASK_SQL,
+    NURSING_DEFAULT_TASK_REFRESH_BINDINGS,
+    DENTAL_DEFAULT_TASK_REFRESH_BINDINGS,
+    REHABILITATION_DEFAULT_TASK_REFRESH_BINDINGS,
+    EXPANDED_CERTIFICATION_DEFAULT_TASK_REFRESH_BINDINGS,
+  ];
+}
+
+let managedCatalogFingerprintCache: string | null = null;
+
+function managedCatalogFingerprint(): string {
+  if (managedCatalogFingerprintCache === null) {
+    const state: ManagedCatalogFingerprintState = {
+      fnv: 2166136261,
+      djb: 5381,
+      length: 0,
+    };
+    absorbFingerprintValue(state, managedCatalogSeedInputs());
+    managedCatalogFingerprintCache = [
+      "v1",
+      state.fnv.toString(16),
+      state.djb.toString(16),
+      state.length.toString(16),
+    ].join("-");
+  }
+
+  return managedCatalogFingerprintCache;
+}
+
+async function seedManagedCatalog(database: D1Database): Promise<void> {
+  await database.batch(
+    GLOBAL_SEED_STATEMENTS.map((seed) =>
+      statement(database, seed.sql, seed.bindings),
+    ),
+  );
+  await database.batch([
+    statement(
+      database,
+      NJ_LCSW_RULE_SET_REFRESH_SQL,
+      NJ_LCSW_RULE_SET_REFRESH_BINDINGS,
+    ),
+  ]);
+  await database.batch(
+    NJ_LCSW_CATEGORY_BINDINGS.map((bindings) =>
+      statement(database, NJ_LCSW_CATEGORY_INSERT_SQL, bindings),
+    ),
+  );
+  await database.batch(
+    NJ_LCSW_CATEGORY_BINDINGS.map((bindings) =>
+      statement(database, NJ_LCSW_CATEGORY_REFRESH_SQL, [
+        ...bindings.slice(1),
+        bindings[0],
+      ]),
+    ),
+  );
+  await database.batch(
+    multiRowStatements(
+      database,
+      CATALOG_2026_RULE_SET_INSERT_SQL,
+      CATALOG_2026_RULE_SET_SEED_BINDINGS,
+      16,
+    ),
+  );
+  await database.batch(
+    ATTORNEY_RULE_SET_REFRESH_BINDINGS.map((bindings) =>
+      statement(database, ATTORNEY_RULE_SET_REFRESH_SQL, bindings),
+    ),
+  );
+  await database.batch(
+    RICH_RULE_CATEGORY_SEED_BINDINGS.map((bindings) =>
+      statement(database, RICH_RULE_CATEGORY_INSERT_SQL, bindings),
+    ),
+  );
+  await database.batch(
+    multiRowStatements(
+      database,
+      CATALOG_2026_CATEGORY_INSERT_SQL,
+      CATALOG_2026_CATEGORY_SEED_BINDINGS,
+      11,
+    ),
+  );
+  await database.batch([
+    statement(database, RETIRE_MISSING_MANAGED_RULE_SETS_SQL),
+    statement(database, DEACTIVATE_MISSING_MANAGED_REQUIREMENTS_SQL),
+    statement(database, DELETE_MISSING_MANAGED_CATEGORIES_SQL),
+  ]);
+  await database.batch(
+    CATALOG_2026_RULE_SET_SEED_BINDINGS.filter(
+      (bindings) =>
+        bindings[0] === "cfp-professional-pre-2027-v1" ||
+        bindings[0] === "cfp-professional-2027-v1",
+    ).map((bindings) =>
+      statement(database, CFP_TRANSITION_RULE_SET_REFRESH_SQL, [
+        bindings[4],
+        bindings[7],
+        bindings[10],
+        bindings[11],
+        bindings[12],
+        bindings[13],
+        bindings[14],
+        bindings[15],
+        bindings[0],
+      ]),
+    ),
+  );
+  await database.batch(
+    CATALOG_2026_CATEGORY_SEED_BINDINGS.filter(
+      (bindings) =>
+        bindings[1] === "cfp-professional-pre-2027-v1" ||
+        bindings[1] === "cfp-professional-2027-v1",
+    ).map((bindings) =>
+      statement(database, CFP_TRANSITION_CATEGORY_REFRESH_SQL, [
+        bindings[2],
+        bindings[3],
+        bindings[4],
+        bindings[5],
+        bindings[6],
+        bindings[7],
+        bindings[8],
+        bindings[9],
+        bindings[10],
+        bindings[0],
+      ]),
+    ),
+  );
+  await database.batch(
+    RICH_RULE_CATEGORY_UPDATE_BINDINGS.map((bindings) =>
+      statement(database, RICH_RULE_CATEGORY_UPDATE_SQL, bindings),
+    ),
+  );
+  await database.batch(
+    ATTORNEY_RULE_CATEGORY_REFRESH_BINDINGS.map((bindings) =>
+      statement(database, ATTORNEY_RULE_CATEGORY_REFRESH_SQL, bindings),
+    ),
+  );
+  await database.batch(
+    MAXIMUM_CLASSIFICATION_CATEGORY_REFRESH_BINDINGS.map((bindings) =>
+      statement(
+        database,
+        MAXIMUM_CLASSIFICATION_CATEGORY_REFRESH_SQL,
+        bindings,
+      ),
+    ),
+  );
+  await database.batch([
+    statement(database, BACKFILL_NJ_LCSW_CREDENTIAL_REQUIREMENTS_SQL, [
+      RULE_SET_ID,
+    ]),
+    statement(database, SYNC_NJ_LCSW_CREDENTIAL_REQUIREMENTS_SQL, [
+      RULE_SET_ID,
+      RULE_SET_ID,
+    ]),
+    statement(
+      database,
+      BACKFILL_ATTORNEY_CREDENTIAL_REQUIREMENTS_SQL,
+      ATTORNEY_CREDENTIAL_REQUIREMENT_SYNC_RULE_SET_IDS,
+    ),
+    statement(database, SYNC_ATTORNEY_CREDENTIAL_REQUIREMENTS_SQL, [
+      ...ATTORNEY_CREDENTIAL_REQUIREMENT_SYNC_RULE_SET_IDS,
+      ...ATTORNEY_CREDENTIAL_REQUIREMENT_SYNC_RULE_SET_IDS,
+    ]),
+    statement(database, BACKFILL_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL),
+    statement(database, SYNC_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL),
+    statement(database, SYNC_ACTIVE_FLORIDA_NURSING_TOTAL_SQL),
+    statement(database, SYNC_ACTIVE_DENTAL_TOTAL_SQL),
+    statement(database, MERGE_CFP_BOUNDARY_GENERAL_MATCHES_SQL),
+    statement(database, REPOINT_CFP_BOUNDARY_ALLOCATIONS_SQL),
+    statement(database, DELETE_CFP_BOUNDARY_SOURCE_MATCHES_SQL),
+    statement(database, DELETE_CFP_BOUNDARY_OBSOLETE_REQUIREMENTS_SQL),
+    statement(database, SYNC_CFP_BOUNDARY_GENERAL_REQUIREMENT_SQL),
+    statement(database, SYNC_CFP_BOUNDARY_ETHICS_REQUIREMENT_SQL),
+    statement(database, RETITLE_CFP_BOUNDARY_REVIEW_TASK_SQL),
+    statement(database, INSERT_CFP_BOUNDARY_REVIEW_TASK_SQL),
+    statement(database, UPDATE_CFP_BOUNDARY_CREDENTIAL_SQL),
+    statement(database, BACKFILL_TEXAS_ETHICS_MATCHES_SQL),
+    ...RETIRED_ATTORNEY_RULE_CATEGORY_BINDINGS.map((bindings) =>
+      statement(
+        database,
+        RETIRE_ATTORNEY_CREDENTIAL_REQUIREMENT_SQL,
+        bindings,
+      ),
+    ),
+    ...RETIRED_ATTORNEY_RULE_CATEGORY_BINDINGS.map((bindings) =>
+      statement(
+        database,
+        DELETE_RETIRED_ATTORNEY_RULE_CATEGORY_SQL,
+        [bindings[1]],
+      ),
+    ),
+  ]);
+  await database.batch(
+    NURSING_DEFAULT_TASK_REFRESH_BINDINGS.map((bindings) =>
+      statement(database, SYNC_MANAGED_DEFAULT_TASK_SQL, bindings),
+    ),
+  );
+  await database.batch(
+    DENTAL_DEFAULT_TASK_REFRESH_BINDINGS.map((bindings) =>
+      statement(database, SYNC_MANAGED_DEFAULT_TASK_SQL, bindings),
+    ),
+  );
+  await database.batch(
+    REHABILITATION_DEFAULT_TASK_REFRESH_BINDINGS.map((bindings) =>
+      statement(database, SYNC_MANAGED_DEFAULT_TASK_SQL, bindings),
+    ),
+  );
+  await database.batch(
+    EXPANDED_CERTIFICATION_DEFAULT_TASK_REFRESH_BINDINGS.map(
+      (bindings) =>
+        statement(database, SYNC_MANAGED_DEFAULT_TASK_SQL, bindings),
+    ),
+  );
 }
 
 export async function initializeDatabase(database: D1Database): Promise<void> {
@@ -5601,187 +5954,25 @@ export async function initializeDatabase(database: D1Database): Promise<void> {
       await database.batch(
         RICH_RULE_INDEX_STATEMENTS.map((sql) => database.prepare(sql)),
       );
-      await database.batch(
-        GLOBAL_SEED_STATEMENTS.map((seed) =>
-          statement(database, seed.sql, seed.bindings),
-        ),
-      );
-      await database.batch([
-        statement(
-          database,
-          NJ_LCSW_RULE_SET_REFRESH_SQL,
-          NJ_LCSW_RULE_SET_REFRESH_BINDINGS,
-        ),
-      ]);
-      await database.batch(
-        NJ_LCSW_CATEGORY_BINDINGS.map((bindings) =>
-          statement(database, NJ_LCSW_CATEGORY_INSERT_SQL, bindings),
-        ),
-      );
-      await database.batch(
-        NJ_LCSW_CATEGORY_BINDINGS.map((bindings) =>
-          statement(database, NJ_LCSW_CATEGORY_REFRESH_SQL, [
-            ...bindings.slice(1),
-            bindings[0],
+      // Reseeding the managed catalog costs ~640 write statements across 20
+      // batches, so replay it only when the shipped catalog differs from the
+      // fingerprint this database was last seeded with. Schema work above and
+      // the trigger guards below stay unconditional.
+      const fingerprint = managedCatalogFingerprint();
+      const seeded = await statement(
+        database,
+        MANAGED_CATALOG_FINGERPRINT_SELECT_SQL,
+        [MANAGED_CATALOG_FINGERPRINT_KEY],
+      ).first<{ value: string }>();
+      if (seeded?.value !== fingerprint) {
+        await seedManagedCatalog(database);
+        await database.batch([
+          statement(database, RECORD_MANAGED_CATALOG_FINGERPRINT_SQL, [
+            MANAGED_CATALOG_FINGERPRINT_KEY,
+            fingerprint,
           ]),
-        ),
-      );
-      await database.batch(
-        multiRowStatements(
-          database,
-          CATALOG_2026_RULE_SET_INSERT_SQL,
-          CATALOG_2026_RULE_SET_SEED_BINDINGS,
-          16,
-        ),
-      );
-      await database.batch(
-        ATTORNEY_RULE_SET_REFRESH_BINDINGS.map((bindings) =>
-          statement(database, ATTORNEY_RULE_SET_REFRESH_SQL, bindings),
-        ),
-      );
-      await database.batch(
-        RICH_RULE_CATEGORY_SEED_BINDINGS.map((bindings) =>
-          statement(database, RICH_RULE_CATEGORY_INSERT_SQL, bindings),
-        ),
-      );
-      await database.batch(
-        multiRowStatements(
-          database,
-          CATALOG_2026_CATEGORY_INSERT_SQL,
-          CATALOG_2026_CATEGORY_SEED_BINDINGS,
-          11,
-        ),
-      );
-      await database.batch([
-        statement(database, RETIRE_MISSING_MANAGED_RULE_SETS_SQL),
-        statement(database, DEACTIVATE_MISSING_MANAGED_REQUIREMENTS_SQL),
-        statement(database, DELETE_MISSING_MANAGED_CATEGORIES_SQL),
-      ]);
-      await database.batch(
-        CATALOG_2026_RULE_SET_SEED_BINDINGS.filter(
-          (bindings) =>
-            bindings[0] === "cfp-professional-pre-2027-v1" ||
-            bindings[0] === "cfp-professional-2027-v1",
-        ).map((bindings) =>
-          statement(database, CFP_TRANSITION_RULE_SET_REFRESH_SQL, [
-            bindings[4],
-            bindings[7],
-            bindings[10],
-            bindings[11],
-            bindings[12],
-            bindings[13],
-            bindings[14],
-            bindings[15],
-            bindings[0],
-          ]),
-        ),
-      );
-      await database.batch(
-        CATALOG_2026_CATEGORY_SEED_BINDINGS.filter(
-          (bindings) =>
-            bindings[1] === "cfp-professional-pre-2027-v1" ||
-            bindings[1] === "cfp-professional-2027-v1",
-        ).map((bindings) =>
-          statement(database, CFP_TRANSITION_CATEGORY_REFRESH_SQL, [
-            bindings[2],
-            bindings[3],
-            bindings[4],
-            bindings[5],
-            bindings[6],
-            bindings[7],
-            bindings[8],
-            bindings[9],
-            bindings[10],
-            bindings[0],
-          ]),
-        ),
-      );
-      await database.batch(
-        RICH_RULE_CATEGORY_UPDATE_BINDINGS.map((bindings) =>
-          statement(database, RICH_RULE_CATEGORY_UPDATE_SQL, bindings),
-        ),
-      );
-      await database.batch(
-        ATTORNEY_RULE_CATEGORY_REFRESH_BINDINGS.map((bindings) =>
-          statement(database, ATTORNEY_RULE_CATEGORY_REFRESH_SQL, bindings),
-        ),
-      );
-      await database.batch(
-        MAXIMUM_CLASSIFICATION_CATEGORY_REFRESH_BINDINGS.map((bindings) =>
-          statement(
-            database,
-            MAXIMUM_CLASSIFICATION_CATEGORY_REFRESH_SQL,
-            bindings,
-          ),
-        ),
-      );
-      await database.batch([
-        statement(database, BACKFILL_NJ_LCSW_CREDENTIAL_REQUIREMENTS_SQL, [
-          RULE_SET_ID,
-        ]),
-        statement(database, SYNC_NJ_LCSW_CREDENTIAL_REQUIREMENTS_SQL, [
-          RULE_SET_ID,
-          RULE_SET_ID,
-        ]),
-        statement(
-          database,
-          BACKFILL_ATTORNEY_CREDENTIAL_REQUIREMENTS_SQL,
-          ATTORNEY_CREDENTIAL_REQUIREMENT_SYNC_RULE_SET_IDS,
-        ),
-        statement(database, SYNC_ATTORNEY_CREDENTIAL_REQUIREMENTS_SQL, [
-          ...ATTORNEY_CREDENTIAL_REQUIREMENT_SYNC_RULE_SET_IDS,
-          ...ATTORNEY_CREDENTIAL_REQUIREMENT_SYNC_RULE_SET_IDS,
-        ]),
-        statement(database, BACKFILL_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL),
-        statement(database, SYNC_MAXIMUM_CLASSIFICATION_REQUIREMENTS_SQL),
-        statement(database, SYNC_ACTIVE_FLORIDA_NURSING_TOTAL_SQL),
-        statement(database, SYNC_ACTIVE_DENTAL_TOTAL_SQL),
-        statement(database, MERGE_CFP_BOUNDARY_GENERAL_MATCHES_SQL),
-        statement(database, REPOINT_CFP_BOUNDARY_ALLOCATIONS_SQL),
-        statement(database, DELETE_CFP_BOUNDARY_SOURCE_MATCHES_SQL),
-        statement(database, DELETE_CFP_BOUNDARY_OBSOLETE_REQUIREMENTS_SQL),
-        statement(database, SYNC_CFP_BOUNDARY_GENERAL_REQUIREMENT_SQL),
-        statement(database, SYNC_CFP_BOUNDARY_ETHICS_REQUIREMENT_SQL),
-        statement(database, RETITLE_CFP_BOUNDARY_REVIEW_TASK_SQL),
-        statement(database, INSERT_CFP_BOUNDARY_REVIEW_TASK_SQL),
-        statement(database, UPDATE_CFP_BOUNDARY_CREDENTIAL_SQL),
-        statement(database, BACKFILL_TEXAS_ETHICS_MATCHES_SQL),
-        ...RETIRED_ATTORNEY_RULE_CATEGORY_BINDINGS.map((bindings) =>
-          statement(
-            database,
-            RETIRE_ATTORNEY_CREDENTIAL_REQUIREMENT_SQL,
-            bindings,
-          ),
-        ),
-        ...RETIRED_ATTORNEY_RULE_CATEGORY_BINDINGS.map((bindings) =>
-          statement(
-            database,
-            DELETE_RETIRED_ATTORNEY_RULE_CATEGORY_SQL,
-            [bindings[1]],
-          ),
-        ),
-      ]);
-      await database.batch(
-        NURSING_DEFAULT_TASK_REFRESH_BINDINGS.map((bindings) =>
-          statement(database, SYNC_MANAGED_DEFAULT_TASK_SQL, bindings),
-        ),
-      );
-      await database.batch(
-        DENTAL_DEFAULT_TASK_REFRESH_BINDINGS.map((bindings) =>
-          statement(database, SYNC_MANAGED_DEFAULT_TASK_SQL, bindings),
-        ),
-      );
-      await database.batch(
-        REHABILITATION_DEFAULT_TASK_REFRESH_BINDINGS.map((bindings) =>
-          statement(database, SYNC_MANAGED_DEFAULT_TASK_SQL, bindings),
-        ),
-      );
-      await database.batch(
-        EXPANDED_CERTIFICATION_DEFAULT_TASK_REFRESH_BINDINGS.map(
-          (bindings) =>
-            statement(database, SYNC_MANAGED_DEFAULT_TASK_SQL, bindings),
-        ),
-      );
+        ]);
+      }
       await database.batch(
         INTEGRITY_TRIGGER_STATEMENTS.map((sql) => database.prepare(sql)),
       );

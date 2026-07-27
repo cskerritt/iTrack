@@ -96,6 +96,7 @@ export async function DELETE(request: Request, context: RouteContext) {
         `UPDATE activities
          SET
            evidence_status = CASE
+             WHEN evidence_status = 'not_required' THEN 'not_required'
              WHEN EXISTS (
                SELECT 1
                FROM evidence_files stored
@@ -106,10 +107,20 @@ export async function DELETE(request: Request, context: RouteContext) {
              ELSE 'missing'
            END,
            evidence_reference = CASE
-             WHEN evidence_reference LIKE 'CRCC pre-approved | %'
-               OR evidence_reference LIKE 'CRCC post-approved | %'
-             THEN evidence_reference
-             ELSE (
+             WHEN evidence_reference IS NULL
+               OR (
+                 evidence_reference NOT LIKE 'CRCC pre-approved | %'
+                 AND evidence_reference NOT LIKE 'CRCC post-approved | %'
+                 AND EXISTS (
+                   SELECT 1
+                   FROM evidence_files derived
+                   WHERE derived.activity_id = activities.id
+                     AND derived.user_id = activities.user_id
+                     AND derived.original_filename =
+                       activities.evidence_reference
+                 )
+               )
+             THEN (
                SELECT stored.original_filename
                FROM evidence_files stored
                WHERE stored.activity_id = activities.id
@@ -118,6 +129,7 @@ export async function DELETE(request: Request, context: RouteContext) {
                ORDER BY stored.created_at DESC, stored.id DESC
                LIMIT 1
              )
+             ELSE evidence_reference
            END,
            revision = revision + 1,
            updated_at = CURRENT_TIMESTAMP

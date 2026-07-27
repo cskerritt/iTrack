@@ -4003,38 +4003,146 @@ async function rethrowClosedCycleWrite(
   throw error;
 }
 
+type CatalogRuleRow = {
+  id: string;
+  profession: string;
+  credentialName: string;
+  jurisdiction: string;
+  issuer: string;
+  totalUnits: number;
+  unitLabel: string;
+  cycleMonths: number;
+  sourceUrl: string;
+  sourceTitle: string;
+  effectiveDate: string | null;
+  lastVerifiedAt: string | null;
+  reviewStatus: string;
+  version: number;
+};
+
+type CatalogCategoryRow = {
+  id: string;
+  ruleSetId: string;
+  name: string;
+  requiredUnits: number;
+  kind: RequirementKind;
+  relation: RequirementRelation;
+  parentCategoryId: string | null;
+  applicability: RequirementApplicability;
+  conditionNote: string | null;
+  exclusiveGroup: string | null;
+};
+
+// The catalog is global seed data, and every current template plus its
+// categories serializes to roughly 700 KB. The workspace read runs on every
+// load and after every mutation, so it selects only the templates one user's
+// own credentials can reach: the exact template a credential was built from,
+// the current template sharing its stable key (the same-level National
+// Registry rollover the acceptance dialog names), and the sibling Florida
+// families whose next-period template that dialog asks the user to choose.
+// The full searchable catalog is served separately by GET /api/catalog.
+const WORKSPACE_SCOPED_RULE_SET_IDS_SQL = `SELECT scoped_rule.id
+       FROM rule_sets scoped_rule
+       WHERE scoped_rule.is_current = 1
+         AND EXISTS (
+           SELECT 1
+           FROM credentials owned_credential
+           LEFT JOIN rule_sets owned_rule
+             ON owned_rule.id = owned_credential.rule_set_id
+           WHERE owned_credential.user_id = ?
+             AND owned_credential.rule_set_id IS NOT NULL
+             AND (
+               owned_credential.rule_set_id = scoped_rule.id
+               OR owned_rule.stable_key = scoped_rule.stable_key
+               OR (
+                 scoped_rule.id LIKE '${FLORIDA_INSURANCE_RULE_SET_PREFIX}%'
+                 AND owned_credential.rule_set_id LIKE '${FLORIDA_INSURANCE_RULE_SET_PREFIX}%'
+               )
+               OR (
+                 scoped_rule.id LIKE '${FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX}%'
+                 AND owned_credential.rule_set_id LIKE '${FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX}%'
+               )
+             )
+         )`;
+const CURRENT_RULE_SET_IDS_SQL = `SELECT id FROM rule_sets WHERE is_current = 1`;
+
+// Pass a userId to scope the catalog to that user's own templates; pass null
+// for the whole current catalog served by GET /api/catalog.
+async function loadRuleCatalog(database: D1Database, userId: string | null) {
+  const ruleSetIdsSql = userId
+    ? WORKSPACE_SCOPED_RULE_SET_IDS_SQL
+    : CURRENT_RULE_SET_IDS_SQL;
+  const bindings = userId ? [userId] : [];
+  const [ruleResult, categoryResult] = await Promise.all([
+    query(
+      database,
+      `SELECT
+        id,
+        profession,
+        credential_name AS credentialName,
+        jurisdiction,
+        issuer,
+        total_units AS totalUnits,
+        unit_label AS unitLabel,
+        cycle_months AS cycleMonths,
+        source_url AS sourceUrl,
+        source_title AS sourceTitle,
+        effective_date AS effectiveDate,
+        last_verified_at AS lastVerifiedAt,
+        review_status AS reviewStatus,
+        version
+      FROM rule_sets
+      WHERE id IN (${ruleSetIdsSql})
+      ORDER BY profession, credential_name, jurisdiction`,
+      bindings,
+    ).all<CatalogRuleRow>(),
+    query(
+      database,
+      `SELECT
+        id,
+        rule_set_id AS ruleSetId,
+        name,
+        required_units AS requiredUnits,
+        kind,
+        relation,
+        parent_category_id AS parentCategoryId,
+        applicability,
+        condition_note AS conditionNote,
+        exclusive_group AS exclusiveGroup
+      FROM rule_categories
+      WHERE rule_set_id IN (${ruleSetIdsSql})
+      ORDER BY rule_set_id, sort_order, name`,
+      bindings,
+    ).all<CatalogCategoryRow>(),
+  ]);
+
+  const categoriesByRule = new Map<string, CatalogCategoryRow[]>();
+  for (const category of categoryResult.results) {
+    const existing = categoriesByRule.get(category.ruleSetId) ?? [];
+    existing.push({
+      ...category,
+      requiredUnits: Number(category.requiredUnits),
+    });
+    categoriesByRule.set(category.ruleSetId, existing);
+  }
+
+  return ruleResult.results.map((rule) => ({
+    ...rule,
+    totalUnits: Number(rule.totalUnits),
+    cycleMonths: Number(rule.cycleMonths),
+    version: Number(rule.version),
+    categories: categoriesByRule.get(rule.id) ?? [],
+  }));
+}
+
+export async function getRuleCatalog(database: D1Database) {
+  return loadRuleCatalog(database, null);
+}
+
 export async function getWorkspace(
   database: D1Database,
   identity: RequestIdentity,
 ) {
-  type CatalogRow = {
-    id: string;
-    profession: string;
-    credentialName: string;
-    jurisdiction: string;
-    issuer: string;
-    totalUnits: number;
-    unitLabel: string;
-    cycleMonths: number;
-    sourceUrl: string;
-    sourceTitle: string;
-    effectiveDate: string | null;
-    lastVerifiedAt: string | null;
-    reviewStatus: string;
-    version: number;
-  };
-  type CategoryRow = {
-    id: string;
-    ruleSetId: string;
-    name: string;
-    requiredUnits: number;
-    kind: RequirementKind;
-    relation: RequirementRelation;
-    parentCategoryId: string | null;
-    applicability: RequirementApplicability;
-    conditionNote: string | null;
-    exclusiveGroup: string | null;
-  };
   type CredentialRow = {
     id: string;
     ruleSetId: string | null;
@@ -4158,8 +4266,7 @@ export async function getWorkspace(
   };
 
   const [
-    catalogResult,
-    categoryResult,
+    catalog,
     credentialResult,
     requirementResult,
     dentalCheckpointStateResult,
@@ -4169,43 +4276,7 @@ export async function getWorkspace(
     progression,
     badgeResult,
   ] = await Promise.all([
-    query(
-      database,
-      `SELECT
-        id,
-        profession,
-        credential_name AS credentialName,
-        jurisdiction,
-        issuer,
-        total_units AS totalUnits,
-        unit_label AS unitLabel,
-        cycle_months AS cycleMonths,
-        source_url AS sourceUrl,
-        source_title AS sourceTitle,
-        effective_date AS effectiveDate,
-        last_verified_at AS lastVerifiedAt,
-        review_status AS reviewStatus,
-        version
-      FROM rule_sets
-      WHERE is_current = 1
-      ORDER BY profession, credential_name, jurisdiction`,
-    ).all<CatalogRow>(),
-    query(
-      database,
-      `SELECT
-        id,
-        rule_set_id AS ruleSetId,
-        name,
-        required_units AS requiredUnits,
-        kind,
-        relation,
-        parent_category_id AS parentCategoryId,
-        applicability,
-        condition_note AS conditionNote,
-        exclusive_group AS exclusiveGroup
-      FROM rule_categories
-      ORDER BY rule_set_id, sort_order, name`,
-    ).all<CategoryRow>(),
+    loadRuleCatalog(database, identity.userId),
     query(
       database,
       `SELECT
@@ -4458,16 +4529,6 @@ export async function getWorkspace(
       [identity.userId],
     ).all<BadgeRow>(),
   ]);
-
-  const categoriesByRule = new Map<string, CategoryRow[]>();
-  for (const category of categoryResult.results) {
-    const existing = categoriesByRule.get(category.ruleSetId) ?? [];
-    existing.push({
-      ...category,
-      requiredUnits: Number(category.requiredUnits),
-    });
-    categoriesByRule.set(category.ruleSetId, existing);
-  }
 
   const requirementMetadataById = new Map(
     requirementResult.results.map((requirement) => [
@@ -5097,13 +5158,7 @@ export async function getWorkspace(
       badges: badgeResult.results,
     },
     progression,
-    catalog: catalogResult.results.map((rule) => ({
-      ...rule,
-      totalUnits: Number(rule.totalUnits),
-      cycleMonths: Number(rule.cycleMonths),
-      version: Number(rule.version),
-      categories: categoriesByRule.get(rule.id) ?? [],
-    })),
+    catalog,
     credentials: credentialResult.results.map((credential) => {
       const totalRequired = Number(credential.totalRequired);
       const totalLoggedUnits = Number(credential.totalEarned);
@@ -6528,13 +6583,33 @@ async function updateActivity(
     );
   }
 
+  const movesBeforeAllocationIncrease =
+    completionDate !== activity!.completionDate &&
+    totalUnits > Number(activity!.totalUnits);
+  const allocationExpectedRevision = movesBeforeAllocationIncrease
+    ? expectedRevision + 1
+    : expectedRevision;
+  // When the activity row is rewritten first, a bumped revision alone is not
+  // proof that this batch performed the rewrite: evidence attach/delete and
+  // allocation writes also bump the revision, without touching the completion
+  // date or the total. Pin the guard to the values this batch writes so the
+  // allocation and match statements cannot commit against a concurrently
+  // bumped row while the guarded activity update itself matched no rows.
+  const activityRewriteGuard = movesBeforeAllocationIncrease
+    ? `
+      AND activity.completion_date = ?
+      AND activity.total_units = ?`
+    : "";
+  const activityRewriteGuardBindings: unknown[] = movesBeforeAllocationIncrease
+    ? [completionDate, totalUnits]
+    : [];
   const mutableActivityExists = `
     SELECT 1
     FROM activities activity
     WHERE activity.id = activity_allocations.activity_id
       AND activity.id = ?
       AND activity.user_id = ?
-      AND activity.revision = ?
+      AND activity.revision = ?${activityRewriteGuard}
       AND activity.archived_at IS NULL
       AND NOT EXISTS (
         SELECT 1
@@ -6547,12 +6622,6 @@ async function updateActivity(
             OR guarded_credential.status NOT IN ('active', 'submitted')
           )
       )`;
-  const movesBeforeAllocationIncrease =
-    completionDate !== activity!.completionDate &&
-    totalUnits > Number(activity!.totalUnits);
-  const allocationExpectedRevision = movesBeforeAllocationIncrease
-    ? expectedRevision + 1
-    : expectedRevision;
   const allocationStatement = query(
     database,
     `UPDATE activity_allocations
@@ -6581,6 +6650,7 @@ async function updateActivity(
       activityId,
       identity.userId,
       allocationExpectedRevision,
+      ...activityRewriteGuardBindings,
     ],
   );
   const matchStatement = query(
@@ -6614,6 +6684,7 @@ async function updateActivity(
       activityId,
       identity.userId,
       allocationExpectedRevision,
+      ...activityRewriteGuardBindings,
     ],
   );
   const activityStatement = query(
@@ -6656,7 +6727,24 @@ async function updateActivity(
     : [allocationStatement, matchStatement, activityStatement];
   const results = await database.batch(statements);
   const activityResult = results[movesBeforeAllocationIncrease ? 0 : 2];
+  const allocationResult = results[movesBeforeAllocationIncrease ? 1 : 0];
+  const matchResult = results[movesBeforeAllocationIncrease ? 2 : 1];
+  const allocationChanges = Number(
+    allocationResult?.meta?.changes ?? Number.NaN,
+  );
+  const matchChanges = Number(matchResult?.meta?.changes ?? Number.NaN);
   if (Number(activityResult?.meta?.changes ?? Number.NaN) !== 1) {
+    // The batch is one transaction that has already committed, so allocation or
+    // match rows must never be rewritten when the activity update matched
+    // nothing. Guards above make that unreachable; surface it loudly instead of
+    // reporting a plain conflict if it ever happens.
+    if (allocationChanges > 0 || matchChanges > 0) {
+      throw new RequestError(
+        "This learning record changed while it was being saved and its credit split may no longer match the saved total. Refresh and review the record before editing it again.",
+        409,
+        "activity_state_changed",
+      );
+    }
     return diagnoseActivityMutationFailure(
       database,
       identity,
