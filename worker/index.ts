@@ -9,6 +9,14 @@ interface Env {
   VAPID_PUBLIC_KEY?: string;
   VAPID_PRIVATE_KEY?: string;
   VAPID_SUBJECT?: string;
+  /**
+   * When set, POST /internal/run-scheduled with a matching
+   * x-internal-scheduled-secret header runs the same push delivery as the
+   * cron trigger. Used by self-hosted deployments (e.g. Railway) whose local
+   * workerd runtime cannot fire cron triggers; unset on platform hosting, so
+   * the route does not exist there.
+   */
+  INTERNAL_SCHEDULED_SECRET?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -37,6 +45,32 @@ interface ScheduledController {
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    if (url.pathname === "/internal/run-scheduled") {
+      const secret = env.INTERNAL_SCHEDULED_SECRET;
+      const provided = request.headers.get("x-internal-scheduled-secret");
+      if (!secret || request.method !== "POST" || provided !== secret) {
+        return new Response("Not Found", { status: 404 });
+      }
+      try {
+        const result = await runScheduledPushDelivery({
+          database: env.DB,
+          scheduledTime: Date.now(),
+          config: {
+            publicKey: env.VAPID_PUBLIC_KEY,
+            privateKey: env.VAPID_PRIVATE_KEY,
+            subject: env.VAPID_SUBJECT,
+          },
+        });
+        return Response.json({ ok: true, result });
+      } catch (error) {
+        console.error(
+          "License Lantern internal scheduled run failed.",
+          error instanceof Error ? (error.stack ?? error.message) : String(error),
+        );
+        return Response.json({ ok: false }, { status: 500 });
+      }
+    }
 
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
@@ -73,8 +107,11 @@ const worker = {
             "License Lantern scheduled push delivery completed.",
             JSON.stringify(result),
           );
-        } catch {
-          console.error("License Lantern scheduled push delivery failed.");
+        } catch (error) {
+          console.error(
+            "License Lantern scheduled push delivery failed.",
+            error instanceof Error ? (error.stack ?? error.message) : String(error),
+          );
           throw new Error("Scheduled push delivery failed.");
         }
       })(),
