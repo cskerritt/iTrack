@@ -12487,7 +12487,10 @@ function errorResponse(error: unknown) {
       { status: 409 },
     );
   }
-  console.error("CEU workspace API error", message);
+  console.error(
+    "CEU workspace API error",
+    error instanceof Error ? (error.stack ?? message) : message,
+  );
   return json(
     {
       error: "The CEU workspace could not be loaded. Please try again.",

@@ -4675,60 +4675,76 @@ const MANAGED_EXTERNAL_RULE_SET_ID_LITERALS = trustedSqlStringList(
 const MANAGED_EXTERNAL_CATEGORY_ID_LITERALS = trustedSqlStringList(
   MANAGED_EXTERNAL_CATEGORY_IDS,
 );
-const MANAGED_EXTERNAL_SCOPE_SQL = `(managed_rule.id LIKE 'isc2-%'
-  OR managed_rule.id LIKE 'comptia-%'
-  OR managed_rule.profession = 'Insurance'
-  OR managed_rule.id LIKE 'nremt-%'
-  OR managed_rule.id LIKE 'ca-child-development-permit-%'
-  OR managed_rule.id LIKE 'tx-standard-classroom-teacher-%'
-  OR managed_rule.id LIKE 'ny-professional-classroom-teacher-%'
-  OR managed_rule.id LIKE 'ny-professional-esol-bilingual-%'
-  OR managed_rule.id LIKE 'nj-employed-teacher-%'
-  OR managed_rule.id LIKE 'pa-professional-educator-%'
-  OR managed_rule.id LIKE 'ca-bbs-%'
-  OR managed_rule.id LIKE 'tx-lpc-%'
-  OR managed_rule.id LIKE 'ny-lmsw-lcsw-%'
-  OR managed_rule.id LIKE 'nj-lpc-%'
-  OR managed_rule.id LIKE 'pa-lpc-%'
-  OR managed_rule.id LIKE 'fl-lcsw-lmft-lmhc-%'
-  OR managed_rule.profession = 'Pharmacy'
-  OR managed_rule.profession = 'Nursing'
-  OR managed_rule.id LIKE 'crcc-%'
-  OR managed_rule.id LIKE 'abve-%'
-  OR managed_rule.id LIKE 'ima-%'
-  OR managed_rule.id LIKE 'acfe-%'
-  OR managed_rule.id LIKE 'iia-%'
-  OR managed_rule.id LIKE 'irs-%'
-  OR managed_rule.id LIKE 'nasaa-%'
-  OR managed_rule.id LIKE 'nmls-%'
-  OR managed_rule.id LIKE 'finra-%'
-  OR managed_rule.id LIKE 'cfainstitute-%'
-  OR managed_rule.id LIKE 'acams-%'
-  OR managed_rule.id LIKE 'aba-%'
-  OR managed_rule.id LIKE 'ascm-%'
-  OR managed_rule.id LIKE 'asq-%'
-  OR managed_rule.id LIKE 'bcsp-%'
-  OR managed_rule.id LIKE 'gbci-%'
-  OR managed_rule.id LIKE 'icf-%'
-  OR managed_rule.id LIKE 'internachi-%'
-  OR managed_rule.id LIKE 'ifma-%'
-  OR managed_rule.id LIKE 'atd-%'
-  OR managed_rule.id LIKE 'giac-%'
-  OR managed_rule.id LIKE 'iapp-%'
-  OR managed_rule.id LIKE 'ace-%'
-  OR managed_rule.id LIKE 'ancc-%'
-  OR managed_rule.id LIKE 'aacn-%'
-  OR managed_rule.id LIKE 'nbcot-%'
-  OR managed_rule.id LIKE 'bacb-%'
-  OR managed_rule.id LIKE 'nbcc-%'
-  OR managed_rule.id LIKE 'ccmc-%'
-  OR managed_rule.id LIKE 'aapc-%'
-  OR managed_rule.id LIKE 'ahima-%'
-  OR managed_rule.id LIKE 'ascp-%'
-  OR managed_rule.id LIKE 'nbrc-%'
-  OR managed_rule.id LIKE 'ardms-%'
-  OR managed_rule.id LIKE 'aama-%'
-  OR managed_rule.id LIKE 'nahq-%'
+// The managed-external scope must stay flat: a plain OR chain of LIKE terms
+// parses as a left-deep expression tree, and once the catalog grew past ~50
+// issuer prefixes it exceeded SQLite's maximum expression depth of 100, which
+// made every statement embedding this fragment fail (and with it every
+// workspace load, since seeding runs during initialization). The VALUES join
+// keeps the parse depth constant no matter how many prefixes are added.
+const MANAGED_EXTERNAL_ID_PREFIXES = [
+  "isc2-",
+  "comptia-",
+  "nremt-",
+  "ca-child-development-permit-",
+  "tx-standard-classroom-teacher-",
+  "ny-professional-classroom-teacher-",
+  "ny-professional-esol-bilingual-",
+  "nj-employed-teacher-",
+  "pa-professional-educator-",
+  "ca-bbs-",
+  "tx-lpc-",
+  "ny-lmsw-lcsw-",
+  "nj-lpc-",
+  "pa-lpc-",
+  "fl-lcsw-lmft-lmhc-",
+  "crcc-",
+  "abve-",
+  "ima-",
+  "acfe-",
+  "iia-",
+  "irs-",
+  "nasaa-",
+  "nmls-",
+  "finra-",
+  "cfainstitute-",
+  "acams-",
+  "aba-",
+  "ascm-",
+  "asq-",
+  "bcsp-",
+  "gbci-",
+  "icf-",
+  "internachi-",
+  "ifma-",
+  "atd-",
+  "giac-",
+  "iapp-",
+  "ace-",
+  "ancc-",
+  "aacn-",
+  "nbcot-",
+  "bacb-",
+  "nbcc-",
+  "ccmc-",
+  "aapc-",
+  "ahima-",
+  "ascp-",
+  "nbrc-",
+  "ardms-",
+  "aama-",
+  "nahq-",
+] as const;
+
+const MANAGED_EXTERNAL_PREFIX_VALUES_SQL = MANAGED_EXTERNAL_ID_PREFIXES.map(
+  (prefix) => `('${prefix}%')`,
+).join(", ");
+
+const MANAGED_EXTERNAL_SCOPE_SQL = `(EXISTS (
+    SELECT 1
+    FROM (VALUES ${MANAGED_EXTERNAL_PREFIX_VALUES_SQL})
+    WHERE managed_rule.id LIKE column1
+  )
+  OR managed_rule.profession IN ('Insurance', 'Pharmacy', 'Nursing')
   OR managed_rule.stable_key IN (
     'ca-dentist',
     'ca-dental-hygienist',
