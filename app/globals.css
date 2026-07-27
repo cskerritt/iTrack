@@ -17,6 +17,62 @@
   --coral: #dd7c66;
   --coral-soft: #fbe4df;
   --white: #ffffff;
+
+  /*
+   * TYPE SCALE — phone-first. `body` is --text-md (15px).
+   * Nothing in this stylesheet may declare a font-size below --text-2xs.
+   * The single documented exception is the bottom tab bar
+   * (`.mobile-nav .nav-button`), where 10px is the platform convention and
+   * the label is carried by a 20px glyph.
+   *   --text-2xs  uppercase micro-labels: pills, chips, eyebrows, table heads
+   *   --text-xs   secondary text: helper copy, hints, metadata, timestamps
+   *   --text-sm   form labels, legends, and every interactive control label
+   *   --text-md   body copy
+   *   --text-lg   next step up, reserved for emphasised sans copy
+   *   --text-control  editable value text (see the iOS zoom floor below)
+   * Serif display sizes (Newsreader headings) sit outside this scale and are
+   * still declared per component.
+   */
+  --text-2xs: 12px;
+  --text-xs: 13px;
+  --text-sm: 14px;
+  --text-md: 15px;
+  --text-lg: 17px;
+  --text-control: 16px;
+
+  /*
+   * MUTED INK — every value clears WCAG AA (4.5:1) for normal-size text on
+   * the surface it is used against. Do not introduce new ad-hoc greys;
+   * pick the token whose surface family matches.
+   *   --ink-label        6.0:1 — form labels and legends
+   *   --ink-muted        5.7:1 on --card/--white, 5.2:1 on --paper
+   *   --ink-faint        5.3:1 on --card/--white, 4.8:1 on --paper
+   *   --ink-placeholder  4.8:1 on --white (placeholders sit on --white only)
+   *   --ink-warm         5.5:1 on the cream/amber card surfaces
+   *   --ink-amber        5.9:1 on --amber-soft chips
+   *   --accent-ink       6.1:1 green accent for meaningful marks
+   */
+  --ink-label: #536762;
+  --ink-muted: #566b64;
+  --ink-faint: #5e6f69;
+  --ink-placeholder: #66766f;
+  --ink-warm: #6a6152;
+  --ink-amber: #7a5716;
+  --accent-ink: #2f6d58;
+
+  /*
+   * ON-DARK INK — for the ink/ink-deep sidebar, hero and detail-header.
+   * Those surfaces carry a mint radial gradient, so the floor is set by the
+   * brightest point of the gradient, not by flat --ink: at that point 0.7
+   * still clears AA (4.7:1) while 0.5-0.58 fall to 3.8-4.4:1.
+   */
+  --on-dark-muted: rgba(255, 255, 255, 0.78);
+  --on-dark-faint: rgba(255, 255, 255, 0.7);
+
+  /* TAP TARGETS — minimum comfortable hit area on a touch screen. */
+  --tap-min: 44px;
+  --tap-comfortable: 48px;
+
   --shadow-sm: 0 1px 2px rgba(19, 53, 47, 0.05);
   --shadow-md: 0 16px 40px rgba(19, 53, 47, 0.09);
   --shadow-lg: 0 28px 80px rgba(16, 44, 39, 0.18);
@@ -42,7 +98,7 @@ body {
     var(--paper);
   color: var(--ink);
   font-family: var(--font-manrope), Arial, Helvetica, sans-serif;
-  font-size: 15px;
+  font-size: var(--text-md);
   line-height: 1.55;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
@@ -50,8 +106,21 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
+}
+
+/*
+ * iOS Safari zooms the viewport whenever a focused field computes below 16px
+ * and never zooms back out. Every editable control therefore carries an
+ * unconditional 16px floor — not one scoped to a breakpoint. `1em` keeps any
+ * field that is deliberately larger than the floor at its declared size.
+ */
+input,
+select,
+textarea {
+  font-size: max(var(--text-control), 1em);
 }
 
 button,
@@ -124,7 +193,7 @@ a {
     calc(22px + env(safe-area-inset-bottom))
     calc(18px + env(safe-area-inset-left));
   background: var(--ink-deep);
-  color: rgba(255, 255, 255, 0.78);
+  color: var(--on-dark-muted);
 }
 
 .brand {
@@ -171,7 +240,7 @@ a {
   background: transparent;
   color: inherit;
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--text-sm);
   font-weight: 700;
   padding: 9px 13px;
   text-align: left;
@@ -220,7 +289,7 @@ a {
   background: var(--mint);
   color: var(--ink-deep);
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--text-sm);
   font-weight: 800;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
 }
@@ -233,12 +302,6 @@ a {
   background: #a0e2c7;
 }
 
-.sidebar-add:disabled,
-.mobile-add:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
-}
-
 .sidebar-coach {
   margin-top: auto;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -249,7 +312,7 @@ a {
 
 .sidebar-coach > span {
   color: var(--mint);
-  font-size: 10px;
+  font-size: var(--text-2xs);
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -267,8 +330,8 @@ a {
 
 .sidebar-coach p {
   margin: 5px 0 0;
-  color: rgba(255, 255, 255, 0.55);
-  font-size: 11px;
+  color: var(--on-dark-faint);
+  font-size: var(--text-xs);
 }
 
 .app-stage {
@@ -311,8 +374,8 @@ a {
 .page-eyebrow,
 .section-kicker {
   display: block;
-  color: #678179;
-  font-size: 10px;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
   font-weight: 800;
   letter-spacing: 0.13em;
   text-transform: uppercase;
@@ -330,8 +393,8 @@ a {
 
 .page-greeting p {
   margin: 4px 0 0;
-  color: #65736f;
-  font-size: 14px;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
 }
 
 .button {
@@ -343,7 +406,7 @@ a {
   border: 1px solid transparent;
   border-radius: 12px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--text-sm);
   font-weight: 800;
   line-height: 1;
   padding: 0 18px;
@@ -394,7 +457,7 @@ a {
 .button-ghost {
   border-color: transparent;
   background: transparent;
-  color: #6b7774;
+  color: var(--ink-muted);
 }
 
 .button-danger {
@@ -440,7 +503,7 @@ a {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.1);
   color: rgba(255, 255, 255, 0.82);
-  font-size: 10px;
+  font-size: var(--text-2xs);
   font-weight: 800;
   letter-spacing: 0.06em;
   padding: 6px 9px;
@@ -465,8 +528,8 @@ a {
 
 .renewal-identity p {
   margin: 0;
-  color: rgba(255, 255, 255, 0.62);
-  font-size: 12px;
+  color: var(--on-dark-muted);
+  font-size: var(--text-xs);
 }
 
 .text-button {
@@ -475,7 +538,7 @@ a {
   background: transparent;
   color: inherit;
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-weight: 800;
   padding: 7px 0;
   text-decoration: none;
@@ -505,8 +568,8 @@ a {
 .deadline-number span {
   display: block;
   margin-top: 10px;
-  color: rgba(255, 255, 255, 0.58);
-  font-size: 10px;
+  color: var(--on-dark-faint);
+  font-size: var(--text-2xs);
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -514,14 +577,14 @@ a {
 .deadline-detail > span {
   display: block;
   margin-bottom: 10px;
-  color: rgba(255, 255, 255, 0.58);
-  font-size: 11px;
+  color: var(--on-dark-faint);
+  font-size: var(--text-xs);
 }
 
 .deadline-detail p {
   margin: 8px 0 0;
-  color: rgba(255, 255, 255, 0.62);
-  font-size: 11px;
+  color: var(--on-dark-muted);
+  font-size: var(--text-xs);
 }
 
 .deadline-detail p strong {
@@ -566,7 +629,7 @@ a {
 }
 
 .section-kicker-light {
-  color: rgba(255, 255, 255, 0.52);
+  color: var(--on-dark-faint);
 }
 
 .readiness-ring {
@@ -611,8 +674,8 @@ a {
 
 .readiness-ring small {
   margin-top: -2px;
-  color: rgba(255, 255, 255, 0.55);
-  font-size: 9px;
+  color: var(--on-dark-faint);
+  font-size: var(--text-2xs);
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -621,8 +684,8 @@ a {
 .readiness-panel p {
   max-width: 175px;
   margin: 0;
-  color: rgba(255, 255, 255, 0.5);
-  font-size: 10px;
+  color: var(--on-dark-faint);
+  font-size: var(--text-xs);
   line-height: 1.45;
 }
 
@@ -660,8 +723,8 @@ a {
 
 .next-action-card p {
   margin: 1px 0 0;
-  color: #7a7768;
-  font-size: 11px;
+  color: var(--ink-warm);
+  font-size: var(--text-xs);
 }
 
 .dashboard-grid {
@@ -709,8 +772,8 @@ a {
 .card-summary {
   border-radius: 99px;
   background: #edf0e9;
-  color: #697771;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
   font-weight: 800;
   padding: 6px 9px;
   text-transform: uppercase;
@@ -749,7 +812,7 @@ a {
   border-radius: 99px;
   background: #f8e5dd;
   color: #9b563f;
-  font-size: 8px;
+  font-size: var(--text-2xs);
   font-weight: 800;
   padding: 3px 6px;
   text-transform: uppercase;
@@ -758,7 +821,7 @@ a {
 .limit-note {
   margin: -2px 0 0;
   color: #99624d;
-  font-size: 9px;
+  font-size: var(--text-xs);
 }
 
 .total-excess-note {
@@ -766,19 +829,35 @@ a {
   border-radius: 9px;
   background: #faf0eb;
   color: #8d5b48;
-  font-size: 8px;
+  font-size: var(--text-xs);
   padding: 8px 10px;
 }
 
+/*
+ * Answering a conditional rule is the highest-stakes interaction in the
+ * product, so every control that does it clears the 44px tap floor and
+ * carries a label at the control type size. The negative inline margin keeps
+ * the text optically aligned with the requirement above it while the hit
+ * area grows outward.
+ */
 .condition-change {
   width: max-content;
+  min-height: var(--tap-min);
+  margin-left: -10px;
   border: 0;
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: #628073;
+  color: var(--ink-soft);
   cursor: pointer;
-  font-size: 8px;
+  font-size: var(--text-sm);
   font-weight: 800;
-  padding: 0;
+  padding: 8px 10px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.condition-change:hover {
+  color: var(--ink);
 }
 
 .requirement-condition {
@@ -806,13 +885,13 @@ a {
 }
 
 .requirement-condition strong {
-  font-size: 10px;
+  font-size: var(--text-sm);
 }
 
 .requirement-condition small,
 .requirement-condition p {
-  color: #7f8985;
-  font-size: 8px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .requirement-condition p {
@@ -826,15 +905,15 @@ a {
 }
 
 .requirement-condition-actions button {
-  min-height: 32px;
+  min-height: var(--tap-min);
   border: 1px solid #cbd7d0;
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--white);
   color: #477363;
   cursor: pointer;
-  font-size: 8px;
+  font-size: var(--text-sm);
   font-weight: 800;
-  padding: 6px 9px;
+  padding: 8px 13px;
 }
 
 .dental-checkpoint {
@@ -858,20 +937,20 @@ a {
 
 .dental-checkpoint-form label > span,
 .checkpoint-date {
-  color: #687a72;
-  font-size: 8px;
+  color: var(--ink-label);
+  font-size: var(--text-sm);
   font-weight: 800;
 }
 
 .dental-checkpoint-form input {
   width: 100%;
-  min-height: 36px;
+  min-height: var(--tap-comfortable);
   border: 1px solid #cbd7d0;
   border-radius: 8px;
   background: var(--white);
   color: var(--ink);
   font: inherit;
-  font-size: 9px;
+  font-size: var(--text-control);
   padding: 8px 10px;
 }
 
@@ -888,13 +967,17 @@ a {
 }
 
 .dental-checkpoint-actions button {
-  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--tap-min);
   border: 1px solid #cbd7d0;
   border-radius: 8px;
   background: var(--white);
   color: #477363;
   cursor: pointer;
-  font-size: 8px;
+  font-size: var(--text-sm);
   font-weight: 800;
   padding: 6px 9px;
 }
@@ -921,8 +1004,8 @@ a {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  color: #72807b;
-  font-size: 10px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .progress-label > span:first-child {
@@ -933,14 +1016,14 @@ a {
 
 .progress-label strong {
   color: var(--ink);
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .met-label {
   border-radius: 99px;
   background: var(--sage-bright);
   color: #31735d;
-  font-size: 8px;
+  font-size: var(--text-2xs);
   font-weight: 800;
   padding: 3px 6px;
   text-transform: uppercase;
@@ -958,7 +1041,7 @@ a {
   background: transparent;
   color: var(--ink-soft);
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-weight: 800;
   padding: 14px 0 0;
 }
@@ -966,8 +1049,8 @@ a {
 .xp-chip {
   border-radius: 99px;
   background: var(--amber-soft);
-  color: #8a6723;
-  font-size: 10px;
+  color: var(--ink-amber);
+  font-size: var(--text-2xs);
   font-weight: 800;
   padding: 6px 10px;
 }
@@ -1010,7 +1093,7 @@ a {
 
 .level-copy strong,
 .level-copy small {
-  font-size: 9px;
+  font-size: var(--text-xs);
 }
 
 .level-copy strong {
@@ -1018,7 +1101,7 @@ a {
 }
 
 .level-copy small {
-  color: #7e8a84;
+  color: var(--ink-muted);
 }
 
 .level-track,
@@ -1057,18 +1140,18 @@ a {
 
 .quest-heading strong {
   color: var(--ink);
-  font-size: 10px;
+  font-size: var(--text-sm);
 }
 
 .quest-heading small {
   margin-top: 2px;
   color: #62736c;
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 
 .quest-heading > span {
   color: #536b61;
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 800;
 }
 
@@ -1081,8 +1164,8 @@ a {
   margin: 0;
   border: 1px dashed #d8ddd6;
   border-radius: 11px;
-  color: #7d8983;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   line-height: 1.45;
   padding: 15px;
   text-align: center;
@@ -1110,13 +1193,13 @@ a {
 }
 
 .quest-state {
-  color: #81a395;
+  color: var(--ink-muted);
   font-size: 15px;
   text-align: center;
 }
 
 .quest-row.claimable .quest-state {
-  color: #c08a26;
+  color: var(--ink-amber);
 }
 
 .quest-row.claimed .quest-state {
@@ -1134,14 +1217,14 @@ a {
 
 .quest-copy strong {
   color: var(--ink);
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .quest-copy small {
   overflow: hidden;
   margin-top: 2px;
   color: #5f716a;
-  font-size: 10px;
+  font-size: var(--text-xs);
   line-height: 1.35;
   text-overflow: ellipsis;
 }
@@ -1152,6 +1235,10 @@ a {
 }
 
 .quest-row button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   min-width: 68px;
   min-height: 44px;
   border: 0;
@@ -1159,8 +1246,8 @@ a {
   background: var(--ink);
   color: var(--white);
   cursor: pointer;
-  font-size: 10px;
-  font-weight: 850;
+  font-size: var(--text-sm);
+  font-weight: 800;
   padding: 7px 9px;
 }
 
@@ -1175,8 +1262,8 @@ a {
 
 .quest-count {
   min-width: 44px;
-  color: #7b8983;
-  font-size: 10px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   font-weight: 800;
   text-align: right;
 }
@@ -1198,18 +1285,18 @@ a {
   border-radius: 8px;
   background: var(--sage-bright);
   color: #37765f;
-  font-weight: 900;
+  font-weight: 800;
 }
 
 .momentum-note.grace_week > span {
   background: var(--amber-soft);
-  color: #956e22;
+  color: var(--ink-amber);
 }
 
 .momentum-note p {
   margin: 0;
-  color: #76827d;
-  font-size: 8px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   line-height: 1.45;
 }
 
@@ -1243,8 +1330,8 @@ a {
   background: var(--white);
   color: #356f5b;
   cursor: pointer;
-  font-size: 10px;
-  font-weight: 850;
+  font-size: var(--text-sm);
+  font-weight: 800;
   padding: 7px 11px;
   text-decoration: none;
 }
@@ -1253,6 +1340,51 @@ a {
 .task-edit-button:disabled {
   cursor: wait;
   opacity: 0.55;
+}
+
+/*
+ * IN-FLIGHT FEEDBACK
+ * A write takes two round trips (save, then re-read), so the control that
+ * started it says so instead of the whole page going grey. The ring is
+ * decorative: the adjacent word ("Saving…", "Claiming…") is what assistive
+ * technology reads, and the sitewide reduced-motion rule freezes the spin
+ * while leaving the mark and its label in place.
+ */
+.action-spinner {
+  display: inline-block;
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  border-top-color: transparent;
+  opacity: 0.75;
+  vertical-align: -2px;
+  animation: lantern-spin 0.7s linear infinite;
+}
+
+.row-saving {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--tap-min);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  font-weight: 800;
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
+.task-row.saving,
+.requirement-condition.saving {
+  background: #f4f6f1;
+}
+
+@keyframes lantern-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .task-row {
@@ -1299,7 +1431,7 @@ a {
   border: 1.5px solid #bdc4ba;
   border-radius: 7px;
   color: transparent;
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 
 .task-row.completed .custom-check {
@@ -1319,20 +1451,20 @@ a {
 
 .task-row strong {
   color: var(--ink);
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .task-row small {
   margin-top: 1px;
   overflow: hidden;
-  color: #8d9691;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .task-row.completed strong {
-  color: #8e9692;
+  color: var(--ink-faint);
   text-decoration: line-through;
 }
 
@@ -1353,7 +1485,7 @@ a {
   margin-top: 18px;
   border-top: 1px solid var(--line);
   color: #4e7469;
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
   padding-top: 15px;
 }
@@ -1371,8 +1503,8 @@ a {
   background: transparent;
   color: #2f705b;
   cursor: pointer;
-  font-size: 9px;
-  font-weight: 850;
+  font-size: var(--text-sm);
+  font-weight: 800;
 }
 
 .reminder-inbox {
@@ -1429,13 +1561,13 @@ a {
 
 .reminder-list strong {
   display: block;
-  font-size: 10px;
+  font-size: var(--text-sm);
 }
 
 .reminder-list p {
   margin: 2px 0 0;
-  color: #7e745d;
-  font-size: 9px;
+  color: var(--ink-warm);
+  font-size: var(--text-xs);
 }
 
 .reminder-list article > div:last-child {
@@ -1451,7 +1583,7 @@ a {
   background: transparent;
   color: #6e6249;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 800;
   padding: 6px 8px;
 }
@@ -1463,6 +1595,22 @@ a {
 .reminder-list .calendar-action {
   border: 1px solid rgba(160, 121, 35, 0.26);
   background: rgba(255, 255, 255, 0.62);
+}
+
+/* The heading counts every check-in; this is how the rest are reached. */
+.reminder-inbox-footer {
+  display: flex;
+  justify-content: center;
+  border-top: 1px solid rgba(208, 185, 126, 0.35);
+  padding: 2px 20px 6px;
+}
+
+.reminder-inbox-footer .text-button {
+  color: var(--ink-warm);
+}
+
+.reminder-inbox-footer .text-button:hover {
+  color: var(--ink);
 }
 
 .recent-list {
@@ -1493,12 +1641,12 @@ a {
 }
 
 .recent-list strong {
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .recent-list p {
-  color: #8e9793;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .evidence-mark {
@@ -1507,8 +1655,8 @@ a {
   width: 25px;
   height: 25px;
   border-radius: 8px;
-  font-size: 10px;
-  font-weight: 900;
+  font-size: var(--text-xs);
+  font-weight: 800;
 }
 
 .evidence-mark.attached {
@@ -1518,17 +1666,17 @@ a {
 
 .evidence-mark.missing {
   background: var(--amber-soft);
-  color: #906923;
+  color: var(--ink-amber);
 }
 
 .evidence-mark.not_required {
   background: #eef0eb;
-  color: #7d8681;
+  color: var(--ink-muted);
 }
 
 .credit-value {
   color: #3b755f;
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 800;
 }
 
@@ -1554,22 +1702,22 @@ a {
 
 .empty-inline strong {
   display: block;
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .empty-inline p {
   margin: 0;
-  color: #87908c;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .empty-inline button {
-  min-height: 38px;
+  min-height: var(--tap-min);
   border: 0;
   background: transparent;
   color: var(--ink-soft);
   cursor: pointer;
-  font-size: 10px;
+  font-size: var(--text-sm);
   font-weight: 800;
 }
 
@@ -1611,8 +1759,8 @@ a {
 .onboarding-copy p {
   max-width: 510px;
   margin: 0 0 27px;
-  color: rgba(255, 255, 255, 0.63);
-  font-size: 14px;
+  color: var(--on-dark-muted);
+  font-size: var(--text-sm);
 }
 
 .onboarding-steps {
@@ -1655,12 +1803,12 @@ a {
 }
 
 .onboarding-steps strong {
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .onboarding-steps p {
-  color: rgba(255, 255, 255, 0.5);
-  font-size: 10px;
+  color: var(--on-dark-faint);
+  font-size: var(--text-xs);
 }
 
 .trust-strip {
@@ -1689,14 +1837,14 @@ a {
   border-radius: 9px;
   background: var(--sage-bright);
   color: #3d745f;
-  font-size: 11px;
-  font-weight: 900;
+  font-size: var(--text-xs);
+  font-weight: 800;
 }
 
 .trust-strip p {
   margin: 0;
-  color: #6c7974;
-  font-size: 10px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .trust-strip strong {
@@ -1745,25 +1893,25 @@ a {
 }
 
 .credential-picker strong {
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .credential-picker small {
-  color: #87918c;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .picker-progress {
   color: #4d776a;
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 800;
 }
 
 .credential-picker .add-picker {
   min-height: 46px;
   border-style: dashed;
-  color: #607c73;
-  font-size: 10px;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
   font-weight: 800;
   justify-content: center;
 }
@@ -1803,8 +1951,8 @@ a {
 
 .credential-detail-header p {
   margin: 0;
-  color: rgba(255, 255, 255, 0.58);
-  font-size: 11px;
+  color: var(--on-dark-faint);
+  font-size: var(--text-xs);
 }
 
 .deadline-chip {
@@ -1820,15 +1968,15 @@ a {
 }
 
 .deadline-chip span {
-  color: rgba(255, 255, 255, 0.5);
-  font-size: 8px;
+  color: var(--on-dark-faint);
+  font-size: var(--text-2xs);
   font-weight: 800;
   text-transform: uppercase;
 }
 
 .deadline-chip strong {
   margin-top: 2px;
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .detail-stats {
@@ -1854,8 +2002,8 @@ a {
 }
 
 .detail-stats span {
-  color: #81908a;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
   font-weight: 800;
   text-transform: uppercase;
 }
@@ -1869,8 +2017,8 @@ a {
 }
 
 .detail-stats small {
-  color: #8e9793;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .detail-section {
@@ -1890,8 +2038,8 @@ a {
 .source-detail p {
   max-width: 650px;
   margin: -8px 0 0;
-  color: #75817d;
-  font-size: 11px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .source-detail .button {
@@ -1902,8 +2050,8 @@ a {
   justify-self: start;
   border-radius: 99px;
   background: #eeefe9;
-  color: #6f7974;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
   font-weight: 700;
   padding: 7px 10px;
 }
@@ -1925,7 +2073,7 @@ a {
   background: transparent;
   color: #3f7562;
   cursor: pointer;
-  font-size: 9px;
+  font-size: var(--text-sm);
   font-weight: 800;
   text-decoration: underline;
   text-underline-offset: 3px;
@@ -1969,7 +2117,7 @@ a {
 .credential-packet-copy > p {
   margin: 0;
   color: #52665d;
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 
 .credential-packet-gaps {
@@ -1983,7 +2131,7 @@ a {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.78);
   color: #4d6258;
-  font-size: 10px;
+  font-size: var(--text-2xs);
   font-weight: 800;
   padding: 4px 7px;
 }
@@ -2000,13 +2148,13 @@ a {
 
 .detail-footer strong {
   display: block;
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .detail-footer p {
   margin: 2px 0 0;
-  color: #89928e;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .submitted-footer {
@@ -2021,8 +2169,8 @@ a {
   border-radius: 99px;
   background: var(--sage-bright);
   color: #32735d;
-  font-size: 8px;
-  font-weight: 900;
+  font-size: var(--text-2xs);
+  font-weight: 800;
   letter-spacing: 0.04em;
   padding: 5px 8px;
   text-transform: uppercase;
@@ -2066,8 +2214,8 @@ a {
 }
 
 .record-summary > div span {
-  color: #84908b;
-  font-size: 8px;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
   font-weight: 800;
   text-transform: uppercase;
 }
@@ -2080,8 +2228,8 @@ a {
 }
 
 .record-summary > div small {
-  color: #949c98;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .record-summary > .button {
@@ -2101,14 +2249,15 @@ a {
   box-shadow: var(--shadow-sm);
 }
 
+/* Fixed columns are sized for the readable type scale, not the old 8-10px. */
 .records-table {
   display: grid;
   grid-template-columns:
     minmax(210px, 1.45fr)
     minmax(130px, 1fr)
-    95px
-    50px
-    78px;
+    112px
+    64px
+    108px;
   align-items: center;
   min-height: 78px;
   border-bottom: 1px solid #e7e8e3;
@@ -2123,9 +2272,9 @@ a {
 .records-table-head {
   min-height: 43px;
   background: #f2f3ee;
-  color: #83908b;
-  font-size: 8px;
-  font-weight: 900;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+  font-weight: 800;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -2147,27 +2296,36 @@ a {
   display: block;
 }
 
+/*
+ * The course title is what the eye scans for, so it wraps to two lines and
+ * clamps there instead of losing most of a real title to a single-line
+ * ellipsis on a phone-width column.
+ */
 .record-title strong {
+  display: -webkit-box;
   overflow: hidden;
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: var(--text-sm);
+  line-height: 1.35;
+  overflow-wrap: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 .record-title small,
 .records-table > span small {
-  color: #8e9793;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .records-table > span {
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 
 .proof-label {
   justify-self: start;
   border-radius: 99px;
-  font-size: 8px !important;
+  font-size: var(--text-2xs);
   font-weight: 800;
   padding: 5px 8px;
 }
@@ -2179,12 +2337,12 @@ a {
 
 .proof-label.missing {
   background: var(--amber-soft);
-  color: #8b6723;
+  color: var(--ink-amber);
 }
 
 .proof-label.not_required {
   background: #eceee9;
-  color: #737d78;
+  color: var(--ink-muted);
 }
 
 .proof-cell {
@@ -2202,8 +2360,8 @@ a {
   background: transparent;
   color: #356f5b;
   cursor: pointer;
-  font-size: 9px;
-  font-weight: 850;
+  font-size: var(--text-sm);
+  font-weight: 800;
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -2215,8 +2373,8 @@ a {
 .frozen-proof-note {
   max-width: 118px;
   margin-top: 3px;
-  color: #6f7d77 !important;
-  font-size: 9px !important;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   line-height: 1.35;
 }
 
@@ -2242,7 +2400,7 @@ a {
 .record-credit {
   justify-self: end;
   color: #3b755f;
-  font-size: 13px;
+  font-size: var(--text-sm);
 }
 
 .record-manage {
@@ -2256,8 +2414,8 @@ a {
   background: var(--white);
   color: #356f5b;
   cursor: pointer;
-  font-size: 9px;
-  font-weight: 850;
+  font-size: var(--text-sm);
+  font-weight: 800;
   padding: 7px 10px;
 }
 
@@ -2267,8 +2425,8 @@ a {
 }
 
 .record-manage > span {
-  color: #7a8781;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   font-weight: 750;
   text-align: right;
 }
@@ -2308,14 +2466,14 @@ a {
 
 .archived-items > summary > span:first-child {
   color: var(--ink);
-  font-size: 11px;
-  font-weight: 850;
+  font-size: var(--text-sm);
+  font-weight: 800;
 }
 
 .archived-items > summary small {
   margin-top: 1px;
   color: #5f7068;
-  font-size: 9px;
+  font-size: var(--text-xs);
   font-weight: 650;
 }
 
@@ -2355,7 +2513,7 @@ a {
 
 .archived-item strong {
   color: var(--ink);
-  font-size: 10px;
+  font-size: var(--text-sm);
 }
 
 .archived-item > div:first-child {
@@ -2370,18 +2528,22 @@ a {
 .archived-item small {
   margin-top: 2px;
   color: #5f7068;
-  font-size: 9px;
+  font-size: var(--text-xs);
 }
 
 .archived-item button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   min-height: 44px;
   border: 1px solid #cad8d1;
   border-radius: 9px;
   background: var(--white);
   color: #356f5b;
   cursor: pointer;
-  font-size: 9px;
-  font-weight: 850;
+  font-size: var(--text-sm);
+  font-weight: 800;
   padding: 7px 11px;
 }
 
@@ -2399,7 +2561,7 @@ a {
 
 .archived-item-state {
   color: #566861;
-  font-size: 9px;
+  font-size: var(--text-xs);
   font-weight: 800;
 }
 
@@ -2445,8 +2607,8 @@ a {
 .account-profile p {
   overflow: hidden;
   margin: 0;
-  color: #7e8985;
-  font-size: 10px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   text-overflow: ellipsis;
 }
 
@@ -2479,8 +2641,8 @@ a {
 .weekly-rhythm-card > p {
   max-width: 630px;
   margin: 0;
-  color: #737e7a;
-  font-size: 11px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .account-level {
@@ -2501,13 +2663,13 @@ a {
 
 .account-level strong {
   color: var(--ink);
-  font-size: 10px;
+  font-size: var(--text-sm);
 }
 
 .account-level small {
   margin-top: 3px;
-  color: #78867f;
-  font-size: 8px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .weekly-rhythm-card {
@@ -2536,7 +2698,7 @@ a {
   height: 32px;
   border-radius: 10px;
   background: var(--sage-bright);
-  font-weight: 900;
+  font-weight: 800;
 }
 
 .weekly-goal-scheduled p {
@@ -2550,13 +2712,13 @@ a {
 
 .weekly-goal-scheduled strong {
   color: var(--ink);
-  font-size: 10px;
+  font-size: var(--text-sm);
 }
 
 .weekly-goal-scheduled small {
   margin-top: 2px;
   color: #61766d;
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 
 .weekly-goal-form {
@@ -2574,8 +2736,8 @@ a {
 
 .weekly-goal-form legend {
   margin-bottom: 9px;
-  color: #526a61;
-  font-size: 10px;
+  color: var(--ink-label);
+  font-size: var(--text-sm);
   font-weight: 800;
 }
 
@@ -2620,13 +2782,13 @@ a {
 
 .weekly-goal-option strong {
   color: var(--ink);
-  font-size: 10px;
+  font-size: var(--text-sm);
 }
 
 .weekly-goal-option small {
   margin-top: 1px;
   color: #61736c;
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 
 .weekly-goal-form fieldset:disabled .weekly-goal-option {
@@ -2642,8 +2804,8 @@ a {
 }
 
 .weekly-goal-actions > span {
-  color: #697a73;
-  font-size: 10px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .reminder-settings-card {
@@ -2698,7 +2860,7 @@ a {
   background: var(--sage-bright);
   color: #32735d;
   font-size: 16px;
-  font-weight: 900;
+  font-weight: 800;
 }
 
 .phone-alert-status.denied {
@@ -2723,13 +2885,13 @@ a {
 
 .phone-alert-status strong {
   color: var(--ink);
-  font-size: 13px;
+  font-size: var(--text-sm);
 }
 
 .phone-alert-status small {
   margin-top: 2px;
-  color: #667872;
-  font-size: 12px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   line-height: 1.45;
 }
 
@@ -2742,7 +2904,7 @@ a {
   display: block;
   margin-top: 12px;
   color: #60736d;
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 700;
 }
 
@@ -2754,8 +2916,8 @@ a {
   max-width: 720px;
   margin-top: 22px;
   border-top: 1px solid var(--line);
-  color: #6c7b76;
-  font-size: 12px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   line-height: 1.5;
   padding-top: 18px;
 }
@@ -2769,8 +2931,8 @@ a {
   border-radius: 99px;
   background: var(--sage-bright);
   color: #32735d;
-  font-size: 9px;
-  font-weight: 850;
+  font-size: var(--text-xs);
+  font-weight: 800;
   padding: 8px 12px;
 }
 
@@ -2778,7 +2940,7 @@ a {
   display: grid;
   gap: 18px;
   color: #566963;
-  font-size: 14px;
+  font-size: var(--text-sm);
   line-height: 1.6;
 }
 
@@ -2811,7 +2973,7 @@ a {
   min-height: 57px;
   border: 1px solid var(--line);
   border-radius: 11px;
-  color: #9aa19d;
+  color: var(--ink-faint);
   gap: 8px;
   padding: 9px 11px;
 }
@@ -2833,11 +2995,11 @@ a {
 
 .badge-grid strong {
   color: var(--ink);
-  font-size: 9px;
+  font-size: var(--text-sm);
 }
 
 .badge-grid small {
-  font-size: 8px;
+  font-size: var(--text-xs);
   line-height: 1.35;
 }
 
@@ -2859,8 +3021,8 @@ a {
   position: relative;
   border: 1px solid var(--line);
   border-radius: 10px;
-  color: #60706b;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   padding: 12px 12px 12px 31px;
 }
 
@@ -2868,9 +3030,9 @@ a {
   position: absolute;
   top: 12px;
   left: 11px;
-  color: #4a846f;
+  color: var(--accent-ink);
   content: "✓";
-  font-weight: 900;
+  font-weight: 800;
 }
 
 .empty-page {
@@ -2911,8 +3073,8 @@ a {
 .empty-page p {
   max-width: 520px;
   margin: 0 0 20px;
-  color: #76817d;
-  font-size: 12px;
+  color: var(--ink-muted);
+  font-size: var(--text-md);
 }
 
 .modal-backdrop {
@@ -3011,14 +3173,14 @@ a {
 
 .field > span,
 .segmented-field legend {
-  color: #536762;
-  font-size: 10px;
+  color: var(--ink-label);
+  font-size: var(--text-sm);
   font-weight: 800;
 }
 
 .field em {
-  color: #9aa29e;
-  font-size: 8px;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
   font-style: normal;
   font-weight: 600;
   text-transform: uppercase;
@@ -3037,7 +3199,7 @@ a {
 }
 
 .field input::placeholder {
-  color: #adb4b0;
+  color: var(--ink-placeholder);
 }
 
 .field input:focus,
@@ -3047,8 +3209,8 @@ a {
 }
 
 .field small {
-  color: #8b9490;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .field small.field-warning {
@@ -3066,7 +3228,7 @@ a {
   background: transparent;
   color: #32735d;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--text-sm);
   font-weight: 800;
   padding: 8px 4px;
 }
@@ -3086,14 +3248,14 @@ a {
 
 .requirement-picker > legend,
 .condition-review > legend {
-  color: #536762;
-  font-size: 10px;
+  color: var(--ink-label);
+  font-size: var(--text-sm);
   font-weight: 800;
 }
 
 .requirement-picker legend em {
-  color: #9aa29e;
-  font-size: 8px;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
   font-style: normal;
   font-weight: 600;
   text-transform: uppercase;
@@ -3137,8 +3299,8 @@ a {
   border: 1px solid #cbd3cf;
   border-radius: 7px;
   color: transparent;
-  font-size: 11px;
-  font-weight: 900;
+  font-size: var(--text-xs);
+  font-weight: 800;
 }
 
 .requirement-choice input:checked + .requirement-check {
@@ -3164,14 +3326,14 @@ a {
 
 .requirement-choice strong {
   color: var(--ink);
-  font-size: 9px;
+  font-size: var(--text-sm);
 }
 
 .requirement-choice small,
 .requirement-picker-hint,
 .requirement-picker-empty {
-  color: #87918d;
-  font-size: 8px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .requirement-picker-empty {
@@ -3189,8 +3351,8 @@ a {
 }
 
 .nremt-requirement-allocator > legend {
-  color: #536762;
-  font-size: 10px;
+  color: var(--ink-label);
+  font-size: var(--text-sm);
   font-weight: 800;
   padding: 0 5px;
 }
@@ -3198,8 +3360,8 @@ a {
 .nremt-requirement-allocator > p,
 .nremt-allocation-heading small {
   margin: 0;
-  color: #78847f;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   line-height: 1.45;
 }
 
@@ -3215,7 +3377,7 @@ a {
 
 .nremt-allocation-heading strong {
   color: var(--ink);
-  font-size: 10px;
+  font-size: var(--text-sm);
 }
 
 .nremt-allocation-list {
@@ -3230,7 +3392,7 @@ a {
 
 .nremt-allocation-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 76px;
+  grid-template-columns: minmax(0, 1fr) 92px;
   align-items: center;
   gap: 8px;
   border: 1px solid var(--line);
@@ -3247,24 +3409,80 @@ a {
 
 .nremt-allocation-row strong {
   color: var(--ink);
-  font-size: 9px;
+  font-size: var(--text-sm);
 }
 
 .nremt-allocation-row small {
   margin-top: 2px;
-  color: #87918d;
-  font-size: 7px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   line-height: 1.35;
 }
 
 .nremt-allocation-row input {
   width: 100%;
-  min-height: 40px;
+  min-height: var(--tap-comfortable);
   border: 1px solid var(--line-strong);
   border-radius: 9px;
   background: var(--white);
   color: var(--ink-deep);
   padding: 8px;
+}
+
+/*
+ * Running total for the exact-allocation forms. Balanced reads in the sage
+ * family used everywhere a compliance state is satisfied; off-by reads in the
+ * amber family used for "still needs attention". Both pairs are the same ones
+ * carried by .proof-label, so the chips read as one system.
+ */
+.allocation-tally {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  margin: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 7px 10px;
+}
+
+.allocation-tally-label {
+  font-size: var(--text-2xs);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.allocation-tally-figure {
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.allocation-tally-state {
+  margin-left: auto;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: var(--text-2xs);
+  font-weight: 800;
+  padding: 3px 9px;
+}
+
+.allocation-tally.balanced {
+  border-color: #a9cfbe;
+  background: var(--sage-bright);
+  color: #31735d;
+}
+
+.allocation-tally.unbalanced {
+  border-color: #ddc68d;
+  background: var(--amber-soft);
+  color: var(--ink-amber);
+}
+
+.allocation-tally.waiting {
+  border-color: var(--line);
+  background: var(--white);
+  color: var(--ink-muted);
 }
 
 .nremt-education-attestation {
@@ -3285,13 +3503,13 @@ a {
 
 .nremt-checklist-note strong {
   color: var(--ink);
-  font-size: 10px;
+  font-size: var(--text-sm);
 }
 
 .nremt-checklist-note p {
   margin: 4px 0 0;
-  color: #78847f;
-  font-size: 8px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   line-height: 1.5;
 }
 
@@ -3304,8 +3522,8 @@ a {
 
 .condition-review > p {
   margin: -3px 0 2px;
-  color: #78847f;
-  font-size: 8px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .condition-list {
@@ -3328,18 +3546,18 @@ a {
 }
 
 .condition-list strong {
-  font-size: 9px;
+  font-size: var(--text-sm);
 }
 
 .condition-list small {
   margin-top: 3px;
-  color: #7e8984;
-  font-size: 8px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .condition-options {
   display: flex;
-  gap: 5px;
+  gap: 6px;
 }
 
 .condition-options label {
@@ -3351,18 +3569,20 @@ a {
   opacity: 0;
 }
 
+/* Applies / Not this cycle — see the .condition-change note on tap floors. */
 .condition-options span {
   display: grid;
   place-items: center;
-  min-height: 34px;
+  min-height: var(--tap-min);
   border: 1px solid #cfd8d2;
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--white);
   color: #64756e;
   cursor: pointer;
-  font-size: 8px;
+  font-size: var(--text-sm);
   font-weight: 800;
-  padding: 6px 8px;
+  padding: 8px 13px;
+  text-align: center;
 }
 
 .condition-options input:checked + span {
@@ -3381,7 +3601,7 @@ a {
 }
 
 .file-field input[type="file"]::file-selector-button {
-  min-height: 34px;
+  min-height: var(--tap-min);
   margin-right: 10px;
   border: 0;
   border-radius: 8px;
@@ -3420,7 +3640,7 @@ a {
   background: var(--sage-bright);
   color: #32735d;
   font-size: 21px;
-  font-weight: 900;
+  font-weight: 800;
 }
 
 .certificate-capture-heading strong,
@@ -3437,8 +3657,8 @@ a {
 
 .certificate-capture-heading p {
   margin: 2px 0 0;
-  color: #76847f;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   line-height: 1.4;
 }
 
@@ -3460,8 +3680,8 @@ a {
   background: var(--white);
   color: #426b5d;
   cursor: pointer;
-  font-size: 9px;
-  font-weight: 850;
+  font-size: var(--text-sm);
+  font-weight: 800;
   padding: 9px 12px;
   text-align: center;
 }
@@ -3495,15 +3715,15 @@ a {
 
 .capture-privacy {
   margin: 0;
-  color: #71817b;
-  font-size: 11px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   line-height: 1.5;
 }
 
 .capture-privacy::before {
-  color: #4a846f;
+  color: var(--accent-ink);
   content: "▣ ";
-  font-weight: 900;
+  font-weight: 800;
 }
 
 .draft-safety-note {
@@ -3532,7 +3752,7 @@ a {
   background: var(--sage-bright);
   color: #39725e;
   font-size: 13px;
-  font-weight: 900;
+  font-weight: 800;
 }
 
 .draft-safety-note strong,
@@ -3542,13 +3762,13 @@ a {
 
 .draft-safety-note strong {
   color: var(--ink);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .draft-safety-note small {
   margin-top: 2px;
-  color: #77857f;
-  font-size: 11px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   line-height: 1.45;
 }
 
@@ -3559,7 +3779,7 @@ a {
   background: #edf0ec;
   color: #63726c;
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-weight: 800;
   padding: 7px 9px;
 }
@@ -3587,24 +3807,24 @@ a {
 }
 
 .capture-file strong {
-  font-size: 9px;
+  font-size: var(--text-sm);
 }
 
 .capture-file small {
   margin-top: 3px;
-  color: #82908b;
-  font-size: 8px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .capture-file button {
   min-width: 61px;
-  min-height: 40px;
+  min-height: var(--tap-min);
   border: 0;
   border-radius: 9px;
   background: #eef1ec;
   color: #66766f;
   cursor: pointer;
-  font-size: 8px;
+  font-size: var(--text-sm);
   font-weight: 800;
 }
 
@@ -3633,7 +3853,7 @@ a {
 
 .capture-status p {
   margin: 0;
-  font-size: 8px;
+  font-size: var(--text-xs);
   line-height: 1.45;
 }
 
@@ -3644,8 +3864,8 @@ a {
   height: 20px;
   border-radius: 50%;
   background: rgba(61, 109, 91, 0.12);
-  font-size: 9px;
-  font-weight: 900;
+  font-size: var(--text-xs);
+  font-weight: 800;
 }
 
 .capture-progress {
@@ -3709,19 +3929,19 @@ a {
 
 .evidence-file-list strong {
   overflow-wrap: anywhere;
-  font-size: 10px;
+  font-size: var(--text-sm);
 }
 
 .evidence-file-list small {
   margin-top: 3px;
-  color: #8b9490;
-  font-size: 8px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .evidence-empty {
   border: 1px dashed var(--line-strong);
   border-radius: 12px;
-  color: #75817d;
+  color: var(--ink-muted);
   padding: 18px;
   text-align: center;
 }
@@ -3732,7 +3952,7 @@ a {
 
 .evidence-empty p {
   margin: 4px 0 0;
-  font-size: 9px;
+  font-size: var(--text-xs);
 }
 
 .evidence-file-actions {
@@ -3744,7 +3964,7 @@ a {
 .button-compact {
   min-height: 44px;
   padding: 7px 10px;
-  font-size: 9px;
+  font-size: var(--text-sm);
 }
 
 .segmented-field {
@@ -3776,8 +3996,8 @@ a {
   min-height: 45px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  color: #75827d;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
   font-weight: 800;
   text-align: center;
 }
@@ -3810,13 +4030,13 @@ a {
 }
 
 .switch-row strong {
-  font-size: 13px;
+  font-size: var(--text-sm);
 }
 
 .switch-row small {
   margin-top: 2px;
-  color: #8a9490;
-  font-size: 12px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   line-height: 1.4;
 }
 
@@ -3837,8 +4057,8 @@ a {
 
 .check-grid legend {
   margin-bottom: 8px;
-  color: #536762;
-  font-size: 10px;
+  color: var(--ink-label);
+  font-size: var(--text-sm);
   font-weight: 800;
 }
 
@@ -3857,9 +4077,9 @@ a {
   min-height: 44px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  color: #74817c;
+  color: var(--ink-muted);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 800;
 }
 
@@ -3885,8 +4105,8 @@ a {
 
 .cycle-rollover > p {
   margin: -5px 0 0;
-  color: #708079;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .form-actions {
@@ -3915,11 +4135,32 @@ a {
 }
 
 .modal-error strong {
-  font-size: 10px;
+  font-size: var(--text-sm);
 }
 
 .modal-error span {
-  font-size: 9px;
+  font-size: var(--text-xs);
+}
+
+/*
+ * The message takes focus when it appears so a phone user whose sheet is
+ * already scrolled to the submit row is put on it rather than left staring at
+ * an unchanged form. It is not in the tab order, so Tab continues to Cancel.
+ */
+.modal-error:focus {
+  outline: none;
+}
+
+.modal-error:focus-visible {
+  outline: 3px solid #b8523c;
+  outline-offset: 2px;
+}
+
+/* A rejected save has to be the last thing above the button that caused it. */
+.form-stack > .modal-error + .form-actions {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 10px;
 }
 
 .read-only-status {
@@ -3944,13 +4185,13 @@ a {
 
 .read-only-status strong {
   color: var(--ink);
-  font-size: 10px;
+  font-size: var(--text-sm);
 }
 
 .read-only-status small {
   margin-top: 2px;
-  color: #718079;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .archive-zone {
@@ -3967,13 +4208,13 @@ a {
 
 .archive-zone > div:first-child > strong {
   color: #78392e;
-  font-size: 10px;
+  font-size: var(--text-sm);
 }
 
 .archive-zone > div:first-child > p {
   margin: 2px 0 0;
   color: #846c66;
-  font-size: 9px;
+  font-size: var(--text-xs);
 }
 
 .archive-trigger {
@@ -3983,8 +4224,8 @@ a {
   background: var(--white);
   color: #934536;
   cursor: pointer;
-  font-size: 10px;
-  font-weight: 850;
+  font-size: var(--text-sm);
+  font-weight: 800;
   padding: 8px 12px;
 }
 
@@ -4004,7 +4245,7 @@ a {
 .archive-confirmation > p {
   margin: 0;
   color: #76554e;
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 
 .archive-confirmation > p strong {
@@ -4034,9 +4275,9 @@ a {
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: #7b8581;
+  color: var(--ink-muted);
   cursor: pointer;
-  font-size: 10px;
+  font-size: var(--text-sm);
   font-weight: 800;
 }
 
@@ -4060,8 +4301,8 @@ a {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 10px;
-  color: #788780;
-  font-size: 10px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   line-height: 1.35;
 }
 
@@ -4074,8 +4315,8 @@ a {
 
 .source-card p {
   margin: 2px 0 8px;
-  color: #6c7974;
-  font-size: 11px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   line-height: 1.5;
 }
 
@@ -4091,7 +4332,7 @@ a {
   align-items: center;
   min-height: 44px;
   color: #356f5b;
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-weight: 800;
 }
 
@@ -4102,8 +4343,8 @@ a {
 
 .form-hint {
   margin: -5px 0 0;
-  color: #8a9490;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .advisory-note {
@@ -4123,7 +4364,7 @@ a {
   height: 22px;
   border: 1px solid #cbd0c7;
   border-radius: 50%;
-  color: #718078;
+  color: var(--ink-muted);
   font-family: Georgia, serif;
   font-size: 12px;
   font-style: italic;
@@ -4131,8 +4372,8 @@ a {
 
 .advisory-note p {
   margin: 1px 0 0;
-  color: #737f7a;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .celebration-panel {
@@ -4166,7 +4407,7 @@ a {
 .celebration-panel p {
   margin: 2px 0 0;
   color: #5f786e;
-  font-size: 9px;
+  font-size: var(--text-xs);
 }
 
 .empty-modal {
@@ -4197,8 +4438,8 @@ a {
 .empty-modal p {
   max-width: 380px;
   margin: 0 0 18px;
-  color: #75817c;
-  font-size: 11px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .offline-banner,
@@ -4230,7 +4471,7 @@ a {
   border-radius: 10px;
   background: #dcece3;
   font-size: 17px;
-  font-weight: 900;
+  font-weight: 800;
 }
 
 .offline-banner strong,
@@ -4239,13 +4480,13 @@ a {
 }
 
 .offline-banner strong {
-  font-size: 10px;
+  font-size: var(--text-sm);
 }
 
 .offline-banner small {
   margin-top: 2px;
-  color: #698078;
-  font-size: 9px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .error-banner strong,
@@ -4254,20 +4495,20 @@ a {
 }
 
 .error-banner strong {
-  font-size: 10px;
+  font-size: var(--text-sm);
 }
 
 .error-banner span {
-  font-size: 9px;
+  font-size: var(--text-xs);
 }
 
 .error-banner button {
-  min-height: 40px;
+  min-height: var(--tap-min);
   border: 1px solid #d99180;
   border-radius: 9px;
   background: var(--white);
   cursor: pointer;
-  font-size: 9px;
+  font-size: var(--text-sm);
   font-weight: 800;
   padding: 0 12px;
 }
@@ -4298,7 +4539,7 @@ a {
   background: var(--sage-bright);
   color: #34715c;
   font-size: 28px;
-  font-weight: 900;
+  font-weight: 800;
 }
 
 .offline-workspace h1 {
@@ -4313,8 +4554,8 @@ a {
 .offline-workspace p {
   max-width: 580px;
   margin: 0;
-  color: #74807b;
-  font-size: 11px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
   line-height: 1.6;
 }
 
@@ -4341,24 +4582,24 @@ a {
 }
 
 .toast > span {
-  font-size: 10px;
+  font-size: var(--text-sm);
   font-weight: 700;
 }
 
 .toast button {
-  min-height: 34px;
+  min-height: var(--tap-min);
   border: 0;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.09);
   color: var(--mint);
   cursor: pointer;
-  font-size: 9px;
+  font-size: var(--text-sm);
   font-weight: 800;
   padding: 0 10px;
 }
 
 .toast .toast-close {
-  width: 34px;
+  width: var(--tap-min);
   padding: 0;
   color: var(--white);
   font-size: 17px;
@@ -4464,9 +4705,9 @@ a {
     grid-template-columns:
       minmax(180px, 1.4fr)
       minmax(100px, 1fr)
-      80px
-      45px
-      76px;
+      98px
+      58px
+      100px;
     column-gap: 12px;
     padding-inline: 12px;
   }
@@ -4653,10 +4894,6 @@ a {
     font-size: 20px;
   }
 
-  .readiness-ring small {
-    font-size: 7px;
-  }
-
   .readiness-panel p {
     grid-column: 1;
     grid-row: 2;
@@ -4677,8 +4914,26 @@ a {
     grid-template-columns: 1fr;
   }
 
+  /*
+   * Single column: compliance leads. Credit progress and the packet checklist
+   * answer "am I covered?", so they stay above the fold; the record of recent
+   * learning follows, and the Level/XP momentum card comes last instead of
+   * pushing the requirement list off a phone screen.
+   */
+  .progress-card {
+    order: 1;
+  }
+
+  .checklist-card {
+    order: 2;
+  }
+
+  .recent-card {
+    order: 3;
+  }
+
   .progression-card {
-    order: -1;
+    order: 4;
   }
 
   .onboarding-hero {
@@ -4748,9 +5003,31 @@ a {
     margin-left: 37px;
   }
 
+  /*
+   * The column head above the list is hidden at this width, so every row
+   * carries its own field names and no value is left to be read as a bare
+   * number or an unexplained chip.
+   */
+  .records-table .record-field-label {
+    position: static;
+    display: block;
+    width: auto;
+    height: auto;
+    margin: 0 0 3px;
+    overflow: visible;
+    clip: auto;
+    color: var(--ink-faint);
+    font-size: var(--text-2xs);
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    white-space: normal;
+    text-transform: uppercase;
+  }
+
   .record-credit {
     grid-column: 2;
     grid-row: 1;
+    text-align: right;
   }
 
   .record-manage {
@@ -4811,7 +5088,7 @@ a {
   }
 
   .page-greeting p {
-    font-size: 12px;
+    font-size: var(--text-xs);
   }
 
   .page-greeting > .button {
@@ -4842,10 +5119,6 @@ a {
 
   .deadline-number strong {
     font-size: 53px;
-  }
-
-  .deadline-number span {
-    font-size: 8px;
   }
 
   .next-action-card {
@@ -4883,11 +5156,6 @@ a {
 
   .install-companion-row .button {
     width: 100%;
-  }
-
-  .field input,
-  .field select {
-    font-size: 16px;
   }
 
   .submitted-note-action {
@@ -4945,7 +5213,7 @@ a {
   }
 
   .deadline-chip strong {
-    font-size: 9px;
+    font-size: var(--text-xs);
   }
 
   .detail-stats > div {
@@ -5127,7 +5395,7 @@ a {
   }
 
   .segmented-field span {
-    min-height: 43px;
+    min-height: var(--tap-min);
   }
 
   .requirement-choice-list {
@@ -5147,9 +5415,14 @@ a {
     grid-template-columns: 1fr;
   }
 
+  /*
+   * Three answers now: Applies / Not this cycle / Not sure yet. auto-fit lets
+   * them sit two-up on a narrow phone and three-up when there is room, without
+   * a stranded full-width third option.
+   */
   .condition-options {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   }
 
   .toast {
@@ -5215,6 +5488,30 @@ a {
 
   .detail-stats > div:last-child {
     border-bottom: 0;
+  }
+}
+
+/*
+ * Regression guard. Anything a finger has to hit inside a compliance form or
+ * a conditional-rule answer keeps the --tap-min floor, whatever a future rule
+ * declares. Scoped to the visible proxies only: the radio and checkbox inputs
+ * behind .condition-options / .segmented-field / .check-grid are visually
+ * hidden and must keep their intrinsic box.
+ */
+@media (pointer: coarse) {
+  .form-stack button,
+  .form-stack .condition-options span,
+  .form-stack .segmented-field span,
+  .form-stack .check-grid span,
+  .condition-change,
+  .requirement-condition-actions button,
+  .dental-checkpoint-actions button {
+    min-height: var(--tap-min);
+  }
+
+  .form-stack input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+  .form-stack select {
+    min-height: var(--tap-comfortable);
   }
 }
 

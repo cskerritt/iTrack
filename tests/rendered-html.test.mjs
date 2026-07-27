@@ -1864,7 +1864,7 @@ test("License Lantern product contract", async (t) => {
       );
       assert.match(
         runtimeSource,
-        /\.\.\.PHARMACY_RULE_SET_SEED_BINDINGS[\s\S]*?\.\.\.PHARMACY_CATEGORY_SEED_BINDINGS[\s\S]*?managed_rule\.profession = 'Pharmacy'[\s\S]*?\.\.\.PHARMACY_MAXIMUM_CLASSIFICATION_RULE_SET_IDS/,
+        /\.\.\.PHARMACY_RULE_SET_SEED_BINDINGS[\s\S]*?\.\.\.PHARMACY_CATEGORY_SEED_BINDINGS[\s\S]*?managed_rule\.profession IN \('Insurance', 'Pharmacy', 'Nursing'\)[\s\S]*?\.\.\.PHARMACY_MAXIMUM_CLASSIFICATION_RULE_SET_IDS/,
       );
       assert.match(
         workspaceRouteSource,
@@ -2867,7 +2867,7 @@ test("License Lantern product contract", async (t) => {
 
         assert.match(
           runtimeSource,
-          /\.\.\.REHABILITATION_RULE_SET_SEED_BINDINGS[\s\S]*?\.\.\.REHABILITATION_CATEGORY_SEED_BINDINGS[\s\S]*?managed_rule\.id LIKE 'crcc-%'[\s\S]*?managed_rule\.id LIKE 'abve-%'/,
+          /\.\.\.REHABILITATION_RULE_SET_SEED_BINDINGS[\s\S]*?\.\.\.REHABILITATION_CATEGORY_SEED_BINDINGS[\s\S]*?"crcc-",[\s\S]*?"abve-",/,
         );
         assert.match(
           routeSource,
@@ -3708,7 +3708,7 @@ export {
         expandedCertificationModule.EXPANDED_CERTIFICATION_RULE_SET_PREFIXES;
       assert.equal(new Set(prefixes).size, prefixes.length);
       const managedScopeSource = runtimeSource.slice(
-        runtimeSource.indexOf("const MANAGED_EXTERNAL_SCOPE_SQL"),
+        runtimeSource.indexOf("const MANAGED_EXTERNAL_ID_PREFIXES"),
         runtimeSource.indexOf(
           "const RETIRE_MISSING_MANAGED_RULE_SETS_SQL",
         ),
@@ -3719,9 +3719,7 @@ export {
           `${prefix} does not own an expanded catalog rule`,
         );
         assert.ok(
-          managedScopeSource.includes(
-            `managed_rule.id LIKE '${prefix}%'`,
-          ),
+          managedScopeSource.includes(`"${prefix}",`),
           `${prefix} is missing from managed retirement`,
         );
       }
@@ -4224,7 +4222,7 @@ export {
       );
       assert.match(
         runtimeSource,
-        /\.\.\.NURSING_RULE_SET_SEED_BINDINGS[\s\S]*?\.\.\.NURSING_CATEGORY_SEED_BINDINGS[\s\S]*?managed_rule\.profession = 'Nursing'[\s\S]*?\.\.\.NURSING_MAXIMUM_CLASSIFICATION_RULE_SET_IDS/,
+        /\.\.\.NURSING_RULE_SET_SEED_BINDINGS[\s\S]*?\.\.\.NURSING_CATEGORY_SEED_BINDINGS[\s\S]*?managed_rule\.profession IN \('Insurance', 'Pharmacy', 'Nursing'\)[\s\S]*?\.\.\.NURSING_MAXIMUM_CLASSIFICATION_RULE_SET_IDS/,
       );
       assert.match(
         workspaceRouteSource,
@@ -7325,6 +7323,17 @@ export {
         clientSource,
         /const activityCredential =[\s\S]*?selectedCredentialId,[\s\S]*?\?\? null/,
       );
+      // Opening the sheet always captures the dashboard's credential, so a
+      // credential picked inside the sheet cannot leak into the app-wide
+      // selection when the sheet closes without saving.
+      assert.match(
+        clientSource,
+        /const openActivityEntry = useCallback\(\(\) => \{[\s\S]*?if \(selectionBeforeActivityEntry\.current === null\) \{\s*selectionBeforeActivityEntry\.current = selectedCredentialId;\s*\}[\s\S]*?setActivityOpen\(true\)/,
+      );
+      assert.match(
+        clientSource,
+        /restoreSelectionBeforeActivityEntry\(\);\s*setActivityOpen\(false\)/,
+      );
       assert.match(
         clientSource,
         /workspaceLoadFailed[\s\S]*?<WorkspaceLoadFailure[\s\S]*?function WorkspaceLoadFailure/,
@@ -7359,15 +7368,27 @@ export {
       );
       assert.match(
         stylesSource,
-        /\.capture-privacy\s*\{[^}]*font-size:\s*11px/,
+        /\.capture-privacy\s*\{[^}]*font-size:\s*var\(--text-xs\)/,
       );
       assert.match(
         stylesSource,
-        /\.draft-safety-note small\s*\{[^}]*font-size:\s*11px/,
+        /\.draft-safety-note small\s*\{[^}]*font-size:\s*var\(--text-xs\)/,
       );
       assert.match(
         stylesSource,
         /\.draft-safety-note button\s*\{[^}]*min-height:\s*44px/,
+      );
+      assert.match(
+        stylesSource,
+        /--text-2xs:\s*12px;\s*--text-xs:\s*13px;\s*--text-sm:\s*14px;\s*--text-md:\s*15px;/,
+      );
+      assert.match(
+        stylesSource,
+        /--text-control:\s*16px;/,
+      );
+      assert.match(
+        stylesSource,
+        /\ninput,\nselect,\ntextarea \{\n  font-size: max\(var\(--text-control\), 1em\);\n\}/,
       );
       assert.match(
         clientSource,
@@ -8882,9 +8903,60 @@ export {
         stylesSource,
         /\.weekly-goal-option\s*\{[^}]*min-height:\s*48px/,
       );
+      // Phone stack: compliance first (credit progress, then the packet
+      // checklist, then the record of recent learning), with the Level/XP
+      // momentum card last instead of ahead of the requirement list.
+      const phoneStyles = stylesSource.split("@media (max-width: 820px)")[1];
+      assert.match(phoneStyles, /\.progress-card\s*\{[^}]*order:\s*1/);
+      assert.match(phoneStyles, /\.checklist-card\s*\{[^}]*order:\s*2/);
+      assert.match(phoneStyles, /\.recent-card\s*\{[^}]*order:\s*3/);
+      assert.match(phoneStyles, /\.progression-card\s*\{[^}]*order:\s*4/);
+      assert.doesNotMatch(stylesSource, /\.progression-card\s*\{[^}]*order:\s*-1/);
+      // The inbox heading counts every timely check-in, so every counted
+      // check-in stays reachable instead of stopping at the third.
+      assert.match(
+        clientSource,
+        /showAllReminders\s*\?\s*visibleReminders\s*:\s*visibleReminders\.slice\(0, 3\)/,
+      );
+      assert.match(
+        clientSource,
+        /View all \$\{visibleReminders\.length\} check-ins/,
+      );
+      // The raised + tab and the sidebar CTA are never inert: the sheet's own
+      // empty state explains the missing credential and routes to setup.
+      assert.match(
+        clientSource,
+        /className="mobile-add"\s*type="button"\s*aria-label="Log completed learning"\s*onClick=\{onAdd\}\s*>/,
+      );
+      assert.match(
+        clientSource,
+        /<button className="sidebar-add" type="button" onClick=\{onAdd\}>/,
+      );
+      // Phone rows label their own fields once the column head is hidden, and
+      // the course title wraps to two lines instead of clipping at one.
+      assert.match(
+        clientSource,
+        /<span className="sr-only record-field-label">Credential<\/span>/,
+      );
+      assert.match(
+        clientSource,
+        /<span className="sr-only record-field-label">Proof<\/span>/,
+      );
+      assert.match(
+        clientSource,
+        /<span className="sr-only record-field-label">Credits<\/span>/,
+      );
+      assert.match(
+        phoneStyles,
+        /\.records-table \.record-field-label\s*\{[^}]*position:\s*static[^}]*font-size:\s*var\(--text-2xs\)/,
+      );
       assert.match(
         stylesSource,
-        /@media \(max-width: 820px\)[\s\S]*?\.progression-card\s*\{[^}]*order:\s*-1/,
+        /\.record-title strong\s*\{[^}]*-webkit-line-clamp:\s*2/,
+      );
+      assert.doesNotMatch(
+        stylesSource,
+        /\.record-title strong\s*\{[^}]*white-space:\s*nowrap/,
       );
       assert.match(
         stylesSource,
@@ -8892,11 +8964,11 @@ export {
       );
       assert.match(
         stylesSource,
-        /\.quest-copy small\s*\{[^}]*color:\s*#5f716a[^}]*font-size:\s*10px/,
+        /\.quest-copy small\s*\{[^}]*color:\s*#5f716a[^}]*font-size:\s*var\(--text-xs\)/,
       );
       assert.match(
         stylesSource,
-        /\.quest-row button\s*\{[^}]*min-height:\s*44px[^}]*font-size:\s*10px/,
+        /\.quest-row button\s*\{[^}]*min-height:\s*44px[^}]*font-size:\s*var\(--text-sm\)/,
       );
       assert.doesNotMatch(
         stylesSource,
@@ -13008,7 +13080,7 @@ export {
       assert.match(clientSource, /Historical cycle is frozen/);
       assert.match(
         styles,
-        /\.source-card p\s*\{[\s\S]*?font-size:\s*11px[\s\S]*?line-height:\s*1\.5/,
+        /\.source-card p\s*\{[\s\S]*?font-size:\s*var\(--text-xs\)[\s\S]*?line-height:\s*1\.5/,
       );
       assert.match(
         styles,
@@ -13017,6 +13089,22 @@ export {
       assert.match(
         styles,
         /\.catalog-custom-button\s*\{[\s\S]*?min-height:\s*44px/,
+      );
+      assert.match(
+        styles,
+        /--tap-min:\s*44px;\s*--tap-comfortable:\s*48px;/,
+      );
+      assert.match(
+        styles,
+        /\.condition-options span\s*\{[\s\S]*?min-height:\s*var\(--tap-min\)[\s\S]*?font-size:\s*var\(--text-sm\)/,
+      );
+      assert.match(
+        styles,
+        /\.condition-change\s*\{[\s\S]*?min-height:\s*var\(--tap-min\)[\s\S]*?font-size:\s*var\(--text-sm\)/,
+      );
+      assert.match(
+        styles,
+        /\.requirement-condition-actions button\s*\{[\s\S]*?min-height:\s*var\(--tap-min\)[\s\S]*?font-size:\s*var\(--text-sm\)/,
       );
     },
   );

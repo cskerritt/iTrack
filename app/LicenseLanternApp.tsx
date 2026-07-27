@@ -1291,6 +1291,34 @@ function bestNextAction(
   };
 }
 
+/*
+ * In-flight mutations are tracked by key so the control that was actually used
+ * is the only thing that changes state while the write is on the wire. Modal
+ * and sheet submits share FORM_ACTION_KEY, so a background row write never
+ * greys out an open sheet's Save button, and a sheet submit never freezes the
+ * rows behind it. Nothing here writes optimistically: the workspace is still
+ * only trusted after the server confirms and the refetch lands.
+ */
+const FORM_ACTION_KEY = "form";
+
+function taskActionKey(taskId: string) {
+  return `task:${taskId}`;
+}
+
+function requirementActionKey(requirementId: string) {
+  return `requirement:${requirementId}`;
+}
+
+function activityActionKey(activityId: string) {
+  return `activity:${activityId}`;
+}
+
+function questActionKey(questKey: string) {
+  return `quest:${questKey}`;
+}
+
+const WEEKLY_GOAL_ACTION_KEY = "weeklyGoal";
+
 export function LicenseLanternApp() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [view, setView] = useState<ViewName>("today");
@@ -1325,7 +1353,10 @@ export function LicenseLanternApp() {
   const [catalogStatus, setCatalogStatus] = useState<
     "idle" | "loading" | "ready" | "error"
   >("idle");
-  const [pending, setPending] = useState(false);
+  const [pendingActionKeys, setPendingActionKeys] = useState<string[]>([]);
+  // Sheet and modal submits only. Row-level writes carry their own key so the
+  // surface behind an open sheet keeps working.
+  const pending = pendingActionKeys.includes(FORM_ACTION_KEY);
   const [error, setError] = useState("");
   const [toast, setToast] = useState<ToastState | null>(null);
   const [activityDraft, setActivityDraft] = useState<ActivityDraft>(() => ({
@@ -1372,6 +1403,7 @@ export function LicenseLanternApp() {
   const activityDraftPersistenceEnabled = useRef(false);
   const activityDraftPersistenceGeneration = useRef(0);
   const catalogRequest = useRef<Promise<boolean> | null>(null);
+  const workspaceLoadSequence = useRef(0);
   const draftStorageKey = useMemo(
     () =>
       workspace?.user.draftStorageNamespace
@@ -1434,8 +1466,17 @@ export function LicenseLanternApp() {
   }, [activityDraft, draftStorageKey, selectedCredentialId]);
 
   const openActivityEntry = useCallback(() => {
+    // A stale message from an earlier attempt must not greet a fresh sheet.
+    setError("");
     activityDraftPersistenceGeneration.current += 1;
     activityDraftPersistenceEnabled.current = true;
+    // Every credential choice made inside this sheet — a restored draft's
+    // credential or one picked from "Apply to credential" — targets this entry
+    // only. The dashboard's own credential is captured here and put back when
+    // the sheet closes without saving, so Today never re-points silently.
+    if (selectionBeforeActivityEntry.current === null) {
+      selectionBeforeActivityEntry.current = selectedCredentialId;
+    }
     let restored = false;
     if (draftStorageKey && workspace) {
       try {
@@ -1455,8 +1496,8 @@ export function LicenseLanternApp() {
             provider: saved.provider,
           });
           // The restored draft only re-targets the credential for this form;
-          // the app-wide selection is restored when the form closes unsaved.
-          selectionBeforeActivityEntry.current = selectedCredentialId;
+          // the app-wide selection captured above is restored when the form
+          // closes unsaved.
           if (credential) {
             setSelectedCredentialId(credential.id);
             setActivityDraftCredentialWarning("");
@@ -1503,18 +1544,28 @@ export function LicenseLanternApp() {
       });
       return;
     }
+    // Only the sheet's own message is dropped here. Escape also runs this
+    // helper when nothing is open, and a workspace-load failure message has to
+    // survive that.
+    if (activityOpen) setError("");
     activityDraftPersistenceEnabled.current = false;
     activityDraftPersistenceGeneration.current += 1;
     restoreSelectionBeforeActivityEntry();
     setActivityOpen(false);
     resetActivityEntry();
   }, [
+    activityOpen,
     persistActivityDraftNow,
     resetActivityEntry,
     restoreSelectionBeforeActivityEntry,
   ]);
 
   const loadWorkspace = useCallback(async () => {
+    // Two row-level writes can now be in flight at once, so two refetches can
+    // be too. A response that has been overtaken is dropped rather than
+    // allowed to paint an older snapshot of the record over a newer one.
+    const requestId = (workspaceLoadSequence.current += 1);
+    const superseded = () => requestId !== workspaceLoadSequence.current;
     setWorkspaceLoadFailed(false);
     setWorkspaceLoadFailureStatus(null);
     let responseStatus: number | null = null;
@@ -1528,6 +1579,7 @@ export function LicenseLanternApp() {
       if (!response.ok) {
         throw new Error(data.error || "We couldn’t load your renewal workspace.");
       }
+      if (superseded()) return true;
       setWorkspace(data);
       setWorkspaceLoadFailed(false);
       setWorkspaceLoadFailureStatus(null);
@@ -1546,6 +1598,7 @@ export function LicenseLanternApp() {
       });
       return true;
     } catch (loadError) {
+      if (superseded()) return false;
       setWorkspaceLoadFailed(true);
       setWorkspaceLoadFailureStatus(responseStatus);
       setError(
@@ -1592,6 +1645,7 @@ export function LicenseLanternApp() {
   }, []);
 
   const openCredentialSetup = useCallback(() => {
+    setError("");
     setCredentialOpen(true);
     void loadCatalog();
   }, [loadCatalog]);
@@ -2074,6 +2128,7 @@ export function LicenseLanternApp() {
     action: string,
     payload: Record<string, unknown>,
     successMessage: string,
+    actionKey: string = FORM_ACTION_KEY,
   ) {
     if (!window.navigator.onLine) {
       setIsOnline(false);
@@ -2082,7 +2137,7 @@ export function LicenseLanternApp() {
       );
       return null;
     }
-    setPending(true);
+    setPendingActionKeys((current) => [...current, actionKey]);
     setError("");
     try {
       const response = await fetch("/api/workspace", {
@@ -2134,7 +2189,13 @@ export function LicenseLanternApp() {
       );
       return null;
     } finally {
-      setPending(false);
+      setPendingActionKeys((current) => {
+        const index = current.indexOf(actionKey);
+        if (index === -1) return current;
+        const next = current.slice();
+        next.splice(index, 1);
+        return next;
+      });
     }
   }
 
@@ -3003,11 +3064,13 @@ export function LicenseLanternApp() {
   }
 
   function openSubmission() {
+    setError("");
     setNremtSubmissionDate(todayIso());
     setSubmissionOpen(true);
   }
 
   function openAcceptance() {
+    setError("");
     if (isAbveCredential(selectedCredential)) {
       setError(
         "ABVE has not yet published a verified Fellow or Diplomate template for the cycle after December 31, 2027. Keep this completed cycle open until the next official requirements and dates are available.",
@@ -3262,6 +3325,7 @@ export function LicenseLanternApp() {
       applicabilityStatus === "applies"
         ? `${requirement.name} added to this cycle.`
         : `${requirement.name} marked not applicable for this cycle.`,
+      requirementActionKey(requirement.id),
     );
   }
 
@@ -3283,6 +3347,7 @@ export function LicenseLanternApp() {
       completed
         ? `${requirement.name} completion saved without adding CE units.`
         : `${requirement.name} reopened.`,
+      requirementActionKey(requirement.id),
     );
   }
 
@@ -3328,6 +3393,7 @@ export function LicenseLanternApp() {
             expectedRevision: activity.revision + 1,
           },
           "Learning record restored.",
+          activityActionKey(activity.id),
         );
       },
     });
@@ -3345,6 +3411,7 @@ export function LicenseLanternApp() {
         expectedRevision: activity.revision,
       },
       "Learning record restored.",
+      activityActionKey(activity.id),
     );
     if (result) {
       window.setTimeout(
@@ -3399,6 +3466,7 @@ export function LicenseLanternApp() {
             expectedRevision: task.revision + 1,
           },
           "Personal task restored.",
+          taskActionKey(task.id),
         );
       },
     });
@@ -3417,6 +3485,7 @@ export function LicenseLanternApp() {
         expectedRevision: task.revision,
       },
       "Personal task restored.",
+      taskActionKey(task.id),
     );
     if (result) {
       window.setTimeout(
@@ -3436,6 +3505,7 @@ export function LicenseLanternApp() {
         expectedRevision: task.revision,
       },
       completed ? "Task checked off." : "Task reopened.",
+      taskActionKey(task.id),
     );
     if (success) {
       setToast({
@@ -3449,6 +3519,7 @@ export function LicenseLanternApp() {
               expectedRevision: task.revision + 1,
             },
             "Change undone.",
+            taskActionKey(task.id),
           );
         },
       });
@@ -3464,6 +3535,7 @@ export function LicenseLanternApp() {
         weekStart: workspace.progression.week.startsOn,
       },
       `${quest.rewardXp} XP claimed. Your real compliance work moved you forward.`,
+      questActionKey(quest.key),
     );
   }
 
@@ -3474,6 +3546,7 @@ export function LicenseLanternApp() {
       weeklyGoal === workspace?.profile.weeklyGoal
         ? "Your current weekly rhythm will continue."
         : "Your next weekly rhythm is scheduled.",
+      WEEKLY_GOAL_ACTION_KEY,
     );
   }
 
@@ -3484,12 +3557,7 @@ export function LicenseLanternApp() {
       <a className="skip-link" href="#main-content">
         Skip to content
       </a>
-      <DesktopSidebar
-        view={view}
-        onView={setView}
-        onAdd={openActivityEntry}
-        hasCredential={Boolean(selectedCredential)}
-      />
+      <DesktopSidebar view={view} onView={setView} onAdd={openActivityEntry} />
 
       <div className="app-stage">
         <header className="mobile-header">
@@ -3554,7 +3622,10 @@ export function LicenseLanternApp() {
               onViewRecords={() => setView("records")}
               onSubmit={openSubmission}
               onAccept={openAcceptance}
-              onReminders={() => setRemindersOpen(true)}
+              onReminders={() => {
+                setError("");
+                setRemindersOpen(true);
+              }}
               onReminderState={(reminder, status) =>
                 void setReminderState(reminder, status)
               }
@@ -3573,9 +3644,9 @@ export function LicenseLanternApp() {
               onRestorePersonalTask={(task) =>
                 void restorePersonalTask(task)
               }
-              taskActionsDisabled={pending || !isOnline}
+              taskActionsDisabled={!isOnline}
+              pendingActionKeys={pendingActionKeys}
               onClaimQuest={(quest) => void claimWeeklyQuest(quest)}
-              progressionPending={pending}
               onRequirementApplicability={(requirement, status) =>
                 selectedCredential
                   ? void setRequirementApplicability(
@@ -3606,7 +3677,10 @@ export function LicenseLanternApp() {
               onAdd={openCredentialSetup}
               onSubmit={openSubmission}
               onAccept={openAcceptance}
-              onReminders={() => setRemindersOpen(true)}
+              onReminders={() => {
+                setError("");
+                setRemindersOpen(true);
+              }}
               onAddToCalendar={(credential) =>
                 void addCredentialToCalendar(credential)
               }
@@ -3634,7 +3708,8 @@ export function LicenseLanternApp() {
                   evidenceNote,
                 )
               }
-              actionsDisabled={pending || !isOnline}
+              actionsDisabled={!isOnline}
+              pendingActionKeys={pendingActionKeys}
             />
           ) : view === "records" ? (
             <RecordsView
@@ -3647,9 +3722,11 @@ export function LicenseLanternApp() {
                 setEditingActivity(activity);
               }}
               onRestore={(activity) => void restoreActivityRecord(activity)}
-              actionsDisabled={pending || !isOnline}
+              actionsDisabled={!isOnline}
+              pendingActionKeys={pendingActionKeys}
               onEvidence={(activity) => void openEvidence(activity)}
               onAllocate={(activity) => {
+                setError("");
                 const existingIds = new Set(
                   allocationsFor(activity).map(
                     (allocation) => allocation.credentialId,
@@ -3663,18 +3740,24 @@ export function LicenseLanternApp() {
                 setAllocationCredentialId(firstEligible?.id ?? "");
                 setAllocationActivity(activity);
               }}
-              onClassify={(activity, allocation) =>
-                setClassificationRepair({ activity, allocation })
-              }
+              onClassify={(activity, allocation) => {
+                setError("");
+                setClassificationRepair({ activity, allocation });
+              }}
             />
           ) : (
             <AccountView
               workspace={workspace}
-              onReminders={() => setRemindersOpen(true)}
+              onReminders={() => {
+                setError("");
+                setRemindersOpen(true);
+              }}
               onWeeklyGoal={(weeklyGoal) =>
                 void updateWeeklyGoal(weeklyGoal)
               }
-              weeklyGoalPending={pending}
+              weeklyGoalPending={pendingActionKeys.includes(
+                WEEKLY_GOAL_ACTION_KEY,
+              )}
               isStandalone={isStandalone}
               installAvailable={Boolean(installPrompt)}
               onInstall={() => void handleInstallApp()}
@@ -3691,12 +3774,7 @@ export function LicenseLanternApp() {
         </main>
       </div>
 
-      <MobileNavigation
-        view={view}
-        onView={setView}
-        onAdd={openActivityEntry}
-        hasCredential={Boolean(selectedCredential)}
-      />
+      <MobileNavigation view={view} onView={setView} onAdd={openActivityEntry} />
 
       {activityOpen && workspace ? (
         <Modal
@@ -4029,6 +4107,10 @@ export function LicenseLanternApp() {
                     {activityDraftCredentialWarning}
                   </small>
                 ) : null}
+                <small>
+                  Choosing here files this activity only. Today keeps its
+                  current credential unless you save this entry to another one.
+                </small>
               </label>
               {isNremtCredential(activityCredential) ? (
                 <NremtRequirementAllocator
@@ -4138,6 +4220,12 @@ export function LicenseLanternApp() {
                   </span>
                 </label>
               </fieldset>
+              {error ? (
+                <ModalError
+                  title="This activity was not saved"
+                  message={error}
+                />
+              ) : null}
               <div className="form-actions">
                 <button
                   className="button button-ghost"
@@ -4218,7 +4306,10 @@ export function LicenseLanternApp() {
         <Modal
           title="Set up a credential"
           eyebrow="Renewal plan"
-          onClose={() => setCredentialOpen(false)}
+          onClose={() => {
+            setCredentialOpen(false);
+            setError("");
+          }}
         >
           <form className="form-stack" onSubmit={handleCredentialSubmit}>
             <div className="mode-switch" aria-label="Credential setup mode">
@@ -4441,8 +4532,11 @@ export function LicenseLanternApp() {
                   <fieldset className="condition-review">
                     <legend>Which conditions apply this cycle?</legend>
                     <p>
-                      Answer each item so a conditional rule is never silently
-                      added or left out.
+                      Answer what you know. Anything left as{" "}
+                      <strong>Not sure yet</strong> is saved as needing
+                      confirmation: it is not added to this cycle&apos;s
+                      requirements, your readiness score stays cautious, and it
+                      appears on Today until you resolve it.
                     </p>
                     <div className="condition-list">
                       {selectedRule.categories
@@ -4472,7 +4566,6 @@ export function LicenseLanternApp() {
                                   type="radio"
                                   name={`applicability:${category.id}`}
                                   value="applies"
-                                  required
                                 />
                                 <span>Applies</span>
                               </label>
@@ -4481,9 +4574,26 @@ export function LicenseLanternApp() {
                                   type="radio"
                                   name={`applicability:${category.id}`}
                                   value="not_applicable"
-                                  required
                                 />
                                 <span>Not this cycle</span>
+                              </label>
+                              {/*
+                               * The stored model has always had a third state,
+                               * and the rest of the product is built around it:
+                               * an unresolved rule is held out of the readiness
+                               * score and surfaced as the top guided action.
+                               * Defaulting here matches what the server already
+                               * stores for an unanswered conditional rule, so a
+                               * guess is never forced at 11pm.
+                               */}
+                              <label>
+                                <input
+                                  type="radio"
+                                  name={`applicability:${category.id}`}
+                                  value="needs_confirmation"
+                                  defaultChecked
+                                />
+                                <span>Not sure yet</span>
                               </label>
                             </div>
                           </article>
@@ -4665,11 +4775,20 @@ export function LicenseLanternApp() {
               </p>
             </div>
 
+            {error ? (
+              <ModalError
+                title="This renewal plan was not created"
+                message={error}
+              />
+            ) : null}
             <div className="form-actions">
               <button
                 className="button button-ghost"
                 type="button"
-                onClick={() => setCredentialOpen(false)}
+                onClick={() => {
+                  setCredentialOpen(false);
+                  setError("");
+                }}
               >
                 Cancel
               </button>
@@ -4705,7 +4824,10 @@ export function LicenseLanternApp() {
                   ? "National Registry milestone"
                   : "Renewal milestone"
           }
-          onClose={() => setSubmissionOpen(false)}
+          onClose={() => {
+            setSubmissionOpen(false);
+            setError("");
+          }}
         >
           <form className="form-stack" onSubmit={handleSubmission}>
             <div className="celebration-panel">
@@ -4850,11 +4972,20 @@ export function LicenseLanternApp() {
                   : "This records what you submitted. Mark the cycle renewed only after the issuing organization confirms acceptance."}
               </p>
             </div>
+            {error ? (
+              <ModalError
+                title="This record was not saved"
+                message={error}
+              />
+            ) : null}
             <div className="form-actions">
               <button
                 className="button button-ghost"
                 type="button"
-                onClick={() => setSubmissionOpen(false)}
+                onClick={() => {
+                  setSubmissionOpen(false);
+                  setError("");
+                }}
               >
                 Not yet
               </button>
@@ -4897,7 +5028,10 @@ export function LicenseLanternApp() {
                   ? "Dashboard renewal approved"
                   : "Acceptance received"
           }
-          onClose={() => setAcceptanceOpen(false)}
+          onClose={() => {
+            setAcceptanceOpen(false);
+            setError("");
+          }}
         >
           <form className="form-stack" onSubmit={handleAcceptance}>
             <div className="celebration-panel">
@@ -5136,11 +5270,20 @@ export function LicenseLanternApp() {
                               : "Requirements are copied as a starting snapshot. Review the current official rules before relying on the new plan."}
               </p>
             </div>
+            {error ? (
+              <ModalError
+                title="This cycle was not closed"
+                message={error}
+              />
+            ) : null}
             <div className="form-actions">
               <button
                 className="button button-ghost"
                 type="button"
-                onClick={() => setAcceptanceOpen(false)}
+                onClick={() => {
+                  setAcceptanceOpen(false);
+                  setError("");
+                }}
               >
                 Not yet
               </button>
@@ -5166,7 +5309,10 @@ export function LicenseLanternApp() {
         <Modal
           title="Due-date check-ins"
           eyebrow="Reminder preferences"
-          onClose={() => setRemindersOpen(false)}
+          onClose={() => {
+            setRemindersOpen(false);
+            setError("");
+          }}
         >
           <form className="form-stack" onSubmit={handleReminderPreferences}>
             <label className="switch-row">
@@ -5277,11 +5423,20 @@ export function LicenseLanternApp() {
                 your calendar controls final delivery.
               </p>
             </div>
+            {error ? (
+              <ModalError
+                title="These check-in settings were not saved"
+                message={error}
+              />
+            ) : null}
             <div className="form-actions">
               <button
                 className="button button-ghost"
                 type="button"
-                onClick={() => setRemindersOpen(false)}
+                onClick={() => {
+                  setRemindersOpen(false);
+                  setError("");
+                }}
               >
                 Cancel
               </button>
@@ -5358,7 +5513,10 @@ export function LicenseLanternApp() {
         <Modal
           title="Reuse completed learning"
           eyebrow={allocationActivity.title}
-          onClose={() => setAllocationActivity(null)}
+          onClose={() => {
+            setAllocationActivity(null);
+            setError("");
+          }}
         >
           {eligibleAllocationCredentials.length ? (
             <form className="form-stack" onSubmit={handleAllocation}>
@@ -5446,11 +5604,20 @@ export function LicenseLanternApp() {
                   />
                 </label>
               ) : null}
+              {error ? (
+                <ModalError
+                  title="This activity was not applied"
+                  message={error}
+                />
+              ) : null}
               <div className="form-actions">
                 <button
                   className="button button-ghost"
                   type="button"
-                  onClick={() => setAllocationActivity(null)}
+                  onClick={() => {
+                    setAllocationActivity(null);
+                    setError("");
+                  }}
                 >
                   Cancel
                 </button>
@@ -5483,7 +5650,10 @@ export function LicenseLanternApp() {
               : "Edit requirement tags"
           }
           eyebrow={classificationRepair.activity.title}
-          onClose={() => setClassificationRepair(null)}
+          onClose={() => {
+            setClassificationRepair(null);
+            setError("");
+          }}
         >
           {classificationCredential ? (
             <form
@@ -5600,11 +5770,20 @@ export function LicenseLanternApp() {
                   />
                 </label>
               ) : null}
+              {error ? (
+                <ModalError
+                  title="This allocation was not updated"
+                  message={error}
+                />
+              ) : null}
               <div className="form-actions">
                 <button
                   className="button button-ghost"
                   type="button"
-                  onClick={() => setClassificationRepair(null)}
+                  onClick={() => {
+                    setClassificationRepair(null);
+                    setError("");
+                  }}
                 >
                   Cancel
                 </button>
@@ -5775,12 +5954,10 @@ function DesktopSidebar({
   view,
   onView,
   onAdd,
-  hasCredential,
 }: {
   view: ViewName;
   onView: (view: ViewName) => void;
   onAdd: () => void;
-  hasCredential: boolean;
 }) {
   return (
     <aside className="desktop-sidebar">
@@ -5811,12 +5988,12 @@ function DesktopSidebar({
           onClick={() => onView("account")}
         />
       </nav>
-      <button
-        className="sidebar-add"
-        type="button"
-        onClick={onAdd}
-        disabled={!hasCredential}
-      >
+      {/*
+       * Never inert. Before a first credential exists the sheet opens on its
+       * own empty state, which explains why credits need a cycle and routes to
+       * credential setup; a dead button explains nothing.
+       */}
+      <button className="sidebar-add" type="button" onClick={onAdd}>
         <span aria-hidden="true">＋</span>
         Log activity
       </button>
@@ -5833,12 +6010,10 @@ function MobileNavigation({
   view,
   onView,
   onAdd,
-  hasCredential,
 }: {
   view: ViewName;
   onView: (view: ViewName) => void;
   onAdd: () => void;
-  hasCredential: boolean;
 }) {
   return (
     <nav className="mobile-nav" aria-label="Primary navigation">
@@ -5854,12 +6029,16 @@ function MobileNavigation({
         symbol="▣"
         onClick={() => onView("credentials")}
       />
+      {/*
+       * Never inert: with no credential yet the sheet opens on its own empty
+       * state, which explains the gap and routes to credential setup. A dead
+       * primary button explains nothing.
+       */}
       <button
         className="mobile-add"
         type="button"
         aria-label="Log completed learning"
         onClick={onAdd}
-        disabled={!hasCredential}
       >
         +
       </button>
@@ -5924,8 +6103,8 @@ function TodayView({
   onEditPersonalTask,
   onRestorePersonalTask,
   taskActionsDisabled,
+  pendingActionKeys,
   onClaimQuest,
-  progressionPending,
   onRequirementApplicability,
   onDentalCheckpoint,
 }: {
@@ -5953,8 +6132,8 @@ function TodayView({
   ) => void;
   onRestorePersonalTask: (task: RenewalTask) => void;
   taskActionsDisabled: boolean;
+  pendingActionKeys: readonly string[];
   onClaimQuest: (quest: WeeklyQuest) => void;
-  progressionPending: boolean;
   onRequirementApplicability: (
     requirement: Requirement,
     status: "applies" | "not_applicable",
@@ -5965,6 +6144,10 @@ function TodayView({
     evidenceNote: string,
   ) => void;
 }) {
+  // The inbox heading counts every timely check-in, so every counted check-in
+  // has to be reachable from this view rather than cut off after the third.
+  const [showAllReminders, setShowAllReminders] = useState(false);
+
   if (!credential) {
     return (
       <div className="view-stack">
@@ -6227,8 +6410,11 @@ function TodayView({
               Settings
             </button>
           </div>
-          <div className="reminder-list">
-            {visibleReminders.slice(0, 3).map((reminder) => (
+          <div className="reminder-list" id="reminder-inbox-list">
+            {(showAllReminders
+              ? visibleReminders
+              : visibleReminders.slice(0, 3)
+            ).map((reminder) => (
               <article
                 className={`${reminder.urgency} ${
                   reminder.key === highlightedReminderKey ? "highlighted" : ""
@@ -6268,6 +6454,21 @@ function TodayView({
               </article>
             ))}
           </div>
+          {visibleReminders.length > 3 ? (
+            <div className="reminder-inbox-footer">
+              <button
+                className="text-button"
+                type="button"
+                aria-controls="reminder-inbox-list"
+                aria-expanded={showAllReminders}
+                onClick={() => setShowAllReminders((current) => !current)}
+              >
+                {showAllReminders
+                  ? "Show the first 3 check-ins"
+                  : `View all ${visibleReminders.length} check-ins`}
+              </button>
+            </div>
+          ) : null}
         </section>
       ) : null}
 
@@ -6361,6 +6562,7 @@ function TodayView({
                         )
                 }
                 actionsDisabled={taskActionsDisabled}
+                pendingActionKeys={pendingActionKeys}
               />
             ))}
           </div>
@@ -6483,10 +6685,24 @@ function TodayView({
                     {quest.claimable ? (
                       <button
                         type="button"
-                        disabled={progressionPending}
+                        disabled={pendingActionKeys.includes(
+                          questActionKey(quest.key),
+                        )}
+                        aria-busy={pendingActionKeys.includes(
+                          questActionKey(quest.key),
+                        )}
                         onClick={() => onClaimQuest(quest)}
                       >
-                        +{quest.rewardXp} XP
+                        {pendingActionKeys.includes(
+                          questActionKey(quest.key),
+                        ) ? (
+                          <>
+                            <ActionSpinner />
+                            Claiming…
+                          </>
+                        ) : (
+                          `+${quest.rewardXp} XP`
+                        )}
                       </button>
                     ) : (
                       <span className="quest-count">
@@ -6604,14 +6820,18 @@ function TodayView({
                 task.dueDate !== null &&
                 task.dueDate !== undefined &&
                 daysUntil(task.dueDate) < 0;
+              const taskSaving = pendingActionKeys.includes(
+                taskActionKey(task.id),
+              );
               return (
                 <article
                   className={`task-row ${
                     task.status === "completed" ? "completed" : ""
                   } ${taskOverdue ? "overdue" : ""} ${
                     credential.status === "renewed" ? "locked" : ""
-                  }`}
+                  } ${taskSaving ? "saving" : ""}`}
                   key={task.id}
+                  aria-busy={taskSaving}
                 >
                   <label className="task-toggle">
                     <input
@@ -6619,7 +6839,8 @@ function TodayView({
                       checked={task.status === "completed"}
                       disabled={
                         credential.status === "renewed" ||
-                        taskActionsDisabled
+                        taskActionsDisabled ||
+                        taskSaving
                       }
                       onChange={() => onToggleTask(task)}
                     />
@@ -6643,8 +6864,13 @@ function TodayView({
                       </small>
                     </span>
                   </label>
-                  {task.isPersonal &&
-                  credential.status !== "renewed" ? (
+                  {taskSaving ? (
+                    <span className="row-saving" role="status">
+                      <ActionSpinner />
+                      Saving…
+                    </span>
+                  ) : task.isPersonal &&
+                    credential.status !== "renewed" ? (
                     <button
                       className="task-edit-button"
                       type="button"
@@ -6688,10 +6914,25 @@ function TodayView({
                       <button
                         type="button"
                         aria-label={`Restore ${task.title}`}
-                        disabled={taskActionsDisabled}
+                        disabled={
+                          taskActionsDisabled ||
+                          pendingActionKeys.includes(taskActionKey(task.id))
+                        }
+                        aria-busy={pendingActionKeys.includes(
+                          taskActionKey(task.id),
+                        )}
                         onClick={() => onRestorePersonalTask(task)}
                       >
-                        Restore task
+                        {pendingActionKeys.includes(
+                          taskActionKey(task.id),
+                        ) ? (
+                          <>
+                            <ActionSpinner />
+                            Restoring…
+                          </>
+                        ) : (
+                          "Restore task"
+                        )}
                       </button>
                     )}
                   </article>
@@ -6816,6 +7057,7 @@ function CredentialsView({
   onRequirementApplicability,
   onDentalCheckpoint,
   actionsDisabled,
+  pendingActionKeys,
 }: {
   credentials: Credential[];
   activities: Activity[];
@@ -6839,6 +7081,7 @@ function CredentialsView({
     evidenceNote: string,
   ) => void;
   actionsDisabled: boolean;
+  pendingActionKeys: readonly string[];
 }) {
   const selected =
     credentials.find((credential) => credential.id === selectedId) ??
@@ -7149,6 +7392,7 @@ function CredentialsView({
                           )
                   }
                   actionsDisabled={actionsDisabled}
+                  pendingActionKeys={pendingActionKeys}
                 />
               ))}
             </div>
@@ -7286,6 +7530,7 @@ function RecordsView({
   onEdit,
   onRestore,
   actionsDisabled,
+  pendingActionKeys,
   onEvidence,
   onAllocate,
   onClassify,
@@ -7297,6 +7542,7 @@ function RecordsView({
   onEdit: (activity: Activity) => void;
   onRestore: (activity: Activity) => void;
   actionsDisabled: boolean;
+  pendingActionKeys: readonly string[];
   onEvidence: (activity: Activity) => void;
   onAllocate: (activity: Activity) => void;
   onClassify: (
@@ -7389,6 +7635,7 @@ function RecordsView({
                       : "—"}
                 </span>
                 <span>
+                  <span className="sr-only">Activity: </span>
                   <strong>{activity.title}</strong>
                   <small>
                     {formatDate(activity.completionDate)}
@@ -7397,6 +7644,7 @@ function RecordsView({
                 </span>
               </div>
               <span>
+                <span className="sr-only record-field-label">Credential</span>
                 {allocationsFor(activity).length ? (
                   <span className="allocation-stack">
                     {allocationsFor(activity).map((allocation) => (
@@ -7471,6 +7719,7 @@ function RecordsView({
                 ) : null}
               </span>
               <span className="proof-cell">
+                <span className="sr-only record-field-label">Proof</span>
                 <span className={`proof-label ${activity.evidenceStatus}`}>
                   {activity.evidenceDeletionPendingCount
                     ? "Removal pending"
@@ -7508,6 +7757,7 @@ function RecordsView({
                 ) : null}
               </span>
               <strong className="record-credit">
+                <span className="sr-only record-field-label">Credits</span>
                 {compactNumber(activity.totalUnits)}
               </strong>
               <div className="record-manage">
@@ -7576,10 +7826,27 @@ function RecordsView({
                       <button
                         type="button"
                         aria-label={`Restore ${activity.title}`}
-                        disabled={actionsDisabled}
+                        disabled={
+                          actionsDisabled ||
+                          pendingActionKeys.includes(
+                            activityActionKey(activity.id),
+                          )
+                        }
+                        aria-busy={pendingActionKeys.includes(
+                          activityActionKey(activity.id),
+                        )}
                         onClick={() => onRestore(activity)}
                       >
-                        Restore record
+                        {pendingActionKeys.includes(
+                          activityActionKey(activity.id),
+                        ) ? (
+                          <>
+                            <ActionSpinner />
+                            Restoring…
+                          </>
+                        ) : (
+                          "Restore record"
+                        )}
                       </button>
                     ) : (
                       <span className="archived-item-state">
@@ -8455,6 +8722,15 @@ function AccountView({
   );
 }
 
+/*
+ * The single in-flight mark used by every control that can start a write. It
+ * is decorative — the visible label beside it ("Saving…", "Claiming…") carries
+ * the meaning for assistive technology — so it is hidden from the a11y tree.
+ */
+function ActionSpinner() {
+  return <span className="action-spinner" aria-hidden="true" />;
+}
+
 function ProgressRow({
   name,
   earned,
@@ -8464,6 +8740,7 @@ function ProgressRow({
   onApplicability,
   onDentalCheckpoint,
   actionsDisabled = false,
+  pendingActionKeys = [],
 }: {
   name: string;
   earned: number;
@@ -8478,9 +8755,14 @@ function ProgressRow({
     evidenceNote: string,
   ) => void;
   actionsDisabled?: boolean;
+  pendingActionKeys?: readonly string[];
 }) {
   const kind = requirement ? requirementKind(requirement) : "minimum";
   const status = requirement ? requirementStatus(requirement) : "applies";
+  // Only this rule's own write shows progress; the rest of the list stays live.
+  const requirementSaving = requirement
+    ? pendingActionKeys.includes(requirementActionKey(requirement.id))
+    : false;
   const rawEarned = requirement
     ? requirementRawEarned(requirement)
     : earned;
@@ -8498,7 +8780,8 @@ function ProgressRow({
       <div
         className={`progress-row requirement-condition ${
           nested ? "nested" : ""
-        }`}
+        } ${requirementSaving ? "saving" : ""}`}
+        aria-busy={requirementSaving}
       >
         <div>
           <span>
@@ -8515,20 +8798,29 @@ function ProgressRow({
         </div>
         {onApplicability ? (
           <div className="requirement-condition-actions">
-            {status !== "not_applicable" ? (
-              <button
-                type="button"
-                onClick={() => onApplicability("not_applicable")}
-              >
-                Not this cycle
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => onApplicability("applies")}
-            >
-              {status === "not_applicable" ? "Add to plan" : "Applies"}
-            </button>
+            {requirementSaving ? (
+              <span className="row-saving" role="status">
+                <ActionSpinner />
+                Saving…
+              </span>
+            ) : (
+              <>
+                {status !== "not_applicable" ? (
+                  <button
+                    type="button"
+                    onClick={() => onApplicability("not_applicable")}
+                  >
+                    Not this cycle
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => onApplicability("applies")}
+                >
+                  {status === "not_applicable" ? "Add to plan" : "Applies"}
+                </button>
+              </>
+            )}
           </div>
         ) : null}
       </div>
@@ -8545,7 +8837,8 @@ function ProgressRow({
           nested ? "nested" : ""
         } ${isDentalCheckpoint ? "dental-checkpoint" : ""} ${
           checkpointCompleted ? "completed" : ""
-        }`}
+        } ${requirementSaving ? "saving" : ""}`}
+        aria-busy={requirementSaving}
       >
         <div>
           <span>
@@ -8603,15 +8896,26 @@ function ProgressRow({
               />
             </label>
             <div className="dental-checkpoint-actions">
-              <button type="submit" disabled={actionsDisabled}>
-                {checkpointCompleted
-                  ? "Update reference"
-                  : "Mark complete"}
+              <button
+                type="submit"
+                disabled={actionsDisabled || requirementSaving}
+                aria-busy={requirementSaving}
+              >
+                {requirementSaving ? (
+                  <>
+                    <ActionSpinner />
+                    Saving…
+                  </>
+                ) : checkpointCompleted ? (
+                  "Update reference"
+                ) : (
+                  "Mark complete"
+                )}
               </button>
               {checkpointCompleted ? (
                 <button
                   type="button"
-                  disabled={actionsDisabled}
+                  disabled={actionsDisabled || requirementSaving}
                   onClick={() =>
                     onDentalCheckpoint(
                       false,
@@ -8625,7 +8929,7 @@ function ProgressRow({
               {conditional && onApplicability ? (
                 <button
                   type="button"
-                  disabled={actionsDisabled}
+                  disabled={actionsDisabled || requirementSaving}
                   onClick={() => onApplicability("not_applicable")}
                 >
                   Not this cycle
@@ -8718,6 +9022,77 @@ function ProgressRow({
   );
 }
 
+/*
+ * Live feedback for the exact-allocation forms. The submit-time validators are
+ * unchanged and still decide whether a payload is legal — this only shows the
+ * running arithmetic while it is still cheap to fix, instead of leaving the
+ * user to balance nine fields in their head and find out on Save.
+ *   "exact"   — the parts have to add up to the target exactly.
+ *   "ceiling" — the amount overlaps the target and may not exceed it.
+ */
+/*
+ * These forms are exact to the entered step — CRC hours go to 0.01 — so the
+ * tally must not borrow compactNumber's single-decimal rounding, which would
+ * report 2.25 as "2.3" and a 0.05 shortfall as "0.1". Rounding at four places
+ * removes float noise and nothing else.
+ */
+function allocationFigure(value: number) {
+  return String(Number(value.toFixed(4)));
+}
+
+function AllocationTally({
+  label,
+  total,
+  target,
+  targetLabel,
+  mode,
+}: {
+  label: string;
+  total: number;
+  target: number;
+  targetLabel: string;
+  mode: "exact" | "ceiling";
+}) {
+  const difference = Number((total - target).toFixed(4));
+  const balanced =
+    mode === "exact" ? Math.abs(difference) <= 0.0001 : difference <= 0.0001;
+  const state = balanced
+    ? mode === "exact"
+      ? "Balanced"
+      : "Within the limit"
+    : difference > 0
+      ? `${allocationFigure(difference)} over`
+      : `${allocationFigure(-difference)} left to assign`;
+  return (
+    <p
+      className={`allocation-tally ${balanced ? "balanced" : "unbalanced"}`}
+      aria-live="polite"
+    >
+      <span className="allocation-tally-label">{label}</span>
+      <span className="allocation-tally-figure">
+        {allocationFigure(total)} of {allocationFigure(target)} {targetLabel}
+      </span>
+      <span className="allocation-tally-state">{state}</span>
+    </p>
+  );
+}
+
+function seedAllocationAmounts(initialMatches: RequirementMatchPayload[]) {
+  const seeded: Record<string, string> = {};
+  for (const match of initialMatches) {
+    seeded[match.requirementId] = String(Number(match.matchedUnits));
+  }
+  return seeded;
+}
+
+function allocationAmount(
+  amounts: Record<string, string>,
+  requirementId: string,
+) {
+  const parsed = Number(amounts[requirementId] ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function NremtRequirementAllocator({
   credential,
   availableUnits,
@@ -8727,11 +9102,8 @@ function NremtRequirementAllocator({
   availableUnits: number;
   initialMatches?: RequirementMatchPayload[];
 }) {
-  const initialUnits = new Map(
-    initialMatches.map((match) => [
-      match.requirementId,
-      Number(match.matchedUnits),
-    ]),
+  const [amounts, setAmounts] = useState<Record<string, string>>(() =>
+    seedAllocationAmounts(initialMatches),
   );
   const selectable = credential.requirements.filter(
     (requirement) =>
@@ -8776,10 +9148,34 @@ function NremtRequirementAllocator({
         max={availableUnits > 0 ? availableUnits : undefined}
         step="0.1"
         inputMode="decimal"
-        defaultValue={initialUnits.get(requirement.id) ?? 0}
+        value={amounts[requirement.id] ?? "0"}
+        onChange={(event) => {
+          const entered = event.currentTarget.value;
+          setAmounts((current) => ({
+            ...current,
+            [requirement.id]: entered,
+          }));
+        }}
         required
       />
     </label>
+  );
+
+  const componentTotal = componentRequirements.reduce(
+    (sum, requirement) => sum + allocationAmount(amounts, requirement.id),
+    0,
+  );
+  const nationalAmount = national
+    ? allocationAmount(amounts, national.id)
+    : 0;
+  const topicTotal = nationalTopics.reduce(
+    (sum, requirement) => sum + allocationAmount(amounts, requirement.id),
+    0,
+  );
+  const overlapTotal = overlappingRequirements.reduce(
+    (highest, requirement) =>
+      Math.max(highest, allocationAmount(amounts, requirement.id)),
+    0,
   );
 
   return (
@@ -8797,6 +9193,22 @@ function NremtRequirementAllocator({
             to this credential.
           </small>
         </div>
+        {availableUnits > 0 ? (
+          <AllocationTally
+            label="Components"
+            total={componentTotal}
+            target={availableUnits}
+            targetLabel="applied credits"
+            mode="exact"
+          />
+        ) : (
+          <p className="allocation-tally waiting">
+            <span className="allocation-tally-label">Components</span>
+            <span className="allocation-tally-figure">
+              Enter the credits to apply first
+            </span>
+          </p>
+        )}
         <div className="nremt-allocation-list">
           {componentRequirements.map(amountInput)}
         </div>
@@ -8809,6 +9221,13 @@ function NremtRequirementAllocator({
             credited portion once.
           </small>
         </div>
+        <AllocationTally
+          label="Topics"
+          total={topicTotal}
+          target={nationalAmount}
+          targetLabel="National credits"
+          mode="exact"
+        />
         <div className="nremt-allocation-list topics">
           {nationalTopics.map(amountInput)}
         </div>
@@ -8821,6 +9240,15 @@ function NremtRequirementAllocator({
             does not increase National or overall credit.
           </small>
         </div>
+        {overlappingRequirements.length ? (
+          <AllocationTally
+            label="Pediatric"
+            total={overlapTotal}
+            target={nationalAmount}
+            targetLabel="National credits"
+            mode="ceiling"
+          />
+        ) : null}
         <div className="nremt-allocation-list">
           {overlappingRequirements.map(amountInput)}
         </div>
@@ -8869,11 +9297,8 @@ function CrcRequirementAllocator({
       : "pre_approved";
   const displayedProgramReference =
     parsedInitialReference?.[2] ?? initialProgramReference;
-  const initialUnits = new Map(
-    initialMatches.map((match) => [
-      match.requirementId,
-      Number(match.matchedUnits),
-    ]),
+  const [amounts, setAmounts] = useState<Record<string, string>>(() =>
+    seedAllocationAmounts(initialMatches),
   );
   const selectable = credential.requirements.filter(
     (requirement) =>
@@ -8917,11 +9342,26 @@ function CrcRequirementAllocator({
         max={availableUnits > 0 ? availableUnits : undefined}
         step="0.01"
         inputMode="decimal"
-        defaultValue={initialUnits.get(requirement.id) ?? 0}
+        value={amounts[requirement.id] ?? "0"}
+        onChange={(event) => {
+          const entered = event.currentTarget.value;
+          setAmounts((current) => ({
+            ...current,
+            [requirement.id]: entered,
+          }));
+        }}
         required
       />
     </label>
   );
+
+  const generalAmount = general ? allocationAmount(amounts, general.id) : 0;
+  const creditTypeTotal =
+    generalAmount +
+    (professionalDevelopment
+      ? allocationAmount(amounts, professionalDevelopment.id)
+      : 0);
+  const ethicsAmount = ethics ? allocationAmount(amounts, ethics.id) : 0;
 
   return (
     <fieldset className="nremt-requirement-allocator">
@@ -8940,6 +9380,31 @@ function CrcRequirementAllocator({
               enter any ethics portion already included in General / Other.
             </small>
           </div>
+          {availableUnits > 0 ? (
+            <AllocationTally
+              label="General / Other + Professional Development"
+              total={creditTypeTotal}
+              target={availableUnits}
+              targetLabel="applied hours"
+              mode="exact"
+            />
+          ) : (
+            <p className="allocation-tally waiting">
+              <span className="allocation-tally-label">
+                General / Other + Professional Development
+              </span>
+              <span className="allocation-tally-figure">
+                Enter the hours to apply first
+              </span>
+            </p>
+          )}
+          <AllocationTally
+            label="Ethics"
+            total={ethicsAmount}
+            target={generalAmount}
+            targetLabel="General / Other hours"
+            mode="ceiling"
+          />
           <div className="nremt-allocation-list">
             {exactRequirements.map(amountInput)}
           </div>
@@ -9447,6 +9912,31 @@ function EmptyPage({
         {action}
       </button>
     </section>
+  );
+}
+
+/*
+ * A rejected save has to be readable from inside the sheet that caused it: the
+ * page-level error banner sits under `.modal-backdrop` and is marked inert
+ * while a modal is open, so it can never be seen or announced from there. Each
+ * modal renders this immediately above its own submit row, and it pulls itself
+ * into view because a phone sheet is usually already scrolled to that row.
+ */
+function ModalError({ title, message }: { title: string; message: string }) {
+  const errorRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const node = errorRef.current;
+    if (!node) return;
+    node.scrollIntoView({ block: "center" });
+    node.focus({ preventScroll: true });
+  }, [message]);
+
+  return (
+    <div className="modal-error" role="alert" ref={errorRef} tabIndex={-1}>
+      <strong>{title}</strong>
+      <span>{message}</span>
+    </div>
   );
 }
 
