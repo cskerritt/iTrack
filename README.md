@@ -60,13 +60,26 @@ box.
 
 ## Architecture
 
-- Vinext App Router on Cloudflare Workers
+- Vinext App Router on Cloudflare Workers runtime (workerd)
 - React 19 phone-first client experience
 - Cloudflare D1 with versioned rule sets and user-owned lifecycle records
 - private Cloudflare R2 evidence objects with owner-scoped metadata
-- workspace/SIWC identity headers in production
+- trusted `oai-authenticated-user-*` identity headers injected by the
+  deployment's auth proxy in production
 - localhost-only demo identity for development
 - Drizzle schema and generated migrations
+
+## Deployment
+
+Production runs on Railway: pushes to `main` auto-deploy. The container
+(`Dockerfile` + `deploy/railway/serve.mjs`) builds the app, runs it under
+wrangler's local workerd runtime with file-backed D1/R2 state on a volume
+mounted at `/data`, and fronts it with a Basic Auth proxy that injects the
+identity headers. Configure users with the `VIGILO_USERS` environment
+variable (`username:password:email[:Display Name]`, `;`-separated) and set
+`VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` for web push.
+The proxy fires scheduled push delivery every 15 minutes through a
+secret-guarded internal route.
 
 Structured activities and allocations are separate from renewal submissions.
 This preserves the difference between learning completed, credit documented,

@@ -7403,44 +7403,31 @@ export {
 
   await t.test("ships durable D1, R2, and migration bindings", async () => {
     const [
-      hostingSource,
-      builtHostingSource,
+      wranglerSource,
       baseMigration,
       evidenceMigration,
       lifecycleMigration,
       richRuleMigration,
       progressionMigration,
-      builtBaseMigration,
-      builtEvidenceMigration,
-      builtLifecycleMigration,
-      builtRichRuleMigration,
-      builtProgressionMigration,
       progressionSnapshotSource,
       migrationJournalSource,
       schemaSource,
       runtimeSource,
       exclusiveGroupMigration,
-      builtExclusiveGroupMigration,
       exclusiveGroupSnapshotSource,
       attestationMigration,
-      builtAttestationMigration,
       attestationSnapshotSource,
       weeklyPeriodMigration,
-      builtWeeklyPeriodMigration,
       weeklyPeriodSnapshotSource,
       archiveMigration,
-      builtArchiveMigration,
       archiveSnapshotSource,
       pushMigration,
-      builtPushMigration,
       pushSnapshotSource,
       dentalCheckpointMigration,
-      builtDentalCheckpointMigration,
       dentalCheckpointSnapshotSource,
     ] = await Promise.all([
-        readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
         readFile(
-          new URL("../dist/.openai/hosting.json", import.meta.url),
+          new URL("../dist/server/wrangler.json", import.meta.url),
           "utf8",
         ),
         readFile(
@@ -7467,41 +7454,6 @@ export {
           "utf8",
         ),
         readFile(
-          new URL(
-            "../dist/.openai/drizzle/0000_past_agent_zero.sql",
-            import.meta.url,
-          ),
-          "utf8",
-        ),
-        readFile(
-          new URL(
-            "../dist/.openai/drizzle/0001_lethal_revanche.sql",
-            import.meta.url,
-          ),
-          "utf8",
-        ),
-        readFile(
-          new URL(
-            "../dist/.openai/drizzle/0002_lonely_green_goblin.sql",
-            import.meta.url,
-          ),
-          "utf8",
-        ),
-        readFile(
-          new URL(
-            "../dist/.openai/drizzle/0003_lazy_ironclad.sql",
-            import.meta.url,
-          ),
-          "utf8",
-        ),
-        readFile(
-          new URL(
-            "../dist/.openai/drizzle/0004_nervous_mentallo.sql",
-            import.meta.url,
-          ),
-          "utf8",
-        ),
-        readFile(
           new URL("../drizzle/meta/0004_snapshot.json", import.meta.url),
           "utf8",
         ),
@@ -7516,25 +7468,11 @@ export {
           "utf8",
         ),
         readFile(
-          new URL(
-            "../dist/.openai/drizzle/0005_smooth_mach_iv.sql",
-            import.meta.url,
-          ),
-          "utf8",
-        ),
-        readFile(
           new URL("../drizzle/meta/0005_snapshot.json", import.meta.url),
           "utf8",
         ),
         readFile(
           new URL("../drizzle/0006_graceful_jackal.sql", import.meta.url),
-          "utf8",
-        ),
-        readFile(
-          new URL(
-            "../dist/.openai/drizzle/0006_graceful_jackal.sql",
-            import.meta.url,
-          ),
           "utf8",
         ),
         readFile(
@@ -7546,25 +7484,11 @@ export {
           "utf8",
         ),
         readFile(
-          new URL(
-            "../dist/.openai/drizzle/0007_damp_mandroid.sql",
-            import.meta.url,
-          ),
-          "utf8",
-        ),
-        readFile(
           new URL("../drizzle/meta/0007_snapshot.json", import.meta.url),
           "utf8",
         ),
         readFile(
           new URL("../drizzle/0008_mighty_snowbird.sql", import.meta.url),
-          "utf8",
-        ),
-        readFile(
-          new URL(
-            "../dist/.openai/drizzle/0008_mighty_snowbird.sql",
-            import.meta.url,
-          ),
           "utf8",
         ),
         readFile(
@@ -7576,13 +7500,6 @@ export {
           "utf8",
         ),
         readFile(
-          new URL(
-            "../dist/.openai/drizzle/0009_lethal_fat_cobra.sql",
-            import.meta.url,
-          ),
-          "utf8",
-        ),
-        readFile(
           new URL("../drizzle/meta/0009_snapshot.json", import.meta.url),
           "utf8",
         ),
@@ -7591,38 +7508,14 @@ export {
           "utf8",
         ),
         readFile(
-          new URL(
-            "../dist/.openai/drizzle/0011_left_timeslip.sql",
-            import.meta.url,
-          ),
-          "utf8",
-        ),
-        readFile(
           new URL("../drizzle/meta/0011_snapshot.json", import.meta.url),
           "utf8",
         ),
       ]);
 
-    const hosting = JSON.parse(hostingSource);
-    const builtHosting = JSON.parse(builtHostingSource);
-    assert.equal(hosting.d1, "DB");
-    assert.equal(builtHosting.d1, "DB");
-    assert.equal(hosting.r2, "EVIDENCE");
-    assert.equal(builtHosting.r2, "EVIDENCE");
-    assert.equal(builtBaseMigration, baseMigration);
-    assert.equal(builtEvidenceMigration, evidenceMigration);
-    assert.equal(builtLifecycleMigration, lifecycleMigration);
-    assert.equal(builtRichRuleMigration, richRuleMigration);
-    assert.equal(builtProgressionMigration, progressionMigration);
-    assert.equal(builtExclusiveGroupMigration, exclusiveGroupMigration);
-    assert.equal(builtAttestationMigration, attestationMigration);
-    assert.equal(builtWeeklyPeriodMigration, weeklyPeriodMigration);
-    assert.equal(builtArchiveMigration, archiveMigration);
-    assert.equal(builtPushMigration, pushMigration);
-    assert.equal(
-      builtDentalCheckpointMigration,
-      dentalCheckpointMigration,
-    );
+    const wrangler = JSON.parse(wranglerSource);
+    assert.equal(wrangler.d1_databases?.[0]?.binding, "DB");
+    assert.equal(wrangler.r2_buckets?.[0]?.binding, "EVIDENCE");
 
     const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}\n${attestationMigration}\n${weeklyPeriodMigration}\n${archiveMigration}\n${pushMigration}\n${dentalCheckpointMigration}`;
     const migratedTables = new Set(

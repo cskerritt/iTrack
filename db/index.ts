@@ -5,7 +5,7 @@ import * as schema from "./schema";
 export function getD1(): D1Database {
   if (!env.DB) {
     throw new Error(
-      "Cloudflare D1 binding `DB` is unavailable. Set the `d1` field in .openai/hosting.json to `DB`.",
+      "Cloudflare D1 binding `DB` is unavailable. Check the d1_databases binding in vite.config.ts.",
     );
   }
 
@@ -15,7 +15,7 @@ export function getD1(): D1Database {
 export function getEvidenceBucket(): R2Bucket {
   if (!env.EVIDENCE) {
     throw new Error(
-      "Cloudflare R2 binding `EVIDENCE` is unavailable. Set the `r2` field in .openai/hosting.json to `EVIDENCE`.",
+      "Cloudflare R2 binding `EVIDENCE` is unavailable. Check the r2_buckets binding in vite.config.ts.",
     );
   }
 
