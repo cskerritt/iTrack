@@ -123,10 +123,10 @@ export function buildCalendarInvite(
   const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//Vigilo//Compliance Check-ins//EN",
+    "PRODID:-//iTrack//Compliance Check-ins//EN",
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
-    "X-WR-CALNAME:Vigilo check-ins",
+    "X-WR-CALNAME:iTrack check-ins",
   ];
 
   for (const event of events) {
@@ -137,6 +137,9 @@ export function buildCalendarInvite(
     const eventUrl = safeHttpsUrl(event.url);
     lines.push(
       "BEGIN:VEVENT",
+      // The "@license-lantern" UID domain predates the iTrack product name and
+      // is load-bearing: calendars match a re-downloaded event by UID, so
+      // changing it would duplicate every check-in already added.
       `UID:${safeUid(event.uid)}@license-lantern`,
       `DTSTAMP:${compactTimestamp(generatedAt)}`,
       `DTSTART;VALUE=DATE:${compactDate(event.date)}`,
@@ -171,12 +174,12 @@ function safeFileName(value: string) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
-  return `${base || "vigilo-check-ins"}.ics`;
+  return `${base || "itrack-check-ins"}.ics`;
 }
 
 export async function offerCalendarInvite(
   events: CalendarInviteEvent[],
-  fileName = "vigilo-check-ins",
+  fileName = "itrack-check-ins",
 ): Promise<CalendarInviteDelivery> {
   const contents = buildCalendarInvite(events);
   const resolvedFileName = safeFileName(fileName);
@@ -200,7 +203,7 @@ export async function offerCalendarInvite(
   if (canShareFile) {
     try {
       await navigator.share({
-        title: "Vigilo calendar check-ins",
+        title: "iTrack calendar check-ins",
         text: "Add these credential and compliance check-ins to your calendar.",
         files: [file],
       });

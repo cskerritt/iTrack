@@ -420,6 +420,9 @@ function json(data: unknown, init?: ResponseInit) {
 }
 
 async function createDraftStorageNamespace(userId: string) {
+  // The "license-lantern:" prefix predates the iTrack product name and is
+  // load-bearing: it seeds the namespace hash that names each browser's saved
+  // draft key, so changing it would strand every existing draft.
   const bytes = new TextEncoder().encode(
     `license-lantern:activity-draft:v1:${userId}`,
   );
@@ -3932,7 +3935,7 @@ async function assertNremtSubmissionComplete(
     Number(total.totalRequired)
   ) {
     throw new RequestError(
-      `Vigilo records ${Number(total.totalEarned)} of ${Number(total.totalRequired)} required National Registry credits. Complete the local total before submitting.`,
+      `iTrack records ${Number(total.totalEarned)} of ${Number(total.totalRequired)} required National Registry credits. Complete the local total before submitting.`,
       409,
       "nremt_total_incomplete",
     );
@@ -10436,7 +10439,7 @@ async function markRenewalAccepted(
           applicability: "always",
           applicabilityStatus: "applies",
           conditionNote:
-            "Complete 38 general CE hours. Classify every general activity under the Principal Topics or Practice Management child category rather than tagging this parent directly. Vigilo does not copy prior-cycle credit; manually record only CFP Board-confirmed eligible carryover and retain the confirmation.",
+            "Complete 38 general CE hours. Classify every general activity under the Principal Topics or Practice Management child category rather than tagging this parent directly. iTrack does not copy prior-cycle credit; manually record only CFP Board-confirmed eligible carryover and retain the confirmation.",
           exclusiveGroup: null,
           isActive: true,
           sortOrder: 0,
@@ -11799,7 +11802,7 @@ async function savePushSubscription(
       );
     }
     throw new RequestError(
-      `Vigilo supports up to ${MAX_PUSH_DEVICES} active alert devices.`,
+      `iTrack supports up to ${MAX_PUSH_DEVICES} active alert devices.`,
       409,
       "push_device_limit",
     );
@@ -11966,7 +11969,7 @@ async function sendTestPush(
       },
       runtimeWebPushConfig(),
       {
-        title: "Vigilo check-in",
+        title: "iTrack check-in",
         body: "Your private test alert is working.",
         tag: `ll-test-${subscription.id
           .replace(/[^A-Za-z0-9_-]/g, "")

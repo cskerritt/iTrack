@@ -32,6 +32,9 @@ function legacyStableFingerprint(value: string) {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
+// The "license-lantern:" localStorage prefix predates the iTrack product
+// name and is load-bearing: renaming it would strand every draft already
+// saved in a user's browser. Leave it as-is.
 export function legacyActivityDraftStorageKey(ownerEmail: string) {
   return `license-lantern:activity-draft:v1:${legacyStableFingerprint(
     ownerEmail,

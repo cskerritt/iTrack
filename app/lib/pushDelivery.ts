@@ -59,8 +59,11 @@ const SUBSCRIPTION_SCAN_BUDGET = 64;
 const MAX_DELIVERIES_PER_RUN = 8;
 const DELIVERY_CONCURRENCY = 4;
 const READY_FETCH_LIMIT = MAX_DELIVERIES_PER_RUN * 4;
-const GENERIC_TITLE = "Vigilo check-in";
+const GENERIC_TITLE = "iTrack check-in";
 const GENERIC_BODY = "You have a renewal item that needs attention.";
+// The push topic predates the iTrack product name and is load-bearing: it
+// collapses a device's pending alerts, and the installed service worker still
+// falls back to the same string. Leave it as-is.
 const GENERIC_TOPIC = "license-lantern-check-in";
 const CONFIGURATION_ERROR_CODES = new Set([
   "invalid_vapid_config",

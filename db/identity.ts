@@ -9,10 +9,10 @@ const EMAIL_HEADER = "oai-authenticated-user-email";
 const NAME_HEADER = "oai-authenticated-user-full-name";
 const NAME_ENCODING_HEADER = "oai-authenticated-user-full-name-encoding";
 const PERCENT_ENCODED_UTF8 = "percent-encoded-utf-8";
-// The app's product name is Vigilo, but the identifiers below predate the
-// rename and are load-bearing: the demo email and the "license-lantern:"
-// hash salt both feed stableUserId, so changing either would orphan every
-// existing user's data. Leave them as-is.
+// The app's product name is iTrack, but the identifiers below predate the
+// product renames and are load-bearing: the demo email and the
+// "license-lantern:" hash salt both feed stableUserId, so changing either
+// would orphan every existing user's data. Leave them as-is.
 const DEMO_EMAIL = "demo@local.license-lantern";
 
 function isLocalHostname(hostname: string): boolean {

@@ -103,7 +103,7 @@ export function reminderCalendarEvent(
         ? `credential-${reminder.credentialId}-${reminder.eventDate}`
         : reminder.key,
     title: reminder.title,
-    description: `${reminder.body} Added from Vigilo.`,
+    description: `${reminder.body} Added from iTrack.`,
     date: reminder.eventDate,
     reminderDaysBefore: [...reminderDaysBefore],
   };
@@ -171,7 +171,7 @@ export function allCheckInCalendarEvents(
           uid: `task:${task.id}:${task.dueDate}`,
           title: `${credential.credentialName}: ${task.title}`,
           description:
-            "Pending Vigilo checklist item. Confirm current requirements with the official authority or employer record.",
+            "Pending iTrack checklist item. Confirm current requirements with the official authority or employer record.",
           date: task.dueDate!,
           reminderDaysBefore: [...reminderDaysBefore],
           url: credential.sourceUrl,

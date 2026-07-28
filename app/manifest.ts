@@ -3,8 +3,8 @@ import type { MetadataRoute } from "next";
 export default function manifest(): MetadataRoute.Manifest {
   return {
     id: "/",
-    name: "Vigilo — CE & Renewal Tracker",
-    short_name: "Vigilo",
+    name: "iTrack — CE & Renewal Tracker",
+    short_name: "iTrack",
     description:
       "Track continuing-education credits, documents, deadlines, and renewal steps.",
     start_url: "/",

@@ -25,7 +25,7 @@ export async function generateMetadata(): Promise<Metadata> {
       ? "http"
       : "https");
   const metadataBase = new URL(`${protocol}://${host}`);
-  const title = "Vigilo — A clear path to renewal";
+  const title = "iTrack — A clear path to renewal";
   const description =
     "A calm continuing-education companion for tracking credits, proof, deadlines, and professional license or certification renewals.";
   const socialImage = new URL("/og.png", metadataBase).toString();
@@ -34,10 +34,10 @@ export async function generateMetadata(): Promise<Metadata> {
     metadataBase,
     title: {
       default: title,
-      template: "%s · Vigilo",
+      template: "%s · iTrack",
     },
     description,
-    applicationName: "Vigilo",
+    applicationName: "iTrack",
     manifest: "/manifest.webmanifest",
     icons: {
       icon: [
@@ -55,7 +55,7 @@ export async function generateMetadata(): Promise<Metadata> {
     appleWebApp: {
       capable: true,
       statusBarStyle: "default",
-      title: "Vigilo",
+      title: "iTrack",
     },
     formatDetection: {
       telephone: false,
@@ -69,7 +69,7 @@ export async function generateMetadata(): Promise<Metadata> {
           url: socialImage,
           width: 2400,
           height: 1260,
-          alt: "Vigilo — A clear path to renewal",
+          alt: "iTrack — A clear path to renewal",
         },
       ],
     },

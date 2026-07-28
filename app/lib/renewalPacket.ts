@@ -697,11 +697,11 @@ export function renderRenewalPacket(data: RenewalPacketData) {
 <body>
   <main>
     <nav class="screen-toolbar" aria-label="Packet actions">
-      <a href="/">← Back to Vigilo</a>
+      <a href="/">← Back to iTrack</a>
       <button id="print-packet" type="button">Print / Save as PDF</button>
     </nav>
     <header class="topbar">
-      <div class="brand">Vigilo · Credential packet</div>
+      <div class="brand">iTrack · Credential packet</div>
       <p class="generated">Generated ${escapeHtml(formatTimestamp(data.generatedAt))}<br>Private record for ${escapeHtml(data.owner.displayName)}</p>
     </header>
 
@@ -860,7 +860,7 @@ export function renderRenewalPacket(data: RenewalPacketData) {
       </div>
     </section>
 
-    <p class="notice"><b>Final verification required.</b> This packet summarizes the private record in Vigilo. It does not replace the issuing authority’s current rules, official record or portal, audit instructions, or proof of completion or acceptance.</p>
+    <p class="notice"><b>Final verification required.</b> This packet summarizes the private record in iTrack. It does not replace the issuing authority’s current rules, official record or portal, audit instructions, or proof of completion or acceptance.</p>
     <footer>
       Account: ${escapeHtml(data.owner.email)} · Use your browser’s Print command to save this credential packet as a PDF. Private evidence links require the signed-in owner.
     </footer>
@@ -880,7 +880,7 @@ export function renderRenewalPacketError(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, noarchive">
-  <title>${escapeHtml(title)} · Vigilo</title>
+  <title>${escapeHtml(title)} · iTrack</title>
   <style>
     :root { color-scheme: light; }
     * { box-sizing: border-box; }
@@ -922,12 +922,12 @@ export function renderRenewalPacketError(
 </head>
 <body>
   <main>
-    <div class="brand">Vigilo</div>
+    <div class="brand">iTrack</div>
     <h1>${escapeHtml(title)}</h1>
     <p>${escapeHtml(message)}</p>
     <nav aria-label="Recovery actions">
       <a class="primary" href="">Try again</a>
-      <a href="/">Back to Vigilo</a>
+      <a href="/">Back to iTrack</a>
     </nav>
   </main>
 </body>

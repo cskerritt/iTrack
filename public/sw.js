@@ -1,3 +1,6 @@
+// The cache prefix predates the iTrack product name and is load-bearing: the
+// activate handler deletes every cache that starts with it, so renaming it
+// would leave each installed device's old caches behind forever.
 const CACHE_PREFIX = "license-lantern-static";
 const CACHE_NAME = `${CACHE_PREFIX}-v3`;
 const PRECACHE = [
@@ -25,7 +28,7 @@ const ALLOWED_LAUNCH_PARAMETERS = new Set([
   "view",
   "delivery",
 ]);
-const GENERIC_NOTIFICATION_TITLE = "Vigilo check-in";
+const GENERIC_NOTIFICATION_TITLE = "iTrack check-in";
 const GENERIC_NOTIFICATION_BODY =
   "You have a renewal item that needs attention.";
 
@@ -130,6 +133,8 @@ function safeLaunchTarget(value) {
 }
 
 function safeNotificationTag(value) {
+  // Matches the server's load-bearing push topic, which predates the iTrack
+  // product name; both sides must keep the same historical string.
   return typeof value === "string" &&
     /^[a-zA-Z0-9:_-]{1,160}$/.test(value)
     ? value
@@ -225,7 +230,7 @@ self.addEventListener("fetch", (event) => {
         const fallback = await cache.match("/offline.html");
         return (
           fallback ||
-          new Response("Vigilo is offline. Reconnect and try again.", {
+          new Response("iTrack is offline. Reconnect and try again.", {
             status: 503,
             headers: {
               "cache-control": "no-store",

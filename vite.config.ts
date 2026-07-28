@@ -20,13 +20,18 @@ const localBindingConfig = {
   d1_databases: [
     {
       binding: d1,
-      database_name: "vigilo-d1",
+      // Display-only: miniflare keys its on-disk D1 state by database_id, so
+      // this name is free to follow the product rename.
+      database_name: "itrack-d1",
       database_id: LOCAL_PLACEHOLDER_DATABASE_ID,
     },
   ],
   r2_buckets: [
     {
       binding: r2,
+      // Load-bearing, so deliberately kept from the Vigilo name: miniflare
+      // keys its on-disk R2 state by bucket_name, and renaming this would
+      // orphan every evidence object already stored on the Railway volume.
       bucket_name: "vigilo-r2",
     },
   ],

@@ -1,6 +1,6 @@
-# Vigilo
+# iTrack
 
-Vigilo is a cloud-based, phone-first companion for continuing
+iTrack is a cloud-based, phone-first companion for continuing
 education and renewals of professional licenses or certifications. It turns
 requirements into a clear plan, keeps completed learning distinct from renewal
 submission, and rewards meaningful record-keeping without punitive daily
@@ -52,7 +52,7 @@ product reminds them to confirm requirements with the issuing authority.
 
 ## Product boundary
 
-Vigilo is an organizer, not an issuing authority. Rule templates
+iTrack is an organizer, not an issuing authority. Rule templates
 include official source links and review metadata, but current instructions
 from the licensing board or certifying body control. Course eligibility,
 official acceptance, and credential status are never inferred from a checked
@@ -75,8 +75,9 @@ Production runs on Railway: pushes to `main` auto-deploy. The container
 (`Dockerfile` + `deploy/railway/serve.mjs`) builds the app, runs it under
 wrangler's local workerd runtime with file-backed D1/R2 state on a volume
 mounted at `/data`, and fronts it with a Basic Auth proxy that injects the
-identity headers. Configure users with the `VIGILO_USERS` environment
-variable (`username:password:email[:Display Name]`, `;`-separated) and set
+identity headers. Configure users with the `ITRACK_USERS` environment
+variable (`username:password:email[:Display Name]`, `;`-separated; the older
+`VIGILO_USERS` and `LANTERN_USERS` names still work) and set
 `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` for web push.
 The proxy fires scheduled push delivery every 15 minutes through a
 secret-guarded internal route.
