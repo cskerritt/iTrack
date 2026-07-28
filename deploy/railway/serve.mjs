@@ -10,9 +10,16 @@
 // Configuration (environment):
 //   PORT          public listen port (Railway sets this)
 //   ITRACK_USERS  semicolon-separated "username:password:email[:Display Name]"
-//                 entries; REQUIRED — the proxy fails closed without it
+//                 entries; required unless ITRACK_OPEN_IDENTITY is set — the
+//                 proxy fails closed without one of the two
 //                 (VIGILO_USERS, then LANTERN_USERS, are accepted as legacy
 //                 fallbacks from the product's earlier names)
+//   ITRACK_OPEN_IDENTITY
+//                 "email[:Display Name]" — DISABLES authentication entirely and
+//                 signs every visitor in as this identity. Anyone with the URL
+//                 can read and write that identity's data; only use it while
+//                 the deployment URL is private. Remove the variable to restore
+//                 Basic Auth via ITRACK_USERS.
 //   PERSIST_DIR   durable state directory (default /data/wrangler-state);
 //                 mount a Railway volume at /data or all data is lost on deploy
 
@@ -46,14 +53,30 @@ function parseUsers(raw) {
   return users;
 }
 
+function parseOpenIdentity(raw) {
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) return null;
+  const [email, ...nameParts] = trimmed.split(":");
+  if (!email || !email.includes("@")) {
+    console.error("ITRACK_OPEN_IDENTITY must look like email[:Display Name]");
+    process.exit(1);
+  }
+  return {
+    email: email.toLowerCase(),
+    displayName: nameParts.join(":") || null,
+  };
+}
+
+const OPEN_IDENTITY = parseOpenIdentity(process.env.ITRACK_OPEN_IDENTITY);
+
 const USERS = parseUsers(
   process.env.ITRACK_USERS ??
     process.env.VIGILO_USERS ??
     process.env.LANTERN_USERS,
 );
-if (USERS.size === 0) {
+if (USERS.size === 0 && !OPEN_IDENTITY) {
   console.error(
-    "Refusing to start: set ITRACK_USERS (username:password:email[:Display Name]; ...)",
+    "Refusing to start: set ITRACK_USERS (username:password:email[:Display Name]; ...) or ITRACK_OPEN_IDENTITY (email[:Display Name])",
   );
   process.exit(1);
 }
@@ -192,7 +215,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const user = authenticate(req.headers.authorization);
+  const user = OPEN_IDENTITY ?? authenticate(req.headers.authorization);
   if (!user) {
     res.writeHead(401, {
       "www-authenticate": 'Basic realm="iTrack", charset="UTF-8"',
@@ -245,7 +268,10 @@ await waitForWorker();
 setInterval(fireCron, CRON_INTERVAL_MS);
 fireCron();
 server.listen(PUBLIC_PORT, "0.0.0.0", () => {
+  const mode = OPEN_IDENTITY
+    ? `OPEN ACCESS — no authentication, all visitors act as ${OPEN_IDENTITY.email}`
+    : `${USERS.size} user${USERS.size === 1 ? "" : "s"}`;
   console.log(
-    `iTrack proxy listening on :${PUBLIC_PORT} (${USERS.size} user${USERS.size === 1 ? "" : "s"}), state in ${PERSIST_DIR}`,
+    `iTrack proxy listening on :${PUBLIC_PORT} (${mode}), state in ${PERSIST_DIR}`,
   );
 });
