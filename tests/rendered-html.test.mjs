@@ -7260,7 +7260,7 @@ export {
       }
       assert.match(
         clientSource,
-        /＋ Add[\s\S]*?isCompliancePeriodCredential\(selected\)[\s\S]*?\? "compliance"[\s\S]*?: "renewal"[\s\S]*?date to calendar/,
+        /<Icon name="plus"[\s\S]*?Add[\s\S]*?isCompliancePeriodCredential\(selected\)[\s\S]*?\? "compliance"[\s\S]*?: "renewal"[\s\S]*?date to calendar/,
       );
       assert.match(
         clientSource,

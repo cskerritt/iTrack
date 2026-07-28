@@ -3575,7 +3575,9 @@ export function ITrackApp() {
         <main id="main-content" className="main-content">
           {!isOnline ? (
             <div className="offline-banner" role="status">
-              <span aria-hidden="true">⌁</span>
+              <span>
+                <Icon name="zap" size={18} />
+              </span>
               <div>
                 <strong>Offline — your cloud record is protected</strong>
                 <small>
@@ -3799,8 +3801,8 @@ export function ITrackApp() {
                 aria-labelledby="certificate-capture-title"
               >
                 <div className="certificate-capture-heading">
-                  <span className="capture-mark" aria-hidden="true">
-                    ◎
+                  <span className="capture-mark">
+                    <Icon name="target" size={21} />
                   </span>
                   <div>
                     <strong id="certificate-capture-title">
@@ -3824,7 +3826,7 @@ export function ITrackApp() {
                         void handleActivityEvidenceSelection(file);
                       }}
                     />
-                    <span aria-hidden="true">◉</span>
+                    <Icon name="camera" size={17} />
                     Take photo
                   </label>
                   <label className="capture-button">
@@ -3841,10 +3843,13 @@ export function ITrackApp() {
                   </label>
                 </div>
                 <p className="capture-privacy">
-                  On-device scan: the reader and English model load from
-                  iTrack. The proof uploads only after Save activity;
-                  suggested field values may be saved unencrypted in this
-                  browser draft.
+                  <Icon name="shield" size={15} />
+                  <span>
+                    On-device scan: the reader and English model load from
+                    iTrack. The proof uploads only after Save activity;
+                    suggested field values may be saved unencrypted in this
+                    browser draft.
+                  </span>
                 </p>
                 {activityDraftRestored ||
                 hasMeaningfulActivityDraft(activityDraft) ? (
@@ -3855,8 +3860,11 @@ export function ITrackApp() {
                     role="status"
                     aria-live="polite"
                   >
-                    <span aria-hidden="true">
-                      {activityDraftRestored ? "↺" : "▣"}
+                    <span>
+                      <Icon
+                        name={activityDraftRestored ? "refresh" : "save"}
+                        size={15}
+                      />
                     </span>
                     <div>
                       <strong>
@@ -3927,8 +3935,13 @@ export function ITrackApp() {
                         />
                       </div>
                     ) : (
-                      <span className="capture-status-mark" aria-hidden="true">
-                        {activityScan.phase === "success" ? "✓" : "i"}
+                      <span className="capture-status-mark">
+                        <Icon
+                          name={
+                            activityScan.phase === "success" ? "check" : "info"
+                          }
+                          size={13}
+                        />
                       </span>
                     )}
                     <p>{activityScan.label}</p>
@@ -4512,7 +4525,8 @@ export function ITrackApp() {
                         target="_blank"
                         rel="noreferrer"
                       >
-                        Review official source ↗
+                        Review official source
+                        <Icon name="arrowUpRight" size={14} />
                       </a>
                     ) : null}
                   </div>
@@ -4831,8 +4845,8 @@ export function ITrackApp() {
         >
           <form className="form-stack" onSubmit={handleSubmission}>
             <div className="celebration-panel">
-              <span className="celebration-mark" aria-hidden="true">
-                ✓
+              <span className="celebration-mark">
+                <Icon name="check" size={20} />
               </span>
               <div>
                 <strong>
@@ -5035,8 +5049,8 @@ export function ITrackApp() {
         >
           <form className="form-stack" onSubmit={handleAcceptance}>
             <div className="celebration-panel">
-              <span className="celebration-mark" aria-hidden="true">
-                ✓
+              <span className="celebration-mark">
+                <Icon name="check" size={20} />
               </span>
               <div>
                 <strong>
@@ -5931,11 +5945,182 @@ export function ITrackApp() {
             aria-label="Dismiss notification"
             onClick={() => setToast(null)}
           >
-            ×
+            <Icon name="close" size={17} />
           </button>
         </div>
       ) : null}
     </div>
+  );
+}
+
+/*
+ * ICONS
+ * One shape per meaning, all drawn on the same 24px grid at one stroke weight,
+ * so marks set at the same `size` read as one set. The stroke is in viewBox
+ * units and therefore scales with `size` — a 13px mark carries a lighter line
+ * than a 21px one, which is what keeps a small mark from going blobby. Keep
+ * adjacent icons on the same size for them to weigh the same. Inline SVG
+ * rather than a font or sprite: the app ships no icon dependency and has to
+ * paint from the offline cache. Every icon is decorative — the label next to
+ * it carries the meaning — so it stays out of the accessibility tree and the
+ * surrounding element keeps whatever accessible name it already had.
+ *
+ * Filled variants exist only where the UI already distinguished filled from
+ * outline (an earned badge, a completed quest). Everything else is outline.
+ */
+const ICON_SHAPES = {
+  home: (
+    <>
+      <path d="M3 10a2 2 0 0 1 .71-1.53l7-6a2 2 0 0 1 2.58 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
+    </>
+  ),
+  layoutGrid: (
+    <>
+      <rect x="3" y="3" width="7" height="7" rx="1.4" />
+      <rect x="14" y="3" width="7" height="7" rx="1.4" />
+      <rect x="3" y="14" width="7" height="7" rx="1.4" />
+      <rect x="14" y="14" width="7" height="7" rx="1.4" />
+    </>
+  ),
+  listRows: (
+    <>
+      <path d="M8 5h13" />
+      <path d="M8 12h13" />
+      <path d="M8 19h13" />
+      <path d="M3 5h.01" />
+      <path d="M3 12h.01" />
+      <path d="M3 19h.01" />
+    </>
+  ),
+  userCircle: (
+    <>
+      <circle cx="12" cy="12" r="9.4" />
+      <circle cx="12" cy="10" r="3" />
+      <path d="M6.6 19.9V19a2 2 0 0 1 2-2h6.8a2 2 0 0 1 2 2v.9" />
+    </>
+  ),
+  plus: (
+    <>
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </>
+  ),
+  minus: <path d="M5 12h14" />,
+  check: <path d="M20 6 9 17l-5-5" />,
+  close: (
+    <>
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </>
+  ),
+  arrowRight: (
+    <>
+      <path d="M5 12h14" />
+      <path d="m12 5 7 7-7 7" />
+    </>
+  ),
+  arrowUpRight: (
+    <>
+      <path d="M7 7h10v10" />
+      <path d="M7 17 17 7" />
+    </>
+  ),
+  arrowDown: (
+    <>
+      <path d="M12 5v14" />
+      <path d="m19 12-7 7-7-7" />
+    </>
+  ),
+  chevronDown: <path d="m6 9 6 6 6-6" />,
+  refresh: (
+    <>
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+      <path d="M3 3v5h5" />
+    </>
+  ),
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="9.4" />
+      <path d="M12 6.6V12l3.8 2.2" />
+    </>
+  ),
+  diamond: (
+    <path d="M2.7 10.3a2.41 2.41 0 0 0 0 3.4l7.6 7.6a2.41 2.41 0 0 0 3.4 0l7.6-7.6a2.41 2.41 0 0 0 0-3.4l-7.6-7.6a2.41 2.41 0 0 0-3.4 0z" />
+  ),
+  diamondFilled: (
+    <path
+      d="M2.7 10.3a2.41 2.41 0 0 0 0 3.4l7.6 7.6a2.41 2.41 0 0 0 3.4 0l7.6-7.6a2.41 2.41 0 0 0 0-3.4l-7.6-7.6a2.41 2.41 0 0 0-3.4 0z"
+      fill="currentColor"
+    />
+  ),
+  circle: <circle cx="12" cy="12" r="9.4" />,
+  target: (
+    <>
+      <circle cx="12" cy="12" r="9.4" />
+      <circle cx="12" cy="12" r="3.6" />
+    </>
+  ),
+  camera: (
+    <>
+      <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z" />
+      <circle cx="12" cy="13" r="3.2" />
+    </>
+  ),
+  save: (
+    <>
+      <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
+      <path d="M17 21v-8H7v8" />
+      <path d="M7 3v4h8" />
+    </>
+  ),
+  shield: (
+    <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
+  ),
+  info: (
+    <>
+      <circle cx="12" cy="12" r="9.4" />
+      <path d="M12 16.4v-4.6" />
+      <path d="M12 7.9h.01" />
+    </>
+  ),
+  alert: (
+    <>
+      <circle cx="12" cy="12" r="9.4" />
+      <path d="M12 7.6v4.8" />
+      <path d="M12 16.4h.01" />
+    </>
+  ),
+  trendingUp: (
+    <>
+      <path d="M16 7h6v6" />
+      <path d="m22 7-8.5 8.5-5-5L2 17" />
+    </>
+  ),
+  zap: (
+    <path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z" />
+  ),
+};
+
+type IconName = keyof typeof ICON_SHAPES;
+
+function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
+  return (
+    <svg
+      className="icon"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {ICON_SHAPES[name]}
+    </svg>
   );
 }
 
@@ -5966,25 +6151,25 @@ function DesktopSidebar({
         <NavButton
           active={view === "today"}
           label="Today"
-          symbol="⌂"
+          icon="home"
           onClick={() => onView("today")}
         />
         <NavButton
           active={view === "credentials"}
           label="Credentials"
-          symbol="▣"
+          icon="layoutGrid"
           onClick={() => onView("credentials")}
         />
         <NavButton
           active={view === "records"}
           label="Records"
-          symbol="≡"
+          icon="listRows"
           onClick={() => onView("records")}
         />
         <NavButton
           active={view === "account"}
           label="Account"
-          symbol="○"
+          icon="userCircle"
           onClick={() => onView("account")}
         />
       </nav>
@@ -5994,7 +6179,7 @@ function DesktopSidebar({
        * credential setup; a dead button explains nothing.
        */}
       <button className="sidebar-add" type="button" onClick={onAdd}>
-        <span aria-hidden="true">＋</span>
+        <Icon name="plus" size={18} />
         Log activity
       </button>
       <div className="sidebar-coach">
@@ -6020,13 +6205,13 @@ function MobileNavigation({
       <NavButton
         active={view === "today"}
         label="Today"
-        symbol="⌂"
+        icon="home"
         onClick={() => onView("today")}
       />
       <NavButton
         active={view === "credentials"}
         label="Credentials"
-        symbol="▣"
+        icon="layoutGrid"
         onClick={() => onView("credentials")}
       />
       {/*
@@ -6040,18 +6225,18 @@ function MobileNavigation({
         aria-label="Log completed learning"
         onClick={onAdd}
       >
-        +
+        <Icon name="plus" size={24} />
       </button>
       <NavButton
         active={view === "records"}
         label="Records"
-        symbol="≡"
+        icon="listRows"
         onClick={() => onView("records")}
       />
       <NavButton
         active={view === "account"}
         label="Account"
-        symbol="○"
+        icon="userCircle"
         onClick={() => onView("account")}
       />
     </nav>
@@ -6061,12 +6246,12 @@ function MobileNavigation({
 function NavButton({
   active,
   label,
-  symbol,
+  icon,
   onClick,
 }: {
   active: boolean;
   label: string;
-  symbol: string;
+  icon: IconName;
   onClick: () => void;
 }) {
   return (
@@ -6076,8 +6261,8 @@ function NavButton({
       aria-current={active ? "page" : undefined}
       onClick={onClick}
     >
-      <span className="nav-symbol" aria-hidden="true">
-        {symbol}
+      <span className="nav-symbol">
+        <Icon name={icon} size={20} />
       </span>
       <span>{label}</span>
     </button>
@@ -6170,7 +6355,7 @@ function TodayView({
               onClick={onAddCredential}
             >
               Set up my first credential
-              <span aria-hidden="true">→</span>
+              <Icon name="arrowRight" size={16} />
             </button>
           </div>
           <ol className="onboarding-steps">
@@ -6199,15 +6384,21 @@ function TodayView({
         </section>
         <section className="trust-strip" aria-label="iTrack principles">
           <div>
-            <span className="trust-mark">✓</span>
+            <span className="trust-mark">
+              <Icon name="check" size={15} />
+            </span>
             <p><strong>Source-linked rules</strong> with review dates</p>
           </div>
           <div>
-            <span className="trust-mark">✓</span>
+            <span className="trust-mark">
+              <Icon name="check" size={15} />
+            </span>
             <p><strong>Your activity history</strong> kept cycle by cycle</p>
           </div>
           <div>
-            <span className="trust-mark">✓</span>
+            <span className="trust-mark">
+              <Icon name="check" size={15} />
+            </span>
             <p><strong>Submission stays separate</strong> from credits earned</p>
           </div>
         </section>
@@ -6285,7 +6476,7 @@ function TodayView({
             type="button"
             onClick={onAddActivity}
           >
-            <span aria-hidden="true">＋</span>
+            <Icon name="plus" size={16} />
             Log completed learning
           </button>
         }
@@ -6322,7 +6513,8 @@ function TodayView({
               type="button"
               onClick={onViewCredentials}
             >
-              View plan <span aria-hidden="true">→</span>
+              View plan
+              <Icon name="arrowRight" size={15} />
             </button>
           </div>
 
@@ -6473,8 +6665,9 @@ function TodayView({
       ) : null}
 
       <section className="next-action-card">
-        <span className="next-action-icon" aria-hidden="true">
-          ↗
+        <span className="next-action-icon">
+          {/* arrowRight, not arrowUpRight: this card's action stays in-app. */}
+          <Icon name="arrowRight" size={21} />
         </span>
         <div>
           <span className="section-kicker">Best next action</span>
@@ -6578,9 +6771,10 @@ function TodayView({
             {credential.status === "renewed"
               ? "View preserved records"
               : "Log an activity"}{" "}
-            <span aria-hidden="true">
-              {credential.status === "renewed" ? "→" : "＋"}
-            </span>
+            <Icon
+              name={credential.status === "renewed" ? "arrowRight" : "plus"}
+              size={16}
+            />
           </button>
         </section>
 
@@ -6662,8 +6856,17 @@ function TodayView({
                     }`}
                     key={quest.key}
                   >
-                    <span className="quest-state" aria-hidden="true">
-                      {quest.claimed ? "✓" : quest.completed ? "◆" : "◇"}
+                    <span className="quest-state">
+                      <Icon
+                        name={
+                          quest.claimed
+                            ? "check"
+                            : quest.completed
+                              ? "diamondFilled"
+                              : "diamond"
+                        }
+                        size={15}
+                      />
                     </span>
                     <div className="quest-copy">
                       <strong>{quest.title}</strong>
@@ -6726,8 +6929,13 @@ function TodayView({
             className={`momentum-note ${progression.momentum.status}`}
             role="status"
           >
-            <span aria-hidden="true">
-              {progression.momentum.activeThisWeek ? "↗" : "○"}
+            <span>
+              <Icon
+                name={
+                  progression.momentum.activeThisWeek ? "trendingUp" : "circle"
+                }
+                size={14}
+              />
             </span>
             <p>
               <strong>
@@ -6775,7 +6983,8 @@ function TodayView({
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  Prepare packet <span aria-hidden="true">↗</span>
+                  Prepare packet
+                  <Icon name="arrowUpRight" size={14} />
                   <span className="sr-only"> (opens in a new tab)</span>
                 </a>
               ) : (
@@ -6795,7 +7004,7 @@ function TodayView({
                   disabled={taskActionsDisabled}
                   onClick={() => onAddPersonalTask(credential)}
                 >
-                  <span aria-hidden="true">＋</span>
+                  <Icon name="plus" size={15} />
                   Add task
                 </button>
               ) : null}
@@ -6844,8 +7053,8 @@ function TodayView({
                       }
                       onChange={() => onToggleTask(task)}
                     />
-                    <span className="custom-check" aria-hidden="true">
-                      ✓
+                    <span className="custom-check">
+                      <Icon name="check" size={14} />
                     </span>
                     <span>
                       <strong>{task.title}</strong>
@@ -6895,7 +7104,9 @@ function TodayView({
                     {credential.archivedTasks.length === 1 ? "task" : "tasks"}
                   </small>
                 </span>
-                <span aria-hidden="true">⌄</span>
+                <span className="disclosure-chevron">
+                  <Icon name="chevronDown" size={16} />
+                </span>
               </summary>
               <div className="archived-item-list">
                 {credential.archivedTasks.map((task) => (
@@ -6947,7 +7158,7 @@ function TodayView({
                 : isCompliancePeriodCredential(credential)
                   ? "Record compliance"
                 : "Log renewal submission"}{" "}
-              <span aria-hidden="true">→</span>
+              <Icon name="arrowRight" size={16} />
             </button>
           ) : credential.status === "submitted" ? (
             <div className="submitted-note submitted-note-action">
@@ -6964,10 +7175,11 @@ function TodayView({
               </span>
               <button type="button" onClick={onAccept}>
                 {isIsc2AutomaticRenewalCredential(credential)
-                  ? "Confirm renewed cycle →"
+                  ? "Confirm renewed cycle"
                   : isCompliancePeriodCredential(credential)
-                    ? "Start next period →"
-                  : "Record acceptance →"}
+                    ? "Start next period"
+                  : "Record acceptance"}
+                <Icon name="arrowRight" size={15} />
               </button>
             </div>
           ) : (
@@ -6997,15 +7209,17 @@ function TodayView({
             <div className="recent-list">
               {workspace.activities.slice(0, 3).map((activity) => (
                 <article key={activity.id}>
-                  <span
-                    className={`evidence-mark ${activity.evidenceStatus}`}
-                    aria-hidden="true"
-                  >
-                    {activity.evidenceStatus === "attached"
-                      ? "✓"
-                      : activity.evidenceStatus === "missing"
-                        ? "!"
-                        : "—"}
+                  <span className={`evidence-mark ${activity.evidenceStatus}`}>
+                    <Icon
+                      name={
+                        activity.evidenceStatus === "attached"
+                          ? "check"
+                          : activity.evidenceStatus === "missing"
+                            ? "alert"
+                            : "minus"
+                      }
+                      size={14}
+                    />
                   </span>
                   <div>
                     <strong>{activity.title}</strong>
@@ -7133,7 +7347,7 @@ function CredentialsView({
         body="Requirements, sources, cycles, and submission status stay connected."
         action={
           <button className="button button-primary" type="button" onClick={onAdd}>
-            <span aria-hidden="true">＋</span>
+            <Icon name="plus" size={16} />
             Add credential
           </button>
         }
@@ -7171,7 +7385,8 @@ function CredentialsView({
               </button>
             ))}
             <button className="add-picker" type="button" onClick={onAdd}>
-              ＋ Add another credential
+              <Icon name="plus" size={15} />
+              Add another credential
             </button>
           </aside>
           <section className="credential-detail">
@@ -7251,8 +7466,8 @@ function CredentialsView({
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  Prepare credential packet{" "}
-                  <span aria-hidden="true">↗</span>
+                  Prepare credential packet
+                  <Icon name="arrowUpRight" size={15} />
                   <span className="sr-only"> (opens in a new tab)</span>
                 </a>
               ) : (
@@ -7272,22 +7487,28 @@ function CredentialsView({
                   type="button"
                   onClick={onReminders}
                 >
-                  ◷ Configure{" "}
-                  {isCompliancePeriodCredential(selected)
-                    ? "compliance"
-                    : "renewal"}{" "}
-                  check-ins
+                  <Icon name="clock" size={15} />
+                  <span>
+                    Configure{" "}
+                    {isCompliancePeriodCredential(selected)
+                      ? "compliance"
+                      : "renewal"}{" "}
+                    check-ins
+                  </span>
                 </button>
                 <button
                   className="reminder-setting-link"
                   type="button"
                   onClick={() => onAddToCalendar(selected)}
                 >
-                  ＋ Add{" "}
-                  {isCompliancePeriodCredential(selected)
-                    ? "compliance"
-                    : "renewal"}{" "}
-                  date to calendar
+                  <Icon name="plus" size={15} />
+                  <span>
+                    Add{" "}
+                    {isCompliancePeriodCredential(selected)
+                      ? "compliance"
+                      : "renewal"}{" "}
+                    date to calendar
+                  </span>
                 </button>
               </div>
             ) : null}
@@ -7423,7 +7644,8 @@ function CredentialsView({
                   target="_blank"
                   rel="noreferrer"
                 >
-                  Open official guidance ↗
+                  Open official guidance
+                  <Icon name="arrowUpRight" size={15} />
                 </a>
               ) : (
                 <span className="custom-rule-label">
@@ -7576,7 +7798,7 @@ function RecordsView({
         body="Credits earned and proof status stay visible before renewal season."
         action={
           <button className="button button-primary" type="button" onClick={onAdd}>
-            <span aria-hidden="true">＋</span>
+            <Icon name="plus" size={16} />
             Log activity
           </button>
         }
@@ -7604,7 +7826,8 @@ function RecordsView({
           href={credentials.length ? "/api/export" : undefined}
           aria-disabled={credentials.length === 0}
         >
-          Export CSV ↓
+          Export CSV
+          <Icon name="arrowDown" size={15} />
         </a>
       </section>
       {activities.length ? (
@@ -7624,15 +7847,17 @@ function RecordsView({
               key={activity.id}
             >
               <div className="record-title">
-                <span
-                  className={`evidence-mark ${activity.evidenceStatus}`}
-                  aria-hidden="true"
-                >
-                  {activity.evidenceStatus === "attached"
-                    ? "✓"
-                    : activity.evidenceStatus === "missing"
-                      ? "!"
-                      : "—"}
+                <span className={`evidence-mark ${activity.evidenceStatus}`}>
+                  <Icon
+                    name={
+                      activity.evidenceStatus === "attached"
+                        ? "check"
+                        : activity.evidenceStatus === "missing"
+                          ? "alert"
+                          : "minus"
+                    }
+                    size={14}
+                  />
                 </span>
                 <span>
                   <span className="sr-only">Activity: </span>
@@ -7710,11 +7935,12 @@ function RecordsView({
                     ),
                 ) ? (
                   <button
-                    className="proof-action allocation-action"
+                    className="proof-action allocation-action with-icon"
                     type="button"
                     onClick={() => onAllocate(activity)}
                   >
-                    ＋ Use for another
+                    <Icon name="plus" size={14} />
+                    <span>Use for another</span>
                   </button>
                 ) : null}
               </span>
@@ -7795,7 +8021,9 @@ function RecordsView({
                 {archivedActivities.length === 1 ? "record" : "records"}
               </small>
             </span>
-            <span aria-hidden="true">⌄</span>
+            <span className="disclosure-chevron">
+              <Icon name="chevronDown" size={16} />
+            </span>
           </summary>
           <div className="archived-item-list">
             {archivedActivities.map((activity) => {
@@ -8459,8 +8687,15 @@ function AccountView({
                 className={badge.earned || badge.earnedAt ? "earned" : ""}
                 key={badge.id}
               >
-                <span aria-hidden="true">
-                  {badge.earned || badge.earnedAt ? "◆" : "◇"}
+                <span>
+                  <Icon
+                    name={
+                      badge.earned || badge.earnedAt
+                        ? "diamondFilled"
+                        : "diamond"
+                    }
+                    size={17}
+                  />
                 </span>
                 <div>
                   <strong>{badge.name}</strong>
@@ -8485,7 +8720,9 @@ function AccountView({
           {typeof scheduledWeeklyGoal === "number" &&
           scheduledWeeklyGoalEffectiveOn ? (
             <div className="weekly-goal-scheduled" role="status">
-              <span aria-hidden="true">↗</span>
+              <span>
+                <Icon name="clock" size={16} />
+              </span>
               <p>
                 <strong>
                   {scheduledWeeklyGoal}{" "}
@@ -8589,12 +8826,18 @@ function AccountView({
             aria-busy={pushPending}
             aria-live="polite"
           >
-            <span aria-hidden="true">
-              {pushDeviceState === "subscribed"
-                ? "✓"
-                : pushDeviceState === "denied"
-                  ? "!"
-                  : "◇"}
+            <span>
+              {/* shield, not diamond: diamond is the milestone mark above. */}
+              <Icon
+                name={
+                  pushDeviceState === "subscribed"
+                    ? "check"
+                    : pushDeviceState === "denied"
+                      ? "alert"
+                      : "shield"
+                }
+                size={17}
+              />
             </span>
             <p>
               <strong>
@@ -8700,7 +8943,10 @@ function AccountView({
               </button>
             </div>
           ) : isStandalone ? (
-            <span className="installed-pill">✓ Installed on this device</span>
+            <span className="installed-pill">
+              <Icon name="check" size={14} />
+              Installed on this device
+            </span>
           ) : null}
         </section>
         <section className="card compliance-card">
@@ -8712,9 +8958,20 @@ function AccountView({
             licensing board or certifying body, or replace official instructions.
           </p>
           <ul>
-            <li>Rule templates show their official source.</li>
-            <li>Custom plans remain clearly labeled.</li>
-            <li>Credits, proof, submission, and acceptance stay distinct.</li>
+            <li>
+              <Icon name="check" size={14} />
+              <span>Rule templates show their official source.</span>
+            </li>
+            <li>
+              <Icon name="check" size={14} />
+              <span>Custom plans remain clearly labeled.</span>
+            </li>
+            <li>
+              <Icon name="check" size={14} />
+              <span>
+                Credits, proof, submission, and acceptance stay distinct.
+              </span>
+            </li>
           </ul>
         </section>
       </div>
@@ -9641,8 +9898,8 @@ function RequirementPicker({
                   toggleRequirement(requirement, event.currentTarget.checked)
                 }
               />
-              <span className="requirement-check" aria-hidden="true">
-                ✓
+              <span className="requirement-check">
+                <Icon name="check" size={14} />
               </span>
               <span>
                 <strong>{requirement.name}</strong>
@@ -9855,7 +10112,7 @@ function Modal({
             aria-label="Close dialog"
             onClick={onClose}
           >
-            ×
+            <Icon name="close" size={19} />
           </button>
         </header>
         <div className="modal-body">{children}</div>
@@ -9877,7 +10134,9 @@ function EmptyInline({
 }) {
   return (
     <div className="empty-inline">
-      <span aria-hidden="true">＋</span>
+      <span>
+        <Icon name="plus" size={16} />
+      </span>
       <div>
         <strong>{title}</strong>
         <p>{body}</p>
@@ -9953,7 +10212,9 @@ function EmptyModalState({
 }) {
   return (
     <div className="empty-modal">
-      <span aria-hidden="true">＋</span>
+      <span>
+        <Icon name="plus" size={24} />
+      </span>
       <h3>{title}</h3>
       <p>{body}</p>
       <button className="button button-primary" type="button" onClick={onAction}>
@@ -9992,8 +10253,8 @@ function LoadingDashboard() {
 function OfflineWorkspace() {
   return (
     <section className="offline-workspace" role="status">
-      <span className="offline-workspace-mark" aria-hidden="true">
-        ⌁
+      <span className="offline-workspace-mark">
+        <Icon name="zap" size={26} />
       </span>
       <span className="section-kicker">Connection paused</span>
       <h1>Your cloud record is still protected.</h1>
@@ -10034,8 +10295,8 @@ function WorkspaceLoadFailure({
       className="offline-workspace workspace-load-failure"
       role="alert"
     >
-      <span className="offline-workspace-mark" aria-hidden="true">
-        !
+      <span className="offline-workspace-mark">
+        <Icon name="alert" size={26} />
       </span>
       <span className="section-kicker">
         {authenticationFailure ? "Protected workspace" : "Connection interrupted"}

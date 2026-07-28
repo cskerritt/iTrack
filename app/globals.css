@@ -23,7 +23,7 @@
    * Nothing in this stylesheet may declare a font-size below --text-2xs.
    * The single documented exception is the bottom tab bar
    * (`.mobile-nav .nav-button`), where 10px is the platform convention and
-   * the label is carried by a 20px glyph.
+   * the label is carried by a 20px icon.
    *   --text-2xs  uppercase micro-labels: pills, chips, eyebrows, table heads
    *   --text-xs   secondary text: helper copy, hints, metadata, timestamps
    *   --text-sm   form labels, legends, and every interactive control label
@@ -72,6 +72,15 @@
   /* TAP TARGETS — minimum comfortable hit area on a touch screen. */
   --tap-min: 44px;
   --tap-comfortable: 48px;
+
+  /*
+   * PRESS FEEDBACK — see INTERACTION STATES. Held as tokens so the
+   * reduced-motion block can trade the scale for a dim in one place instead
+   * of restating every pressable selector.
+   */
+  --press-scale: 0.98;
+  --press-dim: 1;
+  --press-ease: 180ms ease-out;
 
   --shadow-sm: 0 1px 2px rgba(19, 53, 47, 0.05);
   --shadow-md: 0 16px 40px rgba(19, 53, 47, 0.09);
@@ -128,6 +137,42 @@ a {
   -webkit-tap-highlight-color: transparent;
 }
 
+/*
+ * POINTER & TOUCH
+ * Declared once so no control can ship without the affordance. `manipulation`
+ * drops the 300ms double-tap-zoom wait, so a press registers on first contact
+ * while the page itself still pinch-zooms. `a` is qualified by [href] because
+ * a bare anchor is a link target, not a control.
+ */
+button,
+summary,
+select,
+a[href],
+[role="button"],
+input[type="checkbox"],
+input[type="radio"],
+input[type="file"] {
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+/*
+ * Label-wrapped controls, where the input is visually hidden and the label is
+ * what a finger hits. Named individually rather than as a bare `label`
+ * because `cursor` inherits, and a text field inside a labelled row has to
+ * keep its caret.
+ */
+.task-toggle,
+.requirement-choice,
+.weekly-goal-option,
+.capture-button,
+.segmented-field label,
+.check-grid label,
+.condition-options label {
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
 button {
   color: inherit;
 }
@@ -158,11 +203,29 @@ a {
   border: 0;
 }
 
+/*
+ * ICONS
+ * Every icon is an inline SVG that inherits its colour from the control it
+ * sits in, so contrast is decided once by the surrounding token. `block`
+ * removes the inline baseline gap that would otherwise push a mark off centre
+ * beside its label; the mark never shrinks, because a squashed icon in a
+ * cramped row reads as a rendering fault. Icon size is set per site in JSX so
+ * a mark matches the cap height of the text it stands next to.
+ */
+.icon {
+  display: block;
+  flex: 0 0 auto;
+}
+
+/* Line-height alone left this a pixel under the floor once it is revealed. */
 .skip-link {
   position: fixed;
   top: calc(12px + env(safe-area-inset-top));
   left: calc(12px + env(safe-area-inset-left));
   z-index: 1000;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap-min);
   transform: translateY(-140%);
   border-radius: 8px;
   background: var(--white);
@@ -271,10 +334,6 @@ a {
   place-items: center;
   width: 23px;
   height: 23px;
-  font-family: Arial, sans-serif;
-  font-size: 21px;
-  font-weight: 400;
-  line-height: 1;
 }
 
 .sidebar-add {
@@ -292,10 +351,6 @@ a {
   font-size: var(--text-sm);
   font-weight: 800;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
-}
-
-.sidebar-add span {
-  font-size: 19px;
 }
 
 .sidebar-add:hover {
@@ -411,20 +466,10 @@ a {
   line-height: 1;
   padding: 0 18px;
   text-decoration: none;
-  transition:
-    transform 160ms ease,
-    background 160ms ease,
-    border-color 160ms ease;
 }
 
-.button:hover {
+.button:hover:not(:disabled):not(.disabled) {
   transform: translateY(-1px);
-}
-
-.button:disabled {
-  cursor: wait;
-  opacity: 0.62;
-  transform: none;
 }
 
 .button-primary {
@@ -433,7 +478,7 @@ a {
   box-shadow: 0 8px 20px rgba(21, 53, 47, 0.15);
 }
 
-.button-primary:hover {
+.button-primary:hover:not(:disabled):not(.disabled) {
   background: #1d4d43;
 }
 
@@ -465,7 +510,7 @@ a {
   color: var(--white);
 }
 
-.button-danger:hover {
+.button-danger:hover:not(:disabled):not(.disabled) {
   background: #8f4032;
 }
 
@@ -533,6 +578,9 @@ a {
 }
 
 .text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   min-height: 44px;
   border: 0;
   background: transparent;
@@ -710,7 +758,6 @@ a {
   border-radius: 12px;
   background: var(--amber);
   color: var(--ink-deep);
-  font-size: 22px;
 }
 
 .next-action-card h2 {
@@ -988,12 +1035,6 @@ a {
   color: var(--white);
 }
 
-.dental-checkpoint-actions button:disabled,
-.dental-checkpoint-form input:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
 .requirement-condition .checkpoint-reference {
   color: #49685b;
   font-weight: 700;
@@ -1193,9 +1234,9 @@ a {
 }
 
 .quest-state {
+  display: grid;
+  place-items: center;
   color: var(--ink-muted);
-  font-size: 15px;
-  text-align: center;
 }
 
 .quest-row.claimable .quest-state {
@@ -1251,13 +1292,8 @@ a {
   padding: 7px 9px;
 }
 
-.quest-row button:hover {
+.quest-row button:hover:not(:disabled) {
   background: #214f45;
-}
-
-.quest-row button:disabled {
-  cursor: progress;
-  opacity: 0.55;
 }
 
 .quest-count {
@@ -1285,7 +1321,6 @@ a {
   border-radius: 8px;
   background: var(--sage-bright);
   color: #37765f;
-  font-weight: 800;
 }
 
 .momentum-note.grace_week > span {
@@ -1334,12 +1369,6 @@ a {
   font-weight: 800;
   padding: 7px 11px;
   text-decoration: none;
-}
-
-.task-add-button:disabled,
-.task-edit-button:disabled {
-  cursor: wait;
-  opacity: 0.55;
 }
 
 /*
@@ -1397,8 +1426,19 @@ a {
   padding: 3px 5px 3px 8px;
 }
 
-.task-row:hover {
-  background: #f4f5f0;
+/*
+ * A touch screen keeps :hover on whatever it last tapped, which would leave a
+ * finished task glowing after the finger left. Rows answer touch with the
+ * press state instead; the hover tint is for pointers only.
+ */
+@media (hover: hover) and (pointer: fine) {
+  .task-row:hover {
+    background: #f4f5f0;
+  }
+}
+
+.task-row:not(.locked):has(.task-toggle:active) {
+  background: #edefe8;
 }
 
 .task-toggle {
@@ -1431,7 +1471,6 @@ a {
   border: 1.5px solid #bdc4ba;
   border-radius: 7px;
   color: transparent;
-  font-size: var(--text-xs);
 }
 
 .task-row.completed .custom-check {
@@ -1498,6 +1537,9 @@ a {
 }
 
 .submitted-note-action button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   min-height: 44px;
   border: 0;
   background: transparent;
@@ -1505,6 +1547,7 @@ a {
   cursor: pointer;
   font-size: var(--text-sm);
   font-weight: 800;
+  text-align: left;
 }
 
 .reminder-inbox {
@@ -1655,8 +1698,6 @@ a {
   width: 25px;
   height: 25px;
   border-radius: 8px;
-  font-size: var(--text-xs);
-  font-weight: 800;
 }
 
 .evidence-mark.attached {
@@ -1837,8 +1878,6 @@ a {
   border-radius: 9px;
   background: var(--sage-bright);
   color: #3d745f;
-  font-size: var(--text-xs);
-  font-weight: 800;
 }
 
 .trust-strip p {
@@ -1913,6 +1952,7 @@ a {
   color: var(--ink-soft);
   font-size: var(--text-sm);
   font-weight: 800;
+  gap: 7px;
   justify-content: center;
 }
 
@@ -2066,6 +2106,9 @@ a {
 }
 
 .reminder-setting-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   min-height: 44px;
   justify-self: start;
   margin: 0 32px 15px;
@@ -2075,6 +2118,10 @@ a {
   cursor: pointer;
   font-size: var(--text-sm);
   font-weight: 800;
+  text-align: left;
+}
+
+.reminder-setting-link > span {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -2139,11 +2186,6 @@ a {
 .credential-packet-action {
   flex: 0 0 auto;
   white-space: nowrap;
-}
-
-.credential-packet-action:disabled {
-  cursor: not-allowed;
-  opacity: 0.58;
 }
 
 .detail-footer strong {
@@ -2237,8 +2279,9 @@ a {
 }
 
 .button.disabled {
+  cursor: default;
+  opacity: 0.6;
   pointer-events: none;
-  opacity: 0.45;
 }
 
 .records-card {
@@ -2397,6 +2440,19 @@ a {
   padding: 0;
 }
 
+/* Only "use for another" leads with an icon; the rule stays on the words. */
+.allocation-action.with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  text-decoration: none;
+}
+
+.allocation-action.with-icon > span {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .record-credit {
   justify-self: end;
   color: #3b755f;
@@ -2417,11 +2473,6 @@ a {
   font-size: var(--text-sm);
   font-weight: 800;
   padding: 7px 10px;
-}
-
-.record-manage button:disabled {
-  cursor: wait;
-  opacity: 0.55;
 }
 
 .record-manage > span {
@@ -2458,6 +2509,24 @@ a {
   display: none;
 }
 
+/*
+ * The disclosure spans the full width of a card that clips its overflow, so
+ * an outset ring would be cut off on three sides. This one is drawn inside
+ * the summary's own box instead.
+ */
+.archived-items > summary:focus-visible {
+  outline-offset: -3px;
+}
+
+/*
+ * The disclosure is a full-width row, so it answers a press with a tint
+ * rather than the scale used on buttons — a row that shrinks under a thumb
+ * reads as the card itself moving.
+ */
+.archived-items > summary:active {
+  background: #f1f2ed;
+}
+
 .archived-items > summary > span:first-child,
 .archived-items > summary strong,
 .archived-items > summary small {
@@ -2477,13 +2546,14 @@ a {
   font-weight: 650;
 }
 
-.archived-items > summary > span:last-child {
+.disclosure-chevron {
+  display: flex;
+  flex: 0 0 auto;
   color: #61756c;
-  font-size: 18px;
   transition: transform 160ms ease;
 }
 
-.archived-items[open] > summary > span:last-child {
+.archived-items[open] > summary .disclosure-chevron {
   transform: rotate(180deg);
 }
 
@@ -2545,11 +2615,6 @@ a {
   font-size: var(--text-sm);
   font-weight: 800;
   padding: 7px 11px;
-}
-
-.archived-item button:disabled {
-  cursor: not-allowed;
-  opacity: 0.56;
 }
 
 .archived-item-actions {
@@ -2698,7 +2763,6 @@ a {
   height: 32px;
   border-radius: 10px;
   background: var(--sage-bright);
-  font-weight: 800;
 }
 
 .weekly-goal-scheduled p {
@@ -2791,9 +2855,35 @@ a {
   font-size: var(--text-xs);
 }
 
+/* transform: the label is not itself :disabled, so PRESS would still answer. */
 .weekly-goal-form fieldset:disabled .weekly-goal-option {
-  cursor: progress;
-  opacity: 0.62;
+  cursor: default;
+  opacity: 0.6;
+  transform: none;
+}
+
+/* The row already carries the dim; the radio must not dim on top of it. */
+.weekly-goal-form fieldset:disabled .weekly-goal-option input:disabled {
+  opacity: 1;
+}
+
+/*
+ * The radio is a 20px box inside a 48px row, so the ring is drawn on the row
+ * that the eye is already reading rather than on the control alone.
+ */
+.weekly-goal-option:has(input:focus-visible) {
+  outline: 3px solid #2f8a70;
+  outline-offset: 2px;
+}
+
+/*
+ * Only drop the control's own ring where the row is provably able to draw
+ * one; without :has() support this would leave a focused radio unmarked.
+ */
+@supports selector(:has(*)) {
+  .weekly-goal-option input:focus-visible {
+    outline: none;
+  }
 }
 
 .weekly-goal-actions {
@@ -2859,8 +2949,6 @@ a {
   border-radius: 11px;
   background: var(--sage-bright);
   color: #32735d;
-  font-size: 16px;
-  font-weight: 800;
 }
 
 .phone-alert-status.denied {
@@ -2925,6 +3013,7 @@ a {
 .installed-pill {
   display: inline-flex;
   align-items: center;
+  gap: 7px;
   justify-self: start;
   min-height: 36px;
   margin-top: 18px;
@@ -2985,7 +3074,8 @@ a {
 }
 
 .badge-grid article > span {
-  font-size: 18px;
+  display: grid;
+  place-items: center;
 }
 
 .badge-grid strong,
@@ -3018,21 +3108,19 @@ a {
 }
 
 .compliance-card li {
-  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
   border: 1px solid var(--line);
   border-radius: 10px;
   color: var(--ink-muted);
   font-size: var(--text-xs);
-  padding: 12px 12px 12px 31px;
+  padding: 12px;
 }
 
-.compliance-card li::before {
-  position: absolute;
-  top: 12px;
-  left: 11px;
+.compliance-card li > .icon {
+  margin-top: 2px;
   color: var(--accent-ink);
-  content: "✓";
-  font-weight: 800;
 }
 
 .empty-page {
@@ -3143,8 +3231,6 @@ a {
   border-radius: 12px;
   background: var(--white);
   cursor: pointer;
-  font-size: 24px;
-  line-height: 1;
 }
 
 .modal-body {
@@ -3299,8 +3385,6 @@ a {
   border: 1px solid #cbd3cf;
   border-radius: 7px;
   color: transparent;
-  font-size: var(--text-xs);
-  font-weight: 800;
 }
 
 .requirement-choice input:checked + .requirement-check {
@@ -3639,8 +3723,6 @@ a {
   border-radius: 12px;
   background: var(--sage-bright);
   color: #32735d;
-  font-size: 21px;
-  font-weight: 800;
 }
 
 .certificate-capture-heading strong,
@@ -3692,11 +3774,11 @@ a {
   color: var(--white);
 }
 
-.capture-button:hover {
+.capture-button:hover:not(:disabled) {
   border-color: #80aa99;
 }
 
-.capture-button-primary:hover {
+.capture-button-primary:hover:not(:disabled) {
   background: #214f45;
 }
 
@@ -3714,16 +3796,19 @@ a {
 }
 
 .capture-privacy {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
   margin: 0;
   color: var(--ink-muted);
   font-size: var(--text-xs);
   line-height: 1.5;
 }
 
-.capture-privacy::before {
+/* Nudge the mark onto the first line's cap height, not its box top. */
+.capture-privacy > .icon {
+  margin-top: 2px;
   color: var(--accent-ink);
-  content: "▣ ";
-  font-weight: 800;
 }
 
 .draft-safety-note {
@@ -3751,8 +3836,6 @@ a {
   border-radius: 9px;
   background: var(--sage-bright);
   color: #39725e;
-  font-size: 13px;
-  font-weight: 800;
 }
 
 .draft-safety-note strong,
@@ -3782,11 +3865,6 @@ a {
   font-size: var(--text-sm);
   font-weight: 800;
   padding: 7px 9px;
-}
-
-.draft-safety-note button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
 }
 
 .capture-file {
@@ -3828,11 +3906,6 @@ a {
   font-weight: 800;
 }
 
-.capture-file button:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
 .capture-status {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -3864,8 +3937,6 @@ a {
   height: 20px;
   border-radius: 50%;
   background: rgba(61, 109, 91, 0.12);
-  font-size: var(--text-xs);
-  font-weight: 800;
 }
 
 .capture-progress {
@@ -4229,11 +4300,6 @@ a {
   padding: 8px 12px;
 }
 
-.archive-trigger:disabled {
-  cursor: wait;
-  opacity: 0.55;
-}
-
 .archive-confirmation {
   grid-column: 1 / -1;
   display: grid;
@@ -4330,6 +4396,7 @@ a {
 .source-card a {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   min-height: 44px;
   color: #356f5b;
   font-size: var(--text-sm);
@@ -4394,7 +4461,6 @@ a {
   border-radius: 13px;
   background: #5c9e85;
   color: var(--white);
-  font-size: 18px;
 }
 
 .celebration-panel strong {
@@ -4425,7 +4491,6 @@ a {
   height: 55px;
   border-radius: 18px;
   background: var(--sage-bright);
-  font-size: 24px;
 }
 
 .empty-modal h3 {
@@ -4470,8 +4535,6 @@ a {
   height: 32px;
   border-radius: 10px;
   background: #dcece3;
-  font-size: 17px;
-  font-weight: 800;
 }
 
 .offline-banner strong,
@@ -4538,8 +4601,6 @@ a {
   border-radius: 20px 20px 20px 7px;
   background: var(--sage-bright);
   color: #34715c;
-  font-size: 28px;
-  font-weight: 800;
 }
 
 .offline-workspace h1 {
@@ -4599,10 +4660,11 @@ a {
 }
 
 .toast .toast-close {
+  display: grid;
+  place-items: center;
   width: var(--tap-min);
   padding: 0;
   color: var(--white);
-  font-size: 17px;
 }
 
 .loading-heading {
@@ -4670,6 +4732,209 @@ a {
   to {
     background-position: -220% 0;
   }
+}
+
+/*
+ * INTERACTION STATES
+ * Press, hover and disabled are declared once, here at the foot of the base
+ * sheet, so a control cannot ship with three of the four states and no press,
+ * and so a component rule further up cannot silently win the cursor.
+ */
+
+/*
+ * The press is a transform: it answers a tap without changing any box, which
+ * is what keeps the 4px-gap lists from twitching when one row is pressed.
+ * Colour and border are in the same transition so a hover and a press read as
+ * one gesture rather than two.
+ */
+.button,
+.nav-button,
+.sidebar-add,
+.mobile-add,
+.avatar-button,
+.card-link,
+.text-button,
+.modal-close,
+.mode-switch button,
+.condition-change,
+.field-inline-action,
+.reminder-setting-link,
+.proof-action,
+.task-add-button,
+.task-edit-button,
+.record-manage button,
+.archived-item button,
+.archived-items > summary,
+.quest-row button,
+.reminder-list button,
+.submitted-note-action button,
+.empty-inline button,
+.requirement-condition-actions button,
+.dental-checkpoint-actions button,
+.draft-safety-note button,
+.capture-file button,
+.capture-button,
+.archive-trigger,
+.error-banner button,
+.toast button,
+.credential-picker > button,
+.requirement-choice,
+.weekly-goal-option,
+.condition-options span,
+.segmented-field span,
+.check-grid span {
+  transition:
+    transform var(--press-ease),
+    opacity var(--press-ease),
+    background-color var(--press-ease),
+    border-color var(--press-ease),
+    box-shadow var(--press-ease),
+    color var(--press-ease);
+}
+
+.button:active:not(:disabled):not(.disabled),
+.nav-button:active,
+.sidebar-add:active,
+.mobile-add:active,
+.avatar-button:active,
+.card-link:active,
+.text-button:active,
+.modal-close:active,
+.mode-switch button:active,
+.condition-change:active,
+.field-inline-action:active,
+.reminder-setting-link:active,
+.proof-action:active,
+.task-add-button:active:not(:disabled),
+.task-edit-button:active:not(:disabled),
+.record-manage button:active:not(:disabled),
+.archived-item button:active:not(:disabled),
+.quest-row button:active:not(:disabled),
+.reminder-list button:active,
+.submitted-note-action button:active,
+.empty-inline button:active,
+.requirement-condition-actions button:active,
+.dental-checkpoint-actions button:active:not(:disabled),
+.draft-safety-note button:active:not(:disabled),
+.capture-file button:active:not(:disabled),
+.capture-button:active,
+.archive-trigger:active:not(:disabled),
+.error-banner button:active,
+.toast button:active,
+.credential-picker > button:active,
+.requirement-choice:active,
+.weekly-goal-option:active,
+.condition-options label:active span,
+.segmented-field label:active span,
+.check-grid label:active span {
+  opacity: var(--press-dim);
+  transform: scale(var(--press-scale));
+}
+
+/*
+ * A touch screen holds :hover on the last thing it tapped, so a row tint
+ * would stay lit after the finger left. Hover is a pointer affordance; touch
+ * already has the press above. Static panels are deliberately absent: a card
+ * that reacts to the pointer promises a click it does not accept.
+ */
+@media (hover: hover) and (pointer: fine) {
+  .records-table:not(.records-table-head):hover,
+  .archived-item:hover {
+    background: #f7f8f3;
+  }
+
+  .reminder-list article:not(.highlighted):hover {
+    background: #fff6e6;
+  }
+
+  .credential-picker > button:hover:not(.active) {
+    box-shadow: var(--shadow-sm);
+  }
+
+  .archived-items > summary:hover {
+    background: #f7f8f3;
+  }
+}
+
+/*
+ * DISABLED
+ * One reading of "you cannot use this", everywhere: dimmed, a neutral pointer,
+ * and no press or hover answer. The dim stops at 0.6 rather than half strength
+ * because a disabled label is sometimes the only instruction on the card —
+ * "Reconnect to prepare packet" is all an offline reader gets — and 0.5 drops
+ * that below 3:1. `wait`/`progress` cursors are deliberately not used — a
+ * disabled control is not always a busy one, and busy-ness is already carried
+ * by the spinner and the word beside it (see IN-FLIGHT FEEDBACK). Anchors opt
+ * in with `.disabled`, having no such state.
+ */
+button:disabled,
+input:disabled,
+select:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+button:disabled:hover,
+button:disabled:active {
+  opacity: 0.6;
+  transform: none;
+}
+
+/*
+ * Natives that a styled mark stands in for are hidden with opacity rather than
+ * moved off-screen, so the dim above would paint the raw OS control back over
+ * its own replacement. The mark carries the disabled reading instead.
+ */
+.task-toggle input:disabled,
+.requirement-choice input:disabled,
+.condition-options input:disabled,
+.capture-button input:disabled,
+.segmented-field input:disabled,
+.check-grid input:disabled {
+  opacity: 0;
+}
+
+/*
+ * A label wrapping a disabled control is never :disabled itself, so without
+ * this it would keep answering a press the control discards, and the segment
+ * would read as available. Declared after PRESS so the equal-specificity
+ * press rule loses on source order.
+ */
+.segmented-field input:disabled + span,
+.check-grid input:disabled + span,
+.condition-options input:disabled + span {
+  cursor: default;
+  opacity: 0.6;
+  transform: none;
+}
+
+/*
+ * TABULAR FIGURES
+ * Counters, fractions, percentages and countdowns are read by watching one
+ * number change, so their digits keep a fixed advance width and the value
+ * cannot slide sideways going 9 → 10. Prose keeps proportional figures.
+ */
+.card-summary,
+.progress-label strong,
+.deadline-number strong,
+.deadline-chip strong,
+.readiness-ring strong,
+.detail-stats strong,
+.record-summary > div strong,
+.record-title small,
+.allocation-stack small,
+.record-credit,
+.credit-value,
+.picker-progress,
+.xp-chip,
+.level-copy strong,
+.level-copy small,
+.account-level strong,
+.quest-heading > span,
+.quest-count,
+.allocation-tally-figure,
+.connected-device-count {
+  font-variant-numeric: tabular-nums;
 }
 
 @media (max-width: 1040px) {
@@ -4817,12 +5082,13 @@ a {
   .mobile-nav .nav-symbol {
     width: 22px;
     height: 22px;
-    font-size: 20px;
   }
 
   .mobile-add {
+    display: grid;
     align-self: start;
     justify-self: center;
+    place-items: center;
     width: 53px;
     height: 53px;
     margin-top: -22px;
@@ -4831,8 +5097,6 @@ a {
     background: var(--ink);
     color: var(--white);
     cursor: pointer;
-    font-size: 28px;
-    line-height: 1;
     box-shadow: 0 9px 24px rgba(16, 44, 39, 0.23);
   }
 
@@ -5527,6 +5791,20 @@ a {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  /*
+   * With transitions frozen the press scale would snap rather than ease, so
+   * pressed controls dim instead of resizing. A tap still gets an answer;
+   * it is just not a moving one. The hover lift goes for the same reason.
+   */
+  :root {
+    --press-scale: 1;
+    --press-dim: 0.82;
+  }
+
+  .button:hover:not(:disabled):not(.disabled) {
+    transform: none;
   }
 }
 
