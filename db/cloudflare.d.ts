@@ -84,6 +84,12 @@ declare module "cloudflare:workers" {
     VAPID_PUBLIC_KEY?: string;
     VAPID_PRIVATE_KEY?: string;
     VAPID_SUBJECT?: string;
+    APNS_TEAM_ID?: string;
+    APNS_KEY_ID?: string;
+    APNS_PRIVATE_KEY?: string;
+    APNS_BUNDLE_ID?: string;
+    APNS_ENVIRONMENT?: string;
+    ITRACK_WIDGET_TOKEN?: string;
     [binding: string]: unknown;
   };
 }

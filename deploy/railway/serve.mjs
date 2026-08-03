@@ -113,11 +113,18 @@ function authenticate(header) {
 const INTERNAL_SCHEDULED_SECRET = randomBytes(32).toString("hex");
 
 // Worker vars are not inherited from the process environment; forward the
-// ones the worker reads (VAPID push credentials) explicitly.
+// ones the worker reads (VAPID push + APNs credentials, widget token)
+// explicitly.
 const workerVarArgs = [
   "VAPID_PUBLIC_KEY",
   "VAPID_PRIVATE_KEY",
   "VAPID_SUBJECT",
+  "APNS_TEAM_ID",
+  "APNS_KEY_ID",
+  "APNS_PRIVATE_KEY",
+  "APNS_BUNDLE_ID",
+  "APNS_ENVIRONMENT",
+  "ITRACK_WIDGET_TOKEN",
 ].flatMap((name) =>
   process.env[name] ? ["--var", `${name}:${process.env[name]}`] : [],
 );
