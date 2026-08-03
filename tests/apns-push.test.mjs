@@ -162,14 +162,31 @@ test("maps 410 Unregistered to unregistered:true", async () => {
   });
 });
 
-test("maps 400 BadDeviceToken to unregistered:true", async () => {
+test("maps a 410 with an empty body to unregistered:true", async () => {
+  const outcome = await apns.sendApnsNotification(
+    "t",
+    NOTE,
+    CONFIG,
+    async () => new Response(null, { status: 410 }),
+  );
+  assert.deepEqual(outcome, {
+    ok: false,
+    status: 410,
+    unregistered: true,
+    reason: null,
+  });
+});
+
+test("does not unregister on 400 BadDeviceToken", async () => {
+  // Apple also returns BadDeviceToken when a valid token is sent to the wrong
+  // environment, so one APNS_ENVIRONMENT mistake must not retire the fleet.
   const fakeFetch = async () =>
     new Response(JSON.stringify({ reason: "BadDeviceToken" }), { status: 400 });
   const outcome = await apns.sendApnsNotification("t", NOTE, CONFIG, fakeFetch);
   assert.deepEqual(outcome, {
     ok: false,
     status: 400,
-    unregistered: true,
+    unregistered: false,
     reason: "BadDeviceToken",
   });
 });
@@ -230,8 +247,11 @@ test("reuses the provider token for under 50 minutes, then re-mints", async () =
 
   const minted = await authorization(1_754_000_000_000);
   assert.equal(await authorization(1_754_000_000_000 + 49 * 60_000), minted);
-  assert.notEqual(await authorization(1_754_000_000_000 + 51 * 60_000), minted);
-  // A different key must never reuse another configuration's token.
+  const reminted = await authorization(1_754_000_000_000 + 51 * 60_000);
+  assert.notEqual(reminted, minted);
+  // A different key must never reuse the *currently cached* token, so compare
+  // against the freshest one: comparing against `minted` would also pass for a
+  // cache that ignored the key material entirely.
   const other = { ...config, privateKeyPem: await generateTestKeyPem() };
   await apns.sendApnsNotification(
     "t",
@@ -240,10 +260,10 @@ test("reuses the provider token for under 50 minutes, then re-mints", async () =
     fetchImpl,
     1_754_000_000_000 + 51 * 60_000,
   );
-  assert.notEqual(calls[calls.length - 1].init.headers.authorization, minted);
+  assert.notEqual(calls[calls.length - 1].init.headers.authorization, reminted);
 });
 
-test("rejects device tokens that would escape the /3/device/ path", async () => {
+test("retires malformed device tokens without issuing a request", async () => {
   const { calls, fetchImpl } = recordingFetch();
   for (const deviceToken of [
     "",
@@ -253,11 +273,19 @@ test("rejects device tokens that would escape the /3/device/ path", async () => 
     "token#fragment",
     "token/extra",
     "toke n",
+    "dG9rZW4+/w==",
     `token${"0".repeat(400)}`,
   ]) {
-    await assert.rejects(
-      apns.sendApnsNotification(deviceToken, NOTE, CONFIG, fetchImpl),
-      (error) => error instanceof Error && error.message.length > 0,
+    // Self-retiring rather than throwing keeps one poison row from failing
+    // every future cron run, while still issuing no request at all.
+    assert.deepEqual(
+      await apns.sendApnsNotification(deviceToken, NOTE, CONFIG, fetchImpl),
+      {
+        ok: false,
+        status: 0,
+        unregistered: true,
+        reason: "MalformedDeviceToken",
+      },
     );
   }
   assert.equal(calls.length, 0);

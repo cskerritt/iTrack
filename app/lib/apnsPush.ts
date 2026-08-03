@@ -38,15 +38,16 @@ function trimmed(value: string | undefined) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function validDeviceToken(deviceToken: string) {
-  const token = trimmed(deviceToken);
-  if (!DEVICE_TOKEN.test(token)) {
-    throw new Error(
-      "The APNs device token must be the alphanumeric token the device " +
-        "registered with (1-200 characters).",
-    );
-  }
-  return token;
+// A stored token that cannot address `/3/device/<token>` is retired locally
+// rather than thrown on: a poison row would otherwise fail every cron run
+// forever. The verdict is unambiguous because it never involves Apple.
+function malformedDeviceTokenOutcome(): ApnsSendOutcome {
+  return {
+    ok: false,
+    status: 0,
+    unregistered: true,
+    reason: "MalformedDeviceToken",
+  };
 }
 
 function validTopic(bundleId: string) {
@@ -121,8 +122,9 @@ async function discardBody(response: Response) {
 
 /**
  * Delivers one alert to a single device over Apple's HTTP/2 push API.
- * Transport failures reject; APNs responses resolve to an outcome so callers
- * can retry, back off, or disable the device from the status alone.
+ * Deployment mistakes (a bad bundle id or send time) throw; anything that is a
+ * property of one stored device — including a token too malformed to send —
+ * resolves to an outcome so a single row can be retried or retired on its own.
  */
 export async function sendApnsNotification(
   deviceToken: string,
@@ -131,14 +133,20 @@ export async function sendApnsNotification(
   fetchImpl: typeof fetch = fetch,
   nowMs: number = Date.now(),
 ): Promise<ApnsSendOutcome> {
-  const token = validDeviceToken(deviceToken);
   const topic = validTopic(config.bundleId);
   if (!Number.isFinite(nowMs)) {
     throw new Error(
       "The APNs send time must be a finite epoch-milliseconds value.",
     );
   }
-  const host = APNS_HOSTS[config.environment] ?? APNS_HOSTS.production;
+  const token = trimmed(deviceToken);
+  if (!DEVICE_TOKEN.test(token)) return malformedDeviceTokenOutcome();
+  // Indexed by literal key only: a computed lookup would walk the prototype
+  // chain for a config carrying an "environment" like __proto__.
+  const host =
+    config.environment === "sandbox"
+      ? APNS_HOSTS.sandbox
+      : APNS_HOSTS.production;
   const jwt = await providerToken(config, nowMs);
   const body = JSON.stringify({
     aps: {
@@ -154,9 +162,8 @@ export async function sendApnsNotification(
     () => controller.abort("APNs request timed out."),
     REQUEST_TIMEOUT_MILLISECONDS,
   );
-  let response: Response;
   try {
-    response = await fetchImpl(`${host}/3/device/${token}`, {
+    const response = await fetchImpl(`${host}/3/device/${token}`, {
       method: "POST",
       headers: {
         authorization: `bearer ${jwt}`,
@@ -171,30 +178,31 @@ export async function sendApnsNotification(
       body,
       signal: controller.signal,
     });
+    if (response.ok) {
+      await discardBody(response);
+      return {
+        ok: true,
+        status: response.status,
+        unregistered: false,
+        reason: null,
+      };
+    }
+    return {
+      ok: false,
+      status: response.status,
+      // Only 410 retires a device: it is Apple's unambiguous "this token is no
+      // longer active for this topic". A 400 BadDeviceToken also fires when a
+      // token is sent to the wrong APNs environment, so treating it as
+      // unregistered would let one bad APNS_ENVIRONMENT retire the whole
+      // fleet; the attempt cap handles it instead.
+      unregistered: response.status === 410,
+      reason: await failureReason(response),
+    };
   } finally {
+    // The timer stays armed across the body read so a stalled error body
+    // cannot hang the delivery run.
     clearTimeout(timeout);
   }
-
-  if (response.ok) {
-    await discardBody(response);
-    return {
-      ok: true,
-      status: response.status,
-      unregistered: false,
-      reason: null,
-    };
-  }
-  const reason = await failureReason(response);
-  return {
-    ok: false,
-    status: response.status,
-    // 410 retires a token Apple no longer knows; 400 BadDeviceToken means the
-    // token was never valid for this topic. Both must stop future sends.
-    unregistered:
-      response.status === 410 ||
-      (response.status === 400 && reason === "BadDeviceToken"),
-    reason,
-  };
 }
 
 /**
