@@ -38,13 +38,31 @@ export function clampPercent(value: number) {
 
 /**
  * Counts whole days to the *end* of the deadline day, so a credential due
- * today reads as 1 day rather than 0. `nowMs` is a parameter (rather than a
- * `Date.now()` call inside) so the widget feed can stamp its whole payload
- * from one clock reading.
+ * today reads as 1 day rather than 0. The deadline is read in the runtime's
+ * own zone, which is what the browser wants: the number the user sees is
+ * counted in the zone they are standing in.
  */
 export function daysUntilDate(value: string, nowMs: number) {
   const deadline = new Date(`${value.slice(0, 10)}T23:59:59`);
   return Math.ceil((deadline.getTime() - nowMs) / 86_400_000);
+}
+
+/**
+ * The same count, but anchored to a calendar date the caller already
+ * resolved in the *user's* zone rather than the runtime's. Server-side
+ * renderers (the iOS widget feed) run on workerd, whose zone is always UTC,
+ * so counting from an epoch there would show a US user a different number
+ * than the app shows them; passing today's local date in sidesteps that.
+ *
+ * Counting whole calendar days and adding one is exactly what the
+ * end-of-deadline-day arithmetic above resolves to at any wall-clock time
+ * of day.
+ */
+export function daysUntilDateFromToday(value: string, today: string) {
+  const deadline = Date.parse(`${value.slice(0, 10)}T00:00:00.000Z`);
+  const anchor = Date.parse(`${today.slice(0, 10)}T00:00:00.000Z`);
+  if (Number.isNaN(deadline) || Number.isNaN(anchor)) return null;
+  return Math.round((deadline - anchor) / 86_400_000) + 1;
 }
 
 export function requirementEarned(requirement: ReadinessRequirement) {

@@ -35,10 +35,15 @@ export async function GET(request: Request) {
     env.ITRACK_WIDGET_TOKEN,
   );
   if (!authorization.ok) {
-    return Response.json(
-      authorization.status === 503 ? UNAVAILABLE : UNAUTHORIZED,
-      { status: authorization.status, headers: NO_STORE },
-    );
+    if (authorization.status === 503) {
+      return Response.json(UNAVAILABLE, { status: 503, headers: NO_STORE });
+    }
+    return Response.json(UNAUTHORIZED, {
+      status: 401,
+      // Names the scheme the caller should have used, per RFC 7235: a 401
+      // without it tells a client nothing about how to authenticate.
+      headers: { ...NO_STORE, "WWW-Authenticate": 'Bearer realm="iTrack"' },
+    });
   }
 
   try {

@@ -1,5 +1,6 @@
 import { getWorkspace } from "@/app/api/workspace/route";
-import { daysUntilDate, readinessScore } from "./readiness";
+import { daysUntilDateFromToday, readinessScore } from "./readiness";
+import { localReminderClock } from "./reminders";
 
 /**
  * The payload an iOS WidgetKit extension renders. Deliberately tiny and
@@ -85,22 +86,45 @@ export async function buildWidgetSummary(
     isDemo: Boolean(user.isDemo),
   });
 
+  // workerd's zone is always UTC, so counting days from an epoch here would
+  // show a user in the Americas a different number than the app shows them
+  // for most of every day. The workspace already carries the zone the user
+  // set for reminders; today's date is resolved in it once, with the same
+  // clock the reminder and push schedulers use.
+  const today = localReminderClock(
+    new Date(nowMs),
+    workspace.reminderPreferences.timeZone,
+  ).date;
+
   const credentials = workspace.credentials.map((credential) => {
     const dueDate = normalizedDueDate(credential.deadline);
     return {
       name: credential.credentialName,
-      daysToRenewal: dueDate === null ? null : daysUntilDate(dueDate, nowMs),
+      daysToRenewal:
+        dueDate === null ? null : daysUntilDateFromToday(dueDate, today),
       dueDate,
       creditsDone: credential.totalEarned,
       creditsRequired: credential.totalRequired,
       readinessPercent: readinessScore(credential),
+      status: credential.status,
     };
   });
 
-  // Soonest due first because that is the one line a widget has room for.
-  // Undated credentials sort last (they can never be the urgent one), and
-  // name breaks ties so the widget does not reshuffle between refreshes.
+  // Same order the app puts credentials in: live ones first, then submitted,
+  // then closed-out history. Sorting on the date alone would float a renewed
+  // credential — which keeps the deadline it was renewed against — to the top
+  // of the widget the moment a renewal completes, so the one line the widget
+  // has room for would show a dead credential counting down past zero.
+  //
+  // Within a bucket: soonest due first, undated last (they can never be the
+  // urgent one), name as the tiebreak so the widget does not reshuffle
+  // between refreshes.
+  const lifecycleRank = (status: string) =>
+    status === "active" ? 0 : status === "submitted" ? 1 : 2;
   credentials.sort((left, right) => {
+    const rankDifference =
+      lifecycleRank(left.status) - lifecycleRank(right.status);
+    if (rankDifference !== 0) return rankDifference;
     if (left.dueDate !== right.dueDate) {
       if (left.dueDate === null) return 1;
       if (right.dueDate === null) return -1;
@@ -109,7 +133,19 @@ export async function buildWidgetSummary(
     return left.name.localeCompare(right.name);
   });
 
-  return { generatedAt: new Date(nowMs).toISOString(), credentials };
+  return {
+    generatedAt: new Date(nowMs).toISOString(),
+    // Rebuilt field by field: `status` is a sort key, not something the feed
+    // publishes, and listing the shape here keeps it from growing by accident.
+    credentials: credentials.map((credential) => ({
+      name: credential.name,
+      daysToRenewal: credential.daysToRenewal,
+      dueDate: credential.dueDate,
+      creditsDone: credential.creditsDone,
+      creditsRequired: credential.creditsRequired,
+      readinessPercent: credential.readinessPercent,
+    })),
+  };
 }
 
 /**
@@ -140,11 +176,15 @@ export function authorizeWidgetRequest(
   request: Request,
   expectedToken: string | undefined,
 ): { ok: true } | { ok: false; status: 503 | 401 } {
-  if (!expectedToken) return { ok: false, status: 503 };
+  // Trimmed because a token pasted into a hosting dashboard routinely arrives
+  // with a trailing newline; whitespace-only is the same as unset, and must
+  // not become a token made of spaces that some caller could guess.
+  const token = expectedToken?.trim();
+  if (!token) return { ok: false, status: 503 };
   // The whole header is compared in one pass, so not even the scheme prefix
   // gets its own early exit.
   const authorization = request.headers.get("authorization") ?? "";
-  return constantTimeEquals(authorization, `Bearer ${expectedToken}`)
+  return constantTimeEquals(authorization, `Bearer ${token}`)
     ? { ok: true }
     : { ok: false, status: 401 };
 }

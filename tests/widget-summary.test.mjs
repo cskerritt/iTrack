@@ -317,6 +317,48 @@ function seedWorkspace() {
   return { sqlite, database: wrapDatabase(sqlite) };
 }
 
+// A second seed for the ordering and clock cases, where the readiness inputs
+// are beside the point: just a user, an optional reminder time zone, and
+// credentials described by name/deadline/status.
+function seedCredentials(credentials, { timeZone } = {}) {
+  const sqlite = new DatabaseSync(":memory:");
+  for (const statement of schemaStatements) sqlite.exec(statement);
+  const run = (sql, ...bindings) => sqlite.prepare(sql).run(...bindings);
+  run(
+    `INSERT INTO users (id, email, display_name, created_at)
+     VALUES (?, ?, ?, ?)`,
+    USER_ID,
+    "chris@example.test",
+    "Chris",
+    "2026-01-01 00:00:00",
+  );
+  if (timeZone) {
+    run(
+      `INSERT INTO reminder_preferences (
+         user_id, in_app_enabled, push_enabled, push_hour_local, lead_days,
+         time_zone
+       ) VALUES (?, 1, 0, 9, '[90,30,7,1]', ?)`,
+      USER_ID,
+      timeZone,
+    );
+  }
+  for (const [index, credential] of credentials.entries()) {
+    run(
+      `INSERT INTO credentials (
+         id, user_id, credential_name, profession, jurisdiction, issuer,
+         cycle_start, deadline, total_required, unit_label, status
+       ) VALUES (?, ?, ?, 'Nursing', 'RI', 'RI DOH', '2026-01-01', ?, 0,
+                 'hours', ?)`,
+      `cred-${index}`,
+      USER_ID,
+      credential.name,
+      credential.deadline,
+      credential.status ?? "active",
+    );
+  }
+  return { sqlite, database: wrapDatabase(sqlite) };
+}
+
 test("summary lists every credential soonest-due first with nulls last", async () => {
   const { database } = seedWorkspace();
   const summary = await widgetSummary.buildWidgetSummary(
@@ -398,6 +440,67 @@ test("credits and readiness match the dashboard derivation", async () => {
   });
 });
 
+test("a renewed credential never outranks a live one, however old its deadline", async () => {
+  // The renewed row keeps the deadline it was renewed against, so a
+  // date-only sort would put this dead credential — counting down past zero
+  // — on the widget's top line the moment a renewal completes.
+  const { database } = seedCredentials([
+    { name: "Live licence", deadline: "2026-12-01", status: "active" },
+    { name: "Last cycle", deadline: "2026-06-01", status: "renewed" },
+    { name: "Filed licence", deadline: "2027-01-01", status: "submitted" },
+  ]);
+  const summary = await widgetSummary.buildWidgetSummary(
+    database,
+    USER_ID,
+    NOW_MS,
+  );
+
+  assert.deepEqual(
+    summary.credentials.map((credential) => credential.name),
+    ["Live licence", "Filed licence", "Last cycle"],
+  );
+  // The renewed one is kept, not dropped, and still counts down honestly.
+  assert.equal(summary.credentials.at(-1).daysToRenewal, -62);
+});
+
+test("credentials due the same day fall back to name order", async () => {
+  const { database } = seedCredentials([
+    { name: "Zebra cert", deadline: "2026-09-01" },
+    { name: "Alpha cert", deadline: "2026-09-01" },
+  ]);
+  const summary = await widgetSummary.buildWidgetSummary(
+    database,
+    USER_ID,
+    NOW_MS,
+  );
+  assert.deepEqual(
+    summary.credentials.map((credential) => credential.name),
+    ["Alpha cert", "Zebra cert"],
+  );
+});
+
+test("day counts are read in the user's zone, not the worker's", async () => {
+  // 02:00 UTC on the 4th is still 22:00 on the 3rd in New York, so the two
+  // zones disagree about what "today" is at this instant — and therefore
+  // about how many days are left.
+  const instant = Date.parse("2026-08-04T02:00:00.000Z");
+  const credentials = [{ name: "RI RN license", deadline: "2026-08-10" }];
+
+  const newYork = await widgetSummary.buildWidgetSummary(
+    seedCredentials(credentials, { timeZone: "America/New_York" }).database,
+    USER_ID,
+    instant,
+  );
+  assert.equal(newYork.credentials[0].daysToRenewal, 8);
+
+  const utc = await widgetSummary.buildWidgetSummary(
+    seedCredentials(credentials, { timeZone: "UTC" }).database,
+    USER_ID,
+    instant,
+  );
+  assert.equal(utc.credentials[0].daysToRenewal, 7);
+});
+
 test("generatedAt is the ISO form of the supplied clock", async () => {
   const { database } = seedWorkspace();
   const summary = await widgetSummary.buildWidgetSummary(
@@ -454,7 +557,10 @@ function widgetRequest(authorization) {
 }
 
 test("an unset widget token disables the endpoint rather than opening it", () => {
-  for (const expected of [undefined, ""]) {
+  // Whitespace-only counts as unset: a token pasted into a hosting dashboard
+  // routinely arrives padded, and a token made of spaces must never be one a
+  // caller could present.
+  for (const expected of [undefined, "", "   ", "\n", " \t "]) {
     assert.deepEqual(
       widgetSummary.authorizeWidgetRequest(
         widgetRequest("Bearer anything"),
@@ -496,6 +602,14 @@ test("the exact bearer token is accepted", () => {
     widgetSummary.authorizeWidgetRequest(
       widgetRequest(`Bearer ${expected}`),
       expected,
+    ),
+    { ok: true },
+  );
+  // A stored token with stray padding still authenticates the clean one.
+  assert.deepEqual(
+    widgetSummary.authorizeWidgetRequest(
+      widgetRequest(`Bearer ${expected}`),
+      `  ${expected}\n`,
     ),
     { ok: true },
   );
@@ -555,6 +669,45 @@ test("the route refuses callers the token gate rejects", async () => {
   });
   assert.equal(wrong.status, 401);
   assert.equal(wrong.headers.get("cache-control"), "no-store");
+  assert.equal(wrong.headers.get("www-authenticate"), 'Bearer realm="iTrack"');
+});
+
+// The Railway entrypoint cannot be imported here — it spawns wrangler and
+// binds a port at module scope — so its two exemptions are pinned by reading
+// the source. Without them the endpoint is unreachable in production: the
+// Basic gate 401s a bearer request, and the header strip would remove the
+// token before the worker ever sees it. Manual end-to-end verification of the
+// running proxy is recorded in the task report.
+test("the Railway proxy lets the widget feed through with its token", async () => {
+  const source = readFileSync(
+    new URL("../deploy/railway/serve.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /const WIDGET_FEED_PATH = "\/api\/widget-summary";/,
+    "the exemption must be an exact path, not a prefix",
+  );
+  assert.match(
+    source,
+    /const isWidgetFeed = pathname === WIDGET_FEED_PATH;/,
+  );
+  assert.match(
+    source,
+    /const user = isWidgetFeed[\s\S]*?authenticate\(req\.headers\.authorization\)[\s\S]*?if \(!user && !isWidgetFeed\) \{[\s\S]*?res\.writeHead\(401/,
+    "the widget feed must skip the Basic gate",
+  );
+  // The strip stays unconditional for every authenticated path: it is what
+  // stops a caller supplying its own credentials to the worker.
+  assert.match(
+    source,
+    /if \(user\) \{[\s\S]*?delete headers\.authorization;[\s\S]*?oai-authenticated-user-email/,
+  );
+  assert.equal(
+    source.match(/delete headers\.authorization;/g)?.length,
+    1,
+    "authorization is deleted in exactly one place — the authenticated branch",
+  );
 });
 
 test("the route reports 404 before any workspace exists", async () => {

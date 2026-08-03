@@ -7,6 +7,9 @@
 // worker expects from its normal hosting platform. It also fires the
 // */15 cron trigger that delivers scheduled push reminders.
 //
+// One path opts out of Basic Auth — the iOS widget feed, which carries its
+// own bearer token for the worker to check; see WIDGET_FEED_PATH below.
+//
 // Configuration (environment):
 //   PORT          public listen port (Railway sets this)
 //   ITRACK_USERS  semicolon-separated "username:password:email[:Display Name]"
@@ -202,8 +205,18 @@ async function fireCron() {
   }
 }
 
+// The iOS widget feed authenticates a *device* with its own bearer token,
+// checked inside the worker against ITRACK_WIDGET_TOKEN. It therefore cannot
+// pass this proxy's Basic gate (a widget extension has no password prompt),
+// and its Authorization header has to survive the strip below or the worker
+// would only ever see an anonymous request. Both exemptions are scoped to
+// this one exact path: no prefix match, so nothing under a similar-looking
+// path inherits them.
+const WIDGET_FEED_PATH = "/api/widget-summary";
+
 const server = http.createServer((req, res) => {
   const pathname = (req.url ?? "/").split("?")[0];
+  const isWidgetFeed = pathname === WIDGET_FEED_PATH;
 
   if (pathname === "/healthz") {
     res.writeHead(200, { "content-type": "text/plain" });
@@ -222,8 +235,10 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const user = OPEN_IDENTITY ?? authenticate(req.headers.authorization);
-  if (!user) {
+  const user = isWidgetFeed
+    ? null
+    : (OPEN_IDENTITY ?? authenticate(req.headers.authorization));
+  if (!user && !isWidgetFeed) {
     res.writeHead(401, {
       "www-authenticate": 'Basic realm="iTrack", charset="UTF-8"',
       "content-type": "text/plain",
@@ -237,15 +252,21 @@ const server = http.createServer((req, res) => {
   for (const name of Object.keys(headers)) {
     if (name.startsWith("oai-")) delete headers[name];
   }
-  delete headers.authorization;
   delete headers.connection;
-  headers["oai-authenticated-user-email"] = user.email;
-  if (user.displayName) {
-    headers["oai-authenticated-user-full-name"] = encodeURIComponent(
-      user.displayName,
-    );
-    headers["oai-authenticated-user-full-name-encoding"] =
-      "percent-encoded-utf-8";
+  if (user) {
+    // Stripping Authorization is what stops a caller from presenting its own
+    // credentials to the worker; it stays unconditional for every path that
+    // this proxy authenticates. Only the widget feed above keeps its header,
+    // and it is never given an identity in exchange.
+    delete headers.authorization;
+    headers["oai-authenticated-user-email"] = user.email;
+    if (user.displayName) {
+      headers["oai-authenticated-user-full-name"] = encodeURIComponent(
+        user.displayName,
+      );
+      headers["oai-authenticated-user-full-name-encoding"] =
+        "percent-encoded-utf-8";
+    }
   }
 
   const upstream = http.request(
