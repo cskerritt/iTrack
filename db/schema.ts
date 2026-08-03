@@ -609,6 +609,61 @@ export const pushDeliveryLedger = sqliteTable(
   ],
 );
 
+export const apnsDevices = sqliteTable(
+  "apns_devices",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    deviceToken: text("device_token").notNull(),
+    environment: text("environment").notNull().default("production"),
+    deviceLabel: text("device_label"),
+    failureCount: integer("failure_count").notNull().default(0),
+    lastSeenAt: text("last_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    lastSuccessAt: text("last_success_at"),
+    lastFailureAt: text("last_failure_at"),
+    disabledAt: text("disabled_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("apns_devices_token_unique").on(table.deviceToken),
+    index("apns_devices_user_active_idx").on(
+      table.userId,
+      table.disabledAt,
+      table.updatedAt,
+    ),
+  ],
+);
+
+export const apnsDeliveryLedger = sqliteTable(
+  "apns_delivery_ledger",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    deviceId: text("device_id")
+      .notNull()
+      .references(() => apnsDevices.id, { onDelete: "cascade" }),
+    reminderKey: text("reminder_key").notNull(),
+    scheduledFor: text("scheduled_for").notNull(),
+    status: text("status").notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    lastAttemptAt: text("last_attempt_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("apns_ledger_device_reminder_unique").on(
+      table.deviceId,
+      table.reminderKey,
+      table.scheduledFor,
+    ),
+  ],
+);
+
 export const badgeDefinitions = sqliteTable("badge_definitions", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),

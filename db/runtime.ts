@@ -458,6 +458,41 @@ const TABLE_STATEMENTS = [
     ON push_delivery_ledger (status, next_attempt_at)`,
   `CREATE INDEX IF NOT EXISTS push_delivery_ledger_user_created_idx
     ON push_delivery_ledger (user_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS apns_devices (
+    id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT NOT NULL,
+    device_token TEXT NOT NULL,
+    environment TEXT NOT NULL DEFAULT 'production',
+    device_label TEXT,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_success_at TEXT,
+    last_failure_at TEXT,
+    disabled_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS apns_devices_token_unique
+    ON apns_devices (device_token)`,
+  `CREATE INDEX IF NOT EXISTS apns_devices_user_active_idx
+    ON apns_devices (user_id, disabled_at, updated_at)`,
+  `CREATE TABLE IF NOT EXISTS apns_delivery_ledger (
+    id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    reminder_key TEXT NOT NULL,
+    scheduled_for TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (device_id) REFERENCES apns_devices(id) ON DELETE CASCADE
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS apns_ledger_device_reminder_unique
+    ON apns_delivery_ledger (device_id, reminder_key, scheduled_for)`,
   `CREATE TABLE IF NOT EXISTS badge_definitions (
     id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL,

@@ -206,4 +206,34 @@ test("full initialization and managed-catalog seed run against real SQLite", asy
       );
     },
   );
+
+  await t.test(
+    "APNs tables are created by migrations",
+    async () => {
+      const getTableColumns = async (table) => {
+        const result = await realDatabase.prepare(`PRAGMA table_info(${table})`).all();
+        return result.results;
+      };
+      const apnsDevicesColumns = await getTableColumns("apns_devices");
+      const apnsLedgerColumns = await getTableColumns("apns_delivery_ledger");
+      assert.ok(
+        apnsDevicesColumns.length > 0,
+        "apns_devices table should exist",
+      );
+      assert.ok(
+        apnsLedgerColumns.length > 0,
+        "apns_delivery_ledger table should exist",
+      );
+      const deviceColumnNames = apnsDevicesColumns.map((col) => col.name);
+      const ledgerColumnNames = apnsLedgerColumns.map((col) => col.name);
+      assert.ok(
+        deviceColumnNames.includes("device_token"),
+        "apns_devices should have device_token column",
+      );
+      assert.ok(
+        ledgerColumnNames.includes("device_id"),
+        "apns_delivery_ledger should have device_id column",
+      );
+    },
+  );
 });
