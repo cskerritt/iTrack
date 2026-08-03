@@ -2,7 +2,10 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import { runScheduledPushDelivery } from "../app/lib/pushDelivery";
-import { runScheduledApnsDelivery } from "../app/lib/apnsDelivery";
+import {
+  runScheduledApnsDelivery,
+  type ApnsDeliveryResult,
+} from "../app/lib/apnsDelivery";
 import { initializeDatabase } from "../db/runtime";
 
 interface Env {
@@ -47,9 +50,16 @@ interface ScheduledController {
 /**
  * Runs the APNs channel and logs its own outcome. Kept entirely
  * self-contained (own try/catch, never rethrows) so a failure here can
- * never block or delay the web-push channel it runs alongside.
+ * never block or delay the web-push channel it runs alongside, and never
+ * gets skipped by a web-push failure either — callers must invoke this
+ * unconditionally rather than chaining it after a push call that can throw.
+ * Returns the result for callers that want to surface it (e.g. in an HTTP
+ * response); returns null if the run itself failed.
  */
-async function runApnsChannel(env: Env, scheduledTime: number): Promise<void> {
+async function runApnsChannel(
+  env: Env,
+  scheduledTime: number,
+): Promise<ApnsDeliveryResult | null> {
   try {
     const result = await runScheduledApnsDelivery({
       database: env.DB,
@@ -72,6 +82,13 @@ async function runApnsChannel(env: Env, scheduledTime: number): Promise<void> {
         `attemptsFailed=${result.failed} materializedOrRearmed=${result.materialized}`,
       JSON.stringify(result),
     );
+    // Heuristic, not a guarantee: ApnsDeliveryResult has no `cancelled`
+    // counter, so a run that materializes several fresh rows while also
+    // cancelling a large batch of stale ones (reminder no longer active) can
+    // legitimately land every fresh row past MAX_DELIVERIES_PER_RUN and show
+    // delivered+attemptsFailed+disabled=0 with materialized>0 — i.e. work is
+    // simply paced across runs, not stuck. Treat this as "worth a look",
+    // especially if it repeats across consecutive runs.
     if (
       result.configured &&
       result.devices > 0 &&
@@ -83,11 +100,13 @@ async function runApnsChannel(env: Env, scheduledTime: number): Promise<void> {
         JSON.stringify(result),
       );
     }
+    return result;
   } catch (error) {
     console.error(
       "iTrack scheduled APNs delivery failed.",
       error instanceof Error ? (error.stack ?? error.message) : String(error),
     );
+    return null;
   }
 }
 
@@ -112,19 +131,43 @@ const worker = {
         // database; make sure the schema exists before delivery reads it.
         await initializeDatabase(env.DB);
         const scheduledTime = Date.now();
-        const result = await runScheduledPushDelivery({
-          database: env.DB,
-          scheduledTime,
-          config: {
-            publicKey: env.VAPID_PUBLIC_KEY,
-            privateKey: env.VAPID_PRIVATE_KEY,
-            subject: env.VAPID_SUBJECT,
-          },
-        });
-        // Its own try/catch lives inside runApnsChannel, so a failure here
-        // never blocks the web-push response above.
-        await runApnsChannel(env, scheduledTime);
-        return Response.json({ ok: true, result });
+        // Tracked rather than left to propagate so a web-push failure
+        // cannot skip the APNs call below — this route is what Railway
+        // uses in place of cron triggers, so both channels must run every
+        // time it's hit, exactly like the scheduled() handler below.
+        let pushResult: Awaited<ReturnType<typeof runScheduledPushDelivery>> | undefined;
+        let pushFailed = false;
+        let pushError: unknown;
+        try {
+          pushResult = await runScheduledPushDelivery({
+            database: env.DB,
+            scheduledTime,
+            config: {
+              publicKey: env.VAPID_PUBLIC_KEY,
+              privateKey: env.VAPID_PRIVATE_KEY,
+              subject: env.VAPID_SUBJECT,
+            },
+          });
+        } catch (error) {
+          pushFailed = true;
+          pushError = error;
+        }
+
+        // Its own try/catch lives inside runApnsChannel, so this call runs
+        // unconditionally: neither channel's failure can block or skip the
+        // other.
+        const apnsResult = await runApnsChannel(env, scheduledTime);
+
+        if (pushFailed) {
+          console.error(
+            "iTrack internal scheduled run failed.",
+            pushError instanceof Error
+              ? (pushError.stack ?? pushError.message)
+              : String(pushError),
+          );
+          return Response.json({ ok: false, apnsResult }, { status: 500 });
+        }
+        return Response.json({ ok: true, result: pushResult, apnsResult });
       } catch (error) {
         console.error(
           "iTrack internal scheduled run failed.",
