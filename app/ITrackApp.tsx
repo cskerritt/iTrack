@@ -42,6 +42,17 @@ import {
 } from "./lib/checkInCalendar";
 import { portalCarryoverLookbackMonths } from "./lib/carryover";
 import {
+  activeDentalCheckpoints,
+  activeMinimums,
+  clampPercent,
+  credentialProgress,
+  daysUntilDate,
+  readinessScore,
+  requirementEarned,
+  requirementKind,
+  requirementStatus,
+} from "./lib/readiness";
+import {
   oppositeFloridaMentalHealthRuleSetId,
 } from "./lib/floridaMentalHealth";
 import { isExpandedCertificationRuleSetId } from "./lib/expandedCertifications";
@@ -410,9 +421,7 @@ function formatFileSize(bytes: number) {
 }
 
 function daysUntil(value: string) {
-  const deadline = new Date(`${value.slice(0, 10)}T23:59:59`);
-  const today = new Date();
-  return Math.ceil((deadline.getTime() - today.getTime()) / 86_400_000);
+  return daysUntilDate(value, Date.now());
 }
 
 function addDaysIso(value: string, days: number) {
@@ -516,43 +525,8 @@ function activityIsMutable(
   });
 }
 
-function requirementEarned(requirement: Requirement) {
-  return Number(
-    requirement.countableEarned ??
-      requirement.earnedUnits ??
-      requirement.rawEarned ??
-      0,
-  );
-}
-
 function requirementRawEarned(requirement: Requirement) {
   return Number(requirement.rawEarned ?? requirement.earnedUnits ?? 0);
-}
-
-function requirementKind(requirement: Requirement) {
-  return requirement.kind ?? "minimum";
-}
-
-function requirementStatus(requirement: Requirement) {
-  return requirement.applicabilityStatus ?? "applies";
-}
-
-function activeMinimums(credential: Credential) {
-  return credential.requirements.filter(
-    (requirement) =>
-      requirementStatus(requirement) === "applies" &&
-      requirement.isActive !== false &&
-      requirementKind(requirement) === "minimum",
-  );
-}
-
-function activeDentalCheckpoints(credential: Credential) {
-  return credential.requirements.filter(
-    (requirement) =>
-      requirement.isDentalCheckpoint === true &&
-      requirementStatus(requirement) === "applies" &&
-      requirement.isActive !== false,
-  );
 }
 
 function allocationCategoryLabel(allocation: ActivityAllocation) {
@@ -606,58 +580,11 @@ function compactNumber(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
-function clampPercent(value: number) {
-  return Math.max(0, Math.min(100, Math.round(value)));
-}
-
 function firstName(displayName: string) {
   const candidate = displayName.includes("@")
     ? displayName.split("@")[0]
     : displayName.split(/\s+/)[0];
   return candidate || "there";
-}
-
-function credentialProgress(credential: Credential) {
-  if (credential.totalRequired <= 0) return 100;
-  return clampPercent(
-    (credential.totalEarned / credential.totalRequired) * 100,
-  );
-}
-
-function readinessScore(credential: Credential) {
-  const unitProgress = Math.min(1, credentialProgress(credential) / 100);
-  const minimums = activeMinimums(credential);
-  const unresolved = credential.requirements.filter(
-    (item) => requirementStatus(item) === "needs_confirmation",
-  );
-  const dentalCheckpoints = activeDentalCheckpoints(credential);
-  const requirementCount =
-    minimums.length + unresolved.length + dentalCheckpoints.length;
-  const metRequirements =
-    minimums.filter(
-      (item) => requirementEarned(item) >= item.requiredUnits,
-    ).length +
-    dentalCheckpoints.filter(
-      (item) => item.checkpointStatus === "completed",
-    ).length;
-  const requirementProgressValue =
-    requirementCount === 0 ? 1 : metRequirements / requirementCount;
-  const taskCount = credential.tasks.length;
-  const completedTasks = credential.tasks.filter(
-    (item) => item.status === "completed",
-  ).length;
-  const taskProgress = taskCount === 0 ? 1 : completedTasks / taskCount;
-  const score =
-    credential.totalRequired <= 0
-      ? clampPercent(requirementProgressValue * 60 + taskProgress * 40)
-      : clampPercent(
-          unitProgress * 70 +
-            requirementProgressValue * 15 +
-            taskProgress * 15,
-        );
-  return credential.classificationIssues?.length
-    ? Math.min(99, score)
-    : score;
 }
 
 function isIsc2AutomaticRenewalCredential(

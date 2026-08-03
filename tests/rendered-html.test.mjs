@@ -4270,7 +4270,17 @@ export {
       );
       assert.match(
         clientSource,
-        /category\.kind === "informational"[\s\S]*?Track \$\{category\.name\}[\s\S]*?credential\.totalRequired <= 0[\s\S]*?requirementProgressValue \* 60[\s\S]*?taskProgress \* 40/,
+        /category\.kind === "informational"[\s\S]*?Track \$\{category\.name\}/,
+      );
+      // The zero-hour readiness branch now lives in the shared readiness
+      // module (the iOS widget feed derives the same score), so the contract
+      // is asserted where the arithmetic actually is.
+      assert.match(
+        await readFile(
+          new URL("../app/lib/readiness.ts", import.meta.url),
+          "utf8",
+        ),
+        /credential\.totalRequired <= 0[\s\S]*?requirementProgressValue \* 60[\s\S]*?taskProgress \* 40/,
       );
       assert.match(
         clientSource,
