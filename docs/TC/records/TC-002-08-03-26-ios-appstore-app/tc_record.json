@@ -1,0 +1,117 @@
+{
+  "tc_id": "TC-002-08-03-26-ios-appstore-app",
+  "parent_tc": null,
+  "title": "Private iOS app (TestFlight): shell + push + widgets + doc scanner",
+  "status": "planned",
+  "priority": "high",
+  "created": "2026-08-03T21:38:34+00:00",
+  "updated": "2026-08-03T21:39:06+00:00",
+  "created_by": "Claude",
+  "project": "iTrack",
+  "description": {
+    "summary": "New iOS project wrapping the hosted iTrack UI with native APNs push, WidgetKit widgets, VisionKit certificate scanning; backend gains APNs sender, widget endpoint, and re-enabled ITRACK_USERS auth",
+    "motivation": "Chris wants iTrack as a real iPhone app: reliable push reminders, app feel, home-screen widgets, better camera capture",
+    "scope": "feature",
+    "detailed_design": null,
+    "breaking_changes": [],
+    "dependencies": []
+  },
+  "files_affected": [],
+  "revision_history": [
+    {
+      "revision_id": "R1",
+      "timestamp": "2026-08-03T21:38:34+00:00",
+      "author": "Claude",
+      "summary": "TC record created",
+      "field_changes": [
+        {
+          "field": "status",
+          "action": "set",
+          "new_value": "planned",
+          "reason": "initial creation"
+        }
+      ]
+    },
+    {
+      "revision_id": "R2",
+      "timestamp": "2026-08-03T21:39:06+00:00",
+      "author": "Claude",
+      "summary": "handoff: updated progress_summary; handoff: +next_step 'Present sectioned design; get approval'; handoff: +next_step 'Write spec docs/superpowers/specs/2026-08-03-itrack-ios-design.md; commit; user review gate'; handoff: +next_step 'Invoke writing-plans skill for implementation plan'; handoff: +next_step 'Scaffold new iOS project dir (separate from this repo) with Capacitor + WidgetKit extension'",
+      "field_changes": [
+        {
+          "field": "session_context.handoff.progress_summary",
+          "action": "changed",
+          "old_value": "",
+          "new_value": "Brainstorm complete. Requirements: private single-user (Chris), TestFlight distribution, Apple Developer enrolled, Xcode 26.6 on Mac mini. Wants: APNs push reminders, real app feel, WidgetKit widgets, VisionKit certificate capture. Approach A APPROVED by Chris: Capacitor hybrid shell loading hosted Railway app (server.url), native Swift for push/widgets/scanner; backend (this repo) gains APNs sender, widget-summary endpoint, and switch from ITRACK_OPEN_IDENTITY to ITRACK_USERS auth with iOS Keychain creds.",
+          "reason": null
+        },
+        {
+          "field": "session_context.handoff.next_steps",
+          "action": "added",
+          "new_value": "Present sectioned design; get approval",
+          "reason": null
+        },
+        {
+          "field": "session_context.handoff.next_steps",
+          "action": "added",
+          "new_value": "Write spec docs/superpowers/specs/2026-08-03-itrack-ios-design.md; commit; user review gate",
+          "reason": null
+        },
+        {
+          "field": "session_context.handoff.next_steps",
+          "action": "added",
+          "new_value": "Invoke writing-plans skill for implementation plan",
+          "reason": null
+        },
+        {
+          "field": "session_context.handoff.next_steps",
+          "action": "added",
+          "new_value": "Scaffold new iOS project dir (separate from this repo) with Capacitor + WidgetKit extension",
+          "reason": null
+        }
+      ]
+    }
+  ],
+  "sub_tcs": [],
+  "test_cases": [],
+  "approval": {
+    "approved": false,
+    "approved_by": null,
+    "approved_date": null,
+    "approval_notes": "",
+    "test_coverage_status": "none"
+  },
+  "session_context": {
+    "current_session": {
+      "session_id": "session-1785793114-82808",
+      "platform": "claude_code",
+      "model": "unknown",
+      "started": "2026-08-03T21:38:34+00:00",
+      "last_active": "2026-08-03T21:39:06+00:00"
+    },
+    "handoff": {
+      "progress_summary": "Brainstorm complete. Requirements: private single-user (Chris), TestFlight distribution, Apple Developer enrolled, Xcode 26.6 on Mac mini. Wants: APNs push reminders, real app feel, WidgetKit widgets, VisionKit certificate capture. Approach A APPROVED by Chris: Capacitor hybrid shell loading hosted Railway app (server.url), native Swift for push/widgets/scanner; backend (this repo) gains APNs sender, widget-summary endpoint, and switch from ITRACK_OPEN_IDENTITY to ITRACK_USERS auth with iOS Keychain creds.",
+      "next_steps": [
+        "Present sectioned design; get approval",
+        "Write spec docs/superpowers/specs/2026-08-03-itrack-ios-design.md; commit; user review gate",
+        "Invoke writing-plans skill for implementation plan",
+        "Scaffold new iOS project dir (separate from this repo) with Capacitor + WidgetKit extension"
+      ],
+      "blockers": [],
+      "key_context": [],
+      "files_in_progress": [],
+      "decisions_made": []
+    },
+    "session_history": []
+  },
+  "tags": [],
+  "related_tcs": [],
+  "notes": "",
+  "metadata": {
+    "project": "iTrack",
+    "created_by": "Claude",
+    "last_modified_by": "Claude",
+    "last_modified": "2026-08-03T21:39:06+00:00",
+    "estimated_effort": null
+  }
+}

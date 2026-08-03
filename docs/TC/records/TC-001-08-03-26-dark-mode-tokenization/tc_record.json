@@ -1,0 +1,238 @@
+{
+  "tc_id": "TC-001-08-03-26-dark-mode-tokenization",
+  "parent_tc": null,
+  "title": "System-preference dark theme on a fully tokenized palette",
+  "status": "deployed",
+  "priority": "high",
+  "created": "2026-08-03T21:38:34+00:00",
+  "updated": "2026-08-03T21:38:54+00:00",
+  "created_by": "Claude",
+  "project": "iTrack",
+  "description": {
+    "summary": "296 color-literal sites collapsed to ~76 role tokens; dark scheme via prefers-color-scheme remap; adversarial verification fixed 12 findings; shipped afc4b3d + docs 6bd4e84",
+    "motivation": "Light-only UI; Chris asked for dark mode 2026-08-03",
+    "scope": "feature",
+    "detailed_design": null,
+    "breaking_changes": [],
+    "dependencies": []
+  },
+  "files_affected": [
+    {
+      "path": "app/globals.css",
+      "action": "modified",
+      "description": null,
+      "lines_added": null,
+      "lines_removed": null
+    },
+    {
+      "path": "app/layout.tsx",
+      "action": "modified",
+      "description": null,
+      "lines_added": null,
+      "lines_removed": null
+    },
+    {
+      "path": "app/manifest.ts",
+      "action": "modified",
+      "description": null,
+      "lines_added": null,
+      "lines_removed": null
+    },
+    {
+      "path": "public/offline.html",
+      "action": "modified",
+      "description": null,
+      "lines_added": null,
+      "lines_removed": null
+    },
+    {
+      "path": "tests/rendered-html.test.mjs",
+      "action": "modified",
+      "description": null,
+      "lines_added": null,
+      "lines_removed": null
+    },
+    {
+      "path": "docs/DESIGN-SYSTEM.md",
+      "action": "created",
+      "description": null,
+      "lines_added": null,
+      "lines_removed": null
+    }
+  ],
+  "revision_history": [
+    {
+      "revision_id": "R1",
+      "timestamp": "2026-08-03T21:38:34+00:00",
+      "author": "Claude",
+      "summary": "TC record created",
+      "field_changes": [
+        {
+          "field": "status",
+          "action": "set",
+          "new_value": "planned",
+          "reason": "initial creation"
+        }
+      ]
+    },
+    {
+      "revision_id": "R2",
+      "timestamp": "2026-08-03T21:38:54+00:00",
+      "author": "Claude",
+      "summary": "status: planned -> in_progress",
+      "field_changes": [
+        {
+          "field": "status",
+          "action": "changed",
+          "old_value": "planned",
+          "new_value": "in_progress",
+          "reason": "Retroactive record: Opus workflow implemented 2026-08-03 pm"
+        }
+      ]
+    },
+    {
+      "revision_id": "R3",
+      "timestamp": "2026-08-03T21:38:54+00:00",
+      "author": "Claude",
+      "summary": "+file app/globals.css (modified); +file app/layout.tsx (modified); +file app/manifest.ts (modified); +file public/offline.html (modified); +file tests/rendered-html.test.mjs (modified); +file docs/DESIGN-SYSTEM.md (created)",
+      "field_changes": [
+        {
+          "field": "files_affected",
+          "action": "added",
+          "new_value": {
+            "path": "app/globals.css",
+            "action": "modified"
+          },
+          "reason": null
+        },
+        {
+          "field": "files_affected",
+          "action": "added",
+          "new_value": {
+            "path": "app/layout.tsx",
+            "action": "modified"
+          },
+          "reason": null
+        },
+        {
+          "field": "files_affected",
+          "action": "added",
+          "new_value": {
+            "path": "app/manifest.ts",
+            "action": "modified"
+          },
+          "reason": null
+        },
+        {
+          "field": "files_affected",
+          "action": "added",
+          "new_value": {
+            "path": "public/offline.html",
+            "action": "modified"
+          },
+          "reason": null
+        },
+        {
+          "field": "files_affected",
+          "action": "added",
+          "new_value": {
+            "path": "tests/rendered-html.test.mjs",
+            "action": "modified"
+          },
+          "reason": null
+        },
+        {
+          "field": "files_affected",
+          "action": "added",
+          "new_value": {
+            "path": "docs/DESIGN-SYSTEM.md",
+            "action": "created"
+          },
+          "reason": null
+        }
+      ]
+    },
+    {
+      "revision_id": "R4",
+      "timestamp": "2026-08-03T21:38:54+00:00",
+      "author": "Claude",
+      "summary": "status: in_progress -> implemented",
+      "field_changes": [
+        {
+          "field": "status",
+          "action": "changed",
+          "old_value": "in_progress",
+          "new_value": "implemented",
+          "reason": "3 adversarial verifiers found 12 defects; all fixed by Opus fix agent"
+        }
+      ]
+    },
+    {
+      "revision_id": "R5",
+      "timestamp": "2026-08-03T21:38:54+00:00",
+      "author": "Claude",
+      "summary": "status: implemented -> tested",
+      "field_changes": [
+        {
+          "field": "status",
+          "action": "changed",
+          "old_value": "implemented",
+          "new_value": "tested",
+          "reason": "Gates 122/122 + typecheck + lint; 212 composited contrast pairs verified both schemes; Playwright visual pass light+dark desktop+mobile"
+        }
+      ]
+    },
+    {
+      "revision_id": "R6",
+      "timestamp": "2026-08-03T21:38:54+00:00",
+      "author": "Claude",
+      "summary": "status: tested -> deployed",
+      "field_changes": [
+        {
+          "field": "status",
+          "action": "changed",
+          "old_value": "tested",
+          "new_value": "deployed",
+          "reason": "Pushed afc4b3d + 6bd4e84; Railway deploy verified live incl. prod screenshots in both schemes"
+        }
+      ]
+    }
+  ],
+  "sub_tcs": [],
+  "test_cases": [],
+  "approval": {
+    "approved": false,
+    "approved_by": null,
+    "approved_date": null,
+    "approval_notes": "",
+    "test_coverage_status": "none"
+  },
+  "session_context": {
+    "current_session": {
+      "session_id": "session-1785793114-82807",
+      "platform": "claude_code",
+      "model": "unknown",
+      "started": "2026-08-03T21:38:34+00:00",
+      "last_active": "2026-08-03T21:38:54+00:00"
+    },
+    "handoff": {
+      "progress_summary": "",
+      "next_steps": [],
+      "blockers": [],
+      "key_context": [],
+      "files_in_progress": [],
+      "decisions_made": []
+    },
+    "session_history": []
+  },
+  "tags": [],
+  "related_tcs": [],
+  "notes": "",
+  "metadata": {
+    "project": "iTrack",
+    "created_by": "Claude",
+    "last_modified_by": "Claude",
+    "last_modified": "2026-08-03T21:38:54+00:00",
+    "estimated_effort": null
+  }
+}

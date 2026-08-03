@@ -1,0 +1,16 @@
+{
+  "project_name": "iTrack",
+  "tc_root": "docs/TC",
+  "created": "2026-08-03T21:38:34+00:00",
+  "auto_track": true,
+  "default_author": "Claude",
+  "categories": [
+    "feature",
+    "bugfix",
+    "refactor",
+    "infrastructure",
+    "documentation",
+    "hotfix",
+    "enhancement"
+  ]
+}
