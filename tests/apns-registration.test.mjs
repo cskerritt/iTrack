@@ -257,6 +257,11 @@ test("idempotent re-register updates lastSeenAt, clears disabledAt, resets failu
   assert.equal(second.created, false);
   assert.equal(second.id, first.id, "the same device token must not mint a new row");
   const row = deviceRow(sqlite);
+  assert.equal(
+    row.id,
+    second.id,
+    "the returned id must be the persisted row's id",
+  );
   assert.equal(row.failureCount, 0, "a reinstalled app must resurrect its token");
   assert.equal(row.disabledAt, null);
   assert.notEqual(row.lastSeenAt, "2020-01-01 00:00:00");
@@ -279,6 +284,48 @@ test("a second user claiming the same token reassigns it", async () => {
   assert.equal(second.id, first.id);
   const row = deviceRow(sqlite);
   assert.equal(row.userId, OTHER_USER_ID);
+  assert.equal(
+    row.id,
+    second.id,
+    "the returned id must be the persisted row's id",
+  );
+  assert.equal(deviceCount(sqlite), 1);
+});
+
+test("the returned id always equals the persisted row's id, never a discarded candidate", async () => {
+  // The upsert generates a fresh candidate id on every call, including calls
+  // that turn out to hit an existing row. Before the fix, that id came from a
+  // separate SELECT issued ahead of the INSERT, so a second caller racing the
+  // first between that SELECT and its own INSERT could observe no row yet,
+  // mint its own id, and report a `created: true` result whose id was never
+  // actually written anywhere. Pinning `result.id === (fresh DB read).id`
+  // after every call in a sequence — first insert, same-user re-register,
+  // and a second user's claim — is the direct, DB-verified guard against that
+  // class of bug regardless of how the id was derived internally.
+  const { sqlite, database } = createWorkspace();
+
+  const created = await apnsRegistration.registerApnsDevice(database, {
+    userId: USER_ID,
+    deviceToken: DEVICE_TOKEN,
+  });
+  assert.equal(created.created, true);
+  assert.equal(deviceRow(sqlite).id, created.id);
+
+  const reRegistered = await apnsRegistration.registerApnsDevice(database, {
+    userId: USER_ID,
+    deviceToken: DEVICE_TOKEN,
+  });
+  assert.equal(reRegistered.created, false);
+  assert.equal(deviceRow(sqlite).id, reRegistered.id);
+  assert.equal(reRegistered.id, created.id);
+
+  const claimed = await apnsRegistration.registerApnsDevice(database, {
+    userId: OTHER_USER_ID,
+    deviceToken: DEVICE_TOKEN,
+  });
+  assert.equal(claimed.created, false);
+  assert.equal(deviceRow(sqlite).id, claimed.id);
+  assert.equal(claimed.id, created.id);
   assert.equal(deviceCount(sqlite), 1);
 });
 

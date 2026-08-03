@@ -103,14 +103,22 @@ export async function registerApnsDevice(
   const environment = normalizeEnvironment(input.environment);
   const deviceLabel = normalizeDeviceLabel(input.deviceLabel);
 
-  const existing = await query(
-    database,
-    `SELECT id FROM apns_devices WHERE device_token = ?`,
-    [deviceToken],
-  ).first<{ id: string }>();
-  const id = existing?.id ?? crypto.randomUUID();
-
-  await query(
+  // A separate "does this token exist" SELECT ahead of the INSERT would race:
+  // two callers registering the same never-seen token could both see no row,
+  // both mint a fresh id, and both report created:true even though only one
+  // of them actually persists — the loser's returned id would then describe
+  // a row that was never written. Doing the read and the write as one
+  // statement removes the gap: `candidateId` is only ever the id SQLite ends
+  // up storing if this call is the one that wins the insert. If another row
+  // already holds the token (whether it was there before this call started
+  // or landed there first), ON CONFLICT never touches the `id` column, so
+  // RETURNING hands back that row's real id instead — which can only ever
+  // equal `candidateId` by winning the insert, never by coincidence.
+  // `created` falls out of that same comparison for free, with no reliance
+  // on CURRENT_TIMESTAMP's one-second resolution (created_at/updated_at
+  // could tie on either an insert or a same-second update).
+  const candidateId = crypto.randomUUID();
+  const row = await query(
     database,
     `INSERT INTO apns_devices (
        id, user_id, device_token, environment, device_label
@@ -123,9 +131,13 @@ export async function registerApnsDevice(
        failure_count = 0,
        disabled_at = NULL,
        last_seen_at = CURRENT_TIMESTAMP,
-       updated_at = CURRENT_TIMESTAMP`,
-    [id, input.userId, deviceToken, environment, deviceLabel],
-  ).run();
+       updated_at = CURRENT_TIMESTAMP
+     RETURNING id`,
+    [candidateId, input.userId, deviceToken, environment, deviceLabel],
+  ).first<{ id: string }>();
 
-  return { id, created: !existing };
+  if (!row) {
+    throw new Error("apns_devices upsert did not return the persisted row");
+  }
+  return { id: row.id, created: row.id === candidateId };
 }
