@@ -623,7 +623,19 @@ test("iTrack product contract", async (t) => {
       /<meta name="application-name" content="iTrack"\/>/i,
     );
     assert.match(html, /<link rel="manifest"[^>]*manifest\.webmanifest/i);
-    assert.match(html, /<meta name="theme-color" content="#163f36"\/>/i);
+    // One theme-color per scheme, for the browser and OS chrome rather than
+    // for anything the app paints: the brand green in light, the page itself
+    // in dark, so the address bar never sits on a colour the app is not
+    // showing. color-scheme tells the UA to render form controls to match.
+    assert.match(
+      html,
+      /<meta name="theme-color" content="#163f36" media="\(prefers-color-scheme: light\)"\/>/i,
+    );
+    assert.match(
+      html,
+      /<meta name="theme-color" content="#0d1917" media="\(prefers-color-scheme: dark\)"\/>/i,
+    );
+    assert.match(html, /<meta name="color-scheme" content="light dark"\/>/i);
 
     assert.match(html, /aria-label="iTrack"/i);
     assert.match(html, /Skip to content/i);
@@ -8855,9 +8867,12 @@ export {
         stylesSource,
         /\.mobile-nav \.nav-button\s*\{[^}]*min-height:\s*48px[^}]*font-size:\s*10px/,
       );
+      // Quest sub-copy stays a real muted ink at the readable --text-xs size.
+      // It reads a token rather than a literal so the value is one the MUTED
+      // INK block documents an AA ratio for in both schemes.
       assert.match(
         stylesSource,
-        /\.quest-copy small\s*\{[^}]*color:\s*#5f716a[^}]*font-size:\s*var\(--text-xs\)/,
+        /\.quest-copy small\s*\{[^}]*color:\s*var\(--ink-quiet\)[^}]*font-size:\s*var\(--text-xs\)/,
       );
       assert.match(
         stylesSource,

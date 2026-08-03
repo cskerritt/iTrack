@@ -83,8 +83,18 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export const viewport: Viewport = {
-  themeColor: "#163f36",
-  colorScheme: "light",
+  // This colours the browser and OS chrome — the address bar and the
+  // standalone status bar — not anything the app paints: the mobile header
+  // below it is cream, `rgb(var(--paper-rgb) / 0.9)`. Light keeps the brand
+  // green it has always been so the installed app is still recognisably
+  // iTrack; dark names the page itself, because a green bar over a near-black
+  // page would read as a stripe. `light dark` lets the UA render form controls
+  // and scrollbars in the matching scheme.
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#163f36" },
+    { media: "(prefers-color-scheme: dark)", color: "#0d1917" },
+  ],
+  colorScheme: "light dark",
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",

@@ -10,6 +10,10 @@ export default function manifest(): MetadataRoute.Manifest {
     start_url: "/",
     scope: "/",
     display: "standalone",
+    // A manifest cannot answer to prefers-color-scheme: these two are read once,
+    // at install, to paint the splash screen. They stay on the light scheme so
+    // the installed icon and its splash match the marketing art, and the app
+    // itself switches on first paint from the scheme-aware theme-color meta.
     background_color: "#f6f4ee",
     theme_color: "#163f36",
     categories: ["productivity", "education", "business"],
