@@ -45,6 +45,14 @@ export type ApnsDeliveryResult = {
   failed: number;
   /** Devices retired because Apple no longer knows their token. */
   disabled: number;
+  /**
+   * Ledger rows the queue still owes once this run has finished: pending,
+   * inside the attempt cap, past the retry floor, and belonging to an enabled
+   * device in this run's APNs environment — the same predicate the run itself
+   * selects work with. A run that drains its queue reports 0, and so does one
+   * whose only rows are waiting out the retry floor.
+   */
+  duePending: number;
 };
 
 const MAX_ATTEMPTS = 4;
@@ -66,6 +74,24 @@ const DEFAULT_PUSH_HOUR_LOCAL = 9;
 // ledger ids only, so an APNs id would answer the tap with "no longer
 // available" instead of the reminder.
 const LAUNCH_PATH = "/?view=today";
+
+// The work this run can actually attempt. Both the due-row query and the
+// end-of-run `duePending` count read from these two fragments rather than
+// keeping their own copies: a count that drifted from the selection would
+// make the stuck-queue signal report on a queue the run never looks at.
+// Bindings, in order: MAX_ATTEMPTS, the retry floor, the APNs environment.
+const DUE_DELIVERY_FROM = `FROM apns_delivery_ledger delivery
+     JOIN apns_devices device
+       ON device.id = delivery.device_id
+       AND device.user_id = delivery.user_id`;
+const DUE_DELIVERY_WHERE = `WHERE delivery.status = 'pending'
+       AND delivery.attempt_count < ?
+       AND (
+         delivery.last_attempt_at IS NULL
+         OR delivery.last_attempt_at <= ?
+       )
+       AND device.disabled_at IS NULL
+       AND device.environment = ?`;
 
 function query(
   database: D1Database,
@@ -324,6 +350,7 @@ export async function runScheduledApnsDelivery({
     delivered: 0,
     failed: 0,
     disabled: 0,
+    duePending: 0,
   };
   const validConfig = normalizeApnsConfig(config);
   if (!validConfig) return totals;
@@ -390,9 +417,15 @@ export async function runScheduledApnsDelivery({
      LEFT JOIN reminder_preferences preference
        ON preference.user_id = device.user_id
      WHERE device.disabled_at IS NULL
+       AND device.environment = ?
      ORDER BY device.updated_at, device.id
      LIMIT ?`,
-    [DEFAULT_PUSH_HOUR_LOCAL, DEVICE_SCAN_BUDGET],
+    // A device registered against the other APNs environment is skipped
+    // entirely rather than sent to this run's host: Apple answers such a token
+    // with 400 BadDeviceToken, which is deliberately not treated as
+    // unregistered, so the row would otherwise spend its four attempts and be
+    // re-armed to spend four more every day forever.
+    [DEFAULT_PUSH_HOUR_LOCAL, validConfig.environment, DEVICE_SCAN_BUDGET],
   ).all<DeviceRow>();
   totals.devices = deviceRows.results.length;
   if (deviceRows.results.length > 0) {
@@ -479,6 +512,7 @@ export async function runScheduledApnsDelivery({
     }
   }
 
+  const dueBindings = [MAX_ATTEMPTS, retrySql, validConfig.environment];
   const dueRows = await query(
     database,
     `SELECT
@@ -489,20 +523,11 @@ export async function runScheduledApnsDelivery({
        delivery.scheduled_for AS scheduledFor,
        delivery.attempt_count AS attemptCount,
        device.device_token AS deviceToken
-     FROM apns_delivery_ledger delivery
-     JOIN apns_devices device
-       ON device.id = delivery.device_id
-       AND device.user_id = delivery.user_id
-     WHERE delivery.status = 'pending'
-       AND delivery.attempt_count < ?
-       AND (
-         delivery.last_attempt_at IS NULL
-         OR delivery.last_attempt_at <= ?
-       )
-       AND device.disabled_at IS NULL
+     ${DUE_DELIVERY_FROM}
+     ${DUE_DELIVERY_WHERE}
      ORDER BY delivery.created_at, delivery.id
      LIMIT ?`,
-    [MAX_ATTEMPTS, retrySql, MAX_DELIVERIES_PER_RUN],
+    [...dueBindings, MAX_DELIVERIES_PER_RUN],
   ).all<DeliveryRow>();
 
   const reminderCache = new Map<string, Promise<Reminder[]>>();
@@ -547,5 +572,20 @@ export async function runScheduledApnsDelivery({
        AND disabled_at < ?`,
     [deviceCutoff],
   ).run();
+
+  // Counted last, so it reflects the statuses this run just wrote: a row
+  // delivered, failed or refunded above carries this run's `last_attempt_at`
+  // and is therefore inside the retry floor, leaving only the work that is
+  // genuinely still waiting. A head-of-line throw stops the loop without
+  // touching the rows behind it, so those stay counted here even though the
+  // pending row blocks re-materialization and drives `materialized` to 0.
+  const duePendingRow = await query(
+    database,
+    `SELECT COUNT(*) AS duePending
+     ${DUE_DELIVERY_FROM}
+     ${DUE_DELIVERY_WHERE}`,
+    dueBindings,
+  ).first<{ duePending: number }>();
+  totals.duePending = Number(duePendingRow?.duePending ?? 0);
   return totals;
 }

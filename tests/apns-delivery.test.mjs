@@ -225,9 +225,10 @@ function createWorkspace({
   for (const device of devices) {
     sqlite
       .prepare(
-        `INSERT INTO apns_devices (id, user_id, device_token) VALUES (?, ?, ?)`,
+        `INSERT INTO apns_devices (id, user_id, device_token, environment)
+         VALUES (?, ?, ?, ?)`,
       )
-      .run(device.id, USER_ID, device.token);
+      .run(device.id, USER_ID, device.token, device.environment ?? "production");
   }
   return { sqlite, database: wrapDatabase(sqlite) };
 }
@@ -294,6 +295,7 @@ test("reports not-configured and sends nothing without APNs credentials", async 
     delivered: 0,
     failed: 0,
     disabled: 0,
+    duePending: 0,
   });
   assert.equal(calls.length, 0);
   assert.deepEqual(ledgerRows(sqlite), []);
@@ -304,6 +306,7 @@ test("materializes a due reminder and delivers it to the device", async () => {
   const { calls, sendImpl } = recordingSend();
   const result = await run(database, { sendImpl });
 
+  // A run that drains everything it materialized owes nothing afterwards.
   assert.deepEqual(result, {
     configured: true,
     devices: 1,
@@ -311,6 +314,7 @@ test("materializes a due reminder and delivers it to the device", async () => {
     delivered: 1,
     failed: 0,
     disabled: 0,
+    duePending: 0,
   });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].deviceToken, DEVICE_TOKEN);
@@ -479,6 +483,82 @@ test("a thrown send is refunded and stops the run", async () => {
     0,
     "a configuration or transport failure must not spend the row's budget",
   );
+  // The refund hands the attempt back but leaves `last_attempt_at` where the
+  // claim put it, so the row is pending yet still inside the retry floor —
+  // owed work, but not owed *now*, which is what `duePending` counts.
+  assert.ok(rows[0].lastAttemptAt);
+  assert.equal(result.duePending, 0);
+});
+
+test("a head-of-line throw leaves the rest of the queue counted as due", async () => {
+  // The shape the stuck-queue warning exists for: the first row throws and
+  // stops the run, and because its ledger row stays pending nothing can be
+  // re-materialized on later runs — so `materialized` is 0 while the queue is
+  // blocked, and only `duePending` still shows the backlog.
+  const { sqlite, database } = createWorkspace({
+    devices: [
+      { id: DEVICE_ID, token: DEVICE_TOKEN },
+      { id: "device-apns-2", token: "ffeeddccbbaa99887766" },
+    ],
+  });
+  const calls = [];
+  const sendImpl = async (deviceToken) => {
+    calls.push(deviceToken);
+    throw new Error("APNs is unreachable.");
+  };
+  const first = await run(database, { sendImpl });
+
+  assert.equal(calls.length, 1, "the throw must stop the run");
+  assert.equal(first.materialized, 2);
+  assert.equal(first.delivered + first.failed + first.disabled, 0);
+  assert.equal(
+    first.duePending,
+    1,
+    "the untouched row is still due and must be reported",
+  );
+
+  // Past the retry floor the whole queue is due again; the throw still blocks
+  // it, and this run materializes nothing at all — the case the old
+  // `materialized > 0` guard silenced.
+  const second = await run(database, {
+    sendImpl,
+    at: SCHEDULED_TIME + 11 * 60_000,
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(second.materialized, 0);
+  assert.equal(second.delivered + second.failed + second.disabled, 0);
+  assert.equal(second.duePending, 1);
+  assert.equal(
+    ledgerRows(sqlite).filter((row) => row.status === "pending").length,
+    2,
+  );
+});
+
+test("only devices in the run's APNs environment are sent to", async () => {
+  // A sandbox-registered token cannot be delivered by the production host, so
+  // it must not burn attempts against it either.
+  const sandboxToken = "ffeeddccbbaa99887766";
+  const { sqlite, database } = createWorkspace({
+    devices: [
+      { id: DEVICE_ID, token: DEVICE_TOKEN, environment: "production" },
+      { id: "device-apns-2", token: sandboxToken, environment: "sandbox" },
+    ],
+  });
+  const { calls, sendImpl } = recordingSend();
+  const result = await run(database, { sendImpl });
+
+  assert.equal(result.devices, 1);
+  assert.equal(result.materialized, 1);
+  assert.equal(result.delivered, 1);
+  assert.equal(result.duePending, 0);
+  assert.deepEqual(
+    calls.map((call) => call.deviceToken),
+    [DEVICE_TOKEN],
+  );
+  const rows = ledgerRows(sqlite);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].deviceId, DEVICE_ID);
+  assert.equal(deviceRow(sqlite, "device-apns-2").disabledAt, null);
 });
 
 test("waits for the local push hour before materializing", async () => {

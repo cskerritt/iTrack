@@ -73,30 +73,43 @@ async function runApnsChannel(
       },
     });
     // `failed` counts attempts (not give-ups — a row below the cap stays
-    // queued for the next run) and `materialized` includes re-arms of
-    // previously cancelled/expired/failed rows, not only brand-new ones;
-    // the log names them accordingly so the raw JSON isn't misread as a
-    // simple pass/fail tally.
+    // queued for the next run), `materialized` includes re-arms of
+    // previously cancelled/expired/failed rows, not only brand-new ones, and
+    // `duePending` is the backlog left behind once the run finished; the log
+    // names them accordingly so the raw JSON isn't misread as a simple
+    // pass/fail tally.
     console.info(
       "iTrack scheduled APNs delivery completed. " +
-        `attemptsFailed=${result.failed} materializedOrRearmed=${result.materialized}`,
+        `attemptsFailed=${result.failed} ` +
+        `materializedOrRearmed=${result.materialized} ` +
+        `stillDueAfterRun=${result.duePending}`,
       JSON.stringify(result),
     );
-    // Heuristic, not a guarantee: ApnsDeliveryResult has no `cancelled`
-    // counter, so a run that materializes several fresh rows while also
-    // cancelling a large batch of stale ones (reminder no longer active) can
-    // legitimately land every fresh row past MAX_DELIVERIES_PER_RUN and show
-    // delivered+attemptsFailed+disabled=0 with materialized>0 — i.e. work is
-    // simply paced across runs, not stuck. Treat this as "worth a look",
-    // especially if it repeats across consecutive runs.
+    // The signal is the backlog the run left behind, not the rows it created.
+    // Keying on `materialized > 0` was wrong in both directions: it fired on a
+    // run that materialized fresh rows while cancelling a stale batch (work
+    // paced across runs, nothing wrong), and it stayed silent on the failure
+    // actually worth catching — a head-of-line row whose send throws is
+    // refunded and left pending, which blocks re-materialization, so
+    // `materialized` reads 0 on every subsequent run while the queue does not
+    // move at all. `duePending` is recounted against the same predicate the
+    // run selects work with, after this run's statuses are written, so a
+    // drained queue and a queue merely waiting out the retry floor both
+    // report 0.
+    //
+    // Still a heuristic in one respect: ApnsDeliveryResult has no `cancelled`
+    // counter, so a run whose entire batch was cancelled (reminders no longer
+    // active) while more rows remain due will warn about a queue that is in
+    // fact draining. Treat it as "worth a look", especially when it repeats
+    // across consecutive runs.
     if (
       result.configured &&
       result.devices > 0 &&
-      result.delivered + result.failed + result.disabled === 0 &&
-      result.materialized > 0
+      result.duePending > 0 &&
+      result.delivered + result.failed + result.disabled === 0
     ) {
       console.warn(
-        "iTrack APNs delivery appears stuck: devices and materialized rows exist but nothing delivered, failed, or disabled this run.",
+        "iTrack APNs delivery appears stuck: devices exist and rows are still due, but nothing delivered, failed, or disabled this run.",
         JSON.stringify(result),
       );
     }

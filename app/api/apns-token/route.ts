@@ -16,7 +16,10 @@ export async function POST(request: Request) {
     if (!identity) {
       return Response.json(
         {
-          error: "Sign in with ChatGPT to register this device for reminders.",
+          // Not the "Sign in with ChatGPT" copy the browser-facing routes use:
+          // this endpoint's only caller is the iOS shell, which authenticates
+          // with Basic credentials and has no ChatGPT sign-in to offer.
+          error: "Sign in to register this device for reminders.",
           code: "authentication_required",
         },
         { status: 401, headers: NO_STORE },
