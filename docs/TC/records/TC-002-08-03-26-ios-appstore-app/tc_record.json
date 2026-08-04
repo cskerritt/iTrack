@@ -2,10 +2,10 @@
   "tc_id": "TC-002-08-03-26-ios-appstore-app",
   "parent_tc": null,
   "title": "Private iOS app (TestFlight): shell + push + widgets + doc scanner",
-  "status": "in_progress",
+  "status": "implemented",
   "priority": "high",
   "created": "2026-08-03T21:38:34+00:00",
-  "updated": "2026-08-04T01:23:32+00:00",
+  "updated": "2026-08-04T03:59:49+00:00",
   "created_by": "Claude",
   "project": "iTrack",
   "description": {
@@ -118,6 +118,60 @@
           "reason": null
         }
       ]
+    },
+    {
+      "revision_id": "R5",
+      "timestamp": "2026-08-04T03:59:49+00:00",
+      "author": "Claude",
+      "summary": "status: in_progress -> implemented",
+      "field_changes": [
+        {
+          "field": "status",
+          "action": "changed",
+          "old_value": "in_progress",
+          "new_value": "implemented",
+          "reason": "T1-T7 backend deployed; T9-T13 iOS code complete through adversarial review; T8 + signed-build smoke + live upload pending Chris's Apple portal work"
+        }
+      ]
+    },
+    {
+      "revision_id": "R6",
+      "timestamp": "2026-08-04T03:59:49+00:00",
+      "author": "Claude",
+      "summary": "handoff: updated progress_summary; handoff: +next_step 'Chris: Apple portal (APNs .p8+KeyID+TeamID; push cap on com.kwvrs.itrack; App ID com.kwvrs.itrack.widgets; App Group group.com.kwvrs.itrack both IDs) + password + push_enabled sign-off'; handoff: +next_step 'T8 cutover per plan Task 8 (incl. RETURNING live check, openssl rand token)'; handoff: +next_step 'Set DEVELOPMENT_TEAM, signed device build, run docs/SMOKE.md, BUILD_NUMBER=1 first upload via scripts/archive-and-upload.sh'; handoff: +next_step 'iOS-repo final whole-branch review before calling the plan done; product calls: scanner button placement, picker-before-camera flow'",
+      "field_changes": [
+        {
+          "field": "session_context.handoff.progress_summary",
+          "action": "changed",
+          "old_value": "Backend T1-T7 COMPLETE, merged+pushed main e7751af (181/181 tests; APNs delivery+registration+widget endpoint; deploy inert until env). iOS repo ~/Documents/New project/iTrack-iOS scaffolded T9 COMPLETE @ 0302971 (Capacitor 8.5 SPM, Keychain Basic Auth, challenge flow hardened through 2 fix rounds). SDD ledger: Vigilo/.superpowers/sdd/2026-08-03-itrack-ios/progress.md",
+          "new_value": "PAUSED 2026-08-03 midnight. Backend live (inert). iOS app CODE-COMPLETE at iTrack-iOS c13f8f1 (pushed): shell+auth, push registration, 2 widgets, VisionKit scanner w/ activity picker, TestFlight script (never-run but acceptance-tested to the team-id guard). All via SDD with adversarial reviews; ledger in Vigilo/.superpowers/sdd/2026-08-03-itrack-ios/progress.md has full history + deferred minors.",
+          "reason": null
+        },
+        {
+          "field": "session_context.handoff.next_steps",
+          "action": "added",
+          "new_value": "Chris: Apple portal (APNs .p8+KeyID+TeamID; push cap on com.kwvrs.itrack; App ID com.kwvrs.itrack.widgets; App Group group.com.kwvrs.itrack both IDs) + password + push_enabled sign-off",
+          "reason": null
+        },
+        {
+          "field": "session_context.handoff.next_steps",
+          "action": "added",
+          "new_value": "T8 cutover per plan Task 8 (incl. RETURNING live check, openssl rand token)",
+          "reason": null
+        },
+        {
+          "field": "session_context.handoff.next_steps",
+          "action": "added",
+          "new_value": "Set DEVELOPMENT_TEAM, signed device build, run docs/SMOKE.md, BUILD_NUMBER=1 first upload via scripts/archive-and-upload.sh",
+          "reason": null
+        },
+        {
+          "field": "session_context.handoff.next_steps",
+          "action": "added",
+          "new_value": "iOS-repo final whole-branch review before calling the plan done; product calls: scanner button placement, picker-before-camera flow",
+          "reason": null
+        }
+      ]
     }
   ],
   "sub_tcs": [],
@@ -135,10 +189,10 @@
       "platform": "claude_code",
       "model": "unknown",
       "started": "2026-08-03T21:38:34+00:00",
-      "last_active": "2026-08-04T01:23:32+00:00"
+      "last_active": "2026-08-04T03:59:49+00:00"
     },
     "handoff": {
-      "progress_summary": "Backend T1-T7 COMPLETE, merged+pushed main e7751af (181/181 tests; APNs delivery+registration+widget endpoint; deploy inert until env). iOS repo ~/Documents/New project/iTrack-iOS scaffolded T9 COMPLETE @ 0302971 (Capacitor 8.5 SPM, Keychain Basic Auth, challenge flow hardened through 2 fix rounds). SDD ledger: Vigilo/.superpowers/sdd/2026-08-03-itrack-ios/progress.md",
+      "progress_summary": "PAUSED 2026-08-03 midnight. Backend live (inert). iOS app CODE-COMPLETE at iTrack-iOS c13f8f1 (pushed): shell+auth, push registration, 2 widgets, VisionKit scanner w/ activity picker, TestFlight script (never-run but acceptance-tested to the team-id guard). All via SDD with adversarial reviews; ledger in Vigilo/.superpowers/sdd/2026-08-03-itrack-ios/progress.md has full history + deferred minors.",
       "next_steps": [
         "Present sectioned design; get approval",
         "Write spec docs/superpowers/specs/2026-08-03-itrack-ios-design.md; commit; user review gate",
@@ -146,7 +200,11 @@
         "Scaffold new iOS project dir (separate from this repo) with Capacitor + WidgetKit extension",
         "CHRIS GATES: sudo xcodebuild -runFirstLaunch (xcodebuild broken machine-wide); create APNs .p8 key + give Key ID + Team ID; choose ITRACK_USERS password; sign off APNs-bypasses-push_enabled",
         "Then T8 env cutover per plan; then T10-13 (push registration, WidgetKit, VisionKit, TestFlight)",
-        "First simulator run: verify retry page round-trip, single-bridge (double-root-VC question), RETURNING on live workerd"
+        "First simulator run: verify retry page round-trip, single-bridge (double-root-VC question), RETURNING on live workerd",
+        "Chris: Apple portal (APNs .p8+KeyID+TeamID; push cap on com.kwvrs.itrack; App ID com.kwvrs.itrack.widgets; App Group group.com.kwvrs.itrack both IDs) + password + push_enabled sign-off",
+        "T8 cutover per plan Task 8 (incl. RETURNING live check, openssl rand token)",
+        "Set DEVELOPMENT_TEAM, signed device build, run docs/SMOKE.md, BUILD_NUMBER=1 first upload via scripts/archive-and-upload.sh",
+        "iOS-repo final whole-branch review before calling the plan done; product calls: scanner button placement, picker-before-camera flow"
       ],
       "blockers": [],
       "key_context": [],
@@ -162,7 +220,7 @@
     "project": "iTrack",
     "created_by": "Claude",
     "last_modified_by": "Claude",
-    "last_modified": "2026-08-04T01:23:32+00:00",
+    "last_modified": "2026-08-04T03:59:49+00:00",
     "estimated_effort": null
   }
 }

@@ -1,7 +1,7 @@
 {
   "project_name": "iTrack",
   "created": "2026-08-03T21:38:34+00:00",
-  "updated": "2026-08-04T01:23:32+00:00",
+  "updated": "2026-08-04T03:59:49+00:00",
   "next_tc_number": 3,
   "records": [
     {
@@ -17,11 +17,11 @@
     {
       "tc_id": "TC-002-08-03-26-ios-appstore-app",
       "title": "Private iOS app (TestFlight): shell + push + widgets + doc scanner",
-      "status": "in_progress",
+      "status": "implemented",
       "scope": "feature",
       "priority": "high",
       "created": "2026-08-03T21:38:34+00:00",
-      "updated": "2026-08-04T01:23:32+00:00",
+      "updated": "2026-08-04T03:59:49+00:00",
       "path": "records/TC-002-08-03-26-ios-appstore-app/tc_record.json"
     }
   ],
@@ -29,9 +29,9 @@
     "total": 2,
     "by_status": {
       "planned": 0,
-      "in_progress": 1,
+      "in_progress": 0,
       "blocked": 0,
-      "implemented": 0,
+      "implemented": 1,
       "tested": 0,
       "deployed": 1
     },
