@@ -1,17 +1,6 @@
 import type { Metadata, Viewport } from "next";
-import { Manrope, Newsreader } from "next/font/google";
 import { headers } from "next/headers";
 import "./globals.css";
-
-const manrope = Manrope({
-  variable: "--font-manrope",
-  subsets: ["latin"],
-});
-
-const newsreader = Newsreader({
-  variable: "--font-newsreader",
-  subsets: ["latin"],
-});
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -84,15 +73,15 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export const viewport: Viewport = {
   // This colours the browser and OS chrome — the address bar and the
-  // standalone status bar — not anything the app paints: the mobile header
-  // below it is cream, `rgb(var(--paper-rgb) / 0.9)`. Light keeps the brand
-  // green it has always been so the installed app is still recognisably
-  // iTrack; dark names the page itself, because a green bar over a near-black
-  // page would read as a stripe. `light dark` lets the UA render form controls
+  // standalone status bar — not anything the app paints. Both schemes now
+  // name the page itself (--paper), which is what the mobile header under the
+  // bar is painted with at `rgb(var(--paper-rgb) / 0.9)`: on a platform where
+  // the status bar sits *inside* the app's own canvas, any bar that is not
+  // the page reads as a stripe. `light dark` lets the UA render form controls
   // and scrollbars in the matching scheme.
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#163f36" },
-    { media: "(prefers-color-scheme: dark)", color: "#0d1917" },
+    { media: "(prefers-color-scheme: light)", color: "#f2f2f7" },
+    { media: "(prefers-color-scheme: dark)", color: "#0b0b0e" },
   ],
   colorScheme: "light dark",
   width: "device-width",
@@ -107,9 +96,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${manrope.variable} ${newsreader.variable}`}>
-        {children}
-      </body>
+      {/*
+       * No font className: the app is set in the platform UI face
+       * (--font-ui in globals.css), so there is no webfont variable to hang
+       * on the body and no font request on the critical path.
+       */}
+      <body>{children}</body>
     </html>
   );
 }

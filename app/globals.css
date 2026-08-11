@@ -1,22 +1,43 @@
 @import "tailwindcss";
 
 :root {
-  --ink: #15352f;
-  --ink-deep: #102c27;
-  --ink-soft: #325b52;
-  --paper: #f6f4ee;
-  --paper-deep: #eeece4;
-  --card: #fffefa;
-  --line: #dcded5;
-  --line-strong: #c8cdc2;
-  --sage: #b9d9ca;
-  --sage-bright: #dff2e8;
-  --mint: #8ad3b4;
-  --amber: #f3c76b;
-  --amber-soft: #fff2cf;
-  --coral: #dd7c66;
-  --coral-soft: #fbe4df;
+  /*
+   * BRAND PALETTE — the platform's, not a bespoke one. The page is a system
+   * grey group (--paper) with cards lifted to plain white, the ink is a near
+   * neutral rather than a hue, and the one saturated colour is the system
+   * blue. --tint is the soft, un-saturated half of that blue: the fill an
+   * accent wears when something dark has to sit *inside* it. --amber and
+   * --coral are the platform's orange and red, kept only where they carry
+   * meaning (attention, problem) rather than decoration.
+   */
+  --ink: #1d1d21;
+  --ink-deep: #000000;
+  --ink-soft: #0a63c9;
+  --paper: #f2f2f7;
+  --paper-deep: #e5e5ea;
+  --card: #ffffff;
+  --line: #e3e3e8;
+  --line-strong: #cdcdd4;
+  --tint: #cfe3f9;
+  --tint-bright: #e2eefc;
+  --accent: #007aff;
+  --amber: #e8a013;
+  --amber-soft: #fff0d0;
+  --coral: #e5484d;
+  --coral-soft: #fde3e4;
   --white: #ffffff;
+
+  /*
+   * TYPEFACE — one stack for everything. There is no webfont: on the phone
+   * this resolves to San Francisco, which is the point. A downloaded display
+   * face is the single loudest tell that a Capacitor shell is a website, and
+   * it also costs a render-blocking round trip on the first paint the app
+   * shows. Display sizes are now the same face carried by weight and tracking
+   * (600 and -0.02em or tighter) rather than by a second family.
+   */
+  --font-ui:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI",
+    Roboto, sans-serif;
 
   /*
    * TYPE SCALE — phone-first. `body` is --text-md (15px).
@@ -30,8 +51,7 @@
    *   --text-md   body copy
    *   --text-lg   next step up, reserved for emphasised sans copy
    *   --text-control  editable value text (see the iOS zoom floor below)
-   * Serif display sizes (Newsreader headings) sit outside this scale and are
-   * still declared per component.
+   * Display sizes sit outside this scale and are still declared per component.
    */
   --text-2xs: 12px;
   --text-xs: 13px;
@@ -45,18 +65,18 @@
    * the surface it is used against. Do not introduce new ad-hoc greys;
    * pick the token whose surface family matches. The dark scheme restates
    * every ratio below against its own surfaces.
-   *   --ink-label        6.0:1 on --card, 5.5:1 on --paper — labels, legends
-   *   --ink-muted        5.7:1 on --card/--white, 5.2:1 on --paper
-   *   --ink-faint        5.3:1 on --card/--white, 4.8:1 on --paper
-   *   --ink-placeholder  4.8:1 on --white (placeholders sit on --white only)
+   *   --ink-label        8.6:1 on --card/--white, 7.7:1 on --paper — labels
+   *   --ink-muted        7.4:1 on --card/--white, 6.6:1 on --paper
+   *   --ink-faint        6.3:1 on --card/--white, 5.7:1 on --paper
+   *   --ink-placeholder  5.3:1 on --white (placeholders sit on --white only)
    *   --ink-warm         5.9:1 on --wash-amber, 5.6:1 on the amber card
-   *   --ink-amber        5.9:1 on --amber-soft chips
-   *   --accent-ink       6.0:1 green accent for meaningful marks
+   *   --ink-amber        5.8:1 on --amber-soft chips
+   *   --accent-ink       6.1:1 accent ink for meaningful marks
    */
-  --ink-label: #536762;
-  --ink-muted: #566b64;
-  --ink-faint: #5e6f69;
-  --ink-placeholder: #66766f;
+  --ink-label: #4b4b53;
+  --ink-muted: #55555e;
+  --ink-faint: #5f5f68;
+  --ink-placeholder: #6b6b74;
   --ink-warm: #6a6152;
   --ink-amber: #7a5716;
   --accent-ink: #2f6d58;
@@ -96,17 +116,20 @@
 
   /*
    * INVERSE SURFACES — the sidebar, hero, detail-header, toast and primary
-   * button are painted in the brand green rather than on paper. They are the
-   * one family that does not flip with the scheme: they are dark in both, and
-   * in the dark scheme they are lifted above the page instead of dropped below
-   * it. --on-dark is the text that sits on them; --on-accent is the text that
-   * sits on a *bright* mark (mint, amber, sage) and therefore stays dark in
-   * both schemes. Neither is --white or --ink-deep, which flip.
+   * button are painted rather than sat on paper. They are the one family that
+   * does not flip with the scheme: they are dark in both, and in the dark
+   * scheme they are lifted above the page instead of dropped below it.
+   * --on-dark is the text that sits on them; --on-accent is the text that sits
+   * on a filled --accent control, and it is white in both schemes because the
+   * accent is a saturated blue in both. It is not --white, which flips.
+   *
+   * A pale fill that has to carry dark content is not this case: that is
+   * --tint (or --tint-bright), and what sits on it is plain --ink.
    *
    * --on-mark is the third case: the tick or label inside a SOLID MARK. Those
    * marks are dark on a pale surface in the light scheme and pale on a dark
    * one in the dark scheme, so what sits inside them is the only ink here that
-   * does flip — white in light, --on-accent's near-black in dark.
+   * does flip — white in light, near-black in dark.
    */
   --ink-surface: #15352f;
   --ink-surface-deep: #102c27;
@@ -114,9 +137,9 @@
   --ink-surface-press: #214f45;
   --ink-surface-inset: #21473f;
   --on-dark: #ffffff;
-  --on-accent: #102c27;
+  --on-accent: #ffffff;
   --on-mark: #ffffff;
-  --mint-bright: #a0e2c7;
+  --accent-bright: #2f8bff;
 
   /*
    * TINTED SURFACES — panels, chips and row tints that sit on --card or
@@ -126,7 +149,7 @@
    */
   --wash: #f8f8f4;
   --wash-deep: #f2f3ee;
-  --wash-sage: #f3f9f5;
+  --wash-tint: #f3f9f5;
   --wash-amber: #fffaf0;
   --wash-amber-soft: #fff8e7;
   --wash-coral: #fff8f5;
@@ -173,11 +196,11 @@
    * same list. --ink-quiet is the muted grey of the tinted panels, the
    * counterpart to --ink-muted on plain card, and the one that sets the floor:
    * it has to hold on --chip, the lightest tint it is ever asked to sit on.
-   *   --ink-sage         4.8:1 on --sage-bright, 5.6:1 on --card
-   *   --ink-sage-link    5.0:1 on --sage-bright, 5.9:1 on --white
+   *   --ink-sage         4.8:1 on --tint-bright, 5.6:1 on --card
+   *   --ink-sage-link    5.0:1 on --tint-bright, 5.9:1 on --white
    *   --ink-sage-quiet   5.3:1 on --white
-   *   --ink-sage-deep    6.0:1 on --wash-sage
-   *   --ink-quiet        4.9:1 on --chip, 4.8:1 on --sage-bright, 5.5:1 on --card
+   *   --ink-sage-deep    6.0:1 on --wash-tint
+   *   --ink-quiet        4.9:1 on --chip, 4.8:1 on --tint-bright, 5.5:1 on --card
    *   --ink-coral        5.6:1 on --chip-coral, 6.7:1 on --white
    *   --ink-coral-deep   6.7:1 on --coral-soft, 7.7:1 on --wash-coral
    *   --ink-coral-quiet  4.5:1 on --chip-coral
@@ -251,13 +274,13 @@
    * surface and stays white in both; --lift-rgb lifts a panel that sits on
    * paper and therefore has to flip.
    */
-  --mint-rgb: 138 211 180;
+  --accent-rgb: 138 211 180;
   --veil-rgb: 255 255 255;
   --lift-rgb: 255 255 255;
-  --card-rgb: 255 254 250;
-  --wash-sage-rgb: 243 249 245;
-  --paper-rgb: 246 244 238;
-  --line-rgb: 220 222 213;
+  --card-rgb: 255 255 255;
+  --wash-tint-rgb: 243 249 245;
+  --paper-rgb: 242 242 247;
+  --line-rgb: 227 227 232;
   --shade-rgb: 16 44 39;
 
   /* ATMOSPHERE — the page haze, the modal scrim, and the one-off tints. */
@@ -280,50 +303,52 @@
 
 /*
  * DARK SCHEME
- * The same product after dusk, not a different one: still a green forest, only
- * lit from the other side. Nothing here is an inversion. The page drops to a
- * near-black green, --card and the washes rise off it in small steps, and the
- * inverse surfaces — sidebar, hero, detail-header, toast — stay the brand
- * green and are lifted *above* the page rather than dropped below it, so they
- * read as the same panels they always were. Mint, amber and coral keep their
- * hue and are only pulled back where a saturated accent would glare on a dark
- * ground. Every token below already exists above; components are untouched.
+ * The same product after dark, not a different one. Nothing here is an
+ * inversion. The page drops to a true near-black — no hue, because a tinted
+ * near-black is the thing that reads as "a website in dark mode" next to the
+ * platform's own — and --card and the washes rise off it in small steps. The
+ * inverse surfaces (sidebar, hero, detail-header, toast) stay dark and are
+ * lifted *above* the page rather than dropped below it, so they read as the
+ * same panels they always were. The accent, amber and coral keep their hue
+ * and only move to the brighter end of each family, which is what a saturated
+ * colour needs to hold its meaning against a dark ground. Every token below
+ * already exists above; components are untouched.
  */
 @media (prefers-color-scheme: dark) {
   :root {
-    --ink: #cedcd8;
-    --ink-deep: #ecf1ef;
-    --ink-soft: #6ab69a;
-    --paper: #0d1917;
-    --paper-deep: #081110;
-    --card: #1b2d2a;
-    --line: #364b47;
-    --line-strong: #485f5a;
-    --sage: #51ab8a;
-    --sage-bright: #1c4234;
-    --mint: #8fdec1;
-    --amber: #e8cb86;
-    --amber-soft: #44381c;
-    --coral: #da7b63;
-    --coral-soft: #402620;
-    --white: #253d38;
+    --ink: #e5e5ea;
+    --ink-deep: #f5f5f7;
+    --ink-soft: #4da2ff;
+    --paper: #0b0b0e;
+    --paper-deep: #000000;
+    --card: #1c1c1e;
+    --line: #2c2c30;
+    --line-strong: #3d3d44;
+    --tint: #1e3a5c;
+    --tint-bright: #1c3f66;
+    --accent: #0a84ff;
+    --amber: #ffd60a;
+    --amber-soft: #4a3510;
+    --coral: #ff453a;
+    --coral-soft: #452321;
+    --white: #2c2c2e;
 
     /*
      * MUTED INK — the light scheme pulls its greys *down* from the surface;
      * here they are pulled *up* from it. The ladder is the same shape and the
      * same order, and every step clears AA on the dark surfaces:
-     *   --ink-label        9.6:1 on --card, 12.0:1 on --paper — labels, legends
-     *   --ink-muted        8.6:1 on --card, 7.0:1 on --white, 10.7:1 on --paper
-     *   --ink-faint        7.6:1 on --card, 6.2:1 on --white, 9.5:1 on --paper
+     *   --ink-label        10.1:1 on --card, 11.7:1 on --paper — labels, legends
+     *   --ink-muted        8.6:1 on --card, 7.1:1 on --white, 10.0:1 on --paper
+     *   --ink-faint        7.4:1 on --card, 6.1:1 on --white, 8.5:1 on --paper
      *   --ink-placeholder  5.2:1 on --white (placeholders sit on --white only)
      *   --ink-warm         6.2:1 on --wash-amber, 5.7:1 on the amber card
-     *   --ink-amber        5.9:1 on --amber-soft chips
-     *   --accent-ink       5.5:1 green accent for meaningful marks
+     *   --ink-amber        6.0:1 on --amber-soft chips
+     *   --accent-ink       6.5:1 accent ink for meaningful marks
      */
-    --ink-label: #c8d6d2;
-    --ink-muted: #bdcbc7;
-    --ink-faint: #b0c0bb;
-    --ink-placeholder: #a0b1ac;
+    --ink-label: #c7c7cf;
+    --ink-muted: #b8b8c1;
+    --ink-faint: #aaaab3;
+    --ink-placeholder: #9d9da6;
     --ink-warm: #baaa84;
     --ink-amber: #d5b76f;
     --accent-ink: #49b28c;
@@ -331,7 +356,7 @@
     /*
      * ON-DARK INK — unchanged in kind but not in degree. The inverse surfaces
      * are lifted here rather than dropped, so the mint radial over them peaks
-     * on a lighter ground: the sheen is pulled back (see --mint-rgb) and the
+     * on a lighter ground: the sheen is pulled back (see --accent-rgb) and the
      * alphas climb with it. At that peak 0.76 clears AA (4.7:1), the same
      * margin 0.7 holds in the light scheme; 0.73 is the floor and the light
      * scheme's 0.7 would land at 4.3:1 here.
@@ -345,13 +370,13 @@
     --ink-surface-press: #32655b;
     --ink-surface-inset: #1f423b;
     --on-dark: #f4f7f6;
-    --on-accent: #0d211d;
+    --on-accent: #ffffff;
     --on-mark: #0d211d;
-    --mint-bright: #9de3c9;
+    --accent-bright: #3d9bff;
 
     --wash: #233632;
     --wash-deep: #2c423d;
-    --wash-sage: #1e3830;
+    --wash-tint: #1e3830;
     --wash-amber: #322a16;
     --wash-amber-soft: #3c3219;
     --wash-coral: #492d26;
@@ -388,11 +413,11 @@
     /*
      * ACCENT INK — the same list as the light block, measured against the dark
      * tints above:
-     *   --ink-sage         5.8:1 on --sage-bright, 7.5:1 on --card
-     *   --ink-sage-link    4.9:1 on --sage-bright, 5.1:1 on --white
+     *   --ink-sage         5.8:1 on --tint-bright, 7.5:1 on --card
+     *   --ink-sage-link    4.9:1 on --tint-bright, 5.1:1 on --white
      *   --ink-sage-quiet   4.8:1 on --white
-     *   --ink-sage-deep    6.5:1 on --wash-sage
-     *   --ink-quiet        4.8:1 on --chip, 5.7:1 on --sage-bright, 7.3:1 on --card
+     *   --ink-sage-deep    6.5:1 on --wash-tint
+     *   --ink-quiet        4.8:1 on --chip, 5.7:1 on --tint-bright, 7.3:1 on --card
      *   --ink-coral        5.4:1 on --chip-coral, 6.2:1 on --white
      *   --ink-coral-deep   5.8:1 on --coral-soft, 5.2:1 on --wash-coral
      *   --ink-coral-quiet  4.8:1 on --chip-coral
@@ -426,9 +451,9 @@
      * non-text floor against the lightest surface it is ever asked to sit on
      * by a full step, and carries --on-mark at 5:1 or better:
      *   --mark-check        3.5:1 on --chip (a row mid-press), 5.3:1 on --card
-     *   --mark-sage         3.8:1 on --wash-sage, 4.3:1 on --card
-     *   --mark-sage-deep    3.5:1 on --wash-deep, 4.1:1 on --wash-sage
-     *   --mark-sage-bright  3.5:1 on --sage-bright
+     *   --mark-sage         3.8:1 on --wash-tint, 4.3:1 on --card
+     *   --mark-sage-deep    3.5:1 on --wash-deep, 4.1:1 on --wash-tint
+     *   --mark-sage-bright  3.5:1 on --tint-bright
      */
     --mark-check: #71a892;
     --mark-sage: #609882;
@@ -465,12 +490,12 @@
      * is deliberately absent: it lifts the inverse surfaces, which are dark in
      * both schemes, so white is still the only thing that lifts them.
      */
-    --mint-rgb: 96 178 147;
+    --accent-rgb: 96 178 147;
     --lift-rgb: 70 78 75;
-    --card-rgb: 27 45 42;
-    --wash-sage-rgb: 30 56 48;
-    --paper-rgb: 13 25 23;
-    --line-rgb: 54 75 71;
+    --card-rgb: 28 28 30;
+    --wash-tint-rgb: 30 56 48;
+    --paper-rgb: 11 11 14;
+    --line-rgb: 44 44 48;
     --shade-rgb: 0 0 0;
 
     --page-glow: rgba(58, 122, 102, 0.28);
@@ -513,7 +538,7 @@ body {
     radial-gradient(circle at 84% -20%, var(--page-glow), transparent 34%),
     var(--paper);
   color: var(--ink);
-  font-family: var(--font-manrope), Arial, Helvetica, sans-serif;
+  font-family: var(--font-ui);
   font-size: var(--text-md);
   line-height: 1.55;
   min-height: 100vh;
@@ -589,8 +614,8 @@ a {
 }
 
 ::selection {
-  background: var(--sage);
-  color: var(--on-accent);
+  background: var(--tint);
+  color: var(--ink);
 }
 
 :focus-visible {
@@ -681,11 +706,10 @@ a {
   width: 34px;
   height: 34px;
   border-radius: 11px 11px 11px 4px;
-  background: var(--mint);
+  background: var(--accent);
   color: var(--on-accent);
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 23px;
-  font-style: italic;
   font-weight: 700;
 }
 
@@ -722,7 +746,7 @@ a {
 }
 
 .desktop-sidebar .nav-button.active {
-  background: rgb(var(--mint-rgb) / 0.13);
+  background: rgb(var(--accent-rgb) / 0.13);
   color: var(--on-dark);
 }
 
@@ -732,7 +756,7 @@ a {
   width: 3px;
   height: 24px;
   border-radius: 0 4px 4px 0;
-  background: var(--mint);
+  background: var(--accent);
   content: "";
 }
 
@@ -752,7 +776,7 @@ a {
   margin: 28px 4px 0;
   border: 0;
   border-radius: 13px;
-  background: var(--mint);
+  background: var(--accent);
   color: var(--on-accent);
   cursor: pointer;
   font-size: var(--text-sm);
@@ -761,7 +785,7 @@ a {
 }
 
 .sidebar-add:hover {
-  background: var(--mint-bright);
+  background: var(--accent-bright);
 }
 
 .sidebar-coach {
@@ -773,7 +797,7 @@ a {
 }
 
 .sidebar-coach > span {
-  color: var(--mint);
+  color: var(--accent);
   font-size: var(--text-2xs);
   font-weight: 800;
   letter-spacing: 0.12em;
@@ -784,7 +808,7 @@ a {
   display: block;
   margin-top: 7px;
   color: var(--on-dark);
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 17px;
   font-weight: 600;
   line-height: 1.2;
@@ -846,9 +870,9 @@ a {
 .page-greeting h1 {
   margin: 4px 0 1px;
   color: var(--ink-deep);
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: clamp(32px, 3vw, 45px);
-  font-weight: 520;
+  font-weight: 600;
   letter-spacing: -0.035em;
   line-height: 1.08;
 }
@@ -928,7 +952,7 @@ a {
   overflow: hidden;
   border-radius: var(--radius-lg);
   background:
-    radial-gradient(circle at 12% 120%, rgb(var(--mint-rgb) / 0.14), transparent 32%),
+    radial-gradient(circle at 12% 120%, rgb(var(--accent-rgb) / 0.14), transparent 32%),
     var(--ink-surface);
   color: var(--on-dark);
   box-shadow: 0 18px 48px rgb(var(--shade-rgb) / 0.13);
@@ -966,15 +990,15 @@ a {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--mint);
-  box-shadow: 0 0 0 4px rgb(var(--mint-rgb) / 0.12);
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgb(var(--accent-rgb) / 0.12);
 }
 
 .renewal-identity h2 {
   margin: 12px 0 2px;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 31px;
-  font-weight: 560;
+  font-weight: 600;
   letter-spacing: -0.03em;
 }
 
@@ -1013,9 +1037,9 @@ a {
 
 .deadline-number strong {
   display: block;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 65px;
-  font-weight: 440;
+  font-weight: 600;
   letter-spacing: -0.05em;
   line-height: 0.86;
 }
@@ -1070,7 +1094,7 @@ a {
 }
 
 .progress-track-light > span {
-  background: var(--mint);
+  background: var(--accent);
 }
 
 .readiness-panel {
@@ -1096,7 +1120,7 @@ a {
   margin: 14px 0;
   border-radius: 50%;
   background: conic-gradient(
-    var(--mint) calc(var(--score) * 1%),
+    var(--accent) calc(var(--score) * 1%),
     rgb(var(--veil-rgb) / 0.1) 0
   );
 }
@@ -1121,9 +1145,9 @@ a {
 }
 
 .readiness-ring strong {
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 30px;
-  font-weight: 520;
+  font-weight: 600;
   letter-spacing: -0.04em;
 }
 
@@ -1164,12 +1188,12 @@ a {
   height: 42px;
   border-radius: 12px;
   background: var(--amber);
-  color: var(--on-accent);
+  color: var(--ink-surface);
 }
 
 .next-action-card h2 {
   margin: 2px 0 0;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 21px;
   font-weight: 600;
   letter-spacing: -0.02em;
@@ -1213,7 +1237,7 @@ a {
 .card-heading h3 {
   margin: 3px 0 0;
   color: var(--ink-deep);
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 23px;
   font-weight: 600;
   letter-spacing: -0.02em;
@@ -1376,7 +1400,7 @@ a {
 
 .dental-checkpoint.completed {
   border-color: var(--edge-accent-pale);
-  background: var(--wash-sage);
+  background: var(--wash-tint);
 }
 
 .dental-checkpoint-form {
@@ -1469,7 +1493,7 @@ a {
 
 .met-label {
   border-radius: 99px;
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage);
   font-size: var(--text-2xs);
   font-weight: 800;
@@ -1526,7 +1550,7 @@ a {
   border-radius: 14px 14px 14px 5px;
   background: linear-gradient(145deg, var(--orb-from), var(--orb-to));
   color: var(--ink-sage);
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 21px;
   font-weight: 700;
 }
@@ -1637,7 +1661,7 @@ a {
 
 .quest-row.claimed {
   border-color: var(--edge-accent-pale);
-  background: var(--wash-sage);
+  background: var(--wash-tint);
 }
 
 .quest-state {
@@ -1726,7 +1750,7 @@ a {
   width: 24px;
   height: 24px;
   border-radius: 8px;
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage);
 }
 
@@ -1975,9 +1999,10 @@ a {
 
 .reminder-inbox-heading h2 {
   margin: 3px 0 0;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 21px;
   font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 .reminder-list {
@@ -2108,7 +2133,7 @@ a {
 }
 
 .evidence-mark.attached {
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage);
 }
 
@@ -2145,7 +2170,7 @@ a {
   width: 30px;
   height: 30px;
   border-radius: 9px;
-  background: var(--sage-bright);
+  background: var(--tint-bright);
 }
 
 .empty-inline strong {
@@ -2176,7 +2201,7 @@ a {
   overflow: hidden;
   border-radius: var(--radius-lg);
   background:
-    radial-gradient(circle at 0 100%, rgb(var(--mint-rgb) / 0.17), transparent 34%),
+    radial-gradient(circle at 0 100%, rgb(var(--accent-rgb) / 0.17), transparent 34%),
     var(--ink-surface);
   color: var(--on-dark);
   box-shadow: var(--shadow-md);
@@ -2191,15 +2216,15 @@ a {
 }
 
 .onboarding-copy .section-kicker {
-  color: var(--mint);
+  color: var(--accent);
 }
 
 .onboarding-copy h2 {
   max-width: 550px;
   margin: 11px 0 15px;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: clamp(38px, 4.2vw, 58px);
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: -0.045em;
   line-height: 1.02;
 }
@@ -2238,10 +2263,11 @@ a {
   width: 36px;
   height: 36px;
   border-radius: 11px;
-  background: rgb(var(--mint-rgb) / 0.16);
-  color: var(--mint);
-  font-family: var(--font-newsreader), Georgia, serif;
+  background: rgb(var(--accent-rgb) / 0.16);
+  color: var(--accent);
+  font-family: var(--font-ui);
   font-size: 18px;
+  font-weight: 600;
 }
 
 .onboarding-steps strong,
@@ -2283,7 +2309,7 @@ a {
   width: 28px;
   height: 28px;
   border-radius: 9px;
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage);
 }
 
@@ -2452,9 +2478,9 @@ a {
 .push-title {
   margin: 0;
   color: var(--ink-deep);
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: clamp(28px, 2.6vw, 38px);
-  font-weight: 520;
+  font-weight: 600;
   letter-spacing: -0.035em;
   line-height: 1.1;
 }
@@ -2485,7 +2511,7 @@ a {
 }
 
 .credential-picker > button.active {
-  box-shadow: inset 3px 0 var(--mint), var(--shadow-sm);
+  box-shadow: inset 3px 0 var(--accent), var(--shadow-sm);
 }
 
 .credential-picker strong,
@@ -2533,21 +2559,21 @@ a {
   gap: 24px;
   padding: 31px 32px 26px;
   background:
-    radial-gradient(circle at 100% 100%, rgb(var(--mint-rgb) / 0.17), transparent 34%),
+    radial-gradient(circle at 100% 100%, rgb(var(--accent-rgb) / 0.17), transparent 34%),
     var(--ink-surface);
   color: var(--on-dark);
 }
 
 .status-pill-dark {
-  background: rgb(var(--mint-rgb) / 0.14);
-  color: var(--mint);
+  background: rgb(var(--accent-rgb) / 0.14);
+  color: var(--accent);
 }
 
 .credential-detail-header h2 {
   margin: 11px 0 2px;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 31px;
-  font-weight: 550;
+  font-weight: 600;
   letter-spacing: -0.03em;
 }
 
@@ -2612,9 +2638,9 @@ a {
 
 .detail-stats strong {
   margin-top: 4px;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 29px;
-  font-weight: 550;
+  font-weight: 600;
   letter-spacing: -0.03em;
 }
 
@@ -2632,9 +2658,10 @@ a {
 
 .detail-section h3 {
   margin: 4px 0 0;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 21px;
   font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 .source-detail p {
@@ -2707,7 +2734,7 @@ a {
   margin: 0 32px 16px;
   border: 1px solid var(--edge-sage);
   border-radius: 14px;
-  background: var(--wash-sage);
+  background: var(--wash-tint);
   padding: 17px 18px;
 }
 
@@ -2718,9 +2745,10 @@ a {
 
 .credential-packet-copy h3 {
   margin: 3px 0 4px;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 20px;
   font-weight: 650;
+  letter-spacing: -0.02em;
 }
 
 .credential-packet-copy > p {
@@ -2762,7 +2790,7 @@ a {
 }
 
 .submitted-footer {
-  background: var(--sage-bright);
+  background: var(--tint-bright);
 }
 
 .verified-chip,
@@ -2771,7 +2799,7 @@ a {
   align-items: center;
   min-height: 25px;
   border-radius: 99px;
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage);
   font-size: var(--text-2xs);
   font-weight: 800;
@@ -2826,9 +2854,10 @@ a {
 
 .record-summary > div strong {
   margin-top: 2px;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 28px;
-  font-weight: 550;
+  font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 .record-summary > div small {
@@ -2936,7 +2965,7 @@ a {
 }
 
 .proof-label.attached {
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage);
 }
 
@@ -3220,15 +3249,17 @@ a {
   border-radius: 18px 18px 18px 6px;
   background: var(--ink-surface);
   color: var(--on-dark);
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 30px;
+  font-weight: 600;
 }
 
 .account-profile h2 {
   margin: 3px 0 1px;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 24px;
   font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 .account-profile p {
@@ -3256,9 +3287,10 @@ a {
 .phone-companion-card h2,
 .weekly-rhythm-card h2 {
   margin: 4px 0 6px;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 27px;
   font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 .account-momentum > p,
@@ -3279,7 +3311,7 @@ a {
   margin-top: 18px;
   border: 1px solid var(--edge-soft);
   border-radius: 12px;
-  background: var(--wash-sage);
+  background: var(--wash-tint);
   padding: 12px 14px;
 }
 
@@ -3313,7 +3345,7 @@ a {
   margin-top: 18px;
   border: 1px solid var(--edge-sage);
   border-radius: 12px;
-  background: var(--wash-sage);
+  background: var(--wash-tint);
   color: var(--ink-sage-link);
   padding: 11px 13px;
 }
@@ -3324,7 +3356,7 @@ a {
   width: 32px;
   height: 32px;
   border-radius: 10px;
-  background: var(--sage-bright);
+  background: var(--tint-bright);
 }
 
 .weekly-goal-scheduled p {
@@ -3388,7 +3420,7 @@ a {
 
 .weekly-goal-option:has(input:checked) {
   border-color: var(--edge-accent);
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   box-shadow: inset 0 0 0 1px var(--ring-sage);
 }
 
@@ -3486,7 +3518,7 @@ a {
   min-height: 210px;
   padding: 28px;
   background:
-    radial-gradient(circle at 100% 0, rgb(var(--mint-rgb) / 0.24), transparent 40%),
+    radial-gradient(circle at 100% 0, rgb(var(--accent-rgb) / 0.24), transparent 40%),
     var(--card);
 }
 
@@ -3498,7 +3530,7 @@ a {
   margin-top: 18px;
   border: 1px solid var(--edge-soft);
   border-radius: 14px;
-  background: rgb(var(--wash-sage-rgb) / 0.92);
+  background: rgb(var(--wash-tint-rgb) / 0.92);
   padding: 13px 14px;
 }
 
@@ -3509,7 +3541,7 @@ a {
   width: 34px;
   height: 34px;
   border-radius: 11px;
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage);
 }
 
@@ -3580,7 +3612,7 @@ a {
   min-height: 36px;
   margin-top: 18px;
   border-radius: 99px;
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage);
   font-size: var(--text-xs);
   font-weight: 800;
@@ -3631,7 +3663,7 @@ a {
 
 .badge-grid article.earned {
   border-color: var(--edge-sage);
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage);
 }
 
@@ -3705,18 +3737,18 @@ a {
   height: 64px;
   margin-bottom: 19px;
   border-radius: 20px 20px 20px 7px;
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage);
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 31px;
-  font-style: italic;
+  font-weight: 600;
 }
 
 .empty-page h2 {
   margin: 5px 0 7px;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 30px;
-  font-weight: 560;
+  font-weight: 600;
   letter-spacing: -0.03em;
 }
 
@@ -3777,9 +3809,9 @@ a {
 
 .modal-header h2 {
   margin: 3px 0 0;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 28px;
-  font-weight: 580;
+  font-weight: 600;
   letter-spacing: -0.03em;
 }
 
@@ -3957,7 +3989,7 @@ a {
 
 .requirement-choice:has(input:checked) {
   border-color: var(--edge-accent-soft);
-  background: var(--wash-sage);
+  background: var(--wash-tint);
 }
 
 .requirement-choice input:focus-visible + .requirement-check {
@@ -3992,7 +4024,7 @@ a {
   margin: 0;
   border: 1px solid var(--edge-sage);
   border-radius: 13px;
-  background: var(--wash-sage);
+  background: var(--wash-tint);
   padding: 14px;
 }
 
@@ -4115,7 +4147,7 @@ a {
 
 .allocation-tally.balanced {
   border-color: var(--edge-accent-soft);
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage);
 }
 
@@ -4143,7 +4175,7 @@ a {
   margin-bottom: 12px;
   border: 1px solid var(--edge-soft);
   border-radius: 11px;
-  background: var(--wash-sage);
+  background: var(--wash-tint);
   padding: 11px 12px;
 }
 
@@ -4162,7 +4194,7 @@ a {
 .condition-review {
   border: 1px solid var(--edge-soft);
   border-radius: 13px;
-  background: var(--wash-sage);
+  background: var(--wash-tint);
   padding: 14px;
 }
 
@@ -4233,7 +4265,7 @@ a {
 
 .condition-options input:checked + span {
   border-color: var(--edge-accent);
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage-link);
 }
 
@@ -4251,7 +4283,7 @@ a {
   margin-right: 10px;
   border: 0;
   border-radius: 8px;
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage-link);
   cursor: pointer;
   font: inherit;
@@ -4265,8 +4297,8 @@ a {
   border: 1px solid var(--edge-sage);
   border-radius: 15px;
   background:
-    radial-gradient(circle at 100% 0, rgb(var(--mint-rgb) / 0.19), transparent 38%),
-    var(--wash-sage);
+    radial-gradient(circle at 100% 0, rgb(var(--accent-rgb) / 0.19), transparent 38%),
+    var(--wash-tint);
   padding: 15px;
 }
 
@@ -4283,7 +4315,7 @@ a {
   width: 38px;
   height: 38px;
   border-radius: 12px;
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage);
 }
 
@@ -4294,7 +4326,7 @@ a {
 
 .certificate-capture-heading strong {
   color: var(--ink-deep);
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 17px;
   font-weight: 650;
 }
@@ -4387,7 +4419,7 @@ a {
 
 .draft-safety-note.restored {
   border-color: var(--edge-accent-soft);
-  background: var(--wash-sage);
+  background: var(--wash-tint);
 }
 
 .draft-safety-note > span {
@@ -4396,7 +4428,7 @@ a {
   width: 27px;
   height: 27px;
   border-radius: 9px;
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage-link);
 }
 
@@ -4474,7 +4506,7 @@ a {
   align-items: center;
   gap: 8px;
   border-radius: 10px;
-  background: var(--wash-sage);
+  background: var(--wash-tint);
   color: var(--ink-sage-link);
   padding: 9px 10px;
 }
@@ -4523,7 +4555,7 @@ a {
 
 .field.scan-suggested input {
   border-color: var(--edge-accent);
-  background: var(--wash-sage);
+  background: var(--wash-tint);
   box-shadow: inset 3px 0 var(--edge-accent);
 }
 
@@ -4637,7 +4669,7 @@ a {
 
 .segmented-field input:checked + span {
   border-color: var(--edge-accent);
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage-link);
 }
 
@@ -4718,7 +4750,7 @@ a {
 
 .check-grid input:checked + span {
   border-color: var(--edge-accent);
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage-link);
 }
 
@@ -4732,7 +4764,7 @@ a {
   gap: 10px;
   border: 1px solid var(--edge-sage);
   border-radius: 13px;
-  background: var(--wash-sage);
+  background: var(--wash-tint);
   padding: 15px;
 }
 
@@ -4918,7 +4950,7 @@ a {
 .source-card {
   border: 1px solid var(--edge-sage);
   border-radius: 13px;
-  background: var(--wash-sage);
+  background: var(--wash-tint);
   padding: 15px;
 }
 
@@ -4936,7 +4968,7 @@ a {
 
 .source-card > strong {
   display: block;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 18px;
   font-weight: 600;
 }
@@ -4994,9 +5026,9 @@ a {
   border: 1px solid var(--edge-mark);
   border-radius: 50%;
   color: var(--ink-muted);
-  font-family: Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 12px;
-  font-style: italic;
+  font-weight: 700;
 }
 
 .advisory-note p {
@@ -5011,7 +5043,7 @@ a {
   align-items: center;
   gap: 13px;
   border-radius: 14px;
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   padding: 15px;
 }
 
@@ -5027,7 +5059,7 @@ a {
 
 .celebration-panel strong {
   display: block;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 17px;
   font-weight: 600;
 }
@@ -5052,14 +5084,15 @@ a {
   width: 55px;
   height: 55px;
   border-radius: 18px;
-  background: var(--sage-bright);
+  background: var(--tint-bright);
 }
 
 .empty-modal h3 {
   margin: 16px 0 5px;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 24px;
   font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 .empty-modal p {
@@ -5085,7 +5118,7 @@ a {
 
 .offline-banner {
   border-color: var(--edge);
-  background: var(--wash-sage);
+  background: var(--wash-tint);
   color: var(--ink-sage-deep);
 }
 
@@ -5144,7 +5177,7 @@ a {
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background:
-    radial-gradient(circle at 50% 0, rgb(var(--mint-rgb) / 0.22), transparent 44%),
+    radial-gradient(circle at 50% 0, rgb(var(--accent-rgb) / 0.22), transparent 44%),
     var(--card);
   box-shadow: var(--shadow-sm);
   flex-direction: column;
@@ -5161,14 +5194,14 @@ a {
   height: 62px;
   margin-bottom: 18px;
   border-radius: 20px 20px 20px 7px;
-  background: var(--sage-bright);
+  background: var(--tint-bright);
   color: var(--ink-sage);
 }
 
 .offline-workspace h1 {
   max-width: 560px;
   margin: 8px 0;
-  font-family: var(--font-newsreader), Georgia, serif;
+  font-family: var(--font-ui);
   font-size: 34px;
   font-weight: 600;
   letter-spacing: -0.025em;
@@ -5214,7 +5247,7 @@ a {
   border: 0;
   border-radius: 8px;
   background: rgb(var(--veil-rgb) / 0.09);
-  color: var(--mint);
+  color: var(--accent);
   cursor: pointer;
   font-size: var(--text-sm);
   font-weight: 800;
@@ -5598,7 +5631,7 @@ button:disabled:active {
     border-radius: 13px;
     background: var(--white);
     cursor: pointer;
-    font-family: var(--font-newsreader), Georgia, serif;
+    font-family: var(--font-ui);
     font-size: 17px;
     font-weight: 700;
   }
@@ -6392,8 +6425,8 @@ button:disabled:active {
  * forces its palette on everything else. A forced dark theme also reports
  * `prefers-color-scheme: dark`, so what these three opt back into is the dark
  * palette above, and every one of them is a pair that holds against the forced
- * black canvas: --amber over it at 13.3:1, --mint over the ring's unfilled
- * tenth-white at 11.2:1, and --on-accent on --mint at 10.7:1.
+ * black canvas: --amber over it at 13.3:1, --accent over the ring's unfilled
+ * tenth-white at 11.2:1, and --on-accent on --accent at 10.7:1.
  *
  * The add button used to opt out with them and it was the one that did not
  * hold: on a forced dark theme its --ink-surface fill is 2.2:1 on the black

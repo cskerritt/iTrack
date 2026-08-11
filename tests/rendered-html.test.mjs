@@ -624,16 +624,17 @@ test("iTrack product contract", async (t) => {
     );
     assert.match(html, /<link rel="manifest"[^>]*manifest\.webmanifest/i);
     // One theme-color per scheme, for the browser and OS chrome rather than
-    // for anything the app paints: the brand green in light, the page itself
-    // in dark, so the address bar never sits on a colour the app is not
-    // showing. color-scheme tells the UA to render form controls to match.
+    // for anything the app paints. Both name --paper, the page itself, so the
+    // status bar the phone draws inside the app's own canvas is never a colour
+    // the app is not showing. color-scheme tells the UA to render form
+    // controls to match.
     assert.match(
       html,
-      /<meta name="theme-color" content="#163f36" media="\(prefers-color-scheme: light\)"\/>/i,
+      /<meta name="theme-color" content="#f2f2f7" media="\(prefers-color-scheme: light\)"\/>/i,
     );
     assert.match(
       html,
-      /<meta name="theme-color" content="#0d1917" media="\(prefers-color-scheme: dark\)"\/>/i,
+      /<meta name="theme-color" content="#0b0b0e" media="\(prefers-color-scheme: dark\)"\/>/i,
     );
     assert.match(html, /<meta name="color-scheme" content="light dark"\/>/i);
 
@@ -7375,8 +7376,10 @@ export {
       assert.equal(manifest.start_url, "/");
       assert.equal(manifest.scope, "/");
       assert.equal(manifest.display, "standalone");
-      assert.equal(manifest.background_color, "#f6f4ee");
-      assert.equal(manifest.theme_color, "#163f36");
+      // Read once at install to paint the splash, so both stay on the light
+      // scheme's page colour (--paper) rather than a brand fill.
+      assert.equal(manifest.background_color, "#f2f2f7");
+      assert.equal(manifest.theme_color, "#f2f2f7");
       assert.ok(
         manifest.icons.some(
           (icon) =>
