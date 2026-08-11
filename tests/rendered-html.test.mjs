@@ -691,7 +691,7 @@ test("iTrack product contract", async (t) => {
     );
     assert.match(
       clientSource,
-      /className="screen screen-pushed">\s*<CredentialDetailScreen/,
+      /className=\{`screen screen-pushed\$\{[\s\S]{0,200}?<CredentialDetailScreen/,
     );
     assert.match(clientSource, /<CredentialDetailScreen[\s\S]{0,900}?onBack=\{/);
     assert.match(clientSource, /nav\.pop/);
@@ -734,6 +734,117 @@ test("iTrack product contract", async (t) => {
     assert.match(stylesSource, /\.push-header \{/);
     assert.match(stylesSource, /\.push-back \{/);
     assert.match(stylesSource, /\.push-title \{/);
+  });
+
+  await t.test("slides screens in and out and follows the back gesture", async () => {
+    const [clientSource, stylesSource] = await Promise.all([
+      readFile(new URL("../app/ITrackApp.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    ]);
+
+    // Both screens share one grid cell so the arriving one can travel across
+    // the one it covers. Neither leaves the flow, and only the axis they
+    // travel on is clipped: a credential detail runs several viewports tall
+    // and the document — the one scroller on this page — has to reach its
+    // bottom while it is the screen on top.
+    assert.match(
+      stylesSource,
+      /\.screen-stack \{[^}]*display: grid;[^}]*overflow-x: clip;[^}]*overflow-y: visible;[^}]*\}/,
+    );
+    assert.match(
+      stylesSource,
+      /\.screen-stack > \.screen \{[^}]*grid-area: 1 \/ 1;[^}]*\}/,
+    );
+    assert.doesNotMatch(
+      stylesSource,
+      /\.screen-pushed \{[^}]*position: absolute/,
+    );
+
+    // A push arrives from beyond the right edge, a pop leaves the same way,
+    // and the screen underneath parks instead of sitting still.
+    assert.match(
+      stylesSource,
+      /@keyframes screen-in \{[\s\S]{0,200}?translateX\(100%\)/,
+    );
+    assert.match(
+      stylesSource,
+      /\.screen-pushed \{[^}]*animation: screen-in var\(--screen-push\) var\(--screen-ease\)/,
+    );
+    assert.match(
+      stylesSource,
+      /\.screen-pushed\.screen-exiting \{[^}]*animation: screen-out var\(--screen-pop\) var\(--screen-ease\) forwards/,
+    );
+    assert.match(
+      stylesSource,
+      /\.screen-root\.screen-under \{[^}]*transform: translateX\(calc\(-28%/,
+    );
+
+    // One custom property carries the gesture, so the pushed screen and the
+    // one parked under it track the same finger; the exit picks up from where
+    // the finger let go rather than snapping back to zero first.
+    assert.match(
+      stylesSource,
+      /\.screen-pushed \{[^}]*transform: translateX\(var\(--screen-drag, 0px\)\)/,
+    );
+    assert.match(
+      stylesSource,
+      /\.screen-root\.screen-under \{[^}]*var\(--screen-drag, 0px\)/,
+    );
+    assert.match(
+      stylesSource,
+      /@keyframes screen-out \{[\s\S]{0,200}?transform: translateX\(var\(--screen-drag, 0px\)\)/,
+    );
+    // A dragged screen is placed by the finger, not by a curve.
+    assert.match(
+      stylesSource,
+      /\.screen-stack\.screen-dragging [\s\S]{0,120}?\{[^}]*transition: none;[^}]*\}/,
+    );
+
+    // The departing screen stays mounted for the length of its exit — every
+    // pop animates, including the browser's own back button — and stops
+    // taking taps while it is on its way out.
+    assert.match(
+      clientSource,
+      /screen screen-pushed\$\{[\s\S]{0,160}?screen-exiting/,
+    );
+    assert.match(clientSource, /onAnimationEnd=\{finishScreenExit\}/);
+    assert.match(
+      stylesSource,
+      /\.screen-pushed\.screen-exiting \{[^}]*pointer-events: none/,
+    );
+
+    // The gesture listens on the document, not on the stack: its edge band
+    // overlaps the page gutter, where a touch never reaches the stack at all.
+    assert.match(
+      clientSource,
+      /useEdgeSwipeBack\(\s*screenStackRef,\s*Boolean\(detailCredential\),\s*nav\.pop,?\s*\)/,
+    );
+    assert.match(
+      clientSource,
+      /function useEdgeSwipeBack\([\s\S]{0,2600}?document\.addEventListener\(\s*"touchstart"/,
+    );
+    assert.match(
+      clientSource,
+      /clientX <= EDGE_SWIPE_ZONE[\s\S]{0,1200}?> EDGE_SWIPE_COMMIT/,
+    );
+    assert.match(
+      clientSource,
+      /setProperty\(\s*"--screen-drag"/,
+    );
+
+    // Reduced motion drops the choreography and keeps the direct
+    // manipulation: the parked offset goes, the finger's does not.
+    assert.match(
+      stylesSource,
+      /@media \(prefers-reduced-motion: reduce\) \{\s*\.screen-root,\s*\.screen-root\.screen-under \{[^}]*transform: none;/,
+    );
+
+    // A pushed screen opens at its own top the way a native one does, and the
+    // screen it covered comes back to where it was left.
+    assert.match(
+      clientSource,
+      /parkedScrollRef[\s\S]{0,600}?window\.scrollTo/,
+    );
   });
 
   await t.test("removes the disposable starter preview", async () => {

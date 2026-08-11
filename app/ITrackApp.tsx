@@ -1,9 +1,11 @@
 "use client";
 
 import {
+  AnimationEvent,
   ChangeEvent,
   FormEvent,
   ReactNode,
+  RefObject,
   useCallback,
   useEffect,
   useMemo,
@@ -1305,6 +1307,98 @@ function useNavigation() {
   return { route, setTab, push, pop, popToRoot };
 }
 
+// The left-hand band the back gesture may start in, how far it then has to
+// travel before letting go means "go back" rather than "never mind", and the
+// vertical travel past which the finger is plainly scrolling instead.
+const EDGE_SWIPE_ZONE = 24;
+const EDGE_SWIPE_COMMIT = 80;
+const EDGE_SWIPE_ABANDON = 40;
+
+/**
+ * The platform back gesture: drag from the left edge and the pushed screen
+ * comes with the finger; let go past the threshold and it leaves.
+ *
+ * The listeners sit on the document rather than on the stack because the edge
+ * band overlaps the page gutter, and a touch that lands in the gutter never
+ * reaches the stack to bubble out of it. The drag is published as a custom
+ * property on the stack instead of as React state — see SCREEN STACK in
+ * globals.css, where both screens read it — because this runs on every frame
+ * of a drag and a re-render per frame is a dropped one.
+ */
+function useEdgeSwipeBack(
+  stackRef: RefObject<HTMLDivElement | null>,
+  enabled: boolean,
+  onBack: () => void,
+) {
+  useEffect(() => {
+    const stack = stackRef.current;
+    if (!enabled || !stack) return;
+    let startX = 0;
+    let startY = 0;
+    let tracking = false;
+    const release = () => {
+      tracking = false;
+      stack.classList.remove("screen-dragging");
+    };
+    const rest = () => {
+      release();
+      stack.style.removeProperty("--screen-drag");
+    };
+    const onStart = (event: TouchEvent) => {
+      const touch = event.touches[0];
+      if (!touch) return;
+      tracking = touch.clientX <= EDGE_SWIPE_ZONE;
+      startX = touch.clientX;
+      startY = touch.clientY;
+      if (tracking) stack.classList.add("screen-dragging");
+    };
+    const onMove = (event: TouchEvent) => {
+      if (!tracking) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      const dx = touch.clientX - startX;
+      const dy = Math.abs(touch.clientY - startY);
+      if (dy > EDGE_SWIPE_ABANDON && dy > Math.abs(dx)) {
+        rest();
+        return;
+      }
+      // Only forwards: dragging back past the edge would peel the screen off
+      // its own left side, which is not a thing this stack can show.
+      stack.style.setProperty("--screen-drag", `${Math.max(0, dx)}px`);
+    };
+    const onEnd = (event: TouchEvent) => {
+      if (!tracking) return;
+      const dx = event.changedTouches[0]
+        ? event.changedTouches[0].clientX - startX
+        : 0;
+      if (dx > EDGE_SWIPE_COMMIT) {
+        // The offset deliberately stays where the finger left it: the exit
+        // animation reads it as its starting point, so the screen carries on
+        // from the release instead of snapping back and then leaving.
+        release();
+        onBack();
+        return;
+      }
+      rest();
+    };
+    document.addEventListener("touchstart", onStart, { passive: true });
+    document.addEventListener("touchmove", onMove, { passive: true });
+    document.addEventListener("touchend", onEnd);
+    document.addEventListener("touchcancel", onEnd);
+    return () => {
+      document.removeEventListener("touchstart", onStart);
+      document.removeEventListener("touchmove", onMove);
+      document.removeEventListener("touchend", onEnd);
+      document.removeEventListener("touchcancel", onEnd);
+      // The class goes, the offset stays: this teardown runs on the pop that a
+      // committed drag just asked for, and the exit animation about to start
+      // is the one thing still reading that offset. Whatever it leaves behind
+      // is cleared when the animation ends.
+      release();
+    };
+  }, [enabled, onBack, stackRef]);
+}
+
 export function ITrackApp() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const nav = useNavigation();
@@ -2038,6 +2132,62 @@ export function ITrackApp() {
       ) ?? null
     );
   }, [detailCredentialId, workspace]);
+
+  // A pop is a navigation, so the route drops the detail the instant it
+  // happens — but the screen still has to leave the stage. Hold the departing
+  // credential for as long as its exit animation is playing.
+  //
+  // Worked out during render rather than in an effect on purpose: an effect
+  // would unmount the screen for a frame and put it straight back, so the exit
+  // would play on a freshly mounted element, which is a flash rather than a
+  // transition. This shape also means *every* pop animates — the back control,
+  // the edge gesture, the browser's own back button, the shell's hardware
+  // back — because it watches the route rather than the thing that moved it.
+  const [lastDetailCredential, setLastDetailCredential] =
+    useState<Credential | null>(null);
+  const [exitingDetail, setExitingDetail] = useState<Credential | null>(null);
+  if (detailCredential !== lastDetailCredential) {
+    setLastDetailCredential(detailCredential);
+    setExitingDetail(detailCredential ? null : lastDetailCredential);
+  }
+  const stagedDetail = detailCredential ?? exitingDetail;
+  const screenStackRef = useRef<HTMLDivElement | null>(null);
+  useEdgeSwipeBack(screenStackRef, Boolean(detailCredential), nav.pop);
+
+  const finishScreenExit = useCallback(
+    (event: AnimationEvent<HTMLDivElement>) => {
+      // Both screen animations end on this element and plenty of others end
+      // inside it; only the screen's own are this handler's business.
+      if (event.target !== event.currentTarget) return;
+      screenStackRef.current?.style.removeProperty("--screen-drag");
+      setExitingDetail(null);
+    },
+    [],
+  );
+
+  // Backstop. An exit that never reports its end — a browser that skips the
+  // animation outright, a tab hidden mid-pop — would otherwise leave the
+  // departing screen parked on top of the app for good.
+  useEffect(() => {
+    if (!exitingDetail) return;
+    const timeout = window.setTimeout(() => setExitingDetail(null), 700);
+    return () => window.clearTimeout(timeout);
+  }, [exitingDetail]);
+
+  // A pushed screen opens at its own top the way a native one does, and the
+  // screen it covered comes back to where it was left. Both share the document
+  // scroller, so this is the only place that memory can live.
+  const parkedScrollRef = useRef(0);
+  useEffect(() => {
+    if (detailCredentialId) {
+      parkedScrollRef.current = window.scrollY;
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      return;
+    }
+    const parked = parkedScrollRef.current;
+    parkedScrollRef.current = 0;
+    if (parked) window.scrollTo({ top: parked, left: 0, behavior: "auto" });
+  }, [detailCredentialId]);
 
   // Tapping a credential sets the selection and then pushes, but the URL is an
   // external system that also moves on its own: a cold deep link, the browser
@@ -3641,7 +3791,7 @@ export function ITrackApp() {
             </div>
           ) : null}
 
-          <div className="screen-stack">
+          <div className="screen-stack" ref={screenStackRef}>
             <div
               className={`screen screen-root${
                 detailCredential ? " screen-under" : ""
@@ -3787,10 +3937,15 @@ export function ITrackApp() {
                 />
               )}
             </div>
-            {detailCredential ? (
-              <div className="screen screen-pushed">
+            {stagedDetail ? (
+              <div
+                className={`screen screen-pushed${
+                  detailCredential ? "" : " screen-exiting"
+                }`}
+                onAnimationEnd={finishScreenExit}
+              >
                 <CredentialDetailScreen
-                  credential={detailCredential}
+                  credential={stagedDetail}
                   activities={workspace?.activities ?? []}
                   isOnline={isOnline}
                   onBack={nav.pop}

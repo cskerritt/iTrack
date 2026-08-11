@@ -84,6 +84,17 @@
   --press-ease: 180ms ease-out;
 
   /*
+   * SCREEN TRANSITIONS — see SCREEN STACK. The curve is the platform's push:
+   * most of the distance is covered before the eye catches up, then a long
+   * settle, so the screen reads as having been carried rather than moved. The
+   * pop is the shorter of the two because leaving needs no anticipation.
+   */
+  --screen-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --screen-push: 340ms;
+  --screen-pop: 300ms;
+  --screen-bleed: 12px;
+
+  /*
    * INVERSE SURFACES — the sidebar, hero, detail-header, toast and primary
    * button are painted in the brand green rather than on paper. They are the
    * one family that does not flip with the scheme: they are dark in both, and
@@ -2284,6 +2295,129 @@ a {
 
 .trust-strip strong {
   color: var(--ink);
+}
+
+/*
+ * SCREEN STACK — the push and the pop. Both screens are laid into the same
+ * grid cell so the arriving one travels across the one it covers, and the
+ * pushed screen paints --paper so nothing shows through it on the way.
+ *
+ * Neither screen leaves the flow. A credential detail runs several viewports
+ * tall and the document is the only scroller on this page, so a pushed screen
+ * taken out of flow would be clamped to the height of the list behind it and
+ * its bottom would be unreachable. That is also why only the horizontal axis
+ * is clipped — it is the only axis anything travels on.
+ *
+ * The bleed is what makes the clip usable. The stack reaches --screen-bleed
+ * into the page gutter on each side and the pushed screen reaches exactly as
+ * far, so the two boxes coincide: everything the stack can paint, the screen
+ * on top covers. Without it the parked screen shows as a strip of stray text
+ * down the gutter, and the back control's chevron — which hangs past the
+ * column to sit on its label's optical edge — gets shaved off by the clip.
+ *
+ * The screen underneath does not sit still while this happens. It parks a
+ * third of the way out, which is what tells the eye the two are stacked rather
+ * than swapped, and it is clamped to a viewport while parked so a long list
+ * cannot leave dead scroll below a short detail screen.
+ */
+.screen-stack {
+  display: grid;
+  margin-inline: calc(var(--screen-bleed) * -1);
+  padding-inline: var(--screen-bleed);
+  overflow-x: clip;
+  overflow-y: visible;
+}
+
+.screen-stack > .screen {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.screen-root {
+  transition:
+    transform var(--screen-push) var(--screen-ease),
+    opacity var(--screen-push) var(--screen-ease);
+}
+
+.screen-root.screen-under {
+  max-height: 100dvh;
+  overflow: hidden;
+  opacity: 0.92;
+  transform: translateX(calc(-28% + var(--screen-drag, 0px) * 0.28));
+}
+
+/*
+ * --screen-drag is the back gesture's offset, published on the stack so both
+ * screens read the same finger: the pushed one follows it outright, the one
+ * underneath at the same 28% ratio it was parked by. Unset — which is every
+ * moment no finger is down — the fallback leaves both at rest.
+ */
+.screen-pushed {
+  margin-inline: calc(var(--screen-bleed) * -1);
+  padding-inline: var(--screen-bleed);
+  background: var(--paper);
+  transform: translateX(var(--screen-drag, 0px));
+  transition: transform var(--screen-pop) var(--screen-ease);
+  animation: screen-in var(--screen-push) var(--screen-ease);
+  will-change: transform;
+}
+
+/*
+ * A screen on its way out stops answering. The pop has already happened as far
+ * as the URL and the app are concerned; a tap in those last few frames belongs
+ * to what is arriving, not to what is leaving.
+ */
+.screen-pushed.screen-exiting {
+  animation: screen-out var(--screen-pop) var(--screen-ease) forwards;
+  pointer-events: none;
+}
+
+/* A dragged screen is placed by the finger, not by a curve. */
+.screen-stack.screen-dragging .screen-root,
+.screen-stack.screen-dragging .screen-pushed {
+  transition: none;
+}
+
+@keyframes screen-in {
+  from {
+    transform: translateX(100%);
+  }
+
+  to {
+    transform: translateX(0);
+  }
+}
+
+/*
+ * The exit starts wherever the drag left the screen rather than at zero, so
+ * releasing the gesture past its threshold carries straight on instead of
+ * snapping back first and then leaving.
+ */
+@keyframes screen-out {
+  from {
+    transform: translateX(var(--screen-drag, 0px));
+  }
+
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/*
+ * The global reduced-motion block near the end of this file collapses every
+ * duration declared here, so there is no slide left to soften — what is left
+ * is the parked offset, which would otherwise show as a sideways jump in the
+ * frame before the swap.
+ *
+ * The pushed screen keeps its offset because that one is not choreography: it
+ * is the back gesture, and a screen that refuses to come with the finger reads
+ * as broken rather than as calm. It is zero whenever no finger is down.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .screen-root,
+  .screen-root.screen-under {
+    transform: none;
+  }
 }
 
 /*
