@@ -9,12 +9,12 @@
     <meta
       name="theme-color"
       media="(prefers-color-scheme: light)"
-      content="#163f36"
+      content="#f2f2f7"
     />
     <meta
       name="theme-color"
       media="(prefers-color-scheme: dark)"
-      content="#0d1917"
+      content="#0b0b0e"
     />
     <link rel="icon" href="/icon-192.png" />
     <title>iTrack — Offline</title>
@@ -24,43 +24,44 @@
         carries the app's tokens inline. Only the handful the page paints are
         kept, and each is the value globals.css gives it in that scheme, with
         two exceptions the app has no flat token for: --card is the app's card
-        at 0.92 so the haze behind it shows through, and --glow and --mark-ink
-        are this page's own two decorations. The text clears AA on the card in
-        both schemes — 13.1:1 / 10.0:1 for --ink, 5.7:1 / 8.4:1 for
-        --ink-muted, 5.3:1 / 7.5:1 for --ink-faint — as do the button label
-        (13.3:1 / 9.0:1) and the mark (12.3:1 / 6.1:1) on --ink-surface.
+        at 0.92 so the haze behind it shows through, and --glow is the app's
+        --page-glow already composited over --paper, because a gradient stop
+        here cannot carry an alpha of its own. The text clears AA on the card
+        in both schemes — 16.5:1 / 13.4:1 for --ink, 7.3:1 / 8.6:1 for
+        --ink-muted, 6.2:1 / 7.3:1 for --ink-faint — as do the button label
+        (16.3:1 / 13.8:1) and the mark (6.8:1 / 6.3:1) on --ink-surface.
       */
       :root {
         color-scheme: light dark;
         font-family:
-          ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
-          sans-serif;
-        --paper: #f6f4ee;
-        --glow: #fffdf7;
-        --card: rgba(255, 254, 250, 0.92);
-        --line: #dcded5;
-        --ink: #15352f;
-        --ink-muted: #566b64;
-        --ink-faint: #5e6f69;
-        --ink-surface: #15352f;
+          -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui,
+          "Segoe UI", Roboto, sans-serif;
+        --paper: #f2f2f7;
+        --glow: #e2e9f4;
+        --card: rgba(255, 255, 255, 0.92);
+        --line: #e3e3e8;
+        --ink: #1d1d21;
+        --ink-muted: #55555e;
+        --ink-faint: #5f5f68;
+        --ink-surface: #1f2024;
         --on-dark: #ffffff;
-        --mark-ink: #fff7d1;
-        --shadow: 0 24px 70px rgba(19, 53, 47, 0.12);
+        --mark-ink: #5dacff;
+        --shadow: 0 24px 70px rgba(47, 47, 51, 0.12);
         color: var(--ink);
         background: var(--paper);
       }
       @media (prefers-color-scheme: dark) {
         :root {
-          --paper: #0d1917;
-          --glow: #1f423b;
-          --card: rgba(27, 45, 42, 0.92);
-          --line: #364b47;
-          --ink: #cedcd8;
-          --ink-muted: #bdcbc7;
-          --ink-faint: #b0c0bb;
-          --ink-surface: #254b44;
-          --on-dark: #f4f7f6;
-          --mark-ink: #e8cb86;
+          --paper: #0b0b0e;
+          --glow: #16283c;
+          --card: rgba(28, 28, 30, 0.92);
+          --line: #2c2c30;
+          --ink: #e5e5ea;
+          --ink-muted: #b8b8c1;
+          --ink-faint: #aaaab3;
+          --ink-surface: #26262b;
+          --on-dark: #f5f5f7;
+          --mark-ink: #5dacff;
           --shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
         }
       }
