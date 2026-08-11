@@ -61,6 +61,9 @@ import { isExpandedCertificationRuleSetId } from "./lib/expandedCertifications";
 import {
   buildPath,
   parseRoute,
+  readNavEntry,
+  routeAt,
+  withNavEntry,
   type DetailRoute,
   type Route,
   type TabName,
@@ -1256,15 +1259,32 @@ const WEEKLY_GOAL_ACTION_KEY = "weeklyGoal";
 
 const HOME_ROUTE: Route = { tab: "home", detail: null };
 
+// What each tab is called, in one place: the two nav bars label their buttons
+// from it and a pushed screen names the screen it returns to from it.
+const TAB_LABELS: Record<TabName, string> = {
+  home: "Home",
+  credentials: "Credentials",
+  history: "History",
+  profile: "Profile",
+};
+
 /**
  * The app's navigation stack, backed by real browser history.
  *
  * Tabs are roots and switching between them *replaces* the entry, so the
  * hardware/edge-swipe back gesture never walks backwards through a trail of
  * tab taps — it leaves the app, which is what iOS does. Detail screens push,
- * so back pops them. `pushDepth` tracks only the entries this app created:
- * without it `pop()` on a cold deep link would call `history.back()` into
- * whatever page the user was on before iTrack.
+ * so back pops them. Depth tracks only the entries this app created: without
+ * it `pop()` on a cold deep link would call `history.back()` into whatever
+ * page the user was on before iTrack.
+ *
+ * A tab switch taken *from* a pushed screen therefore has two jobs, not one:
+ * it shows the new tab, and it unwinds the entries the app pushed. Skipping
+ * the unwind is what would leave an orphan behind — the entry the push was
+ * made from, still sitting under the tab root the switch wrote — and back
+ * would then return to the tab the user just left instead of leaving the app.
+ * The unwind is a `history.go`, so it lands a beat later; the tab is shown
+ * immediately and `pendingTab` finishes the job when the entry arrives.
  */
 function useNavigation() {
   // Deliberately *not* seeded from `window.location` — the server renders this
@@ -1273,38 +1293,120 @@ function useNavigation() {
   // the server HTML and throw the hydrated tree away; the mount effect below
   // adopts the real URL one render later instead.
   const [route, setRoute] = useState<Route>(HOME_ROUTE);
-  const pushDepth = useRef(0);
+  // The same route, readable during an event rather than a render, so nothing
+  // here has to reach for it through a state updater — a `pushState` inside
+  // one would fire twice under StrictMode's double invocation.
+  const routeRef = useRef<Route>(HOME_ROUTE);
+  const depthRef = useRef(0);
+  const pendingTabRef = useRef<TabName | null>(null);
+
+  const applyRoute = useCallback((next: Route) => {
+    routeRef.current = next;
+    setRoute(next);
+  }, []);
+
+  const commitTab = useCallback(
+    (tab: TabName) => {
+      const next: Route = { tab, detail: null };
+      depthRef.current = 0;
+      window.history.replaceState(
+        withNavEntry(window.history.state, { depth: 0, tab }),
+        "",
+        buildPath(next),
+      );
+      applyRoute(next);
+    },
+    [applyRoute],
+  );
+
   useEffect(() => {
-    const syncFromLocation = () =>
-      setRoute(parseRoute(window.location.pathname));
-    syncFromLocation();
-    const onPop = () => {
-      pushDepth.current = Math.max(0, pushDepth.current - 1);
-      syncFromLocation();
+    const adopt = (state: unknown) => {
+      const entry = readNavEntry(state);
+      depthRef.current = entry?.depth ?? 0;
+      applyRoute(routeAt(window.location.pathname, entry));
+    };
+    adopt(window.history.state);
+    const onPop = (event: PopStateEvent) => {
+      const pending = pendingTabRef.current;
+      if (pending !== null) {
+        pendingTabRef.current = null;
+        commitTab(pending);
+        return;
+      }
+      adopt(event.state);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, []);
-  const setTab = useCallback((tab: TabName) => {
-    const next: Route = { tab, detail: null };
-    window.history.replaceState(window.history.state, "", buildPath(next));
-    pushDepth.current = 0;
-    setRoute(next);
-  }, []);
-  const push = useCallback((detail: DetailRoute) => {
-    setRoute((current) => {
-      const next: Route = { tab: current.tab, detail };
-      window.history.pushState(null, "", buildPath(next));
-      pushDepth.current += 1;
-      return next;
-    });
-  }, []);
+  }, [applyRoute, commitTab]);
+
+  const setTab = useCallback(
+    (tab: TabName) => {
+      if (pendingTabRef.current !== null) {
+        // An unwind is already on its way back; a second `go` would travel
+        // past the tab root and out of the app. Re-aim the one in flight.
+        pendingTabRef.current = tab;
+        applyRoute({ tab, detail: null });
+        return;
+      }
+      if (depthRef.current > 0) {
+        pendingTabRef.current = tab;
+        // The tab is shown now and the history is squared away on the popstate
+        // this asks for; until then the URL still names the screen being left.
+        applyRoute({ tab, detail: null });
+        window.history.go(-depthRef.current);
+        return;
+      }
+      commitTab(tab);
+    },
+    [applyRoute, commitTab],
+  );
+
+  const push = useCallback(
+    (detail: DetailRoute) => {
+      const tab = routeRef.current.tab;
+      const depth = depthRef.current + 1;
+      depthRef.current = depth;
+      window.history.pushState(
+        withNavEntry(null, { depth, tab }),
+        "",
+        buildPath({ tab, detail }),
+      );
+      applyRoute({ tab, detail });
+    },
+    [applyRoute],
+  );
+
+  // The screen stays where it is in the stack and swaps which credential it is
+  // showing — what an accepted renewal does, having just replaced the cycle
+  // the screen was opened on with its successor.
+  const replaceDetail = useCallback(
+    (detail: DetailRoute) => {
+      const { tab, detail: current } = routeRef.current;
+      if (!current) return;
+      window.history.replaceState(
+        withNavEntry(window.history.state, {
+          depth: depthRef.current,
+          tab,
+        }),
+        "",
+        buildPath({ tab, detail }),
+      );
+      applyRoute({ tab, detail });
+    },
+    [applyRoute],
+  );
+
   const pop = useCallback(() => {
-    if (pushDepth.current > 0) window.history.back();
-    else setTab(parseRoute(window.location.pathname).tab);
-  }, [setTab]);
+    if (depthRef.current > 0) {
+      window.history.back();
+      return;
+    }
+    // Nothing of ours underneath — a cold deep link. Drop to the tab root
+    // rather than calling `back()` out of the app entirely.
+    commitTab(routeRef.current.tab);
+  }, [commitTab]);
   const popToRoot = pop; // single-level stack today; alias kept for tab re-tap
-  return { route, setTab, push, pop, popToRoot };
+  return { route, setTab, push, replaceDetail, pop, popToRoot };
 }
 
 // The left-hand band the back gesture may start in, how far it then has to
@@ -1439,9 +1541,22 @@ function useSheetDragDismiss(
     dismissRef.current = onDismiss;
   }, [onDismiss]);
 
+  // The gesture exists only at the width where the dialog *is* a bottom sheet,
+  // and that width can change under an open sheet — a phone rotates. Tracked
+  // live rather than read once at mount, so the gesture and the grabber that
+  // advertises it are never out of step with each other.
+  const [isSheet, setIsSheet] = useState(false);
+  useEffect(() => {
+    const media = window.matchMedia(SHEET_MEDIA);
+    const sync = () => setIsSheet(media.matches);
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
+
   useEffect(() => {
     const card = cardRef.current;
-    if (!card || !window.matchMedia(SHEET_MEDIA).matches) return;
+    if (!card || !isSheet) return;
     let startX = 0;
     let startY = 0;
     let tracking = false;
@@ -1484,8 +1599,16 @@ function useSheetDragDismiss(
         // The offset stays where the finger left it deliberately: the sheet
         // unmounts on the next render, so clearing it here would paint one
         // frame of the sheet snapping back up before it disappeared.
+        //
+        // Unless the owner refuses to close — the log sheet holds itself open
+        // when a draft cannot be saved — in which case the sheet is still
+        // here a frame later and has to come back up, or it would sit parked
+        // at the drag offset with its controls pushed off-screen.
         release();
         dismissRef.current();
+        window.requestAnimationFrame(() => {
+          if (card.isConnected) card.style.removeProperty("--sheet-drag");
+        });
         return;
       }
       rest();
@@ -1499,8 +1622,11 @@ function useSheetDragDismiss(
       card.removeEventListener("touchmove", onMove);
       card.removeEventListener("touchend", onEnd);
       card.removeEventListener("touchcancel", onEnd);
+      // A sheet that stops being a sheet mid-drag — the phone rotated — keeps
+      // neither the drag class nor the offset it was placed by.
+      rest();
     };
-  }, [cardRef]);
+  }, [cardRef, isSheet]);
 }
 
 /*
@@ -1678,69 +1804,91 @@ export function ITrackApp() {
     }
   }, [activityDraft, draftStorageKey, selectedCredentialId]);
 
-  const openActivityEntry = useCallback(() => {
-    hapticTap();
-    // A stale message from an earlier attempt must not greet a fresh sheet.
-    setError("");
-    activityDraftPersistenceGeneration.current += 1;
-    activityDraftPersistenceEnabled.current = true;
-    // Every credential choice made inside this sheet — a restored draft's
-    // credential or one picked from "Apply to credential" — targets this entry
-    // only. The dashboard's own credential is captured here and put back when
-    // the sheet closes without saving, so Today never re-points silently.
-    if (selectionBeforeActivityEntry.current === null) {
-      selectionBeforeActivityEntry.current = selectedCredentialId;
-    }
-    let restored = false;
-    if (draftStorageKey && workspace) {
-      try {
-        const serialized = window.localStorage.getItem(draftStorageKey);
-        const saved = parseActivityDraft(serialized);
-        const credential = workspace.credentials.find(
-          (candidate) =>
-            candidate.id === saved?.credentialId &&
-            candidate.status !== "renewed",
-        );
-        if (saved) {
-          setActivityDraft({
-            title: saved.title,
-            completionDate: saved.completionDate,
-            totalUnits: saved.totalUnits,
-            allocatedUnits: saved.allocatedUnits || saved.totalUnits,
-            provider: saved.provider,
-          });
-          // The restored draft only re-targets the credential for this form;
-          // the app-wide selection captured above is restored when the form
-          // closes unsaved.
-          if (credential) {
-            setSelectedCredentialId(credential.id);
-            setActivityDraftCredentialWarning("");
-          } else {
-            setSelectedCredentialId("");
-            setActivityDraftCredentialWarning(
-              "The credential originally linked to this draft is no longer active. Choose an active credential before saving.",
-            );
-          }
-          setActivityEvidenceFile(null);
-          setActivityScan({
-            phase: "idle",
-            label: "",
-            progress: 0,
-            suggestions: {},
-          });
-          setActivityDraftRestored(true);
-          setActivityDraftPersistenceStatus("saved");
-          restored = true;
-        } else if (serialized) {
-          window.localStorage.removeItem(draftStorageKey);
-        }
-      } catch {
-        // Draft recovery is a convenience; storage restrictions must not block entry.
+  const openActivityEntryFor = useCallback(
+    (preselectCredentialId: string) => {
+      hapticTap();
+      // A stale message from an earlier attempt must not greet a fresh sheet.
+      setError("");
+      activityDraftPersistenceGeneration.current += 1;
+      activityDraftPersistenceEnabled.current = true;
+      // Every credential choice made inside this sheet — a restored draft's
+      // credential or one picked from "Apply to credential" — targets this entry
+      // only. The dashboard's own credential is captured here and put back when
+      // the sheet closes without saving, so Today never re-points silently.
+      if (selectionBeforeActivityEntry.current === null) {
+        selectionBeforeActivityEntry.current = selectedCredentialId;
       }
-    }
-    if (!restored) resetActivityEntry();
-    setActivityOpen(true);
-  }, [draftStorageKey, resetActivityEntry, selectedCredentialId, workspace]);
+      // A shortcut that names a credential — Home's "Log credits" card — is the
+      // user pointing at one explicitly, so it outranks the credential a
+      // restored draft was aimed at. The draft's typed fields are still put
+      // back; only where they would land changes.
+      const preselected =
+        workspace?.credentials.find(
+          (candidate) =>
+            candidate.id === preselectCredentialId &&
+            candidate.status !== "renewed",
+        ) ?? null;
+      if (preselected) setSelectedCredentialId(preselected.id);
+      let restored = false;
+      if (draftStorageKey && workspace) {
+        try {
+          const serialized = window.localStorage.getItem(draftStorageKey);
+          const saved = parseActivityDraft(serialized);
+          const credential = workspace.credentials.find(
+            (candidate) =>
+              candidate.id === saved?.credentialId &&
+              candidate.status !== "renewed",
+          );
+          if (saved) {
+            setActivityDraft({
+              title: saved.title,
+              completionDate: saved.completionDate,
+              totalUnits: saved.totalUnits,
+              allocatedUnits: saved.allocatedUnits || saved.totalUnits,
+              provider: saved.provider,
+            });
+            // The restored draft only re-targets the credential for this form;
+            // the app-wide selection captured above is restored when the form
+            // closes unsaved.
+            const target = preselected ?? credential;
+            if (target) {
+              setSelectedCredentialId(target.id);
+              setActivityDraftCredentialWarning("");
+            } else {
+              setSelectedCredentialId("");
+              setActivityDraftCredentialWarning(
+                "The credential originally linked to this draft is no longer active. Choose an active credential before saving.",
+              );
+            }
+            setActivityEvidenceFile(null);
+            setActivityScan({
+              phase: "idle",
+              label: "",
+              progress: 0,
+              suggestions: {},
+            });
+            setActivityDraftRestored(true);
+            setActivityDraftPersistenceStatus("saved");
+            restored = true;
+          } else if (serialized) {
+            window.localStorage.removeItem(draftStorageKey);
+          }
+        } catch {
+          // Draft recovery is a convenience; storage restrictions must not block entry.
+        }
+      }
+      if (!restored) resetActivityEntry();
+      setActivityOpen(true);
+    },
+    [draftStorageKey, resetActivityEntry, selectedCredentialId, workspace],
+  );
+
+  // The plain "log something" entry point. Kept separate from the shortcut
+  // above because it is handed straight to `onClick`, which would otherwise
+  // call it with a mouse event where the credential id belongs.
+  const openActivityEntry = useCallback(() => {
+    openActivityEntryFor("");
+  }, [openActivityEntryFor]);
 
   const restoreSelectionBeforeActivityEntry = useCallback(() => {
     const previousSelection = selectionBeforeActivityEntry.current;
@@ -2306,17 +2454,24 @@ export function ITrackApp() {
   // A pushed screen opens at its own top the way a native one does, and the
   // screen it covered comes back to where it was left. Both share the document
   // scroller, so this is the only place that memory can live.
-  const parkedScrollRef = useRef(0);
+  //
+  // The offset is remembered with the tab it was taken from, because leaving a
+  // pushed screen is not always a pop: a tab tap also clears the detail, and
+  // dropping the History tab 800px down the Credentials list it never showed
+  // is worse than any scroll restoration is worth.
+  const parkedScrollRef = useRef<{ tab: TabName; y: number } | null>(null);
   useEffect(() => {
     if (detailCredentialId) {
-      parkedScrollRef.current = window.scrollY;
+      parkedScrollRef.current = { tab: view, y: window.scrollY };
       window.scrollTo({ top: 0, left: 0, behavior: "auto" });
       return;
     }
     const parked = parkedScrollRef.current;
-    parkedScrollRef.current = 0;
-    if (parked) window.scrollTo({ top: parked, left: 0, behavior: "auto" });
-  }, [detailCredentialId]);
+    parkedScrollRef.current = null;
+    if (parked && parked.tab === view && parked.y) {
+      window.scrollTo({ top: parked.y, left: 0, behavior: "auto" });
+    }
+  }, [detailCredentialId, view]);
 
   // Tapping a credential sets the selection and then pushes, but the URL is an
   // external system that also moves on its own: a cold deep link, the browser
@@ -3439,7 +3594,16 @@ export function ITrackApp() {
       // feeling, so it gets the firmer of the two taps.
       hapticTap("medium");
       setAcceptanceOpen(false);
-      if (result.id) setSelectedCredentialId(result.id);
+      if (result.id) {
+        setSelectedCredentialId(result.id);
+        // Accepting a renewal ends the cycle the screen was opened on and
+        // starts its successor. A pushed detail screen is addressed by URL, so
+        // it has to be re-pointed at the new cycle or it would sit there
+        // showing the finished one while everything else had moved on.
+        if (nav.route.detail) {
+          nav.replaceDetail({ kind: "credential", id: result.id });
+        }
+      }
     }
   }
 
@@ -3896,10 +4060,14 @@ export function ITrackApp() {
 
   /*
    * The two shortcuts Home's cards take. Both re-point the app at the
-   * credential first, because the pushed screen, the log sheet and the
-   * submission actions all read that one selection; the log sheet additionally
-   * remembers what the selection was and puts it back if the sheet closes
-   * without saving, so a shortcut taken and abandoned leaves no trace.
+   * credential, because the pushed screen, the log sheet and the submission
+   * actions all read that one selection; the log sheet additionally remembers
+   * what the selection was and puts it back if the sheet closes without
+   * saving, so a shortcut taken and abandoned leaves no trace.
+   *
+   * The log shortcut hands the credential *to* the sheet rather than selecting
+   * it first: a restored draft picks its own credential as it opens, and the
+   * later write would otherwise land on top of this one.
    */
   function openCredentialDetail(id: string) {
     setSelectedCredentialId(id);
@@ -3907,8 +4075,7 @@ export function ITrackApp() {
   }
 
   function logCreditsFor(id: string) {
-    setSelectedCredentialId(id);
-    openActivityEntry();
+    openActivityEntryFor(id);
   }
 
   return (
@@ -4118,6 +4285,7 @@ export function ITrackApp() {
                   credential={stagedDetail}
                   activities={workspace?.activities ?? []}
                   isOnline={isOnline}
+                  backLabel={TAB_LABELS[view]}
                   onBack={nav.pop}
                   onSubmit={openSubmission}
                   onAccept={openAcceptance}
@@ -6541,25 +6709,25 @@ function DesktopSidebar({
       <nav aria-label="Primary navigation">
         <NavButton
           active={view === "home"}
-          label="Home"
+          label={TAB_LABELS.home}
           icon="home"
           onClick={() => onView("home")}
         />
         <NavButton
           active={view === "credentials"}
-          label="Credentials"
+          label={TAB_LABELS.credentials}
           icon="layoutGrid"
           onClick={() => onView("credentials")}
         />
         <NavButton
           active={view === "history"}
-          label="History"
+          label={TAB_LABELS.history}
           icon="listRows"
           onClick={() => onView("history")}
         />
         <NavButton
           active={view === "profile"}
-          label="Profile"
+          label={TAB_LABELS.profile}
           icon="userCircle"
           onClick={() => onView("profile")}
         />
@@ -6595,13 +6763,13 @@ function MobileNavigation({
     <nav className="mobile-nav" aria-label="Primary navigation">
       <NavButton
         active={view === "home"}
-        label="Home"
+        label={TAB_LABELS.home}
         icon="home"
         onClick={() => onView("home")}
       />
       <NavButton
         active={view === "credentials"}
-        label="Credentials"
+        label={TAB_LABELS.credentials}
         icon="layoutGrid"
         onClick={() => onView("credentials")}
       />
@@ -6620,13 +6788,13 @@ function MobileNavigation({
       </button>
       <NavButton
         active={view === "history"}
-        label="History"
+        label={TAB_LABELS.history}
         icon="listRows"
         onClick={() => onView("history")}
       />
       <NavButton
         active={view === "profile"}
-        label="Profile"
+        label={TAB_LABELS.profile}
         icon="userCircle"
         onClick={() => onView("profile")}
       />
@@ -7771,6 +7939,7 @@ function CredentialDetailScreen({
   credential,
   activities,
   isOnline,
+  backLabel,
   onBack,
   onSubmit,
   onAccept,
@@ -7784,6 +7953,10 @@ function CredentialDetailScreen({
   credential: Credential;
   activities: Activity[];
   isOnline: boolean;
+  // The tab this screen was pushed from, which is not always the Credentials
+  // list: Home opens credentials too, and the control has to name the screen
+  // the user will actually land back on.
+  backLabel: string;
   onBack: () => void;
   onSubmit: () => void;
   onAccept: () => void;
@@ -7841,7 +8014,7 @@ function CredentialDetailScreen({
       <header className="push-header">
         <button type="button" className="push-back" onClick={onBack}>
           <Icon name="chevronLeft" size={22} />
-          <span>Credentials</span>
+          <span>{backLabel}</span>
         </button>
         <h1 className="push-title">{credential.credentialName}</h1>
       </header>

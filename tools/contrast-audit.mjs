@@ -32,9 +32,10 @@
  *   objects (mark-, edge-, track-)  3.0:1
  *   surfaces (ink-surface*)         1.15:1   — an elevation step, not contrast
  *
- * A trailing "(large …)" or "(glyph …)" drops that one claim to the 3:1
- * object floor: large text and a tick drawn inside a fill are both non-text
- * under WCAG, and both cases are rare enough to be worth naming at the site.
+ * A trailing "(large …)", "(glyph …)" or "(mark …)" drops that one claim to
+ * the 3:1 object floor: large text, a tick drawn inside a fill and a mark that
+ * carries its value in its fill (a bar, a ring) are all non-text under WCAG,
+ * and each case is rare enough to be worth naming at the site.
  */
 
 import { readFileSync } from "node:fs";
@@ -191,7 +192,7 @@ function claimsIn([a, b], scheme) {
 
     let nth = 0;
     for (const m of line.matchAll(
-      /([\d.]+):1\s+(?:(--[a-z0-9-]+)\s+)?(?:on|over)\s+((?:--[a-z0-9-]+(?:@[\d.]+)?(?:\s+over\s+--[a-z0-9-]+)?(?:\/--[a-z0-9-]+)?)|the fill|the amber card)(\s*\((?:large|glyph))?/gi,
+      /([\d.]+):1\s+(?:(--[a-z0-9-]+)\s+)?(?:on|over)\s+((?:--[a-z0-9-]+(?:@[\d.]+)?(?:\s+over\s+--[a-z0-9-]+)?(?:\/--[a-z0-9-]+)?)|the fill|the amber card)(\s*\((?:large|glyph|mark))?/gi,
     )) {
       const subject = m[2] ?? owner;
       const nthOnLine = nth++;

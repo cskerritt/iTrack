@@ -727,14 +727,81 @@ test("iTrack product contract", async (t) => {
     );
 
     // Every pushed screen carries the iOS header: a back control labelled
-    // with the screen it returns to, then this screen's own title.
+    // with the screen it returns to, then this screen's own title. The label
+    // is the tab the push was made *from* — Home opens credentials too, so a
+    // control hardcoded to "Credentials" would name a screen the user is not
+    // going back to.
     assert.match(
       clientSource,
-      /className="push-header"[\s\S]{0,400}?className="push-back"[\s\S]{0,240}?name="chevronLeft"[\s\S]{0,240}?<span>Credentials<\/span>[\s\S]{0,240}?className="push-title"/,
+      /className="push-header"[\s\S]{0,400}?className="push-back"[\s\S]{0,240}?name="chevronLeft"[\s\S]{0,240}?<span>\{backLabel\}<\/span>[\s\S]{0,240}?className="push-title"/,
     );
+    assert.match(clientSource, /backLabel=\{TAB_LABELS\[view\]\}/);
     assert.match(stylesSource, /\.push-header \{/);
     assert.match(stylesSource, /\.push-back \{/);
     assert.match(stylesSource, /\.push-title \{/);
+  });
+
+  await t.test("leaves no history entry the user cannot get out of", async () => {
+    const clientSource = await readFile(
+      new URL("../app/ITrackApp.tsx", import.meta.url),
+      "utf8",
+    );
+
+    // Depth is read off the entry the browser landed on, never counted down
+    // per popstate: popstate fires on *forward* too, and a counter would then
+    // under-report and turn the next pop into a replace, destroying the
+    // pushed entry instead of leaving it.
+    assert.match(
+      clientSource,
+      /const onPop = \(event: PopStateEvent\)[\s\S]{0,400}?adopt\(event\.state\)/,
+    );
+    assert.match(clientSource, /readNavEntry\(state\)[\s\S]{0,120}?depthRef\.current = entry\?\.depth \?\? 0/);
+    assert.doesNotMatch(clientSource, /pushDepth/);
+
+    // Switching tabs from a pushed screen unwinds what the app pushed. Without
+    // the unwind the entry the push was made from is stranded under the tab
+    // root the switch writes, and back walks into the tab the user just left
+    // instead of leaving the app.
+    assert.match(
+      clientSource,
+      /pendingTabRef\.current = tab;[\s\S]{0,300}?window\.history\.go\(-depthRef\.current\)/,
+    );
+    assert.match(
+      clientSource,
+      /const pending = pendingTabRef\.current;[\s\S]{0,200}?commitTab\(pending\)/,
+    );
+
+    // Every entry the app writes is stamped, so a refresh or a forward press
+    // resolves to the same screen and the same tab it was left on.
+    assert.match(clientSource, /pushState\(\s*withNavEntry\(/);
+    assert.match(clientSource, /replaceState\(\s*withNavEntry\(/);
+    assert.match(clientSource, /routeAt\(window\.location\.pathname, entry\)/);
+
+    // Accepting a renewal replaces the cycle the pushed screen was opened on,
+    // so the screen is re-pointed at its successor rather than left showing
+    // the finished one.
+    assert.match(
+      clientSource,
+      /nav\.replaceDetail\(\{ kind: "credential", id: result\.id \}\)/,
+    );
+
+    // Leaving a pushed screen is not always a pop — a tab tap clears the
+    // detail too — so the parked scroll offset is only restored to the tab it
+    // was taken from.
+    assert.match(
+      clientSource,
+      /parkedScrollRef\.current = \{ tab: view, y: window\.scrollY \}/,
+    );
+    assert.match(clientSource, /parked\.tab === view/);
+
+    // Home's "Log credits" shortcut hands its credential to the sheet, which
+    // applies it *after* a restored draft has chosen its own — otherwise the
+    // draft's credential would win and the credits would land on it.
+    assert.match(
+      clientSource,
+      /function logCreditsFor\(id: string\) \{\s*openActivityEntryFor\(id\);/,
+    );
+    assert.match(clientSource, /const target = preselected \?\? credential;/);
   });
 
   await t.test("slides screens in and out and follows the back gesture", async () => {
@@ -915,7 +982,7 @@ test("iTrack product contract", async (t) => {
     );
     assert.match(
       clientSource,
-      /const openActivityEntry = useCallback\(\(\) => \{[\s\S]{0,200}?hapticTap\(\);/,
+      /const openActivityEntryFor = useCallback\(\n\s*\(preselectCredentialId: string\) => \{[\s\S]{0,200}?hapticTap\(\);/,
     );
     assert.match(
       clientSource,
@@ -946,14 +1013,17 @@ test("iTrack product contract", async (t) => {
     );
     // One implementation of "open this credential" and one of "log against
     // this credential", shared by Home's cards and the credential list, both
-    // re-pointing the app's selection before they navigate.
+    // re-pointing the app at the credential. The log shortcut hands it to the
+    // sheet rather than selecting it first: the sheet restores any saved draft
+    // as it opens and picks that draft's credential, so a selection written
+    // beforehand would be overwritten by it.
     assert.match(
       clientSource,
       /function openCredentialDetail\(id: string\) \{\n    setSelectedCredentialId\(id\);\n    nav\.push\(\{ kind: "credential", id \}\);\n  \}/,
     );
     assert.match(
       clientSource,
-      /function logCreditsFor\(id: string\) \{\n    setSelectedCredentialId\(id\);\n    openActivityEntry\(\);\n  \}/,
+      /function logCreditsFor\(id: string\) \{\n    openActivityEntryFor\(id\);\n  \}/,
     );
     assert.match(clientSource, /onOpenCredential=\{openCredentialDetail\}/);
     assert.match(clientSource, /onLogCreditsFor=\{logCreditsFor\}/);
@@ -7665,11 +7735,12 @@ export {
         /const activityCredential =[\s\S]*?selectedCredentialId,[\s\S]*?\?\? null/,
       );
       // Opening the sheet always captures the dashboard's credential, so a
-      // credential picked inside the sheet cannot leak into the app-wide
-      // selection when the sheet closes without saving.
+      // credential picked inside the sheet — or handed to it by a Home
+      // shortcut — cannot leak into the app-wide selection when the sheet
+      // closes without saving.
       assert.match(
         clientSource,
-        /const openActivityEntry = useCallback\(\(\) => \{[\s\S]*?if \(selectionBeforeActivityEntry\.current === null\) \{\s*selectionBeforeActivityEntry\.current = selectedCredentialId;\s*\}[\s\S]*?setActivityOpen\(true\)/,
+        /const openActivityEntryFor = useCallback\([\s\S]*?if \(selectionBeforeActivityEntry\.current === null\) \{\s*selectionBeforeActivityEntry\.current = selectedCredentialId;\s*\}[\s\S]*?setActivityOpen\(true\)/,
       );
       assert.match(
         clientSource,
@@ -21818,6 +21889,28 @@ export {
       assert.deepEqual(navigations, []);
       assert.deepEqual(clientMessages, []);
       assert.equal(focusCount, 1);
+
+      // The app writes real URLs (app/lib/navigation.ts), so the window that
+      // is already open is hardly ever sitting at "/": switching tabs replaces
+      // the entry with /history, opening a credential pushes /credentials/<id>.
+      // Every one of those still has to be recognised as *the app*, or the tap
+      // would open a second copy beside the running one — `openWindow` throws
+      // in this harness precisely so that regression cannot pass.
+      for (const openAt of [
+        "https://itrack.example/credentials",
+        "https://itrack.example/credentials/cred-1",
+        "https://itrack.example/history",
+        "https://itrack.example/profile",
+      ]) {
+        appClient.url = openAt;
+        navigations.length = 0;
+        clientMessages.length = 0;
+        focusCount = 0;
+        await clickNotification(validClickPath);
+        assert.deepEqual(navigations, [validClickPath], openAt);
+        assert.equal(focusCount, 1, openAt);
+      }
+      appClient.url = "https://itrack.example/";
     },
   );
 

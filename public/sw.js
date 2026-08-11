@@ -132,6 +132,24 @@ function safeLaunchTarget(value) {
   return `/?${search.toString()}`;
 }
 
+// Every path the app itself runs at. The app writes real URLs now — a tab
+// switch replaces the entry with /credentials, /history or /profile, and
+// opening a credential pushes /credentials/<id> — so an open window is almost
+// never sitting at "/". Matching only "/" is what made a notification tap open
+// a *second* copy of the app beside the one already running.
+const APP_ROOT_PATHS = new Set([
+  "/",
+  "/credentials",
+  "/history",
+  "/profile",
+]);
+
+function isAppClientPath(pathname) {
+  return (
+    APP_ROOT_PATHS.has(pathname) || pathname.startsWith("/credentials/")
+  );
+}
+
 function safeNotificationTag(value) {
   // Matches the server's load-bearing push topic, which predates the iTrack
   // product name; both sides must keep the same historical string.
@@ -183,7 +201,7 @@ self.addEventListener("notificationclick", (event) => {
             const clientUrl = new URL(client.url);
             return (
               clientUrl.origin === self.location.origin &&
-              clientUrl.pathname === "/"
+              isAppClientPath(clientUrl.pathname)
             );
           } catch {
             return false;

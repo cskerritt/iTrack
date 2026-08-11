@@ -140,11 +140,20 @@
    *
    * --accent-bright is the accent as it reads ON one of these surfaces. The
    * flat accent is a 4.0:1 blue on graphite, under the floor for the kickers
-   * and pill labels that use it, so those sites take this one instead:
+   * and pill labels that use it, so those sites take this one instead. The
+   * three marks that carry a value in their fill alone — the readiness ring's
+   * arc, the credits bar's filled part, the status dot — take it too: each is
+   * read against a white veil over this same graphite, and the flat accent is
+   * 2.5–3.0:1 against those troughs, under the 3:1 mark floor.
    *   --accent-bright  6.8:1 on --ink-surface
    *                    4.6:1 on --accent-rgb@0.17 over --ink-surface — the
    *                    brightest the hero sheen gets under a kicker, and the
    *                    floor that sets this value
+   *                    4.26:1 on --veil-rgb@0.1495 over --ink-surface (mark —
+   *                    the ring's unfilled arc, a tenth-white over the
+   *                    readiness panel's own twentieth; the palest trough any
+   *                    of the three is read against, and so the one that
+   *                    speaks for all of them)
    *   --on-dark        16.3:1 on --ink-surface
    *   --on-accent      5.0:1 on --accent-control
    *                    4.0:1 on --accent (large text only — the 23px brand
@@ -323,6 +332,16 @@
    * the accent moves.
    */
   --page-glow: rgba(188, 212, 238, 0.3);
+  /*
+   * The page's ground, as a whole: the haze *and* the paper under it. Held as
+   * one value because a second surface has to paint it — a pushed screen is
+   * opaque, since the screen it covers is still in the same grid cell — and
+   * flat --paper there would cover part of the haze with a straight edge. The
+   * two layers are named once so they cannot drift apart.
+   */
+  --page-backdrop:
+    radial-gradient(circle at 84% -20%, var(--page-glow), transparent 34%),
+    var(--paper);
   --scrim: rgba(31, 31, 35, 0.57);
   --tint-accent: rgba(26, 100, 180, 0.12);
   --ring-accent: rgba(51, 132, 219, 0.18);
@@ -414,6 +433,9 @@
      *   --on-dark         13.8:1 on --ink-surface
      *   --accent-bright   6.3:1 on --ink-surface
      *                     4.7:1 on --accent-rgb@0.17 over --ink-surface
+     *                     3.91:1 on --veil-rgb@0.1495 over --ink-surface (mark
+     *                     — the readiness ring's unfilled arc; see the light
+     *                     block for why this one stands for all three)
      *   --on-accent       4.8:1 on --accent-control
      *                     3.6:1 on --accent (large text only — see the light
      *                     block; the brand mark is the only site)
@@ -603,9 +625,7 @@ html {
 
 body {
   margin: 0;
-  background:
-    radial-gradient(circle at 84% -20%, var(--page-glow), transparent 34%),
-    var(--paper);
+  background: var(--page-backdrop);
   color: var(--ink);
   font-family: var(--font-ui);
   font-size: var(--text-md);
@@ -1065,7 +1085,7 @@ a {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--accent-bright);
   box-shadow: 0 0 0 4px rgb(var(--accent-rgb) / 0.12);
 }
 
@@ -1169,7 +1189,7 @@ a {
 }
 
 .progress-track-light > span {
-  background: var(--accent);
+  background: var(--accent-bright);
 }
 
 .readiness-panel {
@@ -1195,7 +1215,7 @@ a {
   margin: 14px 0;
   border-radius: 50%;
   background: conic-gradient(
-    var(--accent) calc(var(--score) * 1%),
+    var(--accent-bright) calc(var(--score) * 1%),
     rgb(var(--veil-rgb) / 0.1) 0
   );
 }
@@ -2433,7 +2453,9 @@ a {
 /*
  * SCREEN STACK — the push and the pop. Both screens are laid into the same
  * grid cell so the arriving one travels across the one it covers, and the
- * pushed screen paints --paper so nothing shows through it on the way.
+ * pushed screen paints the page's own ground — --page-backdrop, haze and all,
+ * not flat paper — so nothing shows through it on the way and nothing shows a
+ * seam where it ends.
  *
  * Neither screen leaves the flow. A credential detail runs several viewports
  * tall and the document is the only scroller on this page, so a pushed screen
@@ -2488,7 +2510,8 @@ a {
 .screen-pushed {
   margin-inline: calc(var(--screen-bleed) * -1);
   padding-inline: var(--screen-bleed);
-  background: var(--paper);
+  /* Opaque, and the same ground the page is on — see --page-backdrop. */
+  background: var(--page-backdrop);
   transform: translateX(var(--screen-drag, 0px));
   transition: transform var(--screen-pop) var(--screen-ease);
   animation: screen-in var(--screen-push) var(--screen-ease);
@@ -6563,8 +6586,14 @@ button:disabled:active {
  * forces its palette on everything else. A forced dark theme also reports
  * `prefers-color-scheme: dark`, so what these three opt back into is the dark
  * palette above, and every one of them is a pair that holds against the forced
- * black canvas: --amber over it at 13.3:1, --accent over the ring's unfilled
- * tenth-white at 11.2:1, and --on-accent on --accent at 10.7:1.
+ * black canvas: --amber over it at 14.9:1, --accent-bright over the ring's
+ * unfilled tenth-white at 7.3:1, and --on-accent on --accent at 3.6:1 — the
+ * last of those the brand mark's 23px bold letter, which is large text under
+ * WCAG and so held to the same 3:1 floor the other two are.
+ *
+ * These three ratios are outside the two :root blocks and so outside what
+ * tools/contrast-audit.mjs re-derives; they are recomputed by hand whenever
+ * --amber, --accent or --accent-bright moves.
  *
  * The add button used to opt out with them and it was the one that did not
  * hold: on a forced dark theme its --ink-surface fill is 2.2:1 on the black
