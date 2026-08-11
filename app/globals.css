@@ -2286,11 +2286,43 @@ a {
   color: var(--ink);
 }
 
-.credentials-layout {
+/*
+ * PUSHED SCREEN HEADER — the iOS pairing: a back control carrying the title of
+ * the screen it returns to, and beneath it the title of the screen you are on.
+ * The back control is the accent ink because on this platform "tinted text is
+ * tappable" is the affordance; it is a full tap target despite reading as a
+ * label, and the negative margin lets the chevron sit on the text's optical
+ * left edge rather than indented by its own padding.
+ */
+.push-header {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
-  align-items: start;
-  gap: 18px;
+  justify-items: start;
+  gap: 2px;
+}
+
+.push-back {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap-min);
+  margin-left: -8px;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  cursor: pointer;
+  font-size: var(--text-lg);
+  font-weight: 700;
+  gap: 2px;
+  padding: 0 8px 0 0;
+}
+
+.push-title {
+  margin: 0;
+  color: var(--ink-deep);
+  font-family: var(--font-newsreader), Georgia, serif;
+  font-size: clamp(28px, 2.6vw, 38px);
+  font-weight: 520;
+  letter-spacing: -0.035em;
+  line-height: 1.1;
 }
 
 .credential-picker {
@@ -5179,6 +5211,7 @@ a {
 .error-banner button,
 .toast button,
 .credential-picker > button,
+.push-back,
 .requirement-choice,
 .weekly-goal-option,
 .condition-options span,
@@ -5223,6 +5256,7 @@ a {
 .error-banner button:active,
 .toast button:active,
 .credential-picker > button:active,
+.push-back:active,
 .requirement-choice:active,
 .weekly-goal-option:active,
 .condition-options label:active span,
@@ -5617,10 +5651,6 @@ button:disabled:active {
     grid-template-columns: 1fr;
   }
 
-  .credentials-layout {
-    grid-template-columns: 1fr;
-  }
-
   .credential-picker {
     display: flex;
     overflow-x: auto;
@@ -5631,6 +5661,19 @@ button:disabled:active {
   .credential-picker > button {
     flex: 0 0 220px;
     scroll-snap-align: start;
+  }
+
+  /*
+   * The credential list is a tab root now, not the picker rail that stood
+   * beside a detail pane — that pane is a pushed screen. A list you scroll
+   * sideways hides how many credentials you have, so it keeps the vertical
+   * stack it has at every other width.
+   */
+  .credential-picker.credential-list {
+    display: grid;
+    overflow-x: visible;
+    padding-bottom: 0;
+    scroll-snap-type: none;
   }
 
   .record-summary {

@@ -2026,6 +2026,45 @@ export function ITrackApp() {
     );
   }, [selectedCredentialId, workspace]);
 
+  // The pushed screen is addressed by URL, not by the app-wide selection, so
+  // a cold /credentials/<id> load and a `popstate` from the iOS back gesture
+  // resolve the same way a tap does.
+  const detailCredentialId = nav.route.detail?.id ?? "";
+  const detailCredential = useMemo(() => {
+    if (!workspace || !detailCredentialId) return null;
+    return (
+      workspace.credentials.find(
+        (credential) => credential.id === detailCredentialId,
+      ) ?? null
+    );
+  }, [detailCredentialId, workspace]);
+
+  // Tapping a credential sets the selection and then pushes, but the URL is an
+  // external system that also moves on its own: a cold deep link, the browser
+  // back button and the iOS back gesture all change which credential is open
+  // without any tap. Mirror those into the app-wide selection — "Log
+  // submission" and "Record acceptance" on the pushed screen act on
+  // `selectedCredential` — by subscribing to the same events the router reads,
+  // so the write lands in an event callback instead of a render-driven effect.
+  useEffect(() => {
+    const adoptRouteSelection = () => {
+      const routedId = parseRoute(window.location.pathname).detail?.id;
+      if (routedId) setSelectedCredentialId(routedId);
+    };
+    adoptRouteSelection();
+    window.addEventListener("popstate", adoptRouteSelection);
+    return () => window.removeEventListener("popstate", adoptRouteSelection);
+  }, []);
+
+  // A link naming a credential that was deleted (or never existed) falls back
+  // to the list root instead of stranding the user on an empty screen. The
+  // workspace guard matters: without it a cold /credentials/<id> load would
+  // bounce off before the credential it names had arrived.
+  useEffect(() => {
+    if (!workspace || !detailCredentialId || detailCredential) return;
+    navigateToTab("credentials");
+  }, [detailCredential, detailCredentialId, navigateToTab, workspace]);
+
   const selectedNremtNextRule = useMemo(
     () =>
       currentNremtCatalogRule(
@@ -3602,179 +3641,198 @@ export function ITrackApp() {
             </div>
           ) : null}
 
-          {!workspace ? (
-            !isOnline ? (
-              <OfflineWorkspace />
-            ) : workspaceLoadFailed ? (
-              <WorkspaceLoadFailure
-                status={workspaceLoadFailureStatus}
-                message={error}
-                onRetry={() => void loadWorkspace()}
-              />
-            ) : (
-              <LoadingDashboard />
-            )
-          ) : view === "home" ? (
-            <TodayView
-              workspace={workspace}
-              credential={selectedCredential}
-              isOnline={isOnline}
-              highlightedReminderKey={highlightedReminderKey}
-              onAddActivity={openActivityEntry}
-              onAddCredential={openCredentialSetup}
-              onViewCredentials={() => nav.setTab("credentials")}
-              onViewRecords={() => nav.setTab("history")}
-              onSubmit={openSubmission}
-              onAccept={openAcceptance}
-              onReminders={() => {
-                setError("");
-                setRemindersOpen(true);
-              }}
-              onReminderState={(reminder, status) =>
-                void setReminderState(reminder, status)
-              }
-              onAddReminderToCalendar={(reminder) =>
-                void addReminderToCalendar(reminder)
-              }
-              onToggleTask={toggleTask}
-              onAddPersonalTask={(credential) => {
-                setError("");
-                setTaskEditor({ credential, task: null });
-              }}
-              onEditPersonalTask={(credential, task) => {
-                setError("");
-                setTaskEditor({ credential, task });
-              }}
-              onRestorePersonalTask={(task) =>
-                void restorePersonalTask(task)
-              }
-              taskActionsDisabled={!isOnline}
-              pendingActionKeys={pendingActionKeys}
-              onClaimQuest={(quest) => void claimWeeklyQuest(quest)}
-              onRequirementApplicability={(requirement, status) =>
-                selectedCredential
-                  ? void setRequirementApplicability(
-                      selectedCredential.id,
+          <div className="screen-stack">
+            <div
+              className={`screen screen-root${
+                detailCredential ? " screen-under" : ""
+              }`}
+            >
+              {!workspace ? (
+                !isOnline ? (
+                  <OfflineWorkspace />
+                ) : workspaceLoadFailed ? (
+                  <WorkspaceLoadFailure
+                    status={workspaceLoadFailureStatus}
+                    message={error}
+                    onRetry={() => void loadWorkspace()}
+                  />
+                ) : (
+                  <LoadingDashboard />
+                )
+              ) : view === "home" ? (
+                <TodayView
+                  workspace={workspace}
+                  credential={selectedCredential}
+                  isOnline={isOnline}
+                  highlightedReminderKey={highlightedReminderKey}
+                  onAddActivity={openActivityEntry}
+                  onAddCredential={openCredentialSetup}
+                  onViewCredentials={() => nav.setTab("credentials")}
+                  onViewRecords={() => nav.setTab("history")}
+                  onSubmit={openSubmission}
+                  onAccept={openAcceptance}
+                  onReminders={() => {
+                    setError("");
+                    setRemindersOpen(true);
+                  }}
+                  onReminderState={(reminder, status) =>
+                    void setReminderState(reminder, status)
+                  }
+                  onAddReminderToCalendar={(reminder) =>
+                    void addReminderToCalendar(reminder)
+                  }
+                  onToggleTask={toggleTask}
+                  onAddPersonalTask={(credential) => {
+                    setError("");
+                    setTaskEditor({ credential, task: null });
+                  }}
+                  onEditPersonalTask={(credential, task) => {
+                    setError("");
+                    setTaskEditor({ credential, task });
+                  }}
+                  onRestorePersonalTask={(task) =>
+                    void restorePersonalTask(task)
+                  }
+                  taskActionsDisabled={!isOnline}
+                  pendingActionKeys={pendingActionKeys}
+                  onClaimQuest={(quest) => void claimWeeklyQuest(quest)}
+                  onRequirementApplicability={(requirement, status) =>
+                    selectedCredential
+                      ? void setRequirementApplicability(
+                          selectedCredential.id,
+                          requirement,
+                          status,
+                        )
+                      : undefined
+                  }
+                  onDentalCheckpoint={(requirement, completed, evidenceNote) =>
+                    selectedCredential
+                      ? void saveDentalCheckpoint(
+                          selectedCredential.id,
+                          requirement,
+                          completed,
+                          evidenceNote,
+                        )
+                      : undefined
+                  }
+                />
+              ) : view === "credentials" ? (
+                <CredentialsView
+                  credentials={workspace.credentials}
+                  selectedId={selectedCredential?.id ?? ""}
+                  onSelect={(id) => {
+                    setSelectedCredentialId(id);
+                    nav.push({ kind: "credential", id });
+                  }}
+                  onAdd={openCredentialSetup}
+                />
+              ) : view === "history" ? (
+                <RecordsView
+                  activities={workspace.activities}
+                  archivedActivities={workspace.archivedActivities}
+                  credentials={workspace.credentials}
+                  onAdd={openActivityEntry}
+                  onEdit={(activity) => {
+                    setError("");
+                    setEditingActivity(activity);
+                  }}
+                  onRestore={(activity) => void restoreActivityRecord(activity)}
+                  actionsDisabled={!isOnline}
+                  pendingActionKeys={pendingActionKeys}
+                  onEvidence={(activity) => void openEvidence(activity)}
+                  onAllocate={(activity) => {
+                    setError("");
+                    const existingIds = new Set(
+                      allocationsFor(activity).map(
+                        (allocation) => allocation.credentialId,
+                      ),
+                    );
+                    const firstEligible = workspace.credentials.find(
+                      (credential) =>
+                        credential.status !== "renewed" &&
+                        !existingIds.has(credential.id),
+                    );
+                    setAllocationCredentialId(firstEligible?.id ?? "");
+                    setAllocationActivity(activity);
+                  }}
+                  onClassify={(activity, allocation) => {
+                    setError("");
+                    setClassificationRepair({ activity, allocation });
+                  }}
+                />
+              ) : (
+                <AccountView
+                  workspace={workspace}
+                  onReminders={() => {
+                    setError("");
+                    setRemindersOpen(true);
+                  }}
+                  onWeeklyGoal={(weeklyGoal) =>
+                    void updateWeeklyGoal(weeklyGoal)
+                  }
+                  weeklyGoalPending={pendingActionKeys.includes(
+                    WEEKLY_GOAL_ACTION_KEY,
+                  )}
+                  isStandalone={isStandalone}
+                  installAvailable={Boolean(installPrompt)}
+                  onInstall={() => void handleInstallApp()}
+                  onAddAllCheckIns={() => void addAllCheckInsToCalendar()}
+                  pushDeviceState={pushDeviceState}
+                  pushPending={pushPending}
+                  isOnline={isOnline}
+                  onEnablePhoneAlerts={() => void handleEnablePhoneAlerts()}
+                  onDisablePhoneAlerts={() => void handleDisablePhoneAlerts()}
+                  onTestPhoneAlert={() => void handleTestPhoneAlert()}
+                  onRefreshPhoneAlerts={() => void refreshPushDeviceState()}
+                />
+              )}
+            </div>
+            {detailCredential ? (
+              <div className="screen screen-pushed">
+                <CredentialDetailScreen
+                  credential={detailCredential}
+                  activities={workspace?.activities ?? []}
+                  isOnline={isOnline}
+                  onBack={nav.pop}
+                  onSubmit={openSubmission}
+                  onAccept={openAcceptance}
+                  onReminders={() => {
+                    setError("");
+                    setRemindersOpen(true);
+                  }}
+                  onAddToCalendar={(credential) =>
+                    void addCredentialToCalendar(credential)
+                  }
+                  onRequirementApplicability={(
+                    credentialId,
+                    requirement,
+                    status,
+                  ) =>
+                    void setRequirementApplicability(
+                      credentialId,
                       requirement,
                       status,
                     )
-                  : undefined
-              }
-              onDentalCheckpoint={(requirement, completed, evidenceNote) =>
-                selectedCredential
-                  ? void saveDentalCheckpoint(
-                      selectedCredential.id,
+                  }
+                  onDentalCheckpoint={(
+                    credentialId,
+                    requirement,
+                    completed,
+                    evidenceNote,
+                  ) =>
+                    void saveDentalCheckpoint(
+                      credentialId,
                       requirement,
                       completed,
                       evidenceNote,
                     )
-                  : undefined
-              }
-            />
-          ) : view === "credentials" ? (
-            <CredentialsView
-              credentials={workspace.credentials}
-              activities={workspace.activities}
-              isOnline={isOnline}
-              selectedId={selectedCredential?.id ?? ""}
-              onSelect={(id) => setSelectedCredentialId(id)}
-              onAdd={openCredentialSetup}
-              onSubmit={openSubmission}
-              onAccept={openAcceptance}
-              onReminders={() => {
-                setError("");
-                setRemindersOpen(true);
-              }}
-              onAddToCalendar={(credential) =>
-                void addCredentialToCalendar(credential)
-              }
-              onRequirementApplicability={(
-                credentialId,
-                requirement,
-                status,
-              ) =>
-                void setRequirementApplicability(
-                  credentialId,
-                  requirement,
-                  status,
-                )
-              }
-              onDentalCheckpoint={(
-                credentialId,
-                requirement,
-                completed,
-                evidenceNote,
-              ) =>
-                void saveDentalCheckpoint(
-                  credentialId,
-                  requirement,
-                  completed,
-                  evidenceNote,
-                )
-              }
-              actionsDisabled={!isOnline}
-              pendingActionKeys={pendingActionKeys}
-            />
-          ) : view === "history" ? (
-            <RecordsView
-              activities={workspace.activities}
-              archivedActivities={workspace.archivedActivities}
-              credentials={workspace.credentials}
-              onAdd={openActivityEntry}
-              onEdit={(activity) => {
-                setError("");
-                setEditingActivity(activity);
-              }}
-              onRestore={(activity) => void restoreActivityRecord(activity)}
-              actionsDisabled={!isOnline}
-              pendingActionKeys={pendingActionKeys}
-              onEvidence={(activity) => void openEvidence(activity)}
-              onAllocate={(activity) => {
-                setError("");
-                const existingIds = new Set(
-                  allocationsFor(activity).map(
-                    (allocation) => allocation.credentialId,
-                  ),
-                );
-                const firstEligible = workspace.credentials.find(
-                  (credential) =>
-                    credential.status !== "renewed" &&
-                    !existingIds.has(credential.id),
-                );
-                setAllocationCredentialId(firstEligible?.id ?? "");
-                setAllocationActivity(activity);
-              }}
-              onClassify={(activity, allocation) => {
-                setError("");
-                setClassificationRepair({ activity, allocation });
-              }}
-            />
-          ) : (
-            <AccountView
-              workspace={workspace}
-              onReminders={() => {
-                setError("");
-                setRemindersOpen(true);
-              }}
-              onWeeklyGoal={(weeklyGoal) =>
-                void updateWeeklyGoal(weeklyGoal)
-              }
-              weeklyGoalPending={pendingActionKeys.includes(
-                WEEKLY_GOAL_ACTION_KEY,
-              )}
-              isStandalone={isStandalone}
-              installAvailable={Boolean(installPrompt)}
-              onInstall={() => void handleInstallApp()}
-              onAddAllCheckIns={() => void addAllCheckInsToCalendar()}
-              pushDeviceState={pushDeviceState}
-              pushPending={pushPending}
-              isOnline={isOnline}
-              onEnablePhoneAlerts={() => void handleEnablePhoneAlerts()}
-              onDisablePhoneAlerts={() => void handleDisablePhoneAlerts()}
-              onTestPhoneAlert={() => void handleTestPhoneAlert()}
-              onRefreshPhoneAlerts={() => void refreshPushDeviceState()}
-            />
-          )}
+                  }
+                  actionsDisabled={!isOnline}
+                  pendingActionKeys={pendingActionKeys}
+                />
+              </div>
+            ) : null}
+          </div>
         </main>
       </div>
 
@@ -6039,6 +6097,7 @@ const ICON_SHAPES = {
     </>
   ),
   chevronDown: <path d="m6 9 6 6 6-6" />,
+  chevronLeft: <path d="M15 18l-6-6 6-6" />,
   refresh: (
     <>
       <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
@@ -7265,11 +7324,98 @@ function TodayView({
 
 function CredentialsView({
   credentials,
-  activities,
-  isOnline,
   selectedId,
   onSelect,
   onAdd,
+}: {
+  credentials: Credential[];
+  selectedId: string;
+  onSelect: (id: string) => void;
+  onAdd: () => void;
+}) {
+  // The highlight marks the credential the rest of the app is pointed at —
+  // Today's card, the log sheet's default — not a detail pane beside the list,
+  // which now lives on its own pushed screen.
+  const activeId =
+    credentials.find((credential) => credential.id === selectedId)?.id ??
+    credentials[0]?.id ??
+    "";
+  return (
+    <div className="view-stack">
+      <PageGreeting
+        eyebrow="Credentials"
+        title="Every renewal, one clear place."
+        body="Requirements, sources, cycles, and submission status stay connected."
+        action={
+          <button className="button button-primary" type="button" onClick={onAdd}>
+            <Icon name="plus" size={16} />
+            Add credential
+          </button>
+        }
+      />
+      {credentials.length ? (
+        <section
+          className="credential-picker credential-list"
+          aria-label="Your credentials"
+        >
+          {credentials.map((credential) => (
+            <button
+              key={credential.id}
+              className={credential.id === activeId ? "active" : ""}
+              type="button"
+              onClick={() => onSelect(credential.id)}
+            >
+              <span>
+                <strong>{credential.credentialName}</strong>
+                <small>
+                  {credential.jurisdiction} ·{" "}
+                  {credential.status === "renewed"
+                    ? "history"
+                    : credential.status === "submitted" &&
+                        isIsc2AutomaticRenewalCredential(credential)
+                      ? "awaiting ISC2 renewal"
+                      : credential.status === "submitted" &&
+                          isCompliancePeriodCredential(credential)
+                        ? "compliance recorded"
+                        : credential.status}
+                </small>
+              </span>
+              <span className="picker-progress">
+                {credential.totalRequired > 0
+                  ? `${credentialProgress(credential)}%`
+                  : `${readinessScore(credential)}% ready`}
+              </span>
+            </button>
+          ))}
+          <button className="add-picker" type="button" onClick={onAdd}>
+            <Icon name="plus" size={15} />
+            Add another credential
+          </button>
+        </section>
+      ) : (
+        <EmptyPage
+          title="Add your first credential"
+          body="Choose a source-linked rule template or make a custom plan from your credential information."
+          action="Set up credential"
+          onAction={onAdd}
+        />
+      )}
+    </div>
+  );
+}
+
+/*
+ * The credential detail is a *pushed* screen, not a pane: it owns a history
+ * entry, so the iOS back gesture, the browser back button and a refresh all
+ * behave the way the platform promises. Its header carries the iOS pairing of
+ * a back control labelled with the screen it returns to and this screen's own
+ * title.
+ */
+function CredentialDetailScreen({
+  credential,
+  activities,
+  isOnline,
+  onBack,
   onSubmit,
   onAccept,
   onReminders,
@@ -7279,12 +7425,10 @@ function CredentialsView({
   actionsDisabled,
   pendingActionKeys,
 }: {
-  credentials: Credential[];
+  credential: Credential;
   activities: Activity[];
   isOnline: boolean;
-  selectedId: string;
-  onSelect: (id: string) => void;
-  onAdd: () => void;
+  onBack: () => void;
   onSubmit: () => void;
   onAccept: () => void;
   onReminders: () => void;
@@ -7303,43 +7447,34 @@ function CredentialsView({
   actionsDisabled: boolean;
   pendingActionKeys: readonly string[];
 }) {
-  const selected =
-    credentials.find((credential) => credential.id === selectedId) ??
-    credentials[0];
-  const selectedActivities = selected
-    ? activities.filter((activity) =>
-        allocationsFor(activity).some(
-          (allocation) => allocation.credentialId === selected.id,
-        ),
-      )
-    : [];
-  const requirementGapCount = selected
-    ? Math.max(
-        Number(selected.totalRemaining ?? 0) > 0 ? 1 : 0,
-        selected.requirements.filter(
-          (requirement) =>
-            requirement.applicabilityStatus === "needs_confirmation" ||
-            (requirement.isActive !== false &&
-              requirement.kind === "minimum" &&
-                requirement.applicabilityStatus !== "not_applicable" &&
-                Math.max(
-                  0,
-                  requirement.requiredUnits -
-                    requirementEarned(requirement),
-                ) > 0),
-        ).length,
-      )
-    : 0;
-  const proofGapCount = selectedActivities.filter(
+  const credentialActivities = activities.filter((activity) =>
+    allocationsFor(activity).some(
+      (allocation) => allocation.credentialId === credential.id,
+    ),
+  );
+  const requirementGapCount = Math.max(
+    Number(credential.totalRemaining ?? 0) > 0 ? 1 : 0,
+    credential.requirements.filter(
+      (requirement) =>
+        requirement.applicabilityStatus === "needs_confirmation" ||
+        (requirement.isActive !== false &&
+          requirement.kind === "minimum" &&
+          requirement.applicabilityStatus !== "not_applicable" &&
+          Math.max(
+            0,
+            requirement.requiredUnits - requirementEarned(requirement),
+          ) > 0),
+    ).length,
+  );
+  const proofGapCount = credentialActivities.filter(
     (activity) =>
       activity.evidenceStatus === "missing" ||
       Number(activity.evidenceDeletionPendingCount ?? 0) > 0,
   ).length;
-  const classificationGapCount =
-    selected?.classificationIssues?.length ?? 0;
-  const openTaskCount =
-    selected?.tasks.filter((task) => task.status !== "completed").length ??
-    0;
+  const classificationGapCount = credential.classificationIssues?.length ?? 0;
+  const openTaskCount = credential.tasks.filter(
+    (task) => task.status !== "completed",
+  ).length;
   const trackedGapCount =
     requirementGapCount +
     proofGapCount +
@@ -7347,405 +7482,355 @@ function CredentialsView({
     openTaskCount;
   return (
     <div className="view-stack">
-      <PageGreeting
-        eyebrow="Credentials"
-        title="Every renewal, one clear place."
-        body="Requirements, sources, cycles, and submission status stay connected."
-        action={
-          <button className="button button-primary" type="button" onClick={onAdd}>
-            <Icon name="plus" size={16} />
-            Add credential
-          </button>
-        }
-      />
-      {selected ? (
-        <div className="credentials-layout">
-          <aside className="credential-picker" aria-label="Your credentials">
-            {credentials.map((credential) => (
-              <button
-                key={credential.id}
-                className={credential.id === selected.id ? "active" : ""}
-                type="button"
-                onClick={() => onSelect(credential.id)}
-              >
-                <span>
-                  <strong>{credential.credentialName}</strong>
-                  <small>
-                    {credential.jurisdiction} ·{" "}
-                    {credential.status === "renewed"
-                      ? "history"
-                      : credential.status === "submitted" &&
-                          isIsc2AutomaticRenewalCredential(credential)
-                        ? "awaiting ISC2 renewal"
-                        : credential.status === "submitted" &&
-                            isCompliancePeriodCredential(credential)
-                          ? "compliance recorded"
-                          : credential.status}
-                  </small>
-                </span>
-                <span className="picker-progress">
-                  {credential.totalRequired > 0
-                    ? `${credentialProgress(credential)}%`
-                    : `${readinessScore(credential)}% ready`}
-                </span>
-              </button>
-            ))}
-            <button className="add-picker" type="button" onClick={onAdd}>
-              <Icon name="plus" size={15} />
-              Add another credential
-            </button>
-          </aside>
-          <section className="credential-detail">
-            <div className="credential-detail-header">
-              <div>
-                <span className="status-pill status-pill-dark">
-                  {isIsc2AutomaticRenewalCredential(selected)
-                    ? selected.status === "active"
-                      ? "active renewal cycle"
-                      : selected.status === "submitted"
-                        ? "awaiting ISC2 renewal"
-                        : "renewed"
-                    : isCompliancePeriodCredential(selected)
-                      ? selected.status === "active"
-                        ? "compliance period"
-                        : selected.status === "submitted"
-                          ? "compliance recorded"
-                          : "completed"
-                      : selected.status}
-                </span>
-                <h2>{selected.credentialName}</h2>
-                <p>
-                  {selected.jurisdiction}
-                  {selected.issuer ? ` · ${selected.issuer}` : ""}
-                </p>
-              </div>
-              <div className="deadline-chip">
-                <span>
-                  {isCompliancePeriodCredential(selected)
-                    ? "Complete by"
-                    : "Renew by"}
-                </span>
-                <strong>{formatDate(selected.deadline)}</strong>
-              </div>
-            </div>
-            <section
-              className={`credential-packet-card ${
-                trackedGapCount ? "has-gaps" : "tracked-complete"
-              }`}
-              aria-labelledby="credential-packet-title"
-            >
-              <div className="credential-packet-copy">
-                <span className="section-kicker">Credential packet</span>
-                <h3 id="credential-packet-title">
-                  {selected.status === "renewed"
-                    ? "Preserve this completed-cycle record."
-                    : selected.status === "submitted"
-                      ? isCompliancePeriodCredential(selected)
-                        ? "Keep this compliance checkpoint together."
-                        : isIsc2AutomaticRenewalCredential(selected)
-                          ? "Keep this dashboard checkpoint together."
-                          : "Keep the submission record together."
-                      : trackedGapCount
-                        ? "Review tracked gaps before the next official step."
-                        : "No tracked gaps found—ready for official review."}
-                </h3>
-                <p>
-                  Opens a private, print-ready summary. Evidence files stay
-                  separate and require your signed-in account.
-                </p>
-                <div
-                  className="credential-packet-gaps"
-                  aria-label={`${trackedGapCount} tracked packet gaps`}
-                >
-                  <span>{requirementGapCount} requirement gaps</span>
-                  <span>{proofGapCount} proof flags</span>
-                  <span>{classificationGapCount} classification gaps</span>
-                  <span>{openTaskCount} checklist tasks</span>
-                </div>
-              </div>
-              {isOnline ? (
-                <a
-                  className="button button-outline credential-packet-action"
-                  href={`/api/export/packet?credentialId=${encodeURIComponent(
-                    selected.id,
-                  )}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Prepare credential packet
-                  <Icon name="arrowUpRight" size={15} />
-                  <span className="sr-only"> (opens in a new tab)</span>
-                </a>
-              ) : (
-                <button
-                  className="button button-outline credential-packet-action"
-                  type="button"
-                  disabled
-                >
-                  Reconnect to prepare packet
-                </button>
-              )}
-            </section>
-            {selected.status !== "renewed" ? (
-              <div className="credential-utility-actions">
-                <button
-                  className="reminder-setting-link"
-                  type="button"
-                  onClick={onReminders}
-                >
-                  <Icon name="clock" size={15} />
-                  <span>
-                    Configure{" "}
-                    {isCompliancePeriodCredential(selected)
-                      ? "compliance"
-                      : "renewal"}{" "}
-                    check-ins
-                  </span>
-                </button>
-                <button
-                  className="reminder-setting-link"
-                  type="button"
-                  onClick={() => onAddToCalendar(selected)}
-                >
-                  <Icon name="plus" size={15} />
-                  <span>
-                    Add{" "}
-                    {isCompliancePeriodCredential(selected)
-                      ? "compliance"
-                      : "renewal"}{" "}
-                    date to calendar
-                  </span>
-                </button>
-              </div>
-            ) : null}
-            <div className="detail-stats">
-              <div>
-                <span>Counted</span>
-                <strong>
-                  {selected.totalRequired > 0
-                    ? `${compactNumber(selected.totalEarned)} / ${compactNumber(
-                        selected.totalRequired,
-                      )}`
-                    : "Checklist"}
-                </strong>
-                <small>
-                  {selected.totalRequired > 0
-                    ? selected.unitLabel
-                    : "no general CE total"}
-                </small>
-              </div>
-              <div>
-                <span>Readiness</span>
-                <strong>{readinessScore(selected)}%</strong>
-                <small>credits + checklist</small>
-              </div>
-              <div>
-                <span>
-                  {daysUntil(selected.deadline) < 0
-                    ? "Past deadline"
-                    : "Time left"}
-                </span>
-                <strong>{Math.abs(daysUntil(selected.deadline))}</strong>
-                <small>
-                  {daysUntil(selected.deadline) < 0
-                    ? "days overdue"
-                    : "days"}
-                </small>
-              </div>
-            </div>
-            <div className="detail-section">
-              <div className="card-heading">
-                <div>
-                  <span className="section-kicker">Requirements</span>
-                  <h3>Rule progress and limits</h3>
-                </div>
-              </div>
-              {selected.totalRequired > 0 ? (
-                <ProgressRow
-                  name="Overall"
-                  earned={selected.totalEarned}
-                  required={selected.totalRequired}
-                  unit={selected.unitLabel}
-                />
-              ) : (
-                <p className="total-excess-note">
-                  This issuing organization does not set a general numeric
-                  continuing-education total. Complete the applicable training
-                  conditions and checklist using the official record.
-                </p>
-              )}
-              {Number(selected.totalExcessUnits ?? 0) > 0 ? (
-                <p className="total-excess-note">
-                  {compactNumber(selected.totalRawEarned ?? 0)}{" "}
-                  {selected.unitLabel} are documented;{" "}
-                  {compactNumber(selected.totalExcessUnits ?? 0)} exceed a
-                  category limit.
-                </p>
-              ) : null}
-              {Number(selected.unclassifiedUnits ?? 0) > 0 ? (
-                <p className="total-excess-note">
-                  {compactNumber(selected.unclassifiedUnits ?? 0)}{" "}
-                  {selected.unitLabel} are preserved but excluded until their
-                  required activity type is classified.
-                </p>
-              ) : null}
-              {selected.requirements.map((requirement) => (
-                <ProgressRow
-                  key={requirement.id}
-                  name={requirement.name}
-                  earned={requirementEarned(requirement)}
-                  required={requirement.requiredUnits}
-                  unit={selected.unitLabel}
-                  requirement={requirement}
-                  onApplicability={
-                    selected.status !== "renewed"
-                      ? (status) =>
-                          onRequirementApplicability(
-                            selected.id,
-                            requirement,
-                            status,
-                          )
-                      : undefined
-                  }
-                  onDentalCheckpoint={
-                    selected.status === "renewed"
-                      ? undefined
-                      : (completed, evidenceNote) =>
-                          onDentalCheckpoint(
-                            selected.id,
-                            requirement,
-                            completed,
-                            evidenceNote,
-                          )
-                  }
-                  actionsDisabled={actionsDisabled}
-                  pendingActionKeys={pendingActionKeys}
-                />
-              ))}
-            </div>
-            <div className="detail-section source-detail">
-              <span className="section-kicker">Rule source</span>
-              <h3>
-                {selected.ruleReviewStatus === "custom"
-                  ? "Custom requirements"
-                  : "Source-linked template"}
-              </h3>
-              {selected.ruleReviewStatus !== "custom" ? (
-                <span
-                  className={`verified-chip ${ruleReviewClass(
-                    selected.ruleReviewStatus,
-                  )}`}
-                >
-                  {ruleReviewLabel(selected.ruleReviewStatus)}
-                </span>
-              ) : null}
-              <p>
-                {selected.sourceTitle ??
-                  "Confirm requirements and dates with the issuing organization, especially when rules or your credential status change."}
-              </p>
-              {selected.sourceUrl ? (
-                <a
-                  className="button button-outline"
-                  href={selected.sourceUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open official guidance
-                  <Icon name="arrowUpRight" size={15} />
-                </a>
-              ) : (
-                <span className="custom-rule-label">
-                  Entered manually · no official source attached
-                </span>
-              )}
-            </div>
-            {selected.status === "active" ? (
-              <div className="detail-footer">
-                <div>
-                  <strong>
-                    {isIsc2AutomaticRenewalCredential(selected)
-                      ? "Does the ISC2 Dashboard show CPEs and annual maintenance fees satisfied?"
-                      : isCompliancePeriodCredential(selected)
-                        ? "Does the official record show this period complete?"
-                      : "Finished your renewal submission?"}
-                  </strong>
-                  <p>
-                    {isIsc2AutomaticRenewalCredential(selected)
-                      ? "Save this milestone separately from completed learning."
-                      : isCompliancePeriodCredential(selected)
-                        ? "Save this official milestone separately from completed learning."
-                      : "Log it separately from completed learning."}
-                  </p>
-                </div>
-                <button
-                  className="button button-primary"
-                  type="button"
-                  onClick={onSubmit}
-                >
-                  {isIsc2AutomaticRenewalCredential(selected)
-                    ? "Save dashboard checkpoint"
-                    : isCompliancePeriodCredential(selected)
-                      ? "Record compliance"
-                    : "Log submission"}
-                </button>
-              </div>
-            ) : selected.status === "submitted" ? (
-              <div className="detail-footer submitted-footer">
-                <div>
-                  <strong>
-                    {isIsc2AutomaticRenewalCredential(selected)
-                      ? "Awaiting ISC2 renewal"
-                      : isCompliancePeriodCredential(selected)
-                        ? "Compliance recorded"
-                      : "Renewal submitted"}{" "}
-                    {formatDate(selected.submittedAt)}
-                  </strong>
-                  <p>
-                    {selected.confirmationNumber
-                      ? `Confirmation: ${selected.confirmationNumber}`
-                      : "No confirmation number recorded."}
-                  </p>
-                </div>
-                <button
-                  className="button button-primary"
-                  type="button"
-                  onClick={onAccept}
-                >
-                  {isIsc2AutomaticRenewalCredential(selected)
-                    ? "Confirm renewed cycle"
-                    : isCompliancePeriodCredential(selected)
-                      ? "Start next period"
-                    : "Record acceptance"}
-                </button>
-              </div>
-            ) : (
-              <div className="detail-footer submitted-footer">
-                <div>
-                  <strong>
-                    {isCompliancePeriodCredential(selected)
-                      ? "Completed"
-                      : "Renewed"}{" "}
-                    {formatDate(selected.acceptedAt)}
-                  </strong>
-                  <p>
-                    {selected.acceptanceReference
-                      ? `Reference: ${selected.acceptanceReference}`
-                      : "This completed cycle is preserved in history."}
-                  </p>
-                </div>
-                <span className="verified-chip">Historical cycle</span>
-              </div>
-            )}
-          </section>
+      <header className="push-header">
+        <button type="button" className="push-back" onClick={onBack}>
+          <Icon name="chevronLeft" size={22} />
+          <span>Credentials</span>
+        </button>
+        <h1 className="push-title">{credential.credentialName}</h1>
+      </header>
+      <section className="credential-detail">
+        <div className="credential-detail-header">
+          <div>
+            <span className="status-pill status-pill-dark">
+              {isIsc2AutomaticRenewalCredential(credential)
+                ? credential.status === "active"
+                  ? "active renewal cycle"
+                  : credential.status === "submitted"
+                    ? "awaiting ISC2 renewal"
+                    : "renewed"
+                : isCompliancePeriodCredential(credential)
+                  ? credential.status === "active"
+                    ? "compliance period"
+                    : credential.status === "submitted"
+                      ? "compliance recorded"
+                      : "completed"
+                  : credential.status}
+            </span>
+            <h2>{credential.credentialName}</h2>
+            <p>
+              {credential.jurisdiction}
+              {credential.issuer ? ` · ${credential.issuer}` : ""}
+            </p>
+          </div>
+          <div className="deadline-chip">
+            <span>
+              {isCompliancePeriodCredential(credential)
+                ? "Complete by"
+                : "Renew by"}
+            </span>
+            <strong>{formatDate(credential.deadline)}</strong>
+          </div>
         </div>
-      ) : (
-        <EmptyPage
-          title="Add your first credential"
-          body="Choose a source-linked rule template or make a custom plan from your credential information."
-          action="Set up credential"
-          onAction={onAdd}
-        />
-      )}
+        <section
+          className={`credential-packet-card ${
+            trackedGapCount ? "has-gaps" : "tracked-complete"
+          }`}
+          aria-labelledby="credential-packet-title"
+        >
+          <div className="credential-packet-copy">
+            <span className="section-kicker">Credential packet</span>
+            <h3 id="credential-packet-title">
+              {credential.status === "renewed"
+                ? "Preserve this completed-cycle record."
+                : credential.status === "submitted"
+                  ? isCompliancePeriodCredential(credential)
+                    ? "Keep this compliance checkpoint together."
+                    : isIsc2AutomaticRenewalCredential(credential)
+                      ? "Keep this dashboard checkpoint together."
+                      : "Keep the submission record together."
+                  : trackedGapCount
+                    ? "Review tracked gaps before the next official step."
+                    : "No tracked gaps found—ready for official review."}
+            </h3>
+            <p>
+              Opens a private, print-ready summary. Evidence files stay
+              separate and require your signed-in account.
+            </p>
+            <div
+              className="credential-packet-gaps"
+              aria-label={`${trackedGapCount} tracked packet gaps`}
+            >
+              <span>{requirementGapCount} requirement gaps</span>
+              <span>{proofGapCount} proof flags</span>
+              <span>{classificationGapCount} classification gaps</span>
+              <span>{openTaskCount} checklist tasks</span>
+            </div>
+          </div>
+          {isOnline ? (
+            <a
+              className="button button-outline credential-packet-action"
+              href={`/api/export/packet?credentialId=${encodeURIComponent(
+                credential.id,
+              )}`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Prepare credential packet
+              <Icon name="arrowUpRight" size={15} />
+              <span className="sr-only"> (opens in a new tab)</span>
+            </a>
+          ) : (
+            <button
+              className="button button-outline credential-packet-action"
+              type="button"
+              disabled
+            >
+              Reconnect to prepare packet
+            </button>
+          )}
+        </section>
+        {credential.status !== "renewed" ? (
+          <div className="credential-utility-actions">
+            <button
+              className="reminder-setting-link"
+              type="button"
+              onClick={onReminders}
+            >
+              <Icon name="clock" size={15} />
+              <span>
+                Configure{" "}
+                {isCompliancePeriodCredential(credential)
+                  ? "compliance"
+                  : "renewal"}{" "}
+                check-ins
+              </span>
+            </button>
+            <button
+              className="reminder-setting-link"
+              type="button"
+              onClick={() => onAddToCalendar(credential)}
+            >
+              <Icon name="plus" size={15} />
+              <span>
+                Add{" "}
+                {isCompliancePeriodCredential(credential)
+                  ? "compliance"
+                  : "renewal"}{" "}
+                date to calendar
+              </span>
+            </button>
+          </div>
+        ) : null}
+        <div className="detail-stats">
+          <div>
+            <span>Counted</span>
+            <strong>
+              {credential.totalRequired > 0
+                ? `${compactNumber(credential.totalEarned)} / ${compactNumber(
+                    credential.totalRequired,
+                  )}`
+                : "Checklist"}
+            </strong>
+            <small>
+              {credential.totalRequired > 0
+                ? credential.unitLabel
+                : "no general CE total"}
+            </small>
+          </div>
+          <div>
+            <span>Readiness</span>
+            <strong>{readinessScore(credential)}%</strong>
+            <small>credits + checklist</small>
+          </div>
+          <div>
+            <span>
+              {daysUntil(credential.deadline) < 0
+                ? "Past deadline"
+                : "Time left"}
+            </span>
+            <strong>{Math.abs(daysUntil(credential.deadline))}</strong>
+            <small>
+              {daysUntil(credential.deadline) < 0
+                ? "days overdue"
+                : "days"}
+            </small>
+          </div>
+        </div>
+        <div className="detail-section">
+          <div className="card-heading">
+            <div>
+              <span className="section-kicker">Requirements</span>
+              <h3>Rule progress and limits</h3>
+            </div>
+          </div>
+          {credential.totalRequired > 0 ? (
+            <ProgressRow
+              name="Overall"
+              earned={credential.totalEarned}
+              required={credential.totalRequired}
+              unit={credential.unitLabel}
+            />
+          ) : (
+            <p className="total-excess-note">
+              This issuing organization does not set a general numeric
+              continuing-education total. Complete the applicable training
+              conditions and checklist using the official record.
+            </p>
+          )}
+          {Number(credential.totalExcessUnits ?? 0) > 0 ? (
+            <p className="total-excess-note">
+              {compactNumber(credential.totalRawEarned ?? 0)}{" "}
+              {credential.unitLabel} are documented;{" "}
+              {compactNumber(credential.totalExcessUnits ?? 0)} exceed a
+              category limit.
+            </p>
+          ) : null}
+          {Number(credential.unclassifiedUnits ?? 0) > 0 ? (
+            <p className="total-excess-note">
+              {compactNumber(credential.unclassifiedUnits ?? 0)}{" "}
+              {credential.unitLabel} are preserved but excluded until their
+              required activity type is classified.
+            </p>
+          ) : null}
+          {credential.requirements.map((requirement) => (
+            <ProgressRow
+              key={requirement.id}
+              name={requirement.name}
+              earned={requirementEarned(requirement)}
+              required={requirement.requiredUnits}
+              unit={credential.unitLabel}
+              requirement={requirement}
+              onApplicability={
+                credential.status !== "renewed"
+                  ? (status) =>
+                      onRequirementApplicability(
+                        credential.id,
+                        requirement,
+                        status,
+                      )
+                  : undefined
+              }
+              onDentalCheckpoint={
+                credential.status === "renewed"
+                  ? undefined
+                  : (completed, evidenceNote) =>
+                      onDentalCheckpoint(
+                        credential.id,
+                        requirement,
+                        completed,
+                        evidenceNote,
+                      )
+              }
+              actionsDisabled={actionsDisabled}
+              pendingActionKeys={pendingActionKeys}
+            />
+          ))}
+        </div>
+        <div className="detail-section source-detail">
+          <span className="section-kicker">Rule source</span>
+          <h3>
+            {credential.ruleReviewStatus === "custom"
+              ? "Custom requirements"
+              : "Source-linked template"}
+          </h3>
+          {credential.ruleReviewStatus !== "custom" ? (
+            <span
+              className={`verified-chip ${ruleReviewClass(
+                credential.ruleReviewStatus,
+              )}`}
+            >
+              {ruleReviewLabel(credential.ruleReviewStatus)}
+            </span>
+          ) : null}
+          <p>
+            {credential.sourceTitle ??
+              "Confirm requirements and dates with the issuing organization, especially when rules or your credential status change."}
+          </p>
+          {credential.sourceUrl ? (
+            <a
+              className="button button-outline"
+              href={credential.sourceUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open official guidance
+              <Icon name="arrowUpRight" size={15} />
+            </a>
+          ) : (
+            <span className="custom-rule-label">
+              Entered manually · no official source attached
+            </span>
+          )}
+        </div>
+        {credential.status === "active" ? (
+          <div className="detail-footer">
+            <div>
+              <strong>
+                {isIsc2AutomaticRenewalCredential(credential)
+                  ? "Does the ISC2 Dashboard show CPEs and annual maintenance fees satisfied?"
+                  : isCompliancePeriodCredential(credential)
+                    ? "Does the official record show this period complete?"
+                  : "Finished your renewal submission?"}
+              </strong>
+              <p>
+                {isIsc2AutomaticRenewalCredential(credential)
+                  ? "Save this milestone separately from completed learning."
+                  : isCompliancePeriodCredential(credential)
+                    ? "Save this official milestone separately from completed learning."
+                  : "Log it separately from completed learning."}
+              </p>
+            </div>
+            <button
+              className="button button-primary"
+              type="button"
+              onClick={onSubmit}
+            >
+              {isIsc2AutomaticRenewalCredential(credential)
+                ? "Save dashboard checkpoint"
+                : isCompliancePeriodCredential(credential)
+                  ? "Record compliance"
+                : "Log submission"}
+            </button>
+          </div>
+        ) : credential.status === "submitted" ? (
+          <div className="detail-footer submitted-footer">
+            <div>
+              <strong>
+                {isIsc2AutomaticRenewalCredential(credential)
+                  ? "Awaiting ISC2 renewal"
+                  : isCompliancePeriodCredential(credential)
+                    ? "Compliance recorded"
+                  : "Renewal submitted"}{" "}
+                {formatDate(credential.submittedAt)}
+              </strong>
+              <p>
+                {credential.confirmationNumber
+                  ? `Confirmation: ${credential.confirmationNumber}`
+                  : "No confirmation number recorded."}
+              </p>
+            </div>
+            <button
+              className="button button-primary"
+              type="button"
+              onClick={onAccept}
+            >
+              {isIsc2AutomaticRenewalCredential(credential)
+                ? "Confirm renewed cycle"
+                : isCompliancePeriodCredential(credential)
+                  ? "Start next period"
+                : "Record acceptance"}
+            </button>
+          </div>
+        ) : (
+          <div className="detail-footer submitted-footer">
+            <div>
+              <strong>
+                {isCompliancePeriodCredential(credential)
+                  ? "Completed"
+                  : "Renewed"}{" "}
+                {formatDate(credential.acceptedAt)}
+              </strong>
+              <p>
+                {credential.acceptanceReference
+                  ? `Reference: ${credential.acceptanceReference}`
+                  : "This completed cycle is preserved in history."}
+              </p>
+            </div>
+            <span className="verified-chip">Historical cycle</span>
+          </div>
+        )}
+      </section>
     </div>
   );
 }

@@ -671,6 +671,71 @@ test("iTrack product contract", async (t) => {
     }
   });
 
+  await t.test("pushes credential detail onto the navigation stack", async () => {
+    // Opening a credential is a navigation, not a state swap: it writes a
+    // history entry, so the iOS back gesture, the browser back button and a
+    // refresh all land where the user expects. The list view therefore stops
+    // rendering the detail inline beside it.
+    const [clientSource, stylesSource] = await Promise.all([
+      readFile(new URL("../app/ITrackApp.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    ]);
+
+    assert.match(clientSource, /nav\.push\(\{ kind: "credential", id \}\)/);
+
+    // Both screens sit in the DOM together — the root parked underneath the
+    // pushed one — because the push/pop transition animates between them.
+    assert.match(
+      clientSource,
+      /className="screen-stack"[\s\S]{0,240}?screen screen-root[\s\S]{0,240}?screen-under/,
+    );
+    assert.match(
+      clientSource,
+      /className="screen screen-pushed">\s*<CredentialDetailScreen/,
+    );
+    assert.match(clientSource, /<CredentialDetailScreen[\s\S]{0,900}?onBack=\{/);
+    assert.match(clientSource, /nav\.pop/);
+
+    // A deep link naming a deleted credential falls back to the list root —
+    // but only once the workspace has arrived, or a cold /credentials/<id>
+    // load would bounce off before the credential it names existed.
+    assert.match(
+      clientSource,
+      /!workspace \|\| !detailCredentialId \|\| detailCredential[\s\S]{0,80}?navigateToTab\("credentials"\)/,
+    );
+    // Back, forward and deep links move the URL without a tap, so the
+    // app-wide credential selection that Today, the log sheet and the
+    // submission actions read is mirrored from the routed id.
+    assert.match(
+      clientSource,
+      /parseRoute\(window\.location\.pathname\)\.detail\?\.id[\s\S]{0,200}?setSelectedCredentialId\([\s\S]{0,240}?addEventListener\("popstate"/,
+    );
+
+    const listStart = clientSource.indexOf("function CredentialsView(");
+    const detailStart = clientSource.indexOf(
+      "function CredentialDetailScreen(",
+    );
+    assert.ok(listStart > 0, "CredentialsView should still exist");
+    assert.ok(
+      detailStart > listStart,
+      "CredentialDetailScreen should follow CredentialsView",
+    );
+    assert.doesNotMatch(
+      clientSource.slice(listStart, detailStart),
+      /credential-detail/,
+    );
+
+    // Every pushed screen carries the iOS header: a back control labelled
+    // with the screen it returns to, then this screen's own title.
+    assert.match(
+      clientSource,
+      /className="push-header"[\s\S]{0,400}?className="push-back"[\s\S]{0,240}?name="chevronLeft"[\s\S]{0,240}?<span>Credentials<\/span>[\s\S]{0,240}?className="push-title"/,
+    );
+    assert.match(stylesSource, /\.push-header \{/);
+    assert.match(stylesSource, /\.push-back \{/);
+    assert.match(stylesSource, /\.push-title \{/);
+  });
+
   await t.test("removes the disposable starter preview", async () => {
     const [page, layout, packageJson, previewFiles] = await Promise.all([
       readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -4289,7 +4354,10 @@ export {
       );
       assert.match(
         clientSource,
-        /selected\.totalRequired > 0[\s\S]*?"Checklist"[\s\S]*?selected\.totalRequired > 0[\s\S]*?This issuing organization does not set a general numeric[\s\S]*?continuing-education total/,
+        // Same copy, same branches — the detail moved from a pane inside
+        // CredentialsView onto its own pushed screen, where the binding it
+        // reads is named `credential` rather than `selected`.
+        /credential\.totalRequired > 0[\s\S]*?"Checklist"[\s\S]*?credential\.totalRequired > 0[\s\S]*?This issuing organization does not set a general numeric[\s\S]*?continuing-education total/,
       );
       assert.match(
         clientSource,
@@ -7305,7 +7373,9 @@ export {
       }
       assert.match(
         clientSource,
-        /<Icon name="plus"[\s\S]*?Add[\s\S]*?isCompliancePeriodCredential\(selected\)[\s\S]*?\? "compliance"[\s\S]*?: "renewal"[\s\S]*?date to calendar/,
+        // As above: the "add to calendar" control rode the detail onto the
+        // pushed screen, where its credential binding is `credential`.
+        /<Icon name="plus"[\s\S]*?Add[\s\S]*?isCompliancePeriodCredential\(credential\)[\s\S]*?\? "compliance"[\s\S]*?: "renewal"[\s\S]*?date to calendar/,
       );
       assert.match(
         clientSource,
