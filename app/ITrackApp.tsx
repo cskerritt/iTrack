@@ -1347,6 +1347,16 @@ function useEdgeSwipeBack(
     const onStart = (event: TouchEvent) => {
       const touch = event.touches[0];
       if (!touch) return;
+      // Whatever is on top owns the finger. A sheet covers the whole viewport,
+      // so an edge drag over one belongs to it — without this, pushing a sheet
+      // away would also pop the screen it is sitting on.
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        target.closest(".modal-backdrop") !== null
+      ) {
+        return;
+      }
       tracking = touch.clientX <= EDGE_SWIPE_ZONE;
       startX = touch.clientX;
       startY = touch.clientY;
@@ -1397,6 +1407,124 @@ function useEdgeSwipeBack(
       release();
     };
   }, [enabled, onBack, stackRef]);
+}
+
+// Below this width every modal is anchored to the bottom edge (see SHEET in
+// globals.css), which is the only shape a downward drag is a dismissal of.
+// Above it the dialog is centred and the gesture does not exist.
+const SHEET_MEDIA = "(max-width: 540px)";
+// How far the sheet has to be pushed before letting go means "close this", and
+// the sideways travel past which the finger is plainly doing something else.
+const SHEET_DISMISS_COMMIT = 120;
+const SHEET_DISMISS_ABANDON = 30;
+
+/**
+ * The platform's sheet dismissal: push the sheet back down and it goes.
+ *
+ * It may only start from the top of the sheet's own scroll — below that the
+ * finger belongs to the content, and a sheet that slides away while its reader
+ * is scrolling back up is the most irritating gesture a phone can have. The
+ * offset is published as a custom property rather than as React state for the
+ * same reason the back gesture does it: this runs on every frame of a drag.
+ */
+function useSheetDragDismiss(
+  cardRef: RefObject<HTMLElement | null>,
+  onDismiss: () => void,
+) {
+  // Read through a ref so the listeners are attached once, at mount, rather
+  // than re-attached — mid-drag, losing the gesture — every time the sheet's
+  // owner re-renders and hands down a fresh closure.
+  const dismissRef = useRef(onDismiss);
+  useEffect(() => {
+    dismissRef.current = onDismiss;
+  }, [onDismiss]);
+
+  useEffect(() => {
+    const card = cardRef.current;
+    if (!card || !window.matchMedia(SHEET_MEDIA).matches) return;
+    let startX = 0;
+    let startY = 0;
+    let tracking = false;
+    const release = () => {
+      tracking = false;
+      card.classList.remove("sheet-dragging");
+    };
+    const rest = () => {
+      release();
+      card.style.removeProperty("--sheet-drag");
+    };
+    const onStart = (event: TouchEvent) => {
+      const touch = event.touches[0];
+      if (!touch) return;
+      tracking = card.scrollTop <= 0;
+      startX = touch.clientX;
+      startY = touch.clientY;
+      if (tracking) card.classList.add("sheet-dragging");
+    };
+    const onMove = (event: TouchEvent) => {
+      if (!tracking) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      const dy = touch.clientY - startY;
+      const dx = Math.abs(touch.clientX - startX);
+      // Upwards is the content's own scroll, and a sideways drag is a swipe
+      // through something inside the sheet; neither is this gesture.
+      if (dy < 0 || (dx > SHEET_DISMISS_ABANDON && dx > dy)) {
+        rest();
+        return;
+      }
+      card.style.setProperty("--sheet-drag", `${dy}px`);
+    };
+    const onEnd = (event: TouchEvent) => {
+      if (!tracking) return;
+      const dy = event.changedTouches[0]
+        ? event.changedTouches[0].clientY - startY
+        : 0;
+      if (dy > SHEET_DISMISS_COMMIT) {
+        // The offset stays where the finger left it deliberately: the sheet
+        // unmounts on the next render, so clearing it here would paint one
+        // frame of the sheet snapping back up before it disappeared.
+        release();
+        dismissRef.current();
+        return;
+      }
+      rest();
+    };
+    card.addEventListener("touchstart", onStart, { passive: true });
+    card.addEventListener("touchmove", onMove, { passive: true });
+    card.addEventListener("touchend", onEnd);
+    card.addEventListener("touchcancel", onEnd);
+    return () => {
+      card.removeEventListener("touchstart", onStart);
+      card.removeEventListener("touchmove", onMove);
+      card.removeEventListener("touchend", onEnd);
+      card.removeEventListener("touchcancel", onEnd);
+    };
+  }, [cardRef]);
+}
+
+/*
+ * The phone's own answer to a tap. Haptics are the shell's to provide — the
+ * Capacitor plugin injects itself into the page at runtime — so this looks the
+ * plugin up on every call and does nothing when it is not there. That is the
+ * whole error path: on the web, and in any shell built before the plugin
+ * landed, a missing rumble is not a failure worth reporting.
+ */
+type HapticsPlugin = {
+  impact?: (options: { style: string }) => Promise<void> | void;
+};
+
+function hapticTap(style: "light" | "medium" = "light") {
+  if (typeof window === "undefined") return;
+  const haptics = (
+    window as unknown as {
+      Capacitor?: { Plugins?: { Haptics?: HapticsPlugin } };
+    }
+  ).Capacitor?.Plugins?.Haptics;
+  const impact = haptics?.impact?.({
+    style: style === "light" ? "LIGHT" : "MEDIUM",
+  });
+  void Promise.resolve(impact).catch(() => {});
 }
 
 export function ITrackApp() {
@@ -1551,6 +1679,7 @@ export function ITrackApp() {
   }, [activityDraft, draftStorageKey, selectedCredentialId]);
 
   const openActivityEntry = useCallback(() => {
+    hapticTap();
     // A stale message from an earlier attempt must not greet a fresh sheet.
     setError("");
     activityDraftPersistenceGeneration.current += 1;
@@ -2967,6 +3096,9 @@ export function ITrackApp() {
             allocatedUnits,
           )} applied to this credential.`,
     );
+    // The record is saved at this point whatever happens to the proof file
+    // below, and this is the confirmation the hand gets for it.
+    if (result) hapticTap("medium");
     if (result?.id && hasEvidenceFile && evidenceFile) {
       const uploaded = await uploadEvidence(result.id, evidenceFile);
       if (!uploaded) {
@@ -3303,6 +3435,9 @@ export function ITrackApp() {
           : "Renewal accepted. Your next cycle is ready.",
     );
     if (result) {
+      // The end of a renewal cycle is the one moment in this app worth
+      // feeling, so it gets the firmer of the two taps.
+      hapticTap("medium");
       setAcceptanceOpen(false);
       if (result.id) setSelectedCredentialId(result.id);
     }
@@ -3739,6 +3874,43 @@ export function ITrackApp() {
 
   const userName = workspace?.user.displayName ?? "Professional";
 
+  /*
+   * Tapping the tab you are already on is not a navigation. On this platform
+   * it means "take me back to the start of this tab": it pops whatever is
+   * stacked on it, and with nothing stacked it returns the tab to its own top.
+   * The scroll is left at `auto` so the stylesheet's smooth behaviour applies
+   * and the reduced-motion block can still take it away.
+   */
+  function selectTab(tab: TabName) {
+    hapticTap();
+    if (tab !== view) {
+      nav.setTab(tab);
+      return;
+    }
+    if (nav.route.detail) {
+      nav.popToRoot();
+      return;
+    }
+    window.scrollTo({ top: 0 });
+  }
+
+  /*
+   * The two shortcuts Home's cards take. Both re-point the app at the
+   * credential first, because the pushed screen, the log sheet and the
+   * submission actions all read that one selection; the log sheet additionally
+   * remembers what the selection was and puts it back if the sheet closes
+   * without saving, so a shortcut taken and abandoned leaves no trace.
+   */
+  function openCredentialDetail(id: string) {
+    setSelectedCredentialId(id);
+    nav.push({ kind: "credential", id });
+  }
+
+  function logCreditsFor(id: string) {
+    setSelectedCredentialId(id);
+    openActivityEntry();
+  }
+
   return (
     <div className="app-shell">
       <a className="skip-link" href="#main-content">
@@ -3746,7 +3918,7 @@ export function ITrackApp() {
       </a>
       <DesktopSidebar
         view={view}
-        onView={nav.setTab}
+        onView={selectTab}
         onAdd={openActivityEntry}
       />
 
@@ -3817,8 +3989,9 @@ export function ITrackApp() {
                   highlightedReminderKey={highlightedReminderKey}
                   onAddActivity={openActivityEntry}
                   onAddCredential={openCredentialSetup}
-                  onViewCredentials={() => nav.setTab("credentials")}
                   onViewRecords={() => nav.setTab("history")}
+                  onOpenCredential={openCredentialDetail}
+                  onLogCreditsFor={logCreditsFor}
                   onSubmit={openSubmission}
                   onAccept={openAcceptance}
                   onReminders={() => {
@@ -3870,10 +4043,7 @@ export function ITrackApp() {
                 <CredentialsView
                   credentials={workspace.credentials}
                   selectedId={selectedCredential?.id ?? ""}
-                  onSelect={(id) => {
-                    setSelectedCredentialId(id);
-                    nav.push({ kind: "credential", id });
-                  }}
+                  onSelect={openCredentialDetail}
                   onAdd={openCredentialSetup}
                 />
               ) : view === "history" ? (
@@ -3993,7 +4163,7 @@ export function ITrackApp() {
 
       <MobileNavigation
         view={view}
-        onView={nav.setTab}
+        onView={selectTab}
         onAdd={openActivityEntry}
       />
 
@@ -6253,6 +6423,7 @@ const ICON_SHAPES = {
   ),
   chevronDown: <path d="m6 9 6 6 6-6" />,
   chevronLeft: <path d="M15 18l-6-6 6-6" />,
+  chevronRight: <path d="m9 18 6-6-6-6" />,
   refresh: (
     <>
       <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
@@ -6496,8 +6667,9 @@ function TodayView({
   highlightedReminderKey,
   onAddActivity,
   onAddCredential,
-  onViewCredentials,
   onViewRecords,
+  onOpenCredential,
+  onLogCreditsFor,
   onSubmit,
   onAccept,
   onReminders,
@@ -6519,8 +6691,9 @@ function TodayView({
   highlightedReminderKey: string;
   onAddActivity: () => void;
   onAddCredential: () => void;
-  onViewCredentials: () => void;
   onViewRecords: () => void;
+  onOpenCredential: (credentialId: string) => void;
+  onLogCreditsFor: (credentialId: string) => void;
   onSubmit: () => void;
   onAccept: () => void;
   onReminders: () => void;
@@ -6658,9 +6831,12 @@ function TodayView({
       case "acceptance":
         onAccept();
         break;
+      // Both of these are about *this* credential — its unresolved rules, its
+      // preserved cycle — and both live on its own screen, so they open it
+      // rather than dropping the reader on the list to find it again.
       case "conditions":
       case "history":
-        onViewCredentials();
+        onOpenCredential(credential.id);
         break;
       case "learning":
         onAddActivity();
@@ -6731,7 +6907,7 @@ function TodayView({
             <button
               className="text-button"
               type="button"
-              onClick={onViewCredentials}
+              onClick={() => onOpenCredential(credential.id)}
             >
               View plan
               <Icon name="arrowRight" size={15} />
@@ -6838,11 +7014,36 @@ function TodayView({
                 }
               >
                 <span className="reminder-dot" aria-hidden="true" />
+                <button
+                  className="reminder-open"
+                  type="button"
+                  onClick={() => onOpenCredential(reminder.credentialId)}
+                >
+                  <span>
+                    <strong>{reminder.title}</strong>
+                    <small>{reminder.body}</small>
+                  </span>
+                  <span className="reminder-chevron" aria-hidden="true">
+                    <Icon name="chevronRight" size={16} />
+                  </span>
+                </button>
                 <div>
-                  <strong>{reminder.title}</strong>
-                  <p>{reminder.body}</p>
-                </div>
-                <div>
+                  {/*
+                   * A deadline is a check-in about credits still to earn, so
+                   * the log is offered here with this credential already
+                   * chosen. The other two kinds — a checklist step, a
+                   * submission waiting on its issuer — are not about credits,
+                   * and an action that does not fit the card is noise.
+                   */}
+                  {reminder.kind === "deadline" ? (
+                    <button
+                      className="reminder-log"
+                      type="button"
+                      onClick={() => onLogCreditsFor(reminder.credentialId)}
+                    >
+                      Log credits
+                    </button>
+                  ) : null}
                   <button
                     className="calendar-action"
                     type="button"
@@ -10234,6 +10435,7 @@ function Modal({
 }) {
   const backdropRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
+  useSheetDragDismiss(dialogRef, onClose);
 
   useEffect(() => {
     const backdrop = backdropRef.current;
@@ -10348,6 +10550,12 @@ function Modal({
         aria-labelledby="modal-title"
       >
         <header className="modal-header">
+          {/*
+           * Decorative: it says the sheet can be pushed away, and the gesture
+           * and the close button are what actually do it. Hung off the sticky
+           * header so scrolling the sheet cannot carry the handle out of view.
+           */}
+          <span className="sheet-grabber" aria-hidden="true" />
           <div>
             <span className="section-kicker">{eyebrow}</span>
             <h2 id="modal-title">{title}</h2>

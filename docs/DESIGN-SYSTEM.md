@@ -146,11 +146,20 @@ Display sizes sit outside the scale and are declared per component: same family,
 - Touch: `--tap-min 44px`, `--tap-comfortable 48px` — enforced on every control.
 - Press feedback: `--press-scale .98` over `--press-ease 180ms`; the
   reduced-motion block trades the scale for a dim by re-declaring the press tokens
-  only (composes with the dark block without conflict).
+  only (composes with the dark block without conflict). INTERACTION STATES keys
+  the press to the *element* — `button`, `summary`, `[role="button"]`, an anchor
+  dressed as a control, and the four labels that wrap a hidden input — never to a
+  list of class names, so a new control cannot ship without one. `-webkit-tap-highlight-color`
+  is cleared on `*`.
 - Screen transitions: `--screen-ease` (the platform push curve), `--screen-push
   340ms`, `--screen-pop 300ms`, `--screen-bleed 12px`. See the SCREEN STACK
   section of `globals.css` for how the pushed screen, the parked root and the
   edge-swipe drag share them.
+- Sheets: below 540px every modal is bottom-anchored, and SHEET reuses the same
+  three motion tokens — `sheet-up` on entry, `--sheet-drag` published on the card
+  by the dismiss gesture exactly as `--screen-drag` is on the stack. The grabber
+  is `aria-hidden` decoration hung off the sticky header; the close button and
+  the gesture are the real controls.
 
 ## Scheme mechanics
 

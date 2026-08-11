@@ -633,8 +633,14 @@ textarea {
   font-size: max(var(--text-control), 1em);
 }
 
-button,
-a {
+/*
+ * The grey box a mobile browser paints over whatever was last tapped is the
+ * single clearest tell that a screen is a web page rather than an app, and it
+ * lands on more than `button, a`: the label-wrapped rows, the summary
+ * disclosures and anything carrying [role="button"] are tap targets too. The
+ * press answer this replaces it with is declared once, in INTERACTION STATES.
+ */
+* {
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -2108,10 +2114,41 @@ a {
   font-size: var(--text-sm);
 }
 
-.reminder-list p {
-  margin: 2px 0 0;
+/*
+ * The check-in itself is the control: the whole text block opens the
+ * credential it is about, which is the shortest path from "this needs
+ * attention" to the thing that needs it, and the chevron is what says so. It
+ * has to undo the action styling above — those are the small amber verbs to
+ * its right, this is the row. Its hover is the article's, not its own, so the
+ * row lights as one surface rather than in patches.
+ */
+.reminder-list .reminder-open {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  border-radius: 8px;
+  color: inherit;
+  font-weight: inherit;
+  gap: 10px;
+  padding: 4px 0;
+  text-align: left;
+}
+
+.reminder-list .reminder-open:hover {
+  background: transparent;
+}
+
+.reminder-open small {
+  display: block;
+  margin-top: 2px;
   color: var(--ink-warm);
   font-size: var(--text-xs);
+}
+
+.reminder-chevron {
+  display: grid;
+  place-items: center;
+  color: var(--ink-warm);
 }
 
 .reminder-list article > div:last-child {
@@ -2136,7 +2173,8 @@ a {
   background: var(--tint-amber);
 }
 
-.reminder-list .calendar-action {
+.reminder-list .calendar-action,
+.reminder-list .reminder-log {
   border: 1px solid var(--edge-amber-ink);
   background: rgb(var(--lift-rgb) / 0.62);
 }
@@ -3842,7 +3880,18 @@ a {
     calc(24px + env(safe-area-inset-right))
     calc(24px + env(safe-area-inset-bottom))
     calc(24px + env(safe-area-inset-left));
+  animation: sheet-scrim var(--screen-pop) var(--screen-ease);
   backdrop-filter: blur(5px);
+}
+
+@keyframes sheet-scrim {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 .modal-card {
@@ -3860,6 +3909,38 @@ a {
   border-radius: 22px;
   background: var(--card);
   box-shadow: var(--shadow-lg);
+}
+
+/*
+ * SHEET — below 540px every modal is anchored to the bottom edge (see the
+ * phone block near the end of this file), which on this platform is a sheet,
+ * and a sheet owes the reader two things a centred dialog does not.
+ *
+ * The grabber is the first: a sheet that can be pushed away says so, and the
+ * bar is the only thing that says it. It is decorative — the close button and
+ * the gesture are the actual controls — so it is hidden from the reader that
+ * cannot see it, and it hangs off the sticky header rather than sitting in the
+ * flow, so scrolling the sheet's content cannot scroll the handle away from
+ * the edge it belongs to.
+ *
+ * The drag is the second: --sheet-drag is published on the card by the
+ * dismiss gesture, in the same shape the back gesture uses on the screen stack
+ * (see SCREEN STACK). Unset — every moment no finger is down — the fallback
+ * leaves the sheet where it belongs; while a finger is down the card is placed
+ * by the finger and not by a curve, which is what .sheet-dragging turns off.
+ */
+.sheet-grabber {
+  display: none;
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+
+  to {
+    transform: translateY(0);
+  }
 }
 
 .modal-header {
@@ -5415,41 +5496,26 @@ a {
  * is what keeps the 4px-gap lists from twitching when one row is pressed.
  * Colour and border are in the same transition so a hover and a press read as
  * one gesture rather than two.
+ *
+ * These are keyed to the element rather than to a list of class names, because
+ * an enumerated list is a list that will be out of date: a control added
+ * tomorrow has to answer a tap without anyone remembering to come back here.
+ * Only four kinds of thing take a press — a button, a summary disclosure, an
+ * anchor dressed as a control, and a label wrapping a hidden input, which is
+ * how the choice rows and the file pickers are built — so those four are named
+ * and nothing else is. A bare in-text link is deliberately not one of them: it
+ * is a word in a sentence, and a word that shrinks when touched reads as a
+ * mistake.
  */
-.button,
-.nav-button,
-.sidebar-add,
-.mobile-add,
-.avatar-button,
-.card-link,
-.text-button,
-.modal-close,
-.mode-switch button,
-.condition-change,
-.field-inline-action,
-.reminder-setting-link,
-.proof-action,
-.task-add-button,
-.task-edit-button,
-.record-manage button,
-.archived-item button,
-.archived-items > summary,
-.quest-row button,
-.reminder-list button,
-.submitted-note-action button,
-.empty-inline button,
-.requirement-condition-actions button,
-.dental-checkpoint-actions button,
-.draft-safety-note button,
-.capture-file button,
-.capture-button,
-.archive-trigger,
-.error-banner button,
-.toast button,
-.credential-picker > button,
-.push-back,
+button,
+summary,
+[role="button"],
+a.button,
+a.task-add-button,
+.task-toggle,
 .requirement-choice,
 .weekly-goal-option,
+.capture-button,
 .condition-options span,
 .segmented-field span,
 .check-grid span {
@@ -5462,39 +5528,22 @@ a {
     color var(--press-ease);
 }
 
-.button:active:not(:disabled):not(.disabled),
-.nav-button:active,
-.sidebar-add:active,
-.mobile-add:active,
-.avatar-button:active,
-.card-link:active,
-.text-button:active,
-.modal-close:active,
-.mode-switch button:active,
-.condition-change:active,
-.field-inline-action:active,
-.reminder-setting-link:active,
-.proof-action:active,
-.task-add-button:active:not(:disabled),
-.task-edit-button:active:not(:disabled),
-.record-manage button:active:not(:disabled),
-.archived-item button:active:not(:disabled),
-.quest-row button:active:not(:disabled),
-.reminder-list button:active,
-.submitted-note-action button:active,
-.empty-inline button:active,
-.requirement-condition-actions button:active,
-.dental-checkpoint-actions button:active:not(:disabled),
-.draft-safety-note button:active:not(:disabled),
-.capture-file button:active:not(:disabled),
-.capture-button:active,
-.archive-trigger:active:not(:disabled),
-.error-banner button:active,
-.toast button:active,
-.credential-picker > button:active,
-.push-back:active,
-.requirement-choice:active,
-.weekly-goal-option:active,
+/*
+ * A label is pressed even when the control it wraps is dead — :active is the
+ * label's, not the input's — so the rows that press as a whole ask about their
+ * own input. The three that press a span inside themselves are answered by the
+ * DISABLED block below instead, on source order. Everything else carries the
+ * state on the element that would refuse the click itself.
+ */
+button:active:not(:disabled),
+summary:active,
+[role="button"]:active,
+a.button:active:not(.disabled),
+a.task-add-button:active,
+.task-toggle:active:not(:has(input:disabled)),
+.requirement-choice:active:not(:has(input:disabled)),
+.weekly-goal-option:active:not(:has(input:disabled)),
+.capture-button:active:not(:has(input:disabled)),
 .condition-options label:active span,
 .segmented-field label:active span,
 .check-grid label:active span {
@@ -6268,11 +6317,31 @@ button:disabled:active {
     max-height: calc(94vh - env(safe-area-inset-top));
     max-height: calc(94dvh - env(safe-area-inset-top));
     border-radius: 24px 24px 0 0;
+    transform: translateY(var(--sheet-drag, 0px));
+    transition: transform var(--screen-pop) var(--screen-ease);
+    animation: sheet-up var(--screen-push) var(--screen-ease);
+    will-change: transform;
+  }
+
+  .modal-card.sheet-dragging {
+    transition: none;
+  }
+
+  .sheet-grabber {
+    position: absolute;
+    top: 7px;
+    left: 50%;
+    display: block;
+    width: 36px;
+    height: 5px;
+    margin-left: -18px;
+    border-radius: 3px;
+    background: var(--line-strong);
   }
 
   .modal-header {
     padding:
-      19px
+      22px
       max(18px, env(safe-area-inset-right))
       15px
       max(18px, env(safe-area-inset-left));

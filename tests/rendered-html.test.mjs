@@ -848,6 +848,118 @@ test("iTrack product contract", async (t) => {
     );
   });
 
+  await t.test("answers touch the way the platform does", async () => {
+    const [clientSource, stylesSource] = await Promise.all([
+      readFile(new URL("../app/ITrackApp.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    ]);
+
+    // The grey flash a mobile browser paints over a tapped control is the
+    // clearest tell that a screen is a web page. It goes everywhere, not just
+    // on `button, a`: the label-wrapped rows are tap targets too.
+    assert.match(
+      stylesSource,
+      /^\* \{\n  -webkit-tap-highlight-color: transparent;\n\}/m,
+    );
+
+    // The press answer is keyed to the element, not to an enumerated list of
+    // class names, so a control added tomorrow cannot ship without one. A row
+    // whose own control is disabled still says nothing back.
+    assert.match(
+      stylesSource,
+      /button:active:not\(:disabled\)[\s\S]{0,700}?opacity: var\(--press-dim\);\n  transform: scale\(var\(--press-scale\)\);/,
+    );
+    assert.match(
+      stylesSource,
+      /\.task-toggle:active:not\(:has\(input:disabled\)\)/,
+    );
+
+    // Every modal is a bottom sheet on a phone, so it carries the platform's
+    // two affordances: a grabber that says it can be pushed away, and a drag
+    // that does it — from the top of its own scroll only, since below that the
+    // finger belongs to the content.
+    assert.match(clientSource, /className="sheet-grabber"/);
+    assert.match(stylesSource, /\.sheet-grabber \{/);
+    assert.match(
+      stylesSource,
+      /@keyframes sheet-up \{[\s\S]{0,200}?translateY\(100%\)/,
+    );
+    assert.match(
+      stylesSource,
+      /\.modal-card \{[^}]*animation: sheet-up var\(--screen-push\) var\(--screen-ease\)/,
+    );
+    assert.match(
+      stylesSource,
+      /\.modal-card \{[^}]*transform: translateY\(var\(--sheet-drag, 0px\)\)/,
+    );
+    assert.match(
+      stylesSource,
+      /\.modal-card\.sheet-dragging \{[^}]*transition: none/,
+    );
+    assert.match(clientSource, /setProperty\(\s*"--sheet-drag"/);
+    assert.match(
+      clientSource,
+      /card\.scrollTop <= 0[\s\S]{0,1200}?> SHEET_DISMISS_COMMIT/,
+    );
+
+    // Whatever is on top owns the finger: with a sheet up, an edge drag must
+    // not pop the screen underneath it.
+    assert.match(clientSource, /closest\("\.modal-backdrop"\)/);
+
+    // Haptics belong to the shell. The web build looks the plugin up and
+    // carries on without it rather than requiring one.
+    assert.match(clientSource, /Capacitor\?\.Plugins\?\.Haptics/);
+    assert.match(
+      clientSource,
+      /function selectTab\(tab: TabName\) \{\n    hapticTap\(\);/,
+    );
+    assert.match(
+      clientSource,
+      /const openActivityEntry = useCallback\(\(\) => \{[\s\S]{0,200}?hapticTap\(\);/,
+    );
+    assert.match(
+      clientSource,
+      /"addActivity",[\s\S]{0,2400}?hapticTap\("medium"\);/,
+    );
+    assert.match(
+      clientSource,
+      /"markRenewalAccepted",[\s\S]{0,1600}?hapticTap\("medium"\);/,
+    );
+
+    // Re-tapping the tab you are on is not a navigation: it pops what is
+    // stacked on that tab, and with nothing stacked it returns to the top.
+    assert.match(
+      clientSource,
+      /tab !== view[\s\S]{0,140}?nav\.setTab\(tab\);[\s\S]{0,200}?nav\.popToRoot\(\);[\s\S]{0,200}?window\.scrollTo\(\{ top: 0 \}\)/,
+    );
+
+    // Home's "needs attention" cards are the shortest path to the thing that
+    // needs it: the card opens that credential, and a deadline offers the
+    // credit log already pointed at it.
+    assert.match(
+      clientSource,
+      /className="reminder-open"[\s\S]{0,300}?onOpenCredential\(reminder\.credentialId\)/,
+    );
+    assert.match(
+      clientSource,
+      /onLogCreditsFor\(reminder\.credentialId\)[\s\S]{0,120}?>\s*Log credits/,
+    );
+    // One implementation of "open this credential" and one of "log against
+    // this credential", shared by Home's cards and the credential list, both
+    // re-pointing the app's selection before they navigate.
+    assert.match(
+      clientSource,
+      /function openCredentialDetail\(id: string\) \{\n    setSelectedCredentialId\(id\);\n    nav\.push\(\{ kind: "credential", id \}\);\n  \}/,
+    );
+    assert.match(
+      clientSource,
+      /function logCreditsFor\(id: string\) \{\n    setSelectedCredentialId\(id\);\n    openActivityEntry\(\);\n  \}/,
+    );
+    assert.match(clientSource, /onOpenCredential=\{openCredentialDetail\}/);
+    assert.match(clientSource, /onLogCreditsFor=\{logCreditsFor\}/);
+    assert.match(clientSource, /onSelect=\{openCredentialDetail\}/);
+  });
+
   await t.test("removes the disposable starter preview", async () => {
     const [page, layout, packageJson, previewFiles] = await Promise.all([
       readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
