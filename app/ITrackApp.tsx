@@ -57,6 +57,13 @@ import {
 } from "./lib/floridaMentalHealth";
 import { isExpandedCertificationRuleSetId } from "./lib/expandedCertifications";
 import {
+  buildPath,
+  parseRoute,
+  type DetailRoute,
+  type Route,
+  type TabName,
+} from "./lib/navigation";
+import {
   nextRequirementSelection,
   requirementIncompatibilityMessage,
 } from "./lib/requirementCompatibility";
@@ -332,7 +339,6 @@ type Reminder = {
   urgency: "overdue" | "today" | "soon";
 };
 
-type ViewName = "today" | "credentials" | "records" | "account";
 type ToastState = {
   message: string;
   undo?: () => void;
@@ -1246,9 +1252,67 @@ function questActionKey(questKey: string) {
 
 const WEEKLY_GOAL_ACTION_KEY = "weeklyGoal";
 
+const HOME_ROUTE: Route = { tab: "home", detail: null };
+
+/**
+ * The app's navigation stack, backed by real browser history.
+ *
+ * Tabs are roots and switching between them *replaces* the entry, so the
+ * hardware/edge-swipe back gesture never walks backwards through a trail of
+ * tab taps — it leaves the app, which is what iOS does. Detail screens push,
+ * so back pops them. `pushDepth` tracks only the entries this app created:
+ * without it `pop()` on a cold deep link would call `history.back()` into
+ * whatever page the user was on before iTrack.
+ */
+function useNavigation() {
+  // Deliberately *not* seeded from `window.location` — the server renders this
+  // component with no window, so it always emits the home root. Seeding the
+  // client differently would make a deep link like /credentials disagree with
+  // the server HTML and throw the hydrated tree away; the mount effect below
+  // adopts the real URL one render later instead.
+  const [route, setRoute] = useState<Route>(HOME_ROUTE);
+  const pushDepth = useRef(0);
+  useEffect(() => {
+    const syncFromLocation = () =>
+      setRoute(parseRoute(window.location.pathname));
+    syncFromLocation();
+    const onPop = () => {
+      pushDepth.current = Math.max(0, pushDepth.current - 1);
+      syncFromLocation();
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  const setTab = useCallback((tab: TabName) => {
+    const next: Route = { tab, detail: null };
+    window.history.replaceState(window.history.state, "", buildPath(next));
+    pushDepth.current = 0;
+    setRoute(next);
+  }, []);
+  const push = useCallback((detail: DetailRoute) => {
+    setRoute((current) => {
+      const next: Route = { tab: current.tab, detail };
+      window.history.pushState(null, "", buildPath(next));
+      pushDepth.current += 1;
+      return next;
+    });
+  }, []);
+  const pop = useCallback(() => {
+    if (pushDepth.current > 0) window.history.back();
+    else setTab(parseRoute(window.location.pathname).tab);
+  }, [setTab]);
+  const popToRoot = pop; // single-level stack today; alias kept for tab re-tap
+  return { route, setTab, push, pop, popToRoot };
+}
+
 export function ITrackApp() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
-  const [view, setView] = useState<ViewName>("today");
+  const nav = useNavigation();
+  const view = nav.route.tab;
+  // Pulled out because it is stable for the component's lifetime (a
+  // no-dependency useCallback) while `nav` itself is a fresh object every
+  // render — effects can depend on this without re-running constantly.
+  const navigateToTab = nav.setTab;
   const [selectedCredentialId, setSelectedCredentialId] = useState("");
   const [activityOpen, setActivityOpen] = useState(false);
   const [credentialOpen, setCredentialOpen] = useState(false);
@@ -1766,7 +1830,14 @@ export function ITrackApp() {
   useEffect(() => {
     if (!workspace || !pendingReminderLaunch) return;
     const controller = new AbortController();
-    window.history.replaceState(window.history.state, "", "/");
+    // Scrub the one-time `?delivery=` token out of the address bar so a
+    // refresh cannot replay it. The path itself belongs to the router now, so
+    // keep whatever route we are on rather than pinning back to "/".
+    window.history.replaceState(
+      window.history.state,
+      "",
+      window.location.pathname,
+    );
     void (async () => {
       try {
         const response = await fetch(
@@ -1818,7 +1889,7 @@ export function ITrackApp() {
           return;
         }
         setSelectedCredentialId(credential.id);
-        setView("today");
+        navigateToTab("home");
         setHighlightedReminderKey(reminder?.key ?? "");
         if (!reminder) {
           setToast({
@@ -1837,10 +1908,10 @@ export function ITrackApp() {
       }
     })();
     return () => controller.abort();
-  }, [pendingReminderLaunch, workspace]);
+  }, [navigateToTab, pendingReminderLaunch, workspace]);
 
   useEffect(() => {
-    if (!highlightedReminderKey || view !== "today") return;
+    if (!highlightedReminderKey || view !== "home") return;
     const timeout = window.setTimeout(() => {
       const reminderElement = Array.from(
         document.querySelectorAll<HTMLElement>("[data-reminder-key]"),
@@ -2714,7 +2785,7 @@ export function ITrackApp() {
         formElement.reset();
         setToast({
           message:
-            "Activity saved, but the proof file did not upload. You can add it from Records.",
+            "Activity saved, but the proof file did not upload. You can add it from History.",
         });
         return;
       }
@@ -3484,7 +3555,11 @@ export function ITrackApp() {
       <a className="skip-link" href="#main-content">
         Skip to content
       </a>
-      <DesktopSidebar view={view} onView={setView} onAdd={openActivityEntry} />
+      <DesktopSidebar
+        view={view}
+        onView={nav.setTab}
+        onAdd={openActivityEntry}
+      />
 
       <div className="app-stage">
         <header className="mobile-header">
@@ -3493,7 +3568,7 @@ export function ITrackApp() {
             className="avatar-button"
             type="button"
             aria-label="Open account"
-            onClick={() => setView("account")}
+            onClick={() => nav.setTab("profile")}
           >
             {firstName(userName).slice(0, 1).toUpperCase()}
           </button>
@@ -3539,7 +3614,7 @@ export function ITrackApp() {
             ) : (
               <LoadingDashboard />
             )
-          ) : view === "today" ? (
+          ) : view === "home" ? (
             <TodayView
               workspace={workspace}
               credential={selectedCredential}
@@ -3547,8 +3622,8 @@ export function ITrackApp() {
               highlightedReminderKey={highlightedReminderKey}
               onAddActivity={openActivityEntry}
               onAddCredential={openCredentialSetup}
-              onViewCredentials={() => setView("credentials")}
-              onViewRecords={() => setView("records")}
+              onViewCredentials={() => nav.setTab("credentials")}
+              onViewRecords={() => nav.setTab("history")}
               onSubmit={openSubmission}
               onAccept={openAcceptance}
               onReminders={() => {
@@ -3640,7 +3715,7 @@ export function ITrackApp() {
               actionsDisabled={!isOnline}
               pendingActionKeys={pendingActionKeys}
             />
-          ) : view === "records" ? (
+          ) : view === "history" ? (
             <RecordsView
               activities={workspace.activities}
               archivedActivities={workspace.archivedActivities}
@@ -3703,7 +3778,11 @@ export function ITrackApp() {
         </main>
       </div>
 
-      <MobileNavigation view={view} onView={setView} onAdd={openActivityEntry} />
+      <MobileNavigation
+        view={view}
+        onView={nav.setTab}
+        onAdd={openActivityEntry}
+      />
 
       {activityOpen && workspace ? (
         <Modal
@@ -5275,7 +5354,7 @@ export function ITrackApp() {
                 <small>
                   {workspace.reminderPreferences.activePushDeviceCount === 0 &&
                   !workspace.reminderPreferences.pushEnabled
-                    ? "Connect this device from Account before turning on phone alerts."
+                    ? "Connect this device from Profile before turning on phone alerts."
                     : "Deliver private check-ins to devices you explicitly connect."}
                 </small>
               </span>
@@ -5360,7 +5439,7 @@ export function ITrackApp() {
               <p>
                 In-app check-ins stay inside iTrack. Phone alerts use
                 generic lock-screen copy and only reach devices you connect
-                from Account. Your calendar can alert on the lead days selected here;
+                from Profile. Your calendar can alert on the lead days selected here;
                 your calendar controls final delivery.
               </p>
             </div>
@@ -5412,7 +5491,7 @@ export function ITrackApp() {
                     Tap the Share button, then choose <strong>Add to Home Screen</strong>.
                   </li>
                   <li>
-                    Open the new iTrack icon and return to Account to turn on
+                    Open the new iTrack icon and return to Profile to turn on
                     phone alerts.
                   </li>
                 </ol>
@@ -6067,8 +6146,8 @@ function DesktopSidebar({
   onView,
   onAdd,
 }: {
-  view: ViewName;
-  onView: (view: ViewName) => void;
+  view: TabName;
+  onView: (view: TabName) => void;
   onAdd: () => void;
 }) {
   return (
@@ -6076,10 +6155,10 @@ function DesktopSidebar({
       <Brand />
       <nav aria-label="Primary navigation">
         <NavButton
-          active={view === "today"}
-          label="Today"
+          active={view === "home"}
+          label="Home"
           icon="home"
-          onClick={() => onView("today")}
+          onClick={() => onView("home")}
         />
         <NavButton
           active={view === "credentials"}
@@ -6088,16 +6167,16 @@ function DesktopSidebar({
           onClick={() => onView("credentials")}
         />
         <NavButton
-          active={view === "records"}
-          label="Records"
+          active={view === "history"}
+          label="History"
           icon="listRows"
-          onClick={() => onView("records")}
+          onClick={() => onView("history")}
         />
         <NavButton
-          active={view === "account"}
-          label="Account"
+          active={view === "profile"}
+          label="Profile"
           icon="userCircle"
-          onClick={() => onView("account")}
+          onClick={() => onView("profile")}
         />
       </nav>
       {/*
@@ -6123,17 +6202,17 @@ function MobileNavigation({
   onView,
   onAdd,
 }: {
-  view: ViewName;
-  onView: (view: ViewName) => void;
+  view: TabName;
+  onView: (view: TabName) => void;
   onAdd: () => void;
 }) {
   return (
     <nav className="mobile-nav" aria-label="Primary navigation">
       <NavButton
-        active={view === "today"}
-        label="Today"
+        active={view === "home"}
+        label="Home"
         icon="home"
-        onClick={() => onView("today")}
+        onClick={() => onView("home")}
       />
       <NavButton
         active={view === "credentials"}
@@ -6155,16 +6234,16 @@ function MobileNavigation({
         <Icon name="plus" size={24} />
       </button>
       <NavButton
-        active={view === "records"}
-        label="Records"
+        active={view === "history"}
+        label="History"
         icon="listRows"
-        onClick={() => onView("records")}
+        onClick={() => onView("history")}
       />
       <NavButton
-        active={view === "account"}
-        label="Account"
+        active={view === "profile"}
+        label="Profile"
         icon="userCircle"
-        onClick={() => onView("account")}
+        onClick={() => onView("profile")}
       />
     </nav>
   );
@@ -8218,7 +8297,7 @@ function ActivityEditorModal({
             </span>
             <p>
               <strong>Proof status stays unchanged</strong>
-              <small>{proofSummary}. Manage proof separately in Records.</small>
+              <small>{proofSummary}. Manage proof separately in History.</small>
             </p>
           </div>
           <div className="form-actions">
@@ -8545,7 +8624,7 @@ function AccountView({
   return (
     <div className="view-stack">
       <PageGreeting
-        eyebrow="Account"
+        eyebrow="Profile"
         title="A renewal system that stays yours."
         body="Your identity, momentum, and product safeguards in one place."
       />

@@ -640,12 +640,35 @@ test("iTrack product contract", async (t) => {
     assert.match(html, /aria-label="iTrack"/i);
     assert.match(html, /Skip to content/i);
     assert.match(html, /aria-label="Primary navigation"/i);
-    assert.match(html, />Today<\/span>/i);
+    assert.match(html, />Home<\/span>/i);
     assert.match(html, />Credentials<\/span>/i);
-    assert.match(html, />Records<\/span>/i);
-    assert.match(html, />Account<\/span>/i);
+    assert.match(html, />History<\/span>/i);
+    assert.match(html, />Profile<\/span>/i);
     assert.match(html, /aria-label="Loading iTrack"/i);
     assert.match(html, /Loading your renewal workspace/i);
+  });
+
+  await t.test("serves the app shell at every routed tab path", async () => {
+    // The nav stack writes real URLs (app/lib/navigation.ts), so a refresh, a
+    // deep link, or the iOS shell reloading its `server.url` can land on any
+    // of these. Each has to return the same shell rather than a 404, and each
+    // has to hydrate against the home root — the server has no window, so the
+    // tab is only adopted client-side.
+    for (const path of [
+      "/",
+      "/credentials",
+      "/credentials/cred-1",
+      "/history",
+      "/profile",
+    ]) {
+      const response = await fetchWorker(`http://localhost${path}`, {
+        headers: { accept: "text/html" },
+      });
+      assert.equal(response.status, 200, `${path} should render the app`);
+      const html = await response.text();
+      assert.match(html, /aria-label="Primary navigation"/i, path);
+      assert.match(html, /aria-label="Loading iTrack"/i, path);
+    }
   });
 
   await t.test("removes the disposable starter preview", async () => {
