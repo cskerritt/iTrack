@@ -19,6 +19,7 @@ const SCRYPT = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 export class AuthError extends Error {
   constructor(code, message) {
     super(message ?? code);
+    this.name = "AuthError";
     this.code = code;
   }
 }
@@ -49,6 +50,10 @@ export function verifyPassword(password, stored) {
 function sha256Hex(value) {
   return createHash("sha256").update(value).digest("hex");
 }
+
+// Precomputed dummy hash so unknown-email logins cost exactly one scrypt,
+// same as known emails (avoids a timing oracle on account existence).
+const DUMMY_STORED = hashPassword("missing-user-placeholder");
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -165,7 +170,7 @@ export class AuthStore {
       )
       .get(String(email ?? "").trim().toLowerCase());
     // Always burn a hash comparison so unknown emails cost the same time.
-    const stored = row?.password_scrypt ?? hashPassword("missing-user-placeholder");
+    const stored = row?.password_scrypt ?? DUMMY_STORED;
     const matches = verifyPassword(String(password ?? ""), stored);
     if (!row || !matches) return { ok: false, reason: "bad-credentials" };
     if (row.verified_at === null) return { ok: false, reason: "unverified" };
