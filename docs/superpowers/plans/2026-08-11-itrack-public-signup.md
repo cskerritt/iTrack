@@ -2066,7 +2066,9 @@ git add deploy/railway/gateway.mjs deploy/railway/serve.mjs tests/auth-gateway.t
 git commit -m "feat: auth gateway with landing page, sessions, and Basic compat"
 ```
 
----### Task 6: Dockerfile, test script flag, local Docker smoke
+---
+
+### Task 6: Dockerfile, test script flag, local Docker smoke
 
 **Files:**
 - Modify: `Dockerfile` (CMD line)
