@@ -18,4 +18,4 @@ ENV PERSIST_DIR=/data/wrangler-state
 
 EXPOSE 8080
 
-CMD ["node", "deploy/railway/serve.mjs"]
+CMD ["node", "--experimental-sqlite", "deploy/railway/serve.mjs"]
