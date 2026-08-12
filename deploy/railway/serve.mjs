@@ -2,21 +2,25 @@
 //
 // The app is built for Cloudflare Workers, so this process supervises
 // wrangler's local runtime (workerd) serving the production build with
-// file-backed D1/R2 state, and fronts it with a Basic Auth proxy that
-// injects the trusted `oai-authenticated-user-*` identity headers the
-// worker expects from its normal hosting platform. It also fires the
-// */15 cron trigger that delivers scheduled push reminders.
+// file-backed D1/R2 state, and fronts it with an auth proxy (Basic Auth
+// plus self-serve signup accounts; see gateway.mjs) that injects the
+// trusted `oai-authenticated-user-*` identity headers the worker expects
+// from its normal hosting platform. It also fires the */15 cron trigger
+// that delivers scheduled push reminders.
 //
-// One path opts out of Basic Auth — the iOS widget feed, which carries its
-// own bearer token for the worker to check; see WIDGET_FEED_PATH below.
+// One path opts out of auth entirely — the iOS widget feed, which carries
+// its own bearer token for the worker to check; see WIDGET_FEED_PATH in
+// gateway.mjs.
 //
 // Configuration (environment):
 //   PORT          public listen port (Railway sets this)
 //   ITRACK_USERS  semicolon-separated "username:password:email[:Display Name]"
 //                 entries; required unless ITRACK_OPEN_IDENTITY is set — the
-//                 proxy fails closed without one of the two
-//                 (VIGILO_USERS, then LANTERN_USERS, are accepted as legacy
-//                 fallbacks from the product's earlier names)
+//                 process fails closed at startup without a bootstrap
+//                 identity source, even though self-serve signup accounts
+//                 (SQLite) also exist (VIGILO_USERS, then LANTERN_USERS, are
+//                 accepted as legacy fallbacks from the product's earlier
+//                 names)
 //   ITRACK_OPEN_IDENTITY
 //                 "email[:Display Name]" — DISABLES authentication entirely and
 //                 signs every visitor in as this identity. Anyone with the URL
@@ -27,8 +31,15 @@
 //                 mount a Railway volume at /data or all data is lost on deploy
 
 import { spawn } from "node:child_process";
-import { timingSafeEqual, createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import http from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { AuthStore } from "./auth.mjs";
+import { createAuthRoutes } from "./auth-routes.mjs";
+import { createResendSender } from "./email.mjs";
+import { createGateway } from "./gateway.mjs";
 
 const PUBLIC_PORT = Number.parseInt(process.env.PORT ?? "8080", 10);
 const WORKER_PORT = 8787;
@@ -78,37 +89,13 @@ const USERS = parseUsers(
     process.env.LANTERN_USERS,
 );
 if (USERS.size === 0 && !OPEN_IDENTITY) {
+  // Fail closed: self-serve signup accounts exist, but a bootstrap identity
+  // source is still required. A lost env var must fail loudly at startup,
+  // not quietly 401 the iOS app.
   console.error(
-    "Refusing to start: set ITRACK_USERS (username:password:email[:Display Name]; ...) or ITRACK_OPEN_IDENTITY (email[:Display Name])",
+    "Refusing to start: no ITRACK_USERS or ITRACK_OPEN_IDENTITY configured. Self-serve signup accounts exist, but a bootstrap identity source is still required.",
   );
   process.exit(1);
-}
-
-function digest(value) {
-  return createHash("sha256").update(value).digest();
-}
-
-function safeEqual(left, right) {
-  return timingSafeEqual(digest(left), digest(right));
-}
-
-function authenticate(header) {
-  if (!header?.startsWith("Basic ")) return null;
-  let decoded;
-  try {
-    decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
-  } catch {
-    return null;
-  }
-  const separator = decoded.indexOf(":");
-  if (separator === -1) return null;
-  const username = decoded.slice(0, separator);
-  const password = decoded.slice(separator + 1);
-  const user = USERS.get(username);
-  // Always compare against something so unknown usernames cost the same time.
-  const expected = user?.password ?? "missing-user-placeholder";
-  const matches = safeEqual(password, expected);
-  return user && matches ? user : null;
 }
 
 // Shared only between this process and the worker it spawns; authorizes the
@@ -203,94 +190,63 @@ async function fireCron() {
   } catch (error) {
     console.error("[cron] trigger failed", error);
   }
+  try {
+    const { removedUsers } = store.cleanup();
+    if (removedUsers > 0) console.log(`[auth] cleaned up ${removedUsers} stale unverified account(s)`);
+  } catch (error) {
+    console.error("[auth] cleanup failed", error);
+  }
 }
 
-// The iOS widget feed authenticates a *device* with its own bearer token,
-// checked inside the worker against ITRACK_WIDGET_TOKEN. It therefore cannot
-// pass this proxy's Basic gate (a widget extension has no password prompt),
-// and its Authorization header has to survive the strip below or the worker
-// would only ever see an anonymous request. Both exemptions are scoped to
-// this one exact path: no prefix match, so nothing under a similar-looking
-// path inherits them.
-const WIDGET_FEED_PATH = "/api/widget-summary";
+// Request handling (Basic Auth, widget-feed exemption, self-serve auth
+// routes, public pages, proxying) lives in gateway.mjs so it can be tested
+// against a stub upstream without spawning wrangler.
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const STATE_ROOT = path.dirname(PERSIST_DIR); // /data in production
+mkdirSync(STATE_ROOT, { recursive: true });
 
-const server = http.createServer((req, res) => {
-  const pathname = (req.url ?? "/").split("?")[0];
-  const isWidgetFeed = pathname === WIDGET_FEED_PATH;
-
-  if (pathname === "/healthz") {
-    res.writeHead(200, { "content-type": "text/plain" });
-    res.end("ok");
-    return;
+// Session-signing secret: env wins; otherwise generate once and persist so
+// cookies survive deploys without requiring manual setup.
+const secretFile = path.join(STATE_ROOT, "auth-session-secret");
+let sessionSecret = process.env.AUTH_SESSION_SECRET?.trim();
+if (!sessionSecret) {
+  if (!existsSync(secretFile)) {
+    writeFileSync(secretFile, randomBytes(32).toString("hex"), { mode: 0o600 });
   }
-
-  // Scheduled-trigger and internal endpoints are never reachable from outside.
-  if (
-    pathname === "/__scheduled" ||
-    pathname.startsWith("/cdn-cgi/") ||
-    pathname.startsWith("/internal/")
-  ) {
-    res.writeHead(404);
-    res.end("Not Found");
-    return;
-  }
-
-  const user = isWidgetFeed
-    ? null
-    : (OPEN_IDENTITY ?? authenticate(req.headers.authorization));
-  if (!user && !isWidgetFeed) {
-    res.writeHead(401, {
-      "www-authenticate": 'Basic realm="iTrack", charset="UTF-8"',
-      "content-type": "text/plain",
-    });
-    res.end("Authentication required");
-    return;
-  }
-
-  const headers = { ...req.headers };
-  // Never forward client-supplied identity or hop-by-hop headers.
-  for (const name of Object.keys(headers)) {
-    if (name.startsWith("oai-")) delete headers[name];
-  }
-  delete headers.connection;
-  if (user) {
-    // Stripping Authorization is what stops a caller from presenting its own
-    // credentials to the worker; it stays unconditional for every path that
-    // this proxy authenticates. Only the widget feed above keeps its header,
-    // and it is never given an identity in exchange.
-    delete headers.authorization;
-    headers["oai-authenticated-user-email"] = user.email;
-    if (user.displayName) {
-      headers["oai-authenticated-user-full-name"] = encodeURIComponent(
-        user.displayName,
-      );
-      headers["oai-authenticated-user-full-name-encoding"] =
-        "percent-encoded-utf-8";
-    }
-  }
-
-  const upstream = http.request(
-    {
-      host: "127.0.0.1",
-      port: WORKER_PORT,
-      method: req.method,
-      path: req.url,
-      headers,
-    },
-    (workerResponse) => {
-      res.writeHead(workerResponse.statusCode ?? 502, workerResponse.headers);
-      workerResponse.pipe(res);
-    },
+  sessionSecret = readFileSync(secretFile, "utf8").trim();
+}
+if (!sessionSecret) {
+  console.error(
+    `Refusing to start: session secret is empty (set AUTH_SESSION_SECRET or delete ${secretFile} to regenerate)`,
   );
-  upstream.on("error", (error) => {
-    console.error("proxy upstream error", error);
-    if (!res.headersSent) {
-      res.writeHead(502, { "content-type": "text/plain" });
-    }
-    res.end("Upstream unavailable");
-  });
-  req.pipe(upstream);
+  process.exit(1);
+}
+
+const store = new AuthStore(process.env.AUTH_DB_PATH ?? path.join(STATE_ROOT, "auth.db"));
+const baseUrl =
+  process.env.PUBLIC_BASE_URL ??
+  (process.env.RAILWAY_PUBLIC_DOMAIN
+    ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+    : `http://localhost:${PUBLIC_PORT}`);
+const authRoutes = createAuthRoutes({
+  store,
+  secret: sessionSecret,
+  baseUrl,
+  sendEmail: createResendSender({
+    apiKey: process.env.RESEND_API_KEY,
+    from: process.env.AUTH_EMAIL_FROM,
+  }),
 });
+const server = http.createServer(
+  createGateway({
+    users: USERS,
+    openIdentity: OPEN_IDENTITY,
+    authRoutes,
+    store,
+    pagesDir: path.join(HERE, "pages"),
+    upstreamPort: WORKER_PORT,
+  }),
+);
 
 await waitForWorker();
 setInterval(fireCron, CRON_INTERVAL_MS);
@@ -300,6 +256,6 @@ server.listen(PUBLIC_PORT, "0.0.0.0", () => {
     ? `OPEN ACCESS — no authentication, all visitors act as ${OPEN_IDENTITY.email}`
     : `${USERS.size} user${USERS.size === 1 ? "" : "s"}`;
   console.log(
-    `iTrack proxy listening on :${PUBLIC_PORT} (${mode}), state in ${PERSIST_DIR}`,
+    `iTrack proxy listening on :${PUBLIC_PORT} (${mode}, self-serve signup enabled), state in ${PERSIST_DIR}`,
   );
 });

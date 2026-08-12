@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iTrack — credential and CE renewal tracking</title>
+<meta name="description" content="iTrack keeps your professional licenses, certifications, and CE hours in one place — and reminds you before anything lapses. Free during beta.">
+<style>
+  /* Duplicated verbatim across deploy/railway/pages/*.html — these pages are
+     deliberately self-contained. Tokens mirror app/globals.css. */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --ink: #1d1d21; --ink-muted: #55555e; --paper: #f2f2f7; --card: #ffffff;
+    --line: #e3e3e8; --accent: #007aff; --accent-deep: #0a63c9;
+    --amber: #b97706; --amber-soft: #fff0d0; --coral: #e5484d; --coral-soft: #fde3e4;
+    --ok-soft: #ddf3e4; --ok-ink: #18794e;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Roboto, sans-serif;
+    background: var(--paper); color: var(--ink); line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  .shell { max-width: 980px; margin: 0 auto; padding: 0 20px; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; }
+  .brand { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; color: var(--ink); }
+  .brand span { color: var(--accent); }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-height: 44px; padding: 0 22px; border-radius: 12px; border: 0;
+    font-size: 15px; font-weight: 600; cursor: pointer;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: var(--accent-deep); }
+  .btn-quiet { background: transparent; color: var(--accent); }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 28px; width: 100%; max-width: 420px; margin: 48px auto;
+  }
+  .card h1 { font-size: 22px; letter-spacing: -0.02em; margin-bottom: 6px; }
+  .card p.sub { color: var(--ink-muted); font-size: 14px; margin-bottom: 20px; }
+  label { display: block; font-size: 14px; font-weight: 600; margin: 14px 0 6px; }
+  input {
+    width: 100%; min-height: 44px; padding: 0 12px; font-size: 16px;
+    border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink);
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+  form .btn { width: 100%; margin-top: 20px; }
+  .note { font-size: 13px; color: var(--ink-muted); margin-top: 16px; text-align: center; }
+  .flash { display: none; border-radius: 10px; padding: 10px 12px; font-size: 14px; margin-bottom: 8px; }
+  .flash.error { background: var(--coral-soft); color: #b3261e; }
+  .flash.ok { background: var(--ok-soft); color: var(--ok-ink); }
+  .badge {
+    display: inline-block; background: var(--amber-soft); color: var(--amber);
+    font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+    padding: 4px 10px; border-radius: 999px;
+  }
+</style>
+<style>
+  .hero { text-align: center; padding: 64px 0 48px; }
+  .hero h1 { font-size: clamp(32px, 6vw, 52px); font-weight: 700; letter-spacing: -0.03em; line-height: 1.1; margin: 18px 0 14px; }
+  .hero p.lede { font-size: 18px; color: var(--ink-muted); max-width: 560px; margin: 0 auto 28px; }
+  .hero .cta-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; padding: 24px 0 48px; }
+  .feature { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 22px; }
+  .feature .glyph { font-size: 26px; margin-bottom: 10px; }
+  .feature h3 { font-size: 16px; margin-bottom: 6px; letter-spacing: -0.01em; }
+  .feature p { font-size: 14px; color: var(--ink-muted); }
+  .pricing { padding: 24px 0 56px; text-align: center; }
+  .pricing h2 { font-size: 28px; letter-spacing: -0.02em; margin-bottom: 6px; }
+  .pricing p.sub { color: var(--ink-muted); margin-bottom: 24px; }
+  .tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; max-width: 640px; margin: 0 auto; text-align: left; }
+  .tier { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 24px; display: flex; flex-direction: column; }
+  .tier h3 { font-size: 18px; }
+  .tier .price { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; margin: 8px 0 2px; }
+  .tier .cadence { font-size: 13px; color: var(--ink-muted); margin-bottom: 14px; }
+  .tier ul { list-style: none; margin-bottom: 18px; }
+  .tier li { font-size: 14px; padding: 5px 0 5px 24px; position: relative; }
+  .tier li::before { content: "✓"; position: absolute; left: 0; color: var(--accent); font-weight: 700; }
+  .tier .btn { margin-top: auto; }
+  footer { border-top: 1px solid var(--line); padding: 24px 0 40px; text-align: center; font-size: 13px; color: var(--ink-muted); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <nav class="topbar">
+    <div class="brand">i<span>Track</span></div>
+    <div>
+      <a class="btn btn-quiet" href="/login">Log in</a>
+      <a class="btn btn-primary" href="/signup">Get started</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <span class="badge">Free during beta</span>
+    <h1>Every credential.<br>Every renewal. On time.</h1>
+    <p class="lede">iTrack keeps your professional licenses, certifications, and CE hours in one place — and reminds you before anything lapses.</p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="/signup">Create your free account</a>
+      <a class="btn btn-quiet" href="/login">I already have one</a>
+    </div>
+  </header>
+
+  <section class="features" aria-label="Features">
+    <div class="feature"><div class="glyph">📅</div><h3>Renewal deadlines</h3><p>See every expiration date at a glance, with how much runway you have left on each credential.</p></div>
+    <div class="feature"><div class="glyph">🎓</div><h3>CE progress</h3><p>Track continuing-education hours against each credential's requirement, cycle by cycle.</p></div>
+    <div class="feature"><div class="glyph">🔔</div><h3>Push reminders</h3><p>Get nudged before deadlines on your phone and desktop — not after they've passed.</p></div>
+    <div class="feature"><div class="glyph">🗂️</div><h3>Evidence vault</h3><p>Keep certificates and proof of completion beside each credential, and export everything when an auditor asks.</p></div>
+  </section>
+
+  <section class="pricing" aria-label="Pricing">
+    <h2>Simple pricing</h2>
+    <p class="sub">Everything is free while iTrack is in beta.</p>
+    <div class="tiers">
+      <div class="tier">
+        <h3>Free</h3>
+        <div class="price">$0</div>
+        <div class="cadence">ad-supported</div>
+        <ul>
+          <li>Unlimited credentials</li>
+          <li>Renewal &amp; CE reminders</li>
+          <li>Evidence vault and export</li>
+        </ul>
+        <a class="btn btn-primary" href="/signup">Sign up free</a>
+      </div>
+      <div class="tier">
+        <h3>Pro <span class="badge">coming soon</span></h3>
+        <div class="price">$9.99/mo</div>
+        <div class="cadence">or $79/yr</div>
+        <ul>
+          <li>Everything in Free</li>
+          <li>No ads</li>
+          <li>Priority support</li>
+        </ul>
+        <a class="btn btn-quiet" href="/signup">Start free today</a>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    iTrack is in beta — free while we build. Questions? <a href="mailto:christophertskerritt@gmail.com">Get in touch</a>.
+  </footer>
+</div>
+</body>
+</html>

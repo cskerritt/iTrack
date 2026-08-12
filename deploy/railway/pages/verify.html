@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verify email — iTrack</title>
+<style>
+  /* Duplicated verbatim across deploy/railway/pages/*.html — these pages are
+     deliberately self-contained. Tokens mirror app/globals.css. */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --ink: #1d1d21; --ink-muted: #55555e; --paper: #f2f2f7; --card: #ffffff;
+    --line: #e3e3e8; --accent: #007aff; --accent-deep: #0a63c9;
+    --amber: #b97706; --amber-soft: #fff0d0; --coral: #e5484d; --coral-soft: #fde3e4;
+    --ok-soft: #ddf3e4; --ok-ink: #18794e;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Roboto, sans-serif;
+    background: var(--paper); color: var(--ink); line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  .shell { max-width: 980px; margin: 0 auto; padding: 0 20px; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; }
+  .brand { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; color: var(--ink); }
+  .brand span { color: var(--accent); }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-height: 44px; padding: 0 22px; border-radius: 12px; border: 0;
+    font-size: 15px; font-weight: 600; cursor: pointer;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: var(--accent-deep); }
+  .btn-quiet { background: transparent; color: var(--accent); }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 28px; width: 100%; max-width: 420px; margin: 48px auto;
+  }
+  .card h1 { font-size: 22px; letter-spacing: -0.02em; margin-bottom: 6px; }
+  .card p.sub { color: var(--ink-muted); font-size: 14px; margin-bottom: 20px; }
+  label { display: block; font-size: 14px; font-weight: 600; margin: 14px 0 6px; }
+  input {
+    width: 100%; min-height: 44px; padding: 0 12px; font-size: 16px;
+    border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink);
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+  form .btn { width: 100%; margin-top: 20px; }
+  .note { font-size: 13px; color: var(--ink-muted); margin-top: 16px; text-align: center; }
+  .flash { display: none; border-radius: 10px; padding: 10px 12px; font-size: 14px; margin-bottom: 8px; }
+  .flash.error { background: var(--coral-soft); color: #b3261e; }
+  .flash.ok { background: var(--ok-soft); color: var(--ok-ink); }
+  .badge {
+    display: inline-block; background: var(--amber-soft); color: var(--amber);
+    font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+    padding: 4px 10px; border-radius: 999px;
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <nav class="topbar">
+    <a class="brand" href="/">i<span>Track</span></a>
+  </nav>
+  <main class="card">
+    <h1>Verification link problem</h1>
+    <div class="flash error" id="flash-expired" style="display:block">
+      This verification link is invalid, already used, or expired.
+    </div>
+    <p class="sub">Log in to request a fresh link — we'll offer to resend it if your account still needs verification.</p>
+    <a class="btn btn-primary" href="/login" style="width:100%">Go to login</a>
+  </main>
+</div>
+</body>
+</html>
