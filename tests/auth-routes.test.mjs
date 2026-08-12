@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { AuthStore } from "../deploy/railway/auth.mjs";
 import {
   RateLimiter,
+  clientIp,
   createAuthRoutes,
   readCookie,
   signValue,
@@ -78,6 +79,26 @@ test("rate limiter enforces fixed windows per key", () => {
   assert.equal(limiter.allow("other"), true);
   clock = 1001;
   assert.equal(limiter.allow("k"), true);
+});
+
+test("rate limiter sweeps expired buckets once the map grows large", () => {
+  let clock = 0;
+  const limiter = new RateLimiter(2, 1000, { now: () => clock });
+  for (let i = 0; i < 50001; i += 1) limiter.allow(`spoofed-${i}`);
+  assert.equal(limiter.buckets.size, 50001);
+  clock = 1001; // every existing bucket is now expired
+  assert.equal(limiter.allow("fresh-key"), true);
+  assert.equal(limiter.buckets.size, 1, "expired buckets are swept before the insert");
+});
+
+test("clientIp uses the LAST x-forwarded-for entry, falling back to the socket", () => {
+  // Railway's edge appends the real client IP last; earlier entries are
+  // client-controlled and must never key a rate limit.
+  const socket = { remoteAddress: "203.0.113.9" };
+  assert.equal(clientIp({ headers: { "x-forwarded-for": "1.2.3.4, 10.0.0.9" }, socket }), "10.0.0.9");
+  assert.equal(clientIp({ headers: { "x-forwarded-for": " 10.0.0.9 " }, socket }), "10.0.0.9");
+  assert.equal(clientIp({ headers: {}, socket }), "203.0.113.9");
+  assert.equal(clientIp({ headers: {} }), "unknown");
 });
 
 test("signup happy path sends verification and redirects", async () => {

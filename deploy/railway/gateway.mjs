@@ -4,7 +4,7 @@ import http from "node:http";
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { RateLimiter } from "./auth-routes.mjs";
+import { RateLimiter, clientIp } from "./auth-routes.mjs";
 
 const WIDGET_FEED_PATH = "/api/widget-summary";
 // Basic-auth success cache: repeated identical credentials (the iOS app
@@ -59,12 +59,6 @@ export function createGateway({ users, openIdentity, authRoutes, store, pagesDir
   // (widget feed included). Cache hits above never touch this limiter, so a
   // legitimate client consumes at most ~one slot per cache TTL.
   const basicFailLimiter = new RateLimiter(20, 15 * 60 * 1000);
-
-  function clientIp(req) {
-    const forwarded = req.headers["x-forwarded-for"];
-    if (forwarded) return String(forwarded).split(",")[0].trim();
-    return req.socket?.remoteAddress ?? "unknown";
-  }
 
   function basicIdentity(header, req) {
     const credentials = decodeBasic(header);
@@ -194,11 +188,22 @@ export function createGateway({ users, openIdentity, authRoutes, store, pagesDir
     }
 
     const wantsHtml = req.method === "GET" && (req.headers.accept ?? "").includes("text/html");
-    if (wantsHtml && pathname === "/") {
+    // DO NOT serve landing/redirect HTML to non-browser clients. The
+    // production iOS app is a Capacitor WKWebView shell that signs in by
+    // ANSWERING the 401 Basic challenge below: it sends GET / with a
+    // text/html Accept, no Authorization header, no cookie, and a UA that
+    // ends in "Mobile/15E148" WITHOUT a "Safari/" token. Every mainstream
+    // browser carries "Safari/" (desktop Firefox carries "Firefox/"), so the
+    // landing page and /login redirect are gated on those tokens; anything
+    // else falls through to the 401 challenge. Fails safe: an odd browser
+    // sees a Basic prompt, but the iOS app never sees marketing copy.
+    const ua = req.headers["user-agent"] ?? "";
+    const isBrowser = ua.includes("Safari/") || ua.includes("Firefox/");
+    if (wantsHtml && isBrowser && pathname === "/") {
       servePage(res, "landing.html");
       return;
     }
-    if (wantsHtml) {
+    if (wantsHtml && isBrowser) {
       res.writeHead(303, { location: "/login" });
       res.end();
       return;

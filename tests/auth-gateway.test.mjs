@@ -53,6 +53,14 @@ async function startStack({ openIdentity = null } = {}) {
 const get = (base, pathname, headers = {}) =>
   fetch(`${base}${pathname}`, { headers, redirect: "manual" });
 
+// The production iOS app is a Capacitor WKWebView shell whose UA has NO
+// "Safari/" token; every mainstream browser carries one (desktop Firefox
+// carries "Firefox/" instead).
+const WKWEBVIEW_UA =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148";
+const SAFARI_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
+
 test("gateway routing end to end", async (t) => {
   const stack = await startStack();
   t.after(() => stack.close());
@@ -66,15 +74,40 @@ test("gateway routing end to end", async (t) => {
   });
 
   await t.test("anonymous browser gets landing at /, login redirect elsewhere, 401 for API", async () => {
-    const landing = await get(base, "/", { accept: "text/html" });
+    const landing = await get(base, "/", { accept: "text/html", "user-agent": SAFARI_UA });
     assert.equal(landing.status, 200);
     assert.match(await landing.text(), /Free during beta/);
-    const deep = await get(base, "/credentials", { accept: "text/html" });
+    const deep = await get(base, "/credentials", { accept: "text/html", "user-agent": SAFARI_UA });
     assert.equal(deep.status, 303);
     assert.equal(deep.headers.get("location"), "/login");
+    const firefox = await get(base, "/credentials", {
+      accept: "text/html",
+      "user-agent": "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+    });
+    assert.equal(firefox.status, 303, "desktop Firefox (no Safari/ token) still redirects");
     const api = await get(base, "/api/export");
     assert.equal(api.status, 401);
     assert.match(api.headers.get("www-authenticate"), /Basic realm="iTrack"/);
+  });
+
+  // iOS REGRESSION TEST: the Capacitor WKWebView shell signs in by answering
+  // the 401 Basic challenge. It sends GET / with a text/html Accept, no
+  // Authorization header, no cookie, and a UA without "Safari/". If the
+  // landing page (or the /login redirect) ever swallows this challenge, the
+  // shipped iOS app can never present its sign-in prompt.
+  await t.test("WKWebView shell (no Safari/ token) receives the 401 Basic challenge, not HTML", async () => {
+    const shell = await get(base, "/", { accept: "text/html", "user-agent": WKWEBVIEW_UA });
+    assert.equal(shell.status, 401);
+    assert.equal(
+      shell.headers.get("www-authenticate"),
+      'Basic realm="iTrack", charset="UTF-8"',
+    );
+    const deep = await get(base, "/credentials", { accept: "text/html", "user-agent": WKWEBVIEW_UA });
+    assert.equal(deep.status, 401, "deep paths challenge the shell instead of redirecting");
+    assert.equal(
+      deep.headers.get("www-authenticate"),
+      'Basic realm="iTrack", charset="UTF-8"',
+    );
   });
 
   await t.test("public pages are served", async () => {
@@ -228,6 +261,39 @@ test("correct DB Basic credentials are served from the success cache", async (t)
     );
   }
   assert.equal(scryptCalls, 1, "the second identical request is served from the cache");
+});
+
+test("rate limiting keys on the LAST x-forwarded-for entry (Railway appends the real IP)", async (t) => {
+  // The first XFF entries are client-supplied; only the last one is written
+  // by Railway's edge. If the limiter keyed on the first entry, varying a
+  // fake prefix would mint a fresh budget on every request.
+  const stack = await startStack();
+  t.after(() => stack.close());
+  const { base, store } = stack;
+
+  const { verifyToken } = store.createUser({
+    email: "spoof@e.co", displayName: "Spoof", password: "correct-pass-33",
+  });
+  store.verifyEmail(verifyToken);
+
+  const bad = `Basic ${Buffer.from("spoof@e.co:wrong-pass").toString("base64")}`;
+  for (let attempt = 0; attempt < 21; attempt += 1) {
+    const response = await get(base, "/api/export", {
+      "x-forwarded-for": `1.2.3.${attempt}, 10.0.0.9`,
+      authorization: bad,
+    });
+    assert.equal(response.status, 401);
+  }
+
+  const good = `Basic ${Buffer.from("spoof@e.co:correct-pass-33").toString("base64")}`;
+  const blocked = await get(base, "/api/export", {
+    "x-forwarded-for": "9.9.9.9, 10.0.0.9",
+    authorization: good,
+  });
+  assert.equal(
+    blocked.status, 401,
+    "a fresh fake FIRST entry must not grant a fresh budget: the shared LAST entry is still limited",
+  );
 });
 
 test("open-identity mode bypasses all public pages", async (t) => {

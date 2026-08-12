@@ -15,10 +15,12 @@
 // Configuration (environment):
 //   PORT          public listen port (Railway sets this)
 //   ITRACK_USERS  semicolon-separated "username:password:email[:Display Name]"
-//                 entries; optional — self-serve signup accounts (SQLite) are
-//                 a valid sole auth source, so an empty config only warns
-//                 (VIGILO_USERS, then LANTERN_USERS, are accepted as legacy
-//                 fallbacks from the product's earlier names)
+//                 entries; required unless ITRACK_OPEN_IDENTITY is set — the
+//                 process fails closed at startup without a bootstrap
+//                 identity source, even though self-serve signup accounts
+//                 (SQLite) also exist (VIGILO_USERS, then LANTERN_USERS, are
+//                 accepted as legacy fallbacks from the product's earlier
+//                 names)
 //   ITRACK_OPEN_IDENTITY
 //                 "email[:Display Name]" — DISABLES authentication entirely and
 //                 signs every visitor in as this identity. Anyone with the URL
@@ -87,9 +89,13 @@ const USERS = parseUsers(
     process.env.LANTERN_USERS,
 );
 if (USERS.size === 0 && !OPEN_IDENTITY) {
-  console.warn(
-    "No ITRACK_USERS or ITRACK_OPEN_IDENTITY configured; only self-serve accounts can log in",
+  // Fail closed: self-serve signup accounts exist, but a bootstrap identity
+  // source is still required. A lost env var must fail loudly at startup,
+  // not quietly 401 the iOS app.
+  console.error(
+    "Refusing to start: no ITRACK_USERS or ITRACK_OPEN_IDENTITY configured. Self-serve signup accounts exist, but a bootstrap identity source is still required.",
   );
+  process.exit(1);
 }
 
 // Shared only between this process and the worker it spawns; authorizes the
@@ -202,7 +208,7 @@ mkdirSync(STATE_ROOT, { recursive: true });
 // Session-signing secret: env wins; otherwise generate once and persist so
 // cookies survive deploys without requiring manual setup.
 const secretFile = path.join(STATE_ROOT, "auth-session-secret");
-let sessionSecret = process.env.AUTH_SESSION_SECRET;
+let sessionSecret = process.env.AUTH_SESSION_SECRET?.trim();
 if (!sessionSecret) {
   if (!existsSync(secretFile)) {
     writeFileSync(secretFile, randomBytes(32).toString("hex"), { mode: 0o600 });

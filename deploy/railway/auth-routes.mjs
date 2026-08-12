@@ -7,6 +7,8 @@ const SESSION_MAX_AGE_S = 30 * 24 * 60 * 60;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const MAX_BODY_BYTES = 32 * 1024;
 
+const RATE_LIMITER_SWEEP_THRESHOLD = 50000;
+
 export class RateLimiter {
   constructor(limit, windowMs, { now = () => Date.now() } = {}) {
     this.limit = limit;
@@ -18,6 +20,14 @@ export class RateLimiter {
     const now = this.now();
     const bucket = this.buckets.get(key);
     if (!bucket || now - bucket.start >= this.windowMs) {
+      // Bound memory under key-churn floods (e.g. spoofed addresses): once
+      // the map is large, sweep expired buckets before inserting. O(n), but
+      // only on this rare trigger, so steady-state stays O(1).
+      if (this.buckets.size > RATE_LIMITER_SWEEP_THRESHOLD) {
+        for (const [staleKey, staleBucket] of this.buckets) {
+          if (now - staleBucket.start >= this.windowMs) this.buckets.delete(staleKey);
+        }
+      }
       this.buckets.set(key, { start: now, count: 1 });
       return true;
     }
@@ -57,9 +67,16 @@ export function readCookie(req, name) {
   return null;
 }
 
-function clientIp(req) {
+export function clientIp(req) {
   const forwarded = req.headers["x-forwarded-for"];
-  if (forwarded) return String(forwarded).split(",")[0].trim();
+  if (forwarded) {
+    // Railway's edge APPENDS the real client address as the LAST entry of
+    // x-forwarded-for; anything before it is client-supplied. Keying rate
+    // limits on the first entry would let an attacker mint a fresh budget
+    // per request by varying a fake prefix.
+    const entries = String(forwarded).split(",");
+    return entries[entries.length - 1].trim();
+  }
   return req.socket?.remoteAddress ?? "unknown";
 }
 
