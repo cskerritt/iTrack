@@ -19,7 +19,8 @@ app. Positioning is **free during beta**. The app stays on
 | Email | Resend API for verification + password-reset mail |
 | Domain | Stay on railway.app URL; custom domain later |
 | iOS app | Keep Basic Auth working alongside sessions — iOS app/widget unchanged |
-| Pricing copy | "Free during beta" |
+| Pricing copy | "Free during beta"; two tiers shown on landing page |
+| Monetization | Phased: Phase 1 (this spec) shows tiers only — Free (ad-supported) and Pro at $9.99/mo or $79/yr "coming soon". Phase 2 (own spec) builds Stripe billing, per-user entitlements, and AdSense/AdMob ad slots. iOS purchases will honor web-purchased tiers (Apple IAP rules make in-app Stripe impossible). |
 | Architecture | A: proxy gateway (not worker/D1, not third-party auth) |
 
 ## Background / constraints
@@ -135,6 +136,11 @@ Self-contained static HTML in the app's iOS neutral+blue design language
   `/signup`, secondary "Log in".
 - Three-to-four feature blurbs: renewal deadlines & progress, push
   reminders, evidence vault, calendar/ICS + export.
+- Pricing section, two tiers: **Free** ($0, ad-supported — unlimited
+  credentials, reminders, evidence vault) and **Pro** ($9.99/mo or $79/yr,
+  badged "coming soon" — everything in Free, no ads, priority support),
+  with a note that everything is free during the beta. No checkout —
+  billing is Phase 2.
 - Footer: beta note, contact mailto.
 - No screenshots at launch (no asset pipeline in the proxy); revisit later.
 
@@ -149,7 +155,8 @@ Self-contained static HTML in the app's iOS neutral+blue design language
 
 ## Testing
 
-- Vitest unit tests for `auth.mjs`: hashing round-trip, token lifecycle,
+- `node --test` unit tests (the repo's existing runner) for `auth.mjs`:
+  hashing round-trip, token lifecycle,
   session expiry/sliding, rate limiter, email normalization.
 - Integration test: boot the proxy against a stub worker; assert landing vs
   app routing, full sign-up→verify→login→logout flow (Resend mocked),
@@ -164,8 +171,11 @@ Self-contained static HTML in the app's iOS neutral+blue design language
 - Deploy: push to main → Railway auto-deploys. Rollback = revert commit.
 - Open item for Chris: Resend account + sending-domain DNS verification.
 
-## Out of scope (YAGNI)
+## Out of scope (YAGNI / Phase 2)
 
-Custom domain, paid tiers/billing, OAuth/social login, admin user list UI,
-email change flow, account deletion UI, migrating iOS app off Basic Auth,
-screenshots on the landing page.
+Custom domain, OAuth/social login, admin user list UI, email change flow,
+account deletion UI, migrating iOS app off Basic Auth, screenshots on the
+landing page. **Phase 2 (separate spec, decided 2026-08-11):** Stripe
+subscriptions ($9.99/mo / $79/yr Pro), per-user entitlements, AdSense (web)
+and AdMob (iOS) ad slots for the free tier, consent/privacy compliance;
+iOS honors web-purchased tiers rather than selling via Stripe in-app.
