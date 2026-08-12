@@ -635,7 +635,8 @@ git commit -m "feat: Resend email sender with fail-soft unconfigured mode"
 | `/auth/reset` | success (valid token, new password ≥ 10) | `/login?reset=1` |
 | `/auth/reset` | invalid/expired token | `/reset?error=expired` |
 | `/auth/reset` | password too short | `/reset?error=invalid&token=<token>` |
-| `/auth/resend` | always (re-send verification if eligible) | `/login?resent=1` |
+| `/auth/resend` | re-send verification if eligible (no enumeration) | `/login?resent=1` |
+| `/auth/resend` | rate limited | `/login?error=rate-limited` |
 | any `/auth/*` | Origin/Referer host mismatch | `403` plain text, no redirect |
 | any other `/auth/*` path or non-POST method | `404` plain text |
 
