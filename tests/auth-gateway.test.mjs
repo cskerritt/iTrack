@@ -143,6 +143,93 @@ test("gateway routing end to end", async (t) => {
   });
 });
 
+test("a throwing store cannot crash the gateway (exception barrier)", async (t) => {
+  const stubStore = {
+    verifyEmail() { throw new Error("boom"); },
+    authenticate() { return { ok: false, reason: "bad-credentials" }; },
+  };
+  const authRoutes = createAuthRoutes({
+    store: stubStore,
+    secret: "gw-secret",
+    baseUrl: "http://gw.test",
+    sendEmail: async () => ({ ok: true }),
+  });
+  const gateway = http.createServer(
+    createGateway({
+      users: new Map(),
+      openIdentity: null,
+      authRoutes,
+      store: stubStore,
+      pagesDir,
+      upstreamPort: 1,
+    }),
+  );
+  await new Promise((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+  const base = `http://127.0.0.1:${gateway.address().port}`;
+
+  const verify = await get(base, "/verify?token=x");
+  assert.equal(verify.status, 500, "a throwing route responds 500 instead of crashing");
+  const health = await get(base, "/healthz");
+  assert.equal(health.status, 200, "the server survives the thrown error");
+});
+
+test("junk Basic floods are rate limited without breaking sessions", async (t) => {
+  const stack = await startStack();
+  t.after(() => stack.close());
+  const { base, store } = stack;
+  const ip = { "x-forwarded-for": "203.0.113.9" };
+
+  const { verifyToken } = store.createUser({
+    email: "flood@e.co", displayName: "Flood", password: "correct-pass-11",
+  });
+  const verified = await get(base, `/verify?token=${verifyToken}`);
+  assert.equal(verified.status, 303);
+  const cookie = verified.headers.get("set-cookie").split(";")[0];
+
+  const bad = `Basic ${Buffer.from("flood@e.co:wrong-pass").toString("base64")}`;
+  for (let attempt = 0; attempt < 21; attempt += 1) {
+    const response = await get(base, "/api/export", { ...ip, authorization: bad });
+    assert.equal(response.status, 401);
+  }
+
+  const good = `Basic ${Buffer.from("flood@e.co:correct-pass-11").toString("base64")}`;
+  const blocked = await get(base, "/api/export", { ...ip, authorization: good });
+  assert.equal(blocked.status, 401, "the limiter gates the scrypt path for the flooded IP");
+
+  const viaSession = await get(base, "/credentials", { ...ip, accept: "text/html", cookie });
+  assert.equal(viaSession.status, 200, "session-cookie auth is unaffected by the Basic limiter");
+  assert.equal(await viaSession.text(), "app-response");
+});
+
+test("correct DB Basic credentials are served from the success cache", async (t) => {
+  const stack = await startStack();
+  t.after(() => stack.close());
+  const { base, store } = stack;
+  const ip = { "x-forwarded-for": "198.51.100.7" };
+
+  const { verifyToken } = store.createUser({
+    email: "cache@e.co", displayName: "Cache", password: "correct-pass-22",
+  });
+  store.verifyEmail(verifyToken);
+
+  const original = store.authenticate.bind(store);
+  let scryptCalls = 0;
+  store.authenticate = (...args) => { scryptCalls += 1; return original(...args); };
+
+  const auth = `Basic ${Buffer.from("cache@e.co:correct-pass-22").toString("base64")}`;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await get(base, "/credentials", { ...ip, authorization: auth });
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "app-response");
+    assert.equal(
+      stack.upstreamSeen().headers["oai-authenticated-user-email"],
+      "cache@e.co",
+    );
+  }
+  assert.equal(scryptCalls, 1, "the second identical request is served from the cache");
+});
+
 test("open-identity mode bypasses all public pages", async (t) => {
   const stack = await startStack({
     openIdentity: { email: "open@e.co", displayName: "Open" },

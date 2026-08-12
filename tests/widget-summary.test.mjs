@@ -703,7 +703,7 @@ test("the Railway proxy lets the widget feed through with its token", async () =
     "the widget feed must dispatch before open-identity handling",
   );
   assert.ok(
-    widgetAt < source.indexOf("basicIdentity(req.headers.authorization)"),
+    widgetAt < source.indexOf("basicIdentity(req.headers.authorization"),
     "the widget feed must skip the auth gate",
   );
   // The strip stays the default for every authenticated path: it is what

@@ -209,6 +209,12 @@ if (!sessionSecret) {
   }
   sessionSecret = readFileSync(secretFile, "utf8").trim();
 }
+if (!sessionSecret) {
+  console.error(
+    `Refusing to start: session secret is empty (set AUTH_SESSION_SECRET or delete ${secretFile} to regenerate)`,
+  );
+  process.exit(1);
+}
 
 const store = new AuthStore(process.env.AUTH_DB_PATH ?? path.join(STATE_ROOT, "auth.db"));
 const baseUrl =

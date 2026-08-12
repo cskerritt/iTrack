@@ -4,8 +4,15 @@ import http from "node:http";
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import { createHash, timingSafeEqual } from "node:crypto";
+import { RateLimiter } from "./auth-routes.mjs";
 
 const WIDGET_FEED_PATH = "/api/widget-summary";
+// Basic-auth success cache: repeated identical credentials (the iOS app
+// sends Basic on every request) cost one sha256 instead of one synchronous
+// scrypt. Entries are keyed by a hash of the credentials, expire quickly,
+// and the map is capped so junk cannot grow it without bound.
+const BASIC_CACHE_TTL_MS = 5 * 60 * 1000;
+const BASIC_CACHE_MAX = 1000;
 const PAGE_ROUTES = new Map([
   ["/signup", "signup.html"],
   ["/login", "login.html"],
@@ -46,7 +53,20 @@ export function createGateway({ users, openIdentity, authRoutes, store, pagesDir
     res.end(pageCache.get(name));
   }
 
-  function basicIdentity(header) {
+  const basicCache = new Map();
+  // Gates the synchronous-scrypt path in store.authenticate: without it, a
+  // stream of junk Basic headers would block the event loop for every client
+  // (widget feed included). Cache hits above never touch this limiter, so a
+  // legitimate client consumes at most ~one slot per cache TTL.
+  const basicFailLimiter = new RateLimiter(20, 15 * 60 * 1000);
+
+  function clientIp(req) {
+    const forwarded = req.headers["x-forwarded-for"];
+    if (forwarded) return String(forwarded).split(",")[0].trim();
+    return req.socket?.remoteAddress ?? "unknown";
+  }
+
+  function basicIdentity(header, req) {
     const credentials = decodeBasic(header);
     if (!credentials) return null;
     const envUser = users.get(credentials.username);
@@ -56,9 +76,24 @@ export function createGateway({ users, openIdentity, authRoutes, store, pagesDir
       return { email: envUser.email, displayName: envUser.displayName };
     }
     // DB accounts authenticate with email as the Basic username.
+    const cacheKey = createHash("sha256")
+      .update(`${credentials.username}:${credentials.password}`)
+      .digest("hex");
+    const cached = basicCache.get(cacheKey);
+    if (cached) {
+      if (cached.expires > Date.now()) return cached.identity;
+      basicCache.delete(cacheKey);
+    }
+    if (!basicFailLimiter.allow(`basic:${clientIp(req)}`)) return null;
     const attempt = store.authenticate(credentials.username, credentials.password);
     if (attempt.ok) {
-      return { email: attempt.user.email, displayName: attempt.user.displayName };
+      const identity = { email: attempt.user.email, displayName: attempt.user.displayName };
+      if (basicCache.size >= BASIC_CACHE_MAX) {
+        // Maps iterate in insertion order; drop the oldest entry.
+        basicCache.delete(basicCache.keys().next().value);
+      }
+      basicCache.set(cacheKey, { identity, expires: Date.now() + BASIC_CACHE_TTL_MS });
+      return identity;
     }
     return null;
   }
@@ -94,7 +129,7 @@ export function createGateway({ users, openIdentity, authRoutes, store, pagesDir
     req.pipe(upstream);
   }
 
-  return async (req, res) => {
+  async function handleRequest(req, res) {
     const url = new URL(req.url ?? "/", "http://placeholder");
     const pathname = url.pathname;
 
@@ -151,7 +186,7 @@ export function createGateway({ users, openIdentity, authRoutes, store, pagesDir
     const sessionUser = authRoutes.userForRequest(req);
     const identity = sessionUser
       ? { email: sessionUser.email, displayName: sessionUser.displayName }
-      : basicIdentity(req.headers.authorization);
+      : basicIdentity(req.headers.authorization, req);
 
     if (identity) {
       proxy(req, res, identity);
@@ -173,5 +208,22 @@ export function createGateway({ users, openIdentity, authRoutes, store, pagesDir
       "content-type": "text/plain",
     });
     res.end("Authentication required");
+  }
+
+  // Exception barrier: a throwing route (bad token, unreadable page file,
+  // store error) must produce a 500, never an unhandled rejection that takes
+  // down the supervisor process.
+  return async (req, res) => {
+    try {
+      await handleRequest(req, res);
+    } catch (error) {
+      console.error("gateway error", error);
+      if (!res.headersSent) {
+        res.writeHead(500, { "content-type": "text/plain" });
+      }
+      if (!res.writableEnded) {
+        res.end("Internal error");
+      }
+    }
   };
 }
