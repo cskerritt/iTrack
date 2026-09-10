@@ -672,6 +672,15 @@ test("iTrack product contract", async (t) => {
     }
   });
 
+  await t.test("unknown paths render the not-found route with a 404", async () => {
+    const response = await fetchWorker("http://localhost/definitely-not-a-route", {
+      headers: { accept: "text/html" },
+    });
+    assert.equal(response.status, 404);
+    assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+    assert.match(await response.text(), /Page not found/);
+  });
+
   await t.test("pushes credential detail onto the navigation stack", async () => {
     // Opening a credential is a navigation, not a state swap: it writes a
     // history entry, so the iOS back gesture, the browser back button and a
