@@ -59,3 +59,19 @@ test("no state updater reads event.currentTarget or event.target (app-ux-01 / ar
   }
   assert.ok(seen >= 7, `expected to scan at least the seven setActivityDraft updaters, scanned ${seen}`);
 });
+
+test("client code never calls response.json() directly (app-ux-M-01 / architecture-M-04)", () => {
+  for (const { file, source } of readClientSources()) {
+    if (file.startsWith("api/") || file === "lib/apiResponse.ts") continue;
+    assert.doesNotMatch(source, /\bresponse\.json\(\)/, `${file}: use readApiResponse() from app/lib/apiResponse.ts`);
+  }
+});
+
+test("sign out is a POST form to /auth/logout, not a link (app-ux-02)", () => {
+  const sources = readClientSources();
+  assert.ok(sources.every(({ source }) => !source.includes("/signout-with-chatgpt")), "dead sign-out URL removed");
+  assert.ok(
+    sources.some(({ source }) => /<form[^>]*method="post"[^>]*action="\/auth\/logout"/.test(source)),
+    "a POST form to /auth/logout exists",
+  );
+});

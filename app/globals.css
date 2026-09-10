@@ -3401,6 +3401,7 @@ a {
 }
 
 .account-profile .button,
+.account-profile .account-signout,
 .account-profile .demo-label {
   grid-column: 1 / -1;
   justify-self: start;

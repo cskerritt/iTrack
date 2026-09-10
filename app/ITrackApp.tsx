@@ -69,6 +69,11 @@ import {
   type TabName,
 } from "./lib/navigation";
 import {
+  SESSION_ENDED_MESSAGE,
+  UNEXPECTED_RESPONSE_MESSAGE,
+  readApiResponse,
+} from "./lib/apiResponse";
+import {
   nextRequirementSelection,
   requirementIncompatibilityMessage,
 } from "./lib/requirementCompatibility";
@@ -1922,6 +1927,15 @@ export function ITrackApp() {
     restoreSelectionBeforeActivityEntry,
   ]);
 
+  // A 401 from any fetch means the session lapsed. Drop the workspace so the
+  // existing WorkspaceLoadFailure "Reload and sign in" state renders.
+  const handleSessionEnded = useCallback(() => {
+    setWorkspace(null);
+    setWorkspaceLoadFailed(true);
+    setWorkspaceLoadFailureStatus(401);
+    setError("");
+  }, []);
+
   const loadWorkspace = useCallback(async () => {
     // Two row-level writes can now be in flight at once, so two refetches can
     // be too. A response that has been overtaken is dropped rather than
@@ -1937,7 +1951,10 @@ export function ITrackApp() {
         cache: "no-store",
       });
       responseStatus = response.status;
-      const data = (await response.json()) as Workspace & { error?: string };
+      const parsed = await readApiResponse<Workspace & { error?: string }>(response);
+      if (parsed.kind === "session-ended") throw new Error(SESSION_ENDED_MESSAGE);
+      if (parsed.kind === "unexpected") throw new Error(UNEXPECTED_RESPONSE_MESSAGE);
+      const data = parsed.data;
       if (!response.ok) {
         throw new Error(data.error || "We couldn’t load your renewal workspace.");
       }
@@ -1984,10 +2001,13 @@ export function ITrackApp() {
         const response = await fetch("/api/catalog", {
           headers: { accept: "application/json" },
         });
-        const data = (await response.json()) as {
-          catalog?: CatalogRule[];
-          error?: string;
-        };
+        const parsed = await readApiResponse<{ catalog?: CatalogRule[]; error?: string }>(response);
+        if (parsed.kind === "session-ended") {
+          handleSessionEnded();
+          throw new Error(SESSION_ENDED_MESSAGE);
+        }
+        if (parsed.kind === "unexpected") throw new Error(UNEXPECTED_RESPONSE_MESSAGE);
+        const data = parsed.data;
         if (!response.ok || !Array.isArray(data.catalog)) {
           throw new Error(
             data.error || "We couldn’t load the credential templates.",
@@ -2004,7 +2024,7 @@ export function ITrackApp() {
     })();
     catalogRequest.current = request;
     return request;
-  }, []);
+  }, [handleSessionEnded]);
 
   const openCredentialSetup = useCallback(() => {
     setError("");
@@ -2221,12 +2241,14 @@ export function ITrackApp() {
             signal: controller.signal,
           },
         );
-        const result = (await response.json()) as {
-          target?: {
-            credentialId?: unknown;
-            reminderKey?: unknown;
-          };
-        };
+        const parsed = await readApiResponse<{
+          target?: { credentialId?: unknown; reminderKey?: unknown };
+        }>(response);
+        if (parsed.kind === "session-ended") {
+          if (!controller.signal.aborted) handleSessionEnded();
+          return;
+        }
+        const result = parsed.kind === "json" ? parsed.data : {};
         if (controller.signal.aborted) return;
         setPendingReminderLaunch(null);
         if (
@@ -2279,7 +2301,7 @@ export function ITrackApp() {
       }
     })();
     return () => controller.abort();
-  }, [navigateToTab, pendingReminderLaunch, workspace]);
+  }, [handleSessionEnded, navigateToTab, pendingReminderLaunch, workspace]);
 
   useEffect(() => {
     if (!highlightedReminderKey || view !== "home") return;
@@ -2616,12 +2638,18 @@ export function ITrackApp() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action, payload }),
       });
-      const result = (await response.json()) as {
+      const parsed = await readApiResponse<{
         ok?: boolean;
         error?: string;
         code?: string;
         id?: string;
-      };
+      }>(response);
+      if (parsed.kind === "session-ended") {
+        handleSessionEnded();
+        return null;
+      }
+      if (parsed.kind === "unexpected") throw new Error(UNEXPECTED_RESPONSE_MESSAGE);
+      const result = parsed.data;
       if (!response.ok) {
         if (
           [
@@ -2685,12 +2713,18 @@ export function ITrackApp() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action, payload }),
     });
-    const result = (await response.json()) as {
+    const parsed = await readApiResponse<{
       ok?: boolean;
       error?: string;
       code?: string;
       id?: string;
-    };
+    }>(response);
+    if (parsed.kind === "session-ended") {
+      handleSessionEnded();
+      throw new Error(SESSION_ENDED_MESSAGE);
+    }
+    if (parsed.kind === "unexpected") throw new Error(UNEXPECTED_RESPONSE_MESSAGE);
+    const result = parsed.data;
     if (!response.ok) {
       throw new Error(result.error || "Phone-alert setup did not save.");
     }
@@ -3293,10 +3327,13 @@ export function ITrackApp() {
         method: "POST",
         body: payload,
       });
-      const result = (await response.json()) as {
-        evidence?: EvidenceFile;
-        error?: string;
-      };
+      const parsed = await readApiResponse<{ evidence?: EvidenceFile; error?: string }>(response);
+      if (parsed.kind === "session-ended") {
+        handleSessionEnded();
+        throw new Error(SESSION_ENDED_MESSAGE);
+      }
+      if (parsed.kind === "unexpected") throw new Error(UNEXPECTED_RESPONSE_MESSAGE);
+      const result = parsed.data;
       if (!response.ok || !result.evidence) {
         throw new Error(result.error || "The proof file did not upload.");
       }
@@ -3325,10 +3362,13 @@ export function ITrackApp() {
         `/api/evidence?activityId=${encodeURIComponent(activity.id)}`,
         { headers: { accept: "application/json" }, cache: "no-store" },
       );
-      const result = (await response.json()) as {
-        evidence?: EvidenceFile[];
-        error?: string;
-      };
+      const parsed = await readApiResponse<{ evidence?: EvidenceFile[]; error?: string }>(response);
+      if (parsed.kind === "session-ended") {
+        handleSessionEnded();
+        throw new Error(SESSION_ENDED_MESSAGE);
+      }
+      if (parsed.kind === "unexpected") throw new Error(UNEXPECTED_RESPONSE_MESSAGE);
+      const result = parsed.data;
       if (!response.ok) {
         throw new Error(result.error || "The proof files could not be loaded.");
       }
@@ -3369,10 +3409,13 @@ export function ITrackApp() {
         `/api/evidence/${encodeURIComponent(evidence.id)}`,
         { method: "DELETE" },
       );
-      const result = (await response.json()) as {
-        error?: string;
-        code?: string;
-      };
+      const parsed = await readApiResponse<{ error?: string; code?: string }>(response);
+      if (parsed.kind === "session-ended") {
+        handleSessionEnded();
+        throw new Error(SESSION_ENDED_MESSAGE);
+      }
+      if (parsed.kind === "unexpected") throw new Error(UNEXPECTED_RESPONSE_MESSAGE);
+      const result = parsed.data;
       if (!response.ok) {
         if (result.code === "evidence_delete_retry") {
           setEvidenceFiles((current) =>
@@ -9245,12 +9288,11 @@ function AccountView({
           {workspace.user.isDemo ? (
             <span className="demo-label">Local preview</span>
           ) : (
-            <a
-              className="button button-outline"
-              href="/signout-with-chatgpt?return_to=%2F"
-            >
-              Sign out
-            </a>
+            <form method="post" action="/auth/logout" className="account-signout">
+              <button className="button button-outline" type="submit">
+                Sign out
+              </button>
+            </form>
           )}
         </section>
         <section className="card account-momentum">
