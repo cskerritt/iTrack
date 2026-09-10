@@ -171,7 +171,7 @@ test("gateway routes by path and Accept, never by User-Agent", async (t) => {
   await t.test("public allowlist proxies without auth", async () => {
     for (const pathname of [
       "/robots.txt", "/sitemap.xml", "/favicon.ico", "/manifest.webmanifest", "/icons/x.png",
-      "/og.png", "/offline.html", "/sw.js", "/assets/app.js", "/_next/static/chunk.js", "/ocr/worker.min.js",
+      "/og.png", "/offline.html", "/offline", "/sw.js", "/assets/app.js", "/_next/static/chunk.js", "/ocr/worker.min.js",
       "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png",
     ]) {
       const response = await get(base, pathname);

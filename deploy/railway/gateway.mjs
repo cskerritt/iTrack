@@ -27,6 +27,10 @@ const PUBLIC_EXACT = new Set([
   "/manifest.webmanifest",
   "/og.png",
   "/offline.html",
+  // vinext answers /offline.html with a 307 to /offline; the service worker
+  // precaches /offline.html and follows that redirect, so the target must be
+  // public too or the cached "offline page" becomes the login page.
+  "/offline",
   "/sw.js",
   "/icon-192.png",
   "/icon-512.png",
