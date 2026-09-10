@@ -10,6 +10,8 @@ import {
   SESSION_TTL_MS,
   UNVERIFIED_TTL_MS,
 } from "../deploy/railway/auth.mjs";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
 
 function makeStore() {
   let clock = 1_000_000_000_000;
@@ -57,9 +59,10 @@ test("createUser + verifyEmail + authenticate happy path", () => {
   });
 });
 
-test("duplicate email is rejected case-insensitively", () => {
+test("duplicate verified email is rejected case-insensitively", () => {
   const { store } = makeStore();
-  store.createUser({ email: "a@b.co", displayName: "A", password: "x".repeat(10) });
+  const { verifyToken } = store.createUser({ email: "a@b.co", displayName: "A", password: "x".repeat(10) });
+  store.verifyEmail(verifyToken);
   assert.throws(
     () => store.createUser({ email: "A@B.CO", displayName: "A2", password: "y".repeat(10) }),
     (err) => err instanceof AuthError && err.code === "email-taken",
@@ -144,4 +147,75 @@ test("password reset flow invalidates sessions and old tokens expire", () => {
   const { token: expiring } = store.createResetToken("r@e.co");
   tick(RESET_TTL_MS + 1);
   assert.equal(store.resetPassword(expiring, "too-late-pass"), null);
+});
+
+test("re-signup of an UNVERIFIED email replaces name + hash and reissues the link", () => {
+  const { store } = makeStore();
+  const first = store.createUser({ email: "claim@e.co", displayName: "Squatter", password: "squatter-pass-1" });
+  assert.equal(first.replaced, false);
+  const second = store.createUser({ email: "Claim@E.co", displayName: "Owner", password: "owner-pass-123" });
+  assert.equal(second.replaced, true);
+  assert.equal(second.userId, first.userId, "same account row is kept");
+  assert.notEqual(second.verifyToken, first.verifyToken);
+  assert.equal(store.verifyEmail(first.verifyToken), null, "the squatter's link is dead");
+  const verified = store.verifyEmail(second.verifyToken);
+  assert.equal(verified.displayName, "Owner");
+  assert.equal(store.authenticate("claim@e.co", "squatter-pass-1").ok, false, "old password gone");
+  assert.equal(store.authenticate("claim@e.co", "owner-pass-123").ok, true);
+});
+
+test("re-signup of a VERIFIED email still throws email-taken", () => {
+  const { store } = makeStore();
+  const { verifyToken } = store.createUser({ email: "v@e.co", displayName: "V", password: "x".repeat(10) });
+  store.verifyEmail(verifyToken);
+  assert.throws(
+    () => store.createUser({ email: "v@e.co", displayName: "V2", password: "y".repeat(10) }),
+    (err) => err instanceof AuthError && err.code === "email-taken",
+  );
+  assert.equal(store.authenticate("v@e.co", "x".repeat(10)).ok, true, "verified account untouched");
+});
+
+test("createVerifiedUser creates once and never touches an existing account", () => {
+  const { store } = makeStore();
+  const made = store.createVerifiedUser({ email: "Boot@E.co", displayName: null, password: "boot-pass-1234" });
+  assert.equal(made.created, true);
+  assert.equal(store.authenticate("boot@e.co", "boot-pass-1234").ok, true, "verified immediately");
+  const again = store.createVerifiedUser({ email: "boot@e.co", displayName: null, password: "other-pass-1234" });
+  assert.equal(again.created, false);
+  assert.equal(again.userId, made.userId);
+  assert.equal(store.authenticate("boot@e.co", "boot-pass-1234").ok, true, "password unchanged");
+  assert.equal(store.authenticate("boot@e.co", "other-pass-1234").ok, false);
+  const pending = store.createUser({ email: "pend@e.co", displayName: "P", password: "pending-pass-1" });
+  const skip = store.createVerifiedUser({ email: "pend@e.co", displayName: null, password: "boot-pass-1234" });
+  assert.equal(skip.created, false, "an unverified account is also left alone");
+  assert.equal(skip.userId, pending.userId);
+  assert.equal(store.authenticate("pend@e.co", "pending-pass-1").ok, false, "still unverified");
+});
+
+test("sessions record when the cookie was issued and can be marked re-issued", () => {
+  const { store, tick } = makeStore();
+  const { userId, verifyToken } = store.createUser({ email: "c@e.co", displayName: "C", password: "x".repeat(10) });
+  store.verifyEmail(verifyToken);
+  const sid = store.createSession(userId);
+  const issuedAt = store.sessionUser(sid).cookieIssuedAt;
+  assert.equal(typeof issuedAt, "number");
+  tick(25 * 60 * 60 * 1000);
+  assert.equal(store.sessionUser(sid).cookieIssuedAt, issuedAt, "reading does not bump it");
+  store.markCookieIssued(sid);
+  assert.equal(store.sessionUser(sid).cookieIssuedAt, issuedAt + 25 * 60 * 60 * 1000);
+});
+
+test("an auth.db created before cookie_issued_at existed is upgraded on open", () => {
+  const { DatabaseSync } = require("node:sqlite");
+  const dbPath = `${process.env.TMPDIR ?? "/tmp"}/auth-upgrade-${process.pid}.db`;
+  const legacy = new DatabaseSync(dbPath);
+  legacy.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE COLLATE NOCASE, display_name TEXT, password_scrypt TEXT NOT NULL, created_at INTEGER NOT NULL, verified_at INTEGER);
+    CREATE TABLE tokens (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK (kind IN ('verify','reset')), expires_at INTEGER NOT NULL, used_at INTEGER);
+    CREATE TABLE sessions (session_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL);`);
+  legacy.close();
+  const store = new AuthStore(dbPath);
+  const columns = store.db.prepare("PRAGMA table_info(sessions)").all().map((row) => row.name);
+  assert.ok(columns.includes("cookie_issued_at"));
+  store.close();
+  require("node:fs").rmSync(dbPath, { force: true });
 });

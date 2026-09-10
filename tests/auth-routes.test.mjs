@@ -118,7 +118,7 @@ test("signup maps duplicate, invalid, and mail-down outcomes", async () => {
   const { routes } = makeRoutes();
   await post(routes, "/auth/signup", form({ email: "dup@e.co", name: "D", password: "longenough1" }));
   let { res } = await post(routes, "/auth/signup", form({ email: "dup@e.co", name: "D", password: "longenough1" }));
-  assert.equal(res.headers.location, "/signup?error=email-taken");
+  assert.equal(res.headers.location, "/signup?sent=1", "unverified duplicate is re-sent, not refused");
   ({ res } = await post(routes, "/auth/signup", form({ email: "bad@no-tld.x", name: "B", password: "longenough1" })));
   assert.equal(res.headers.location, "/signup?error=invalid");
   ({ res } = await post(routes, "/auth/signup", form({ email: "ok@e.co", name: "O", password: "short" })));

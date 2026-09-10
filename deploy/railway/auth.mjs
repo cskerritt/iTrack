@@ -76,7 +76,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
-  last_seen_at INTEGER NOT NULL
+  last_seen_at INTEGER NOT NULL,
+  cookie_issued_at INTEGER NOT NULL DEFAULT 0
 );
 `;
 
@@ -86,10 +87,26 @@ export class AuthStore {
     this.now = now;
     this.db.exec("PRAGMA foreign_keys = ON;");
     this.db.exec(SCHEMA);
+    this.#upgradeSchema();
   }
 
   close() {
     this.db.close();
+  }
+
+  // Additive migrations for auth.db files created by earlier builds. Each
+  // guard is idempotent so the constructor can run on every boot.
+  #upgradeSchema() {
+    const sessionColumns = this.db
+      .prepare("PRAGMA table_info(sessions)")
+      .all()
+      .map((row) => row.name);
+    if (!sessionColumns.includes("cookie_issued_at")) {
+      this.db.exec(
+        "ALTER TABLE sessions ADD COLUMN cookie_issued_at INTEGER NOT NULL DEFAULT 0",
+      );
+      this.db.exec("UPDATE sessions SET cookie_issued_at = created_at WHERE cookie_issued_at = 0");
+    }
   }
 
   #issueToken(userId, kind, ttlMs) {
@@ -126,6 +143,27 @@ export class AuthStore {
 
   createUser({ email, displayName, password }) {
     const normalized = String(email).trim().toLowerCase();
+    const existing = this.db
+      .prepare("SELECT id, verified_at FROM users WHERE email = ?")
+      .get(normalized);
+    if (existing && existing.verified_at !== null) throw new AuthError("email-taken");
+    if (existing) {
+      // An unverified address is still claimable: whoever proves they own the
+      // inbox wins, so the earlier name, hash and links are all replaced.
+      this.db
+        .prepare(
+          "UPDATE users SET display_name = ?, password_scrypt = ?, created_at = ? WHERE id = ?",
+        )
+        .run(displayName ?? null, hashPassword(password), this.now(), existing.id);
+      this.db
+        .prepare("DELETE FROM tokens WHERE user_id = ? AND kind = 'verify'")
+        .run(existing.id);
+      return {
+        userId: existing.id,
+        verifyToken: this.#issueToken(existing.id, "verify", VERIFY_TTL_MS),
+        replaced: true,
+      };
+    }
     const userId = `acct_${randomUUID()}`;
     try {
       this.db
@@ -139,7 +177,27 @@ export class AuthStore {
       }
       throw error;
     }
-    return { userId, verifyToken: this.#issueToken(userId, "verify", VERIFY_TTL_MS) };
+    return {
+      userId,
+      verifyToken: this.#issueToken(userId, "verify", VERIFY_TTL_MS),
+      replaced: false,
+    };
+  }
+
+  // Startup bootstrap: creates a VERIFIED account only when no row exists for
+  // the address. Existing rows (verified or not) are never modified.
+  createVerifiedUser({ email, displayName, password }) {
+    const normalized = String(email).trim().toLowerCase();
+    const existing = this.db.prepare("SELECT id FROM users WHERE email = ?").get(normalized);
+    if (existing) return { userId: existing.id, created: false };
+    const userId = `acct_${randomUUID()}`;
+    const now = this.now();
+    this.db
+      .prepare(
+        "INSERT INTO users (id, email, display_name, password_scrypt, created_at, verified_at) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(userId, normalized, displayName ?? null, hashPassword(password), now, now);
+    return { userId, created: true };
   }
 
   verifyEmail(rawToken) {
@@ -185,16 +243,16 @@ export class AuthStore {
     const now = this.now();
     this.db
       .prepare(
-        "INSERT INTO sessions (session_hash, user_id, created_at, expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO sessions (session_hash, user_id, created_at, expires_at, last_seen_at, cookie_issued_at) VALUES (?, ?, ?, ?, ?, ?)",
       )
-      .run(sha256Hex(raw), userId, now, now + SESSION_TTL_MS, now);
+      .run(sha256Hex(raw), userId, now, now + SESSION_TTL_MS, now, now);
     return raw;
   }
 
   sessionUser(rawSessionId) {
     const hash = sha256Hex(String(rawSessionId ?? ""));
     const row = this.db
-      .prepare("SELECT user_id, expires_at FROM sessions WHERE session_hash = ?")
+      .prepare("SELECT user_id, expires_at, cookie_issued_at FROM sessions WHERE session_hash = ?")
       .get(hash);
     const now = this.now();
     if (!row) return null;
@@ -205,7 +263,14 @@ export class AuthStore {
     this.db
       .prepare("UPDATE sessions SET expires_at = ?, last_seen_at = ? WHERE session_hash = ?")
       .run(now + SESSION_TTL_MS, now, hash);
-    return this.#userById(row.user_id);
+    const user = this.#userById(row.user_id);
+    return user ? { ...user, cookieIssuedAt: Number(row.cookie_issued_at) } : null;
+  }
+
+  markCookieIssued(rawSessionId) {
+    this.db
+      .prepare("UPDATE sessions SET cookie_issued_at = ? WHERE session_hash = ?")
+      .run(this.now(), sha256Hex(String(rawSessionId ?? "")));
   }
 
   deleteSession(rawSessionId) {
