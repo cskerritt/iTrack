@@ -60,11 +60,56 @@ test("no state updater reads event.currentTarget or event.target (app-ux-01 / ar
   assert.ok(seen >= 7, `expected to scan at least the seven setActivityDraft updaters, scanned ${seen}`);
 });
 
-test("client code never calls response.json() directly (app-ux-M-01 / architecture-M-04)", () => {
+test("client code never calls .json() on a fetch Response directly (app-ux-M-01 / architecture-M-04)", () => {
   for (const { file, source } of readClientSources()) {
     if (file.startsWith("api/") || file === "lib/apiResponse.ts") continue;
-    assert.doesNotMatch(source, /\bresponse\.json\(\)/, `${file}: use readApiResponse() from app/lib/apiResponse.ts`);
+    // Any receiver: `response.json()`, `res.json()`, `.then((r) => r.json())`.
+    // `Response.json(data)` (the static constructor) takes arguments, so it
+    // is not matched.
+    assert.doesNotMatch(source, /\.json\(\s*\)/, `${file}: use readApiResponse() from app/lib/apiResponse.ts`);
   }
+});
+
+// A mounted Modal marks its surroundings inert and aria-hidden, so a
+// Reload-and-sign-in state rendered behind one is neither perceivable nor
+// operable. Every modal whose render condition is not gated on `workspace`
+// (or `selectedCredential`, which is derived from it) therefore has to be
+// closed by handleSessionEnded, in the same commit that drops the workspace.
+test("handleSessionEnded closes every modal that is not gated on workspace (app-ux-M-01)", () => {
+  const sources = readClientSources();
+  const owner = sources.find(({ source }) => /const handleSessionEnded = useCallback\(/.test(source));
+  assert.ok(owner, "handleSessionEnded is defined in a client source");
+  const body = owner.source.match(/const handleSessionEnded = useCallback\(\(\) => \{([\s\S]*?)\n\s*\}, \[\]\);/)?.[1];
+  assert.ok(body, "handleSessionEnded body found");
+  assert.match(body, /\bsetWorkspace\(null\)/, "handleSessionEnded drops the workspace");
+
+  let gated = 0;
+  const ungated = [];
+  for (const { file, source } of sources) {
+    // `{condition ? (\n <Modal …` / `<…Modal …` render sites and their conditions.
+    const site = /\{([^{}]+?)\s\?\s\(\s*<\w*Modal\b/g;
+    let match;
+    while ((match = site.exec(source)) !== null) {
+      const condition = match[1].trim();
+      if (/\b(workspace|selectedCredential)\b/.test(condition)) {
+        gated += 1;
+        continue;
+      }
+      for (const name of condition.match(/\b[a-z]\w*\b/g) ?? []) {
+        const setter = `set${name[0].toUpperCase()}${name.slice(1)}`;
+        assert.match(
+          body,
+          new RegExp(`\\b${setter}\\((null|false)\\)`),
+          `${file}: the modal gated on \`${condition}\` would stay mounted over the Reload state; add ${setter}(null|false) to handleSessionEnded`,
+        );
+        ungated.push(name);
+      }
+    }
+  }
+  assert.ok(
+    gated >= 6 && ungated.length >= 5,
+    `expected to scan the gated (${gated}) and ungated (${ungated.length}) modal render sites`,
+  );
 });
 
 test("sign out is a POST form to /auth/logout, not a link (app-ux-02)", () => {

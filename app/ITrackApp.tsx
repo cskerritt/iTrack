@@ -1928,12 +1928,21 @@ export function ITrackApp() {
   ]);
 
   // A 401 from any fetch means the session lapsed. Drop the workspace so the
-  // existing WorkspaceLoadFailure "Reload and sign in" state renders.
+  // existing WorkspaceLoadFailure "Reload and sign in" state renders, and
+  // close every sheet that is not itself gated on `workspace`: a mounted
+  // Modal marks its surroundings inert, so a Reload state rendered behind
+  // one is neither perceivable nor operable (app-ux-M-01). `error` carries
+  // the session message so any surface that still renders it says why.
   const handleSessionEnded = useCallback(() => {
     setWorkspace(null);
     setWorkspaceLoadFailed(true);
     setWorkspaceLoadFailureStatus(401);
-    setError("");
+    setEditingActivity(null);
+    setTaskEditor(null);
+    setInstallHelpOpen(false);
+    setClassificationRepair(null);
+    setEvidenceActivity(null);
+    setError(SESSION_ENDED_MESSAGE);
   }, []);
 
   const loadWorkspace = useCallback(async () => {
@@ -1952,7 +1961,13 @@ export function ITrackApp() {
       });
       responseStatus = response.status;
       const parsed = await readApiResponse<Workspace & { error?: string }>(response);
-      if (parsed.kind === "session-ended") throw new Error(SESSION_ENDED_MESSAGE);
+      if (parsed.kind === "session-ended") {
+        // A refetch can 401 while a workspace is still on screen (the
+        // banner's Try again, the reload after a write). Drop it so the
+        // Reload-and-sign-in state renders instead of a retry loop.
+        if (!superseded()) handleSessionEnded();
+        throw new Error(SESSION_ENDED_MESSAGE);
+      }
       if (parsed.kind === "unexpected") throw new Error(UNEXPECTED_RESPONSE_MESSAGE);
       const data = parsed.data;
       if (!response.ok) {
@@ -1987,7 +2002,7 @@ export function ITrackApp() {
       );
       return false;
     }
-  }, []);
+  }, [handleSessionEnded]);
 
   // The searchable template catalog is global reference data, so it is fetched
   // once per session — when the chooser first opens — instead of riding along
