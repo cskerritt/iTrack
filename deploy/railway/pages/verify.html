@@ -60,9 +60,13 @@
   <main class="card">
     <div id="confirm-view" style="display:none">
       <h1>Confirm your email</h1>
-      <p class="sub">One more step: confirm that this address is yours and you'll be signed in.</p>
+      <p class="sub">One more step: enter the password you chose when you signed up, and you'll be signed in.</p>
+      <div class="flash error" id="confirm-flash-password">That password doesn't match this account. Try again — or, if you're sure it's right, <a href="/signup">sign up again</a> with this address to set a new password and get a fresh link.</div>
+      <div class="flash error" id="confirm-flash-rate-limited">Too many attempts. Wait a few minutes and try again.</div>
       <form action="/auth/verify" method="post">
         <input type="hidden" name="token" id="token">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" required autocomplete="current-password" autofocus>
         <button class="btn btn-primary" type="submit">Confirm my email</button>
       </form>
     </div>
@@ -87,8 +91,13 @@
   const params = new URLSearchParams(location.search);
   const token = params.get("token");
   const error = params.get("error");
-  if (token && !error) {
+  // A wrong password or a rate limit keeps the link alive, so those come
+  // back to the confirm form with the token; anything else is a dead link.
+  const retryable = !error || error === "password" || error === "rate-limited";
+  if (token && retryable) {
     document.getElementById("token").value = token;
+    const flash = error && document.getElementById("confirm-flash-" + error);
+    if (flash) flash.style.display = "block";
     document.getElementById("confirm-view").style.display = "block";
   } else {
     document.getElementById("problem-view").style.display = "block";

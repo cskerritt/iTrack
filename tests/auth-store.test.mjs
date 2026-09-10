@@ -41,7 +41,7 @@ test("createUser + verifyEmail + authenticate happy path", () => {
     ok: false,
     reason: "unverified",
   });
-  const verified = store.verifyEmail(verifyToken);
+  const verified = store.verifyEmail(verifyToken, "longenoughpass");
   assert.equal(verified.email, "pat@example.com"); // lowercased
   const auth = store.authenticate("PAT@example.com", "longenoughpass");
   assert.equal(auth.ok, true);
@@ -62,7 +62,7 @@ test("createUser + verifyEmail + authenticate happy path", () => {
 test("duplicate verified email is rejected case-insensitively", () => {
   const { store } = makeStore();
   const { verifyToken } = store.createUser({ email: "a@b.co", displayName: "A", password: "x".repeat(10) });
-  store.verifyEmail(verifyToken);
+  store.verifyEmail(verifyToken, "x".repeat(10));
   assert.throws(
     () => store.createUser({ email: "A@B.CO", displayName: "A2", password: "y".repeat(10) }),
     (err) => err instanceof AuthError && err.code === "email-taken",
@@ -74,13 +74,13 @@ test("verify tokens are single-use and expire", () => {
   const { verifyToken } = store.createUser({
     email: "one@e.co", displayName: "One", password: "x".repeat(10),
   });
-  assert.ok(store.verifyEmail(verifyToken));
-  assert.equal(store.verifyEmail(verifyToken), null); // single-use
+  assert.ok(store.verifyEmail(verifyToken, "x".repeat(10)));
+  assert.equal(store.verifyEmail(verifyToken, "x".repeat(10)), null); // single-use
   const second = store.createUser({
     email: "two@e.co", displayName: "Two", password: "x".repeat(10),
   });
   tick(VERIFY_TTL_MS + 1);
-  assert.equal(store.verifyEmail(second.verifyToken), null); // expired
+  assert.equal(store.verifyEmail(second.verifyToken, "x".repeat(10)), null); // expired
 });
 
 test("newVerifyToken only for unverified existing users", () => {
@@ -91,7 +91,7 @@ test("newVerifyToken only for unverified existing users", () => {
   const reissued = store.newVerifyToken("u@e.co");
   assert.ok(reissued.token);
   assert.equal(store.newVerifyToken("missing@e.co"), null);
-  store.verifyEmail(verifyToken);
+  store.verifyEmail(verifyToken, "x".repeat(10));
   assert.equal(store.newVerifyToken("u@e.co"), null); // already verified
 });
 
@@ -100,7 +100,7 @@ test("sessions resolve, slide, expire, delete", () => {
   const { userId, verifyToken } = store.createUser({
     email: "s@e.co", displayName: "S", password: "x".repeat(10),
   });
-  store.verifyEmail(verifyToken);
+  store.verifyEmail(verifyToken, "x".repeat(10));
   const sid = store.createSession(userId);
   assert.equal(store.sessionUser(sid).email, "s@e.co");
   tick(SESSION_TTL_MS - 1000);
@@ -119,7 +119,7 @@ test("cleanup removes stale unverified users and expired rows", () => {
   const { store, tick } = makeStore();
   store.createUser({ email: "stale@e.co", displayName: "Stale", password: "x".repeat(10) });
   const kept = store.createUser({ email: "kept@e.co", displayName: "Kept", password: "x".repeat(10) });
-  store.verifyEmail(kept.verifyToken);
+  store.verifyEmail(kept.verifyToken, "x".repeat(10));
   tick(UNVERIFIED_TTL_MS + 1);
   const { removedUsers } = store.cleanup();
   assert.equal(removedUsers, 1);
@@ -134,7 +134,7 @@ test("password reset flow invalidates sessions and old tokens expire", () => {
     email: "r@e.co", displayName: "R", password: "original-pass",
   });
   assert.equal(store.createResetToken("r@e.co"), null, "unverified gets no reset");
-  store.verifyEmail(verifyToken);
+  store.verifyEmail(verifyToken, "original-pass");
   const sid = store.createSession(userId);
   const { token } = store.createResetToken("r@e.co");
   assert.equal(store.createResetToken("nobody@e.co"), null);
@@ -157,8 +157,8 @@ test("re-signup of an UNVERIFIED email replaces name + hash and reissues the lin
   assert.equal(second.replaced, true);
   assert.equal(second.userId, first.userId, "same account row is kept");
   assert.notEqual(second.verifyToken, first.verifyToken);
-  assert.equal(store.verifyEmail(first.verifyToken), null, "the squatter's link is dead");
-  const verified = store.verifyEmail(second.verifyToken);
+  assert.equal(store.verifyEmail(first.verifyToken, "squatter-pass-1"), null, "the squatter's link is dead");
+  const verified = store.verifyEmail(second.verifyToken, "owner-pass-123");
   assert.equal(verified.displayName, "Owner");
   assert.equal(store.authenticate("claim@e.co", "squatter-pass-1").ok, false, "old password gone");
   assert.equal(store.authenticate("claim@e.co", "owner-pass-123").ok, true);
@@ -167,7 +167,7 @@ test("re-signup of an UNVERIFIED email replaces name + hash and reissues the lin
 test("re-signup of a VERIFIED email still throws email-taken", () => {
   const { store } = makeStore();
   const { verifyToken } = store.createUser({ email: "v@e.co", displayName: "V", password: "x".repeat(10) });
-  store.verifyEmail(verifyToken);
+  store.verifyEmail(verifyToken, "x".repeat(10));
   assert.throws(
     () => store.createUser({ email: "v@e.co", displayName: "V2", password: "y".repeat(10) }),
     (err) => err instanceof AuthError && err.code === "email-taken",
@@ -195,7 +195,7 @@ test("createVerifiedUser creates once and never touches an existing account", ()
 test("sessions record when the cookie was issued and can be marked re-issued", () => {
   const { store, tick } = makeStore();
   const { userId, verifyToken } = store.createUser({ email: "c@e.co", displayName: "C", password: "x".repeat(10) });
-  store.verifyEmail(verifyToken);
+  store.verifyEmail(verifyToken, "x".repeat(10));
   const sid = store.createSession(userId);
   const issuedAt = store.sessionUser(sid).cookieIssuedAt;
   assert.equal(typeof issuedAt, "number");
@@ -218,4 +218,58 @@ test("an auth.db created before cookie_issued_at existed is upgraded on open", (
   assert.ok(columns.includes("cookie_issued_at"));
   store.close();
   require("node:fs").rmSync(dbPath, { force: true });
+});
+
+test("verifyEmail needs the account's current password; a wrong one leaves the link live", () => {
+  const { store } = makeStore();
+  const { userId, verifyToken } = store.createUser({ email: "pw@e.co", displayName: "P", password: "right-pass-11" });
+  assert.deepEqual(store.peekVerifyToken(verifyToken), { userId, email: "pw@e.co" });
+  assert.equal(store.verifyEmail(verifyToken, "wrong-pass-11"), null, "wrong password is refused");
+  assert.equal(store.verifyEmail(verifyToken), null, "no password is refused");
+  assert.equal(store.verifyEmail(verifyToken, ""), null, "empty password is refused");
+  assert.ok(store.peekVerifyToken(verifyToken), "the refusals did not consume the link");
+  assert.equal(store.authenticate("pw@e.co", "right-pass-11").reason, "unverified", "…or verify anything");
+  const verified = store.verifyEmail(verifyToken, "right-pass-11");
+  assert.equal(verified.email, "pw@e.co");
+  assert.equal(store.peekVerifyToken(verifyToken), null, "consumed");
+  assert.equal(store.authenticate("pw@e.co", "right-pass-11").ok, true);
+});
+
+test("peekVerifyToken ignores unknown, used, expired, and reset tokens", () => {
+  const { store, tick } = makeStore();
+  assert.equal(store.peekVerifyToken("nope"), null);
+  assert.equal(store.peekVerifyToken(undefined), null);
+  const a = store.createUser({ email: "a@e.co", displayName: "A", password: "x".repeat(10) });
+  store.verifyEmail(a.verifyToken, "x".repeat(10));
+  assert.equal(store.peekVerifyToken(a.verifyToken), null, "used");
+  const { token: reset } = store.createResetToken("a@e.co");
+  assert.equal(store.peekVerifyToken(reset), null, "a reset token is not a verify link");
+  const b = store.createUser({ email: "b@e.co", displayName: "B", password: "x".repeat(10) });
+  tick(VERIFY_TTL_MS + 1);
+  assert.equal(store.peekVerifyToken(b.verifyToken), null, "expired");
+});
+
+test("owner-first squat: neither the squatter's link nor a resend confirms a password the owner never set", () => {
+  const { store } = makeStore();
+  // The owner signs up first; a squatter re-signs-up before the owner clicks.
+  const owner = store.createUser({ email: "own@e.co", displayName: "Owner", password: "owner-pass-111" });
+  const squat = store.createUser({ email: "own@e.co", displayName: "Squatter", password: "squatter-pass-1" });
+  assert.equal(squat.replaced, true);
+  assert.equal(store.verifyEmail(owner.verifyToken, "owner-pass-111"), null, "the owner's original link is dead");
+  // The squatter's link lands in the OWNER's inbox, and so does whatever the
+  // resend form issues — both belong to a row that now carries the squatter's hash.
+  const resent = store.newVerifyToken("own@e.co");
+  for (const token of [squat.verifyToken, resent.token]) {
+    assert.equal(store.verifyEmail(token, "owner-pass-111"), null, "a password the owner never set cannot be confirmed");
+    assert.ok(store.peekVerifyToken(token), "…and the refusal does not burn the link");
+  }
+  assert.equal(store.authenticate("own@e.co", "squatter-pass-1").reason, "unverified", "nothing was verified");
+  // Recovery: signing up again replaces the squatter's hash and kills every outstanding link.
+  const again = store.createUser({ email: "own@e.co", displayName: "Owner", password: "owner-pass-222" });
+  assert.equal(again.replaced, true);
+  assert.equal(store.peekVerifyToken(squat.verifyToken), null);
+  assert.equal(store.peekVerifyToken(resent.token), null);
+  assert.ok(store.verifyEmail(again.verifyToken, "owner-pass-222"));
+  assert.equal(store.authenticate("own@e.co", "owner-pass-222").ok, true);
+  assert.equal(store.authenticate("own@e.co", "squatter-pass-1").ok, false, "the squatter's password never survives");
 });

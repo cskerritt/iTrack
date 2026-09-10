@@ -83,11 +83,18 @@ test("login page: next field, generic error, and a resend form with its own emai
   assert.doesNotMatch(resendForm[0], /type="hidden" name="email"/);
 });
 
-test("verify page: POST confirm form and a problem view with resend", () => {
+test("verify page: the confirm form posts the token AND the current password; problem view has resend", () => {
   const html = page("verify.html");
-  assert.match(html, /<form action="\/auth\/verify" method="post"/);
-  assert.match(html, /<input type="hidden" name="token" id="token">/);
-  assert.match(html, />Confirm my email</);
+  const confirmForm = html.match(/<form action="\/auth\/verify" method="post">[\s\S]*?<\/form>/);
+  assert.ok(confirmForm, "confirm form present");
+  assert.match(confirmForm[0], /<input type="hidden" name="token" id="token">/);
+  assert.match(confirmForm[0], /<input id="password" name="password" type="password" required autocomplete="current-password"/,
+    "a bare link must not confirm a password the inbox owner never set");
+  assert.match(confirmForm[0], />Confirm my email</);
+  assert.match(html, /id="confirm-flash-password">That password doesn't match this account\./);
+  assert.match(html, /id="confirm-flash-rate-limited">Too many attempts\./);
+  assert.match(html, /href="\/signup"/, "the way out of a replaced password is to sign up again");
+  assert.match(html, /error === "password" \|\| error === "rate-limited"/, "retryable errors keep the confirm view and its token");
   assert.match(html, /If you already confirmed, just log in\./);
   assert.match(html, /action="\/auth\/resend"/);
   assert.match(html, /href="\/login"/);

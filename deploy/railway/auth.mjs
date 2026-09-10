@@ -200,7 +200,38 @@ export class AuthStore {
     return { userId, created: true };
   }
 
-  verifyEmail(rawToken) {
+  // The account behind a live verify link, without consuming it. null when
+  // the link is unknown, used, expired, or not a verify link.
+  #liveVerifyToken(rawToken) {
+    const row = this.db
+      .prepare(
+        `SELECT t.expires_at, t.used_at, u.id AS user_id, u.email, u.password_scrypt
+           FROM tokens t JOIN users u ON u.id = t.user_id
+          WHERE t.token_hash = ? AND t.kind = 'verify'`,
+      )
+      .get(sha256Hex(String(rawToken ?? "")));
+    if (!row || row.used_at !== null || row.expires_at < this.now()) return null;
+    return row;
+  }
+
+  peekVerifyToken(rawToken) {
+    const row = this.#liveVerifyToken(rawToken);
+    return row ? { userId: row.user_id, email: row.email } : null;
+  }
+
+  // Consumes a verify link and marks the account verified — but only when
+  // `password` matches the account's CURRENT hash. A link proves inbox
+  // access, not that its holder set the password on the row: an unverified
+  // row is claimable (createUser), so a later signup may have swapped the
+  // hash, and newVerifyToken hands out links for whatever hash is current.
+  // Without this check the inbox owner would confirm — and be signed into —
+  // an account whose password belongs to whoever signed up last. A wrong
+  // password does not consume the link, so a typo is retryable; the caller
+  // rate-limits the attempts.
+  verifyEmail(rawToken, password) {
+    const live = this.#liveVerifyToken(rawToken);
+    if (!live) return null;
+    if (!verifyPassword(String(password ?? ""), live.password_scrypt)) return null;
     const userId = this.#consumeToken(rawToken, "verify");
     if (!userId) return null;
     this.db

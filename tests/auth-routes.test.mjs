@@ -123,7 +123,7 @@ test("signup is enumeration-neutral: unverified duplicate re-sends, verified dup
   ({ res } = await post(routes, "/auth/signup", form({ email: "dup@e.co", name: "D2", password: "another-pass1" })));
   assert.equal(res.headers.location, "/signup?sent=1&email=dup%40e.co");
   assert.equal(sent.length, 2, "unverified duplicate gets a fresh link");
-  store.verifyEmail(sent[1].text.match(/token=([A-Za-z0-9_-]+)/)[1]);
+  store.verifyEmail(sent[1].text.match(/token=([A-Za-z0-9_-]+)/)[1], "another-pass1");
   ({ res } = await post(routes, "/auth/signup", form({ email: "dup@e.co", name: "D3", password: "third-pass-1" })));
   assert.equal(res.headers.location, "/signup?sent=1&email=dup%40e.co", "verified duplicate looks identical");
   assert.equal(sent.length, 2, "…but nothing is sent and nothing changes");
@@ -140,19 +140,89 @@ test("signup is enumeration-neutral: unverified duplicate re-sends, verified dup
   assert.equal(res.headers.location, "/signup?sent=1&mail=failed&email=y%40e.co");
 });
 
-test("verify is a POST: consumes the token, signs in, and fails closed", async () => {
-  const { routes, sent } = makeRoutes();
+test("verify is a POST: needs the token AND the current password, consumes the token, signs in, fails closed", async () => {
+  const { store, routes, sent } = makeRoutes();
   await post(routes, "/auth/signup", form({ email: "v@e.co", name: "V", password: "longenough1" }));
   const token = sent[0].text.match(/token=([A-Za-z0-9_-]+)/)[1];
-  let { res } = await post(routes, "/auth/verify", form({ token: "bogus" }));
+  let { res } = await post(routes, "/auth/verify", form({ token: "bogus", password: "longenough1" }));
   assert.equal(res.headers.location, "/verify?error=expired");
   assert.equal(res.headers["set-cookie"], undefined);
+  ({ res } = await post(routes, "/auth/verify", form({ token, password: "wrong-pass-11" })));
+  assert.equal(res.headers.location, `/verify?error=password&token=${token}`, "wrong password: back to the confirm form");
+  assert.equal(res.headers["set-cookie"], undefined);
   ({ res } = await post(routes, "/auth/verify", form({ token })));
+  assert.equal(res.headers.location, `/verify?error=password&token=${token}`, "missing password: same answer");
+  assert.equal(res.headers["set-cookie"], undefined);
+  assert.equal(store.authenticate("v@e.co", "longenough1").reason, "unverified", "nothing verified yet");
+  ({ res } = await post(routes, "/auth/verify", form({ token, password: "longenough1" })));
   assert.equal(res.statusCode, 303);
   assert.equal(res.headers.location, "/");
   assert.match(res.headers["set-cookie"], new RegExp(`^${SESSION_COOKIE}=`));
-  ({ res } = await post(routes, "/auth/verify", form({ token })));
+  ({ res } = await post(routes, "/auth/verify", form({ token, password: "longenough1" })));
   assert.equal(res.headers.location, "/verify?error=expired", "single use");
+});
+
+test("owner-first squat over HTTP: the owner cannot confirm the squatter's password and recovers by signing up again", async () => {
+  const { store, routes, sent } = makeRoutes();
+  const link = (i) => sent[i].text.match(/token=([A-Za-z0-9_-]+)/)[1];
+  await post(routes, "/auth/signup", form({ email: "own@e.co", name: "Owner", password: "owner-pass-111" }));
+  await post(routes, "/auth/signup", form({ email: "own@e.co", name: "Squatter", password: "squatter-pass-1" }),
+    { "x-forwarded-for": "198.51.100.7" });
+  assert.equal(sent.length, 2, "both links went to the owner's inbox");
+  let { res } = await post(routes, "/auth/verify", form({ token: link(0), password: "owner-pass-111" }));
+  assert.equal(res.headers.location, "/verify?error=expired", "the owner's first link is dead");
+  ({ res } = await post(routes, "/auth/resend", form({ email: "own@e.co" })));
+  assert.equal(res.headers.location, "/login?sent=1");
+  assert.equal(sent.length, 3, "the resend issues a link for the row the squatter now owns");
+  for (const token of [link(1), link(2)]) {
+    ({ res } = await post(routes, "/auth/verify", form({ token, password: "owner-pass-111" })));
+    assert.equal(res.headers.location, `/verify?error=password&token=${token}`);
+    assert.equal(res.headers["set-cookie"], undefined, "no session for a password the owner never set");
+  }
+  assert.equal(store.authenticate("own@e.co", "squatter-pass-1").reason, "unverified", "the squatter's password was never confirmed");
+  await post(routes, "/auth/signup", form({ email: "own@e.co", name: "Owner", password: "owner-pass-222" }));
+  ({ res } = await post(routes, "/auth/verify", form({ token: link(3), password: "owner-pass-222" })));
+  assert.equal(res.headers.location, "/");
+  assert.match(res.headers["set-cookie"], new RegExp(`^${SESSION_COOKIE}=`));
+  assert.equal(store.authenticate("own@e.co", "owner-pass-222").ok, true);
+  assert.equal(store.authenticate("own@e.co", "squatter-pass-1").ok, false);
+});
+
+test("verify shares the per-account limiter with login: 10 wrong passwords lock the address for both", async () => {
+  const { store, routes, sent, sleeps } = makeRoutes();
+  await post(routes, "/auth/signup", form({ email: "acct@e.co", name: "A", password: "longenough1" }));
+  const token = sent[0].text.match(/token=([A-Za-z0-9_-]+)/)[1];
+  for (let i = 0; i < 10; i += 1) {
+    const { res } = await post(routes, "/auth/verify", form({ token, password: "wrong-pass-1" }),
+      { "x-forwarded-for": `10.0.${i}.1` });
+    assert.equal(res.headers.location, `/verify?error=password&token=${token}`);
+  }
+  assert.deepEqual(sleeps, [], "no delay while under the limit");
+  let scrypts = 0;
+  for (const method of ["verifyEmail", "authenticate"]) {
+    const original = store[method].bind(store);
+    store[method] = (...args) => { scrypts += 1; return original(...args); };
+  }
+  let { res } = await post(routes, "/auth/verify", form({ token, password: "longenough1" }), { "x-forwarded-for": "10.9.9.9" });
+  assert.equal(res.headers.location, `/verify?error=password&token=${token}`, "even the right password is refused while tripped");
+  assert.equal(res.headers["set-cookie"], undefined);
+  ({ res } = await post(routes, "/auth/login", form({ email: "acct@e.co", password: "longenough1" }), { "x-forwarded-for": "10.9.9.8" }));
+  assert.equal(res.headers.location, "/login?error=bad-credentials", "login is locked by the same bucket");
+  assert.deepEqual(sleeps, [2000, 2000]);
+  assert.equal(scrypts, 0, "scrypt is not burned for a tripped account");
+  assert.ok(store.peekVerifyToken(token), "the link survives the lockout for a retry after the window");
+});
+
+test("verify counts against the per-IP login limiter and keeps the token for a retry", async () => {
+  const { routes, sent } = makeRoutes();
+  await post(routes, "/auth/signup", form({ email: "ip@e.co", name: "I", password: "longenough1" }));
+  const token = sent[0].text.match(/token=([A-Za-z0-9_-]+)/)[1];
+  for (let i = 0; i < 10; i += 1) {
+    await post(routes, "/auth/login", form({ email: `x${i}@e.co`, password: "wrong-pass-1" }));
+  }
+  const { res } = await post(routes, "/auth/verify", form({ token, password: "longenough1" }));
+  assert.equal(res.headers.location, `/verify?error=rate-limited&token=${token}`);
+  assert.equal(res.headers["set-cookie"], undefined);
 });
 
 test("resend has its own email field, its own limiter, and neutral outcomes", async () => {
@@ -187,7 +257,7 @@ test("login flow: unverified and wrong password share one generic error; verifie
   let { res } = await post(routes, "/auth/login", form({ email: "l@e.co", password: "longenough1" }));
   assert.equal(res.headers.location, "/login?error=bad-credentials", "unverified is not distinguishable");
   const token = sent[0].text.match(/token=([A-Za-z0-9_-]+)/)[1];
-  assert.ok(store.verifyEmail(token));
+  assert.ok(store.verifyEmail(token, "longenough1"));
   ({ res } = await post(routes, "/auth/login", form({ email: "l@e.co", password: "longenough1" })));
   assert.equal(res.headers.location, "/");
   const setCookie = res.headers["set-cookie"];
@@ -288,7 +358,7 @@ test("RateLimiter.check probes without counting", () => {
 test("reset flow: request always says sent, reset changes password", async () => {
   const { store, routes, sent } = makeRoutes();
   await post(routes, "/auth/signup", form({ email: "r@e.co", name: "R", password: "longenough1" }));
-  store.verifyEmail(sent[0].text.match(/token=([A-Za-z0-9_-]+)/)[1]);
+  store.verifyEmail(sent[0].text.match(/token=([A-Za-z0-9_-]+)/)[1], "longenough1");
   let { res } = await post(routes, "/auth/request-reset", form({ email: "r@e.co" }));
   assert.equal(res.headers.location, "/reset?sent=1");
   ({ res } = await post(routes, "/auth/request-reset", form({ email: "ghost@e.co" })));

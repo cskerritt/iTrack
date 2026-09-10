@@ -289,8 +289,30 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
       // security-03 / landing-auth-05: the token is consumed here, on an
       // explicit POST from the confirm page, never on the GET a mail scanner
       // makes.
-      const verified = store.verifyEmail(fields.get("token") ?? "");
-      if (!verified) return redirect(res, "/verify?error=expired"), true;
+      //
+      // The link alone is not enough. An unverified row is claimable, so a
+      // signup that came AFTER the inbox owner's may have replaced the hash,
+      // and the resend form issues links for whatever hash is current.
+      // Confirming therefore also proves the account's current password:
+      // someone who never set it cannot confirm it (and signing up again
+      // restores their own). A wrong password keeps the link alive for a
+      // retry, so the attempts are limited like login — per IP, and per
+      // account (same bucket, so login and verify cannot be guessed in turn).
+      const token = fields.get("token") ?? "";
+      const pending = store.peekVerifyToken(token);
+      if (!pending) return redirect(res, "/verify?error=expired"), true;
+      const retry = (error) => `/verify?error=${error}&token=${encodeURIComponent(token)}`;
+      if (!loginLimiter.allow(`login:${ip}`)) return redirect(res, retry("rate-limited")), true;
+      const accountKey = `account:${pending.email}`;
+      if (!accountLimiter.check(accountKey)) {
+        await sleep(ACCOUNT_LOCK_DELAY_MS);
+        return redirect(res, retry("password")), true;
+      }
+      const verified = store.verifyEmail(token, password);
+      if (!verified) {
+        accountLimiter.allow(accountKey);
+        return redirect(res, retry("password")), true;
+      }
       issueSessionCookie(res, verified.userId);
       return redirect(res, "/"), true;
     }

@@ -197,7 +197,11 @@ test("gateway routes by path and Accept, never by User-Agent", async (t) => {
     const verifyPage = await get(base, `/verify?token=${token}`, { accept: "text/html" });
     assert.equal(verifyPage.status, 200, "GET /verify renders a page and consumes nothing");
     assert.equal(verifyPage.headers.get("set-cookie"), null);
-    const confirm = await postForm(base, "/auth/verify", { token });
+    const refused = await postForm(base, "/auth/verify", { token, password: "not-the-one-1" });
+    assert.equal(refused.status, 303);
+    assert.equal(refused.headers.get("location"), `/verify?error=password&token=${token}`, "the link alone is not enough");
+    assert.equal(refused.headers.get("set-cookie"), null);
+    const confirm = await postForm(base, "/auth/verify", { token, password: "longenough1" });
     assert.equal(confirm.status, 303);
     assert.equal(confirm.headers.get("location"), "/");
     const cookie = confirm.headers.get("set-cookie").split(";")[0];

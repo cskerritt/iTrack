@@ -39,7 +39,7 @@ test("applyBootstrapUsers creates verified accounts once and never touches exist
     "bad-credentials",
     "the bootstrap password was not written over the pending user's hash",
   );
-  assert.ok(store.verifyEmail(pending.verifyToken), "the pending user's own link still works");
+  assert.ok(store.verifyEmail(pending.verifyToken, "pending-pass-1"), "the pending user's own link still works");
   assert.equal(
     store.authenticate("pending@example.test", "pending-pass-1").ok,
     true,
