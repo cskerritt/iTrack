@@ -46,24 +46,6 @@ export function daysUntilDate(value: string, nowMs: number) {
   return Math.ceil((deadline.getTime() - nowMs) / 86_400_000);
 }
 
-/**
- * The same count, but anchored to a calendar date the caller already
- * resolved in the *user's* zone rather than the runtime's. Server-side
- * callers run on workerd, whose zone is always UTC,
- * so counting from an epoch there would show a US user a different number
- * than the app shows them; passing today's local date in sidesteps that.
- *
- * Counting whole calendar days and adding one is exactly what the
- * end-of-deadline-day arithmetic above resolves to at any wall-clock time
- * of day.
- */
-export function daysUntilDateFromToday(value: string, today: string) {
-  const deadline = Date.parse(`${value.slice(0, 10)}T00:00:00.000Z`);
-  const anchor = Date.parse(`${today.slice(0, 10)}T00:00:00.000Z`);
-  if (Number.isNaN(deadline) || Number.isNaN(anchor)) return null;
-  return Math.round((deadline - anchor) / 86_400_000) + 1;
-}
-
 export function requirementEarned(requirement: ReadinessRequirement) {
   return Number(
     requirement.countableEarned ??
