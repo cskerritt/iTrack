@@ -13,6 +13,7 @@
     "build:nav-test": "tsc app/lib/navigation.ts --outDir .test-build --module nodenext --target es2022",
     "test:nav": "npm run build:nav-test && node --test tests/navigation.test.mjs",
     "typecheck": "tsc --noEmit",
+    "test:e2e": "playwright test",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern public/ocr --ignore-pattern .test-build",
     "db:generate": "drizzle-kit generate"
   },
@@ -26,6 +27,7 @@
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",
+    "@playwright/test": "1.63.0",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",

@@ -4517,12 +4517,10 @@ export function ITrackApp() {
                   value={activityDraft.title}
                   maxLength={ACTIVITY_DRAFT_TITLE_MAX_LENGTH}
                   disabled={scanningActivityEvidence}
-                  onChange={(event) =>
-                    setActivityDraft((current) => ({
-                      ...current,
-                      title: event.currentTarget.value,
-                    }))
-                  }
+                  onChange={(event) => {
+                    const title = event.currentTarget.value;
+                    setActivityDraft((current) => ({ ...current, title }));
+                  }}
                   required
                 />
                 {activityScan.suggestions.title ? (
@@ -4545,12 +4543,10 @@ export function ITrackApp() {
                     type="date"
                     value={activityDraft.completionDate}
                     disabled={scanningActivityEvidence}
-                    onChange={(event) =>
-                      setActivityDraft((current) => ({
-                        ...current,
-                        completionDate: event.currentTarget.value,
-                      }))
-                    }
+                    onChange={(event) => {
+                      const completionDate = event.currentTarget.value;
+                      setActivityDraft((current) => ({ ...current, completionDate }));
+                    }}
                     min={
                       confirmedCarryoverWindowStart(activityCredential) ??
                       activityCredential?.cycleStart
@@ -4588,20 +4584,18 @@ export function ITrackApp() {
                     placeholder="1.0"
                     value={activityDraft.totalUnits}
                     disabled={scanningActivityEvidence}
-                    onChange={(event) =>
-                      setActivityDraft((current) => {
-                        const totalUnits = event.currentTarget.value;
-                        return {
-                          ...current,
-                          totalUnits,
-                          allocatedUnits:
-                            !current.allocatedUnits ||
-                            current.allocatedUnits === current.totalUnits
-                              ? totalUnits
-                              : current.allocatedUnits,
-                        };
-                      })
-                    }
+                    onChange={(event) => {
+                      const totalUnits = event.currentTarget.value;
+                      setActivityDraft((current) => ({
+                        ...current,
+                        totalUnits,
+                        allocatedUnits:
+                          !current.allocatedUnits ||
+                          current.allocatedUnits === current.totalUnits
+                            ? totalUnits
+                            : current.allocatedUnits,
+                      }));
+                    }}
                     required
                   />
                   {activityScan.suggestions.credits ? (
@@ -4626,12 +4620,10 @@ export function ITrackApp() {
                     placeholder="1.0"
                     value={activityDraft.allocatedUnits}
                     disabled={scanningActivityEvidence}
-                    onChange={(event) =>
-                      setActivityDraft((current) => ({
-                        ...current,
-                        allocatedUnits: event.currentTarget.value,
-                      }))
-                    }
+                    onChange={(event) => {
+                      const allocatedUnits = event.currentTarget.value;
+                      setActivityDraft((current) => ({ ...current, allocatedUnits }));
+                    }}
                     required
                   />
                   <small>
@@ -4745,12 +4737,10 @@ export function ITrackApp() {
                   value={activityDraft.provider}
                   maxLength={ACTIVITY_DRAFT_PROVIDER_MAX_LENGTH}
                   disabled={scanningActivityEvidence}
-                  onChange={(event) =>
-                    setActivityDraft((current) => ({
-                      ...current,
-                      provider: event.currentTarget.value,
-                    }))
-                  }
+                  onChange={(event) => {
+                    const provider = event.currentTarget.value;
+                    setActivityDraft((current) => ({ ...current, provider }));
+                  }}
                   required={isNremtCredential(activityCredential)}
                 />
                 {activityScan.suggestions.provider ? (
