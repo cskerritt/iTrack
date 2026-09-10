@@ -228,3 +228,95 @@ test("a throwing store cannot crash the gateway (exception barrier)", async (t) 
   const health = await get(base, "/healthz");
   assert.equal(health.status, 200, "the server survives the thrown error");
 });
+
+
+const SECURITY_HEADERS = {
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "strict-origin-when-cross-origin",
+  "permissions-policy": "camera=(self), microphone=(), geolocation=()",
+  "x-frame-options": "DENY",
+  "content-security-policy-report-only":
+    "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; frame-ancestors 'none'",
+};
+
+test("request-target normalisation, security headers, compression and caching", async (t) => {
+  const stack = await startStack({
+    upstreamHandler: (req, res) => {
+      res.writeHead(200, { "content-type": "text/plain", "x-frame-options": "SAMEORIGIN" });
+      res.end(`upstream saw ${req.url}`);
+    },
+  });
+  t.after(() => stack.close());
+  const { base } = stack;
+
+  await t.test("targets that do not start with exactly one slash are rejected", async () => {
+    for (const target of ["//login", "//internal/run-scheduled", "//xmlrpc.php"]) {
+      const response = await fetch(`${base}${target}`, { headers: { accept: "text/html" }, redirect: "manual" });
+      assert.equal(response.status, 400, target);
+      assert.deepEqual(await response.json(), { error: "bad_request_target" });
+    }
+  });
+
+  await t.test("repeated slashes inside the path collapse before routing and proxying", async () => {
+    const blocked = await get(base, "/internal//run-scheduled");
+    assert.equal(blocked.status, 404);
+    const cookie = await signedInCookie(stack);
+    const proxied = await get(base, "/credentials//abc?x=1", { cookie, accept: "text/html" });
+    assert.equal(proxied.status, 200);
+    assert.equal(await proxied.text(), "upstream saw /credentials/abc?x=1");
+    assert.equal(stack.upstreamSeen().url, "/credentials/abc?x=1");
+  });
+
+  await t.test("every response carries the security header set, including proxied ones", async () => {
+    const cookie = await signedInCookie(stack, "hdr@e.co");
+    const responses = [
+      await get(base, "/", { accept: "text/html" }),
+      await get(base, "/credentials", { accept: "text/html" }),
+      await get(base, "/api/workspace", { accept: "application/json" }),
+      await get(base, "/healthz"),
+      await get(base, "/robots.txt"),
+      await get(base, "/credentials", { accept: "text/html", cookie }),
+      await get(base, "//bad"),
+    ];
+    for (const response of responses) {
+      for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+        assert.equal(response.headers.get(name), value, `${name} on ${response.url} (${response.status})`);
+      }
+    }
+    assert.equal(responses[5].headers.get("x-frame-options"), "DENY", "gateway header wins over upstream SAMEORIGIN");
+  });
+
+  await t.test("public pages are compressed on request and cached for five minutes", async () => {
+    // Node's fetch injects `accept-encoding: gzip, deflate` when none is set,
+    // so the uncompressed baseline must decline compression explicitly.
+    const plain = await get(base, "/", { accept: "text/html", "accept-encoding": "identity" });
+    assert.equal(plain.headers.get("content-encoding"), null);
+    assert.equal(plain.headers.get("cache-control"), "public, max-age=300");
+    assert.equal(plain.headers.get("vary"), "accept-encoding");
+    const rawLength = Number(plain.headers.get("content-length"));
+    assert.ok(rawLength > 1000);
+
+    const gz = await fetch(`${base}/`, { headers: { accept: "text/html", "accept-encoding": "gzip" } });
+    assert.equal(gz.headers.get("content-encoding"), "gzip");
+    // Node's fetch transparently decodes; check the wire bytes via a raw socket-free route: content-length differs.
+    assert.ok(Number(gz.headers.get("content-length")) < rawLength, "gzip body is smaller");
+    assert.match(await gz.text(), /Every credential\./);
+
+    const br = await fetch(`${base}/`, { headers: { accept: "text/html", "accept-encoding": "br, gzip" } });
+    assert.equal(br.headers.get("content-encoding"), "br", "brotli preferred when offered");
+    assert.match(await br.text(), /Every credential\./);
+
+    const login = await get(base, "/login", { accept: "text/html" });
+    assert.equal(login.headers.get("cache-control"), "public, max-age=300");
+    const verify = await get(base, "/verify?token=x", { accept: "text/html" });
+    assert.equal(verify.headers.get("cache-control"), "no-store", "the token-bearing page is never cached");
+  });
+
+  await t.test("HEAD on a compressed page sends headers only", async () => {
+    const response = await fetch(`${base}/`, { method: "HEAD", headers: { accept: "text/html", "accept-encoding": "gzip" } });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-encoding"), "gzip");
+    assert.equal(await response.text(), "");
+  });
+});

@@ -7,6 +7,7 @@
 import http from "node:http";
 import path from "node:path";
 import { readFileSync } from "node:fs";
+import { brotliCompressSync, gzipSync, constants as zlib } from "node:zlib";
 import { safeNextPath } from "./auth-routes.mjs";
 
 const PAGE_ROUTES = new Map([
@@ -48,27 +49,59 @@ function wantsHtml(req) {
   return accept.includes("text/html") || accept.includes("*/*");
 }
 
+// Spec 3.1 header set. Applied before routing so every branch — pages, JSON
+// errors, redirects, proxied worker responses — carries it. CSP is
+// report-only in Wave 1; Wave 5 enforces it once the redesign settles its
+// font and script needs.
+export const SECURITY_HEADERS = Object.freeze({
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "strict-origin-when-cross-origin",
+  "permissions-policy": "camera=(self), microphone=(), geolocation=()",
+  "x-frame-options": "DENY",
+  "content-security-policy-report-only":
+    "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; frame-ancestors 'none'",
+});
+
 export function applySecurityHeaders(res) {
-  // Filled in by Task 4 (security header set from spec 3.1).
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
 }
 
 export function createGateway({ authRoutes, store, pagesDir, upstreamPort, now = () => Date.now() }) {
   const pageCache = new Map();
   function loadPage(name) {
     if (!pageCache.has(name)) {
-      pageCache.set(name, { raw: readFileSync(path.join(pagesDir, name)) });
+      const raw = readFileSync(path.join(pagesDir, name));
+      pageCache.set(name, {
+        raw,
+        gzip: gzipSync(raw, { level: 9 }),
+        br: brotliCompressSync(raw, {
+          params: { [zlib.BROTLI_PARAM_QUALITY]: 11, [zlib.BROTLI_PARAM_SIZE_HINT]: raw.length },
+        }),
+      });
     }
     return pageCache.get(name);
   }
 
+  function chooseEncoding(req) {
+    const offered = String(req.headers["accept-encoding"] ?? "");
+    if (/\bbr\b/.test(offered)) return "br";
+    if (/\bgzip\b/.test(offered)) return "gzip";
+    return null;
+  }
+
   function servePage(req, res, name, { cacheControl = PUBLIC_CACHE_CONTROL, status = 200 } = {}) {
     const page = loadPage(name);
-    const body = page.raw;
-    res.writeHead(status, {
+    const encoding = chooseEncoding(req);
+    const body = encoding ? page[encoding] : page.raw;
+    const headers = {
       "content-type": "text/html; charset=utf-8",
       "cache-control": cacheControl,
+      vary: "accept-encoding",
       "content-length": body.length,
-    });
+    };
+    if (encoding) headers["content-encoding"] = encoding;
+    res.writeHead(status, headers);
     res.end(req.method === "HEAD" ? undefined : body);
   }
 
@@ -99,7 +132,7 @@ export function createGateway({ authRoutes, store, pagesDir, upstreamPort, now =
     const upstream = http.request(
       { host: "127.0.0.1", port: upstreamPort, method: req.method, path: target, headers },
       (workerResponse) => {
-        const responseHeaders = { ...workerResponse.headers, ...extraHeaders };
+        const responseHeaders = { ...workerResponse.headers, ...extraHeaders, ...SECURITY_HEADERS };
         if (publicAsset && !responseHeaders["cache-control"]) {
           responseHeaders["cache-control"] = PUBLIC_CACHE_CONTROL;
         }
@@ -120,8 +153,16 @@ export function createGateway({ authRoutes, store, pagesDir, upstreamPort, now =
   async function handleRequest(req, res) {
     applySecurityHeaders(res);
     const rawTarget = req.url ?? "/";
+    // critic-07: a `//host/path` target parses as host + path and a `//x`
+    // target classifies differently from `/x`. Reject anything that does not
+    // start with exactly one slash, then collapse repeated slashes inside the
+    // path so routing and proxying agree on one normalised target.
+    if (!rawTarget.startsWith("/") || rawTarget.startsWith("//")) {
+      sendJson(req, res, 400, { error: "bad_request_target" });
+      return;
+    }
     const url = new URL(rawTarget, "http://placeholder");
-    const pathname = url.pathname;
+    const pathname = url.pathname.replace(/\/{2,}/g, "/");
     const target = pathname + url.search;
 
     if (pathname === "/healthz") {
