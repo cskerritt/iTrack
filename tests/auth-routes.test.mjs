@@ -191,3 +191,20 @@ test("origin mismatch is rejected, unknown auth paths 404", async () => {
   assert.equal(await routes.handle(req, getRes, "/auth/login"), true);
   assert.equal(getRes.statusCode, 404);
 });
+
+test("slideSessionCookie re-issues the same cookie only once it is older than 24h", async () => {
+  const { store, routes, tick } = makeRoutes();
+  const { userId } = store.createVerifiedUser({ email: "slide@e.co", displayName: "S", password: "longenough1" });
+  const raw = store.createSession(userId);
+  const cookie = `${SESSION_COOKIE}=${signValue(raw, SECRET)}`;
+  const req = { headers: { cookie } };
+  const session = routes.sessionForRequest(req);
+  assert.equal(routes.slideSessionCookie(session, session.user.cookieIssuedAt + 1000), null, "fresh cookie: nothing to do");
+  tick(24 * 60 * 60 * 1000 + 1);
+  const reissued = routes.slideSessionCookie(routes.sessionForRequest(req), session.user.cookieIssuedAt + 24 * 60 * 60 * 1000 + 1);
+  assert.ok(reissued);
+  assert.equal(reissued.split(";")[0], cookie, "same signed value");
+  assert.match(reissued, /Max-Age=2592000/);
+  assert.match(reissued, /HttpOnly/);
+  assert.equal(routes.slideSessionCookie(routes.sessionForRequest(req), session.user.cookieIssuedAt + 24 * 60 * 60 * 1000 + 2), null, "marked issued; not re-issued again");
+});

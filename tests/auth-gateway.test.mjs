@@ -320,3 +320,59 @@ test("request-target normalisation, security headers, compression and caching", 
     assert.equal(await response.text(), "");
   });
 });
+
+test("authenticated requests re-issue the session cookie once it is a day old", async (t) => {
+  const stack = await startStack();
+  t.after(() => stack.close());
+  const { base, clock } = stack;
+  const cookie = await signedInCookie(stack, "slide@e.co");
+  const fresh = await get(base, "/credentials", { accept: "text/html", cookie });
+  assert.equal(fresh.status, 200);
+  assert.equal(fresh.headers.get("set-cookie"), null);
+  clock.now += 24 * 60 * 60 * 1000 + 1;
+  const stale = await get(base, "/api/workspace", { accept: "application/json", cookie });
+  assert.equal(stale.status, 200);
+  const reissued = stale.headers.get("set-cookie");
+  assert.ok(reissued, "cookie re-issued");
+  assert.equal(reissued.split(";")[0], cookie);
+  assert.match(reissued, /Max-Age=2592000/);
+  const again = await get(base, "/api/workspace", { accept: "application/json", cookie });
+  assert.equal(again.headers.get("set-cookie"), null, "only once per day");
+});
+
+test("POST /api/client-error logs one structured line and is rate limited per session", async (t) => {
+  const stack = await startStack();
+  t.after(() => stack.close());
+  const { base } = stack;
+  const lines = [];
+  const original = console.error;
+  console.error = (...args) => lines.push(args.map(String).join(" "));
+  t.after(() => { console.error = original; });
+  const cookie = await signedInCookie(stack, "beacon@e.co");
+  const report = { message: "TypeError: x is null", stack: "at a\nat b", route: "/credentials/abc", userAgent: "UA", at: "2026-09-10T12:00:00.000Z" };
+  const post = (body, headers = {}) => fetch(`${base}/api/client-error`, {
+    method: "POST", headers: { "content-type": "application/json", cookie, ...headers }, body,
+  });
+  const ok = await post(JSON.stringify(report));            // slot 1 of 10
+  assert.equal(ok.status, 204);
+  assert.equal(lines.length, 1);
+  const logged = JSON.parse(lines[0]);
+  assert.equal(logged.event, "client_error");
+  assert.equal(logged.message, report.message);
+  assert.equal(logged.route, "/credentials/abc");
+  assert.equal(logged.session, true);
+  assert.equal(logged.stack, "at a\nat b");
+  assert.equal((await post("not json")).status, 400);        // slot 2 (limiter counts before parsing)
+  assert.equal((await post(JSON.stringify({ ...report, stack: "x".repeat(9000) }))).status, 413); // slot 3
+  assert.equal(lines.length, 1, "rejected beacons are not logged");
+  for (let i = 0; i < 7; i += 1) assert.equal((await post(JSON.stringify(report))).status, 204); // slots 4-10
+  const limited = await post(JSON.stringify(report));
+  assert.equal(limited.status, 429);
+  assert.equal(lines.length, 8, "the 11th beacon is dropped, not logged");
+  const anonymous = await fetch(`${base}/api/client-error`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(report),
+  });
+  assert.equal(anonymous.status, 204, "an unauthenticated beacon is accepted (keyed by IP)");
+  assert.equal(JSON.parse(lines[8]).session, false);
+  assert.equal((await get(base, "/api/client-error")).status, 405);
+});

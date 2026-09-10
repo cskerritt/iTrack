@@ -4,6 +4,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 export const SESSION_COOKIE = "itrack_session";
 const SESSION_MAX_AGE_S = 30 * 24 * 60 * 60;
+export const COOKIE_REISSUE_AFTER_MS = 24 * 60 * 60 * 1000;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const MAX_BODY_BYTES = 32 * 1024;
 
@@ -176,6 +177,16 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
     res.setHeader("set-cookie", sessionCookieHeader(signValue(raw, secret)));
   }
 
+  // landing-auth-M-03: the DB row slides on every request but the browser
+  // discards the cookie at its original Max-Age. Once a day, send the same
+  // signed value again with a fresh 30-day Max-Age.
+  function slideSessionCookie(session, nowMs = now()) {
+    if (!session) return null;
+    if (nowMs - session.user.cookieIssuedAt < COOKIE_REISSUE_AFTER_MS) return null;
+    store.markCookieIssued(session.raw);
+    return sessionCookieHeader(session.cookie);
+  }
+
   async function deliver(kind, email, message) {
     const result = await sendEmail({
       to: email, subject: message.subject, html: message.html, text: message.text,
@@ -282,5 +293,5 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
     return redirect(res, "/login?resent=1"), true;
   }
 
-  return { handle, userForRequest, sessionForRequest, issueSessionCookie };
+  return { handle, userForRequest, sessionForRequest, issueSessionCookie, slideSessionCookie };
 }

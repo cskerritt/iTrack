@@ -4,11 +4,12 @@
 // One credential: the signed `itrack_session` cookie. Routing decisions use
 // the request path and the Accept header only; the client's UA string is
 // never consulted (no browser or bot sniffing).
+import { createHash } from "node:crypto";
 import http from "node:http";
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import { brotliCompressSync, gzipSync, constants as zlib } from "node:zlib";
-import { safeNextPath } from "./auth-routes.mjs";
+import { RateLimiter, clientIp, readBody, safeNextPath } from "./auth-routes.mjs";
 
 const PAGE_ROUTES = new Map([
   ["/signup", "signup.html"],
@@ -150,6 +151,66 @@ export function createGateway({ authRoutes, store, pagesDir, upstreamPort, now =
     req.pipe(upstream);
   }
 
+  const CLIENT_ERROR_MAX_BYTES = 8 * 1024;
+  const clientErrorLimiter = new RateLimiter(10, 60 * 1000, { now });
+
+  function clip(value, max) {
+    return typeof value === "string" ? value.slice(0, max) : "";
+  }
+
+  async function handleClientError(req, res) {
+    if (req.method !== "POST") {
+      sendJson(req, res, 405, { error: "method_not_allowed" });
+      return;
+    }
+    const session = authRoutes.sessionForRequest(req);
+    const key = session
+      ? `beacon:s:${createHash("sha256").update(session.raw).digest("hex").slice(0, 16)}`
+      : `beacon:ip:${clientIp(req)}`;
+    if (!clientErrorLimiter.allow(key)) {
+      sendJson(req, res, 429, { error: "rate_limited" });
+      return;
+    }
+    // Check the declared size first: readBody() destroys the socket when the
+    // stream overruns, which would swallow the 413. Browsers and fetch()
+    // always send Content-Length for a string body.
+    if (Number(req.headers["content-length"] ?? 0) > CLIENT_ERROR_MAX_BYTES) {
+      sendJson(req, res, 413, { error: "too_large" });
+      return;
+    }
+    let body;
+    try {
+      body = await readBody(req, CLIENT_ERROR_MAX_BYTES);
+    } catch {
+      sendJson(req, res, 413, { error: "too_large" });
+      return;
+    }
+    let report;
+    try {
+      report = JSON.parse(body);
+    } catch {
+      sendJson(req, res, 400, { error: "invalid_json" });
+      return;
+    }
+    if (typeof report !== "object" || report === null) {
+      sendJson(req, res, 400, { error: "invalid_json" });
+      return;
+    }
+    // One structured line; the stack is already capped client-side at 2 kB
+    // and again here. Nothing from the body is interpolated into a template.
+    console.error(JSON.stringify({
+      event: "client_error",
+      at: clip(report.at, 40) || new Date(now()).toISOString(),
+      route: clip(report.route, 200),
+      message: clip(report.message, 500),
+      stack: clip(report.stack, 2048),
+      userAgent: clip(report.userAgent, 300),
+      session: Boolean(session),
+    }));
+    res.writeHead(204, { "cache-control": "no-store" });
+    res.end();
+  }
+
   async function handleRequest(req, res) {
     applySecurityHeaders(res);
     const rawTarget = req.url ?? "/";
@@ -181,6 +242,11 @@ export function createGateway({ authRoutes, store, pagesDir, upstreamPort, now =
       return;
     }
 
+    if (pathname === "/api/client-error") {
+      await handleClientError(req, res);
+      return;
+    }
+
     if (pathname.startsWith("/auth/")) {
       await authRoutes.handle(req, res, pathname);
       return;
@@ -202,7 +268,8 @@ export function createGateway({ authRoutes, store, pagesDir, upstreamPort, now =
     const session = authRoutes.sessionForRequest(req);
     if (session) {
       const identity = { email: session.user.email, displayName: session.user.displayName };
-      proxy(req, res, target, identity);
+      const reissued = authRoutes.slideSessionCookie(session, now());
+      proxy(req, res, target, identity, reissued ? { extraHeaders: { "set-cookie": reissued } } : {});
       return;
     }
 
