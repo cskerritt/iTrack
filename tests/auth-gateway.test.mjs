@@ -76,7 +76,7 @@ test("gateway routing end to end", async (t) => {
   await t.test("anonymous browser gets landing at /, login redirect elsewhere, 401 for API", async () => {
     const landing = await get(base, "/", { accept: "text/html", "user-agent": SAFARI_UA });
     assert.equal(landing.status, 200);
-    assert.match(await landing.text(), /Free during beta/);
+    assert.match(await landing.text(), /Every credential\./);
     const deep = await get(base, "/credentials", { accept: "text/html", "user-agent": SAFARI_UA });
     assert.equal(deep.status, 303);
     assert.equal(deep.headers.get("location"), "/login");

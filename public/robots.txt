@@ -1,0 +1,9 @@
+User-agent: *
+Disallow: /api/
+Disallow: /auth/
+Disallow: /credentials
+Disallow: /history
+Disallow: /profile
+Disallow: /verify
+Disallow: /reset
+Sitemap: https://itrackceu.com/sitemap.xml

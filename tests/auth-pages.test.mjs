@@ -20,15 +20,42 @@ test("all five pages exist and are self-contained", () => {
   }
 });
 
-test("landing page carries the agreed copy and links", () => {
+test("landing page carries no pricing, tier, or beta copy and keeps its links", () => {
   const html = page("landing.html");
-  assert.match(html, /Free during beta/);
-  assert.match(html, /\$9\.99\/mo/);
-  assert.match(html, /\$79\/yr/);
-  assert.match(html, /coming soon/i);
+  assert.doesNotMatch(html, /\$\d/, "no prices");
+  assert.doesNotMatch(html, /\bbeta\b/i, "no beta copy");
+  assert.doesNotMatch(html, /ad-supported/i, "no ad tier");
+  assert.doesNotMatch(html, /coming soon/i, "no Pro teaser");
+  assert.doesNotMatch(html, /<h3>Pro\b/, "no Pro tier");
+  assert.doesNotMatch(html, /class="tier"|class="pricing"/, "pricing section removed");
   assert.match(html, /href="\/signup"/);
   assert.match(html, /href="\/login"/);
+  assert.match(html, /mailto:support@itrackceu\.com/);
+  assert.doesNotMatch(html, /name="robots"/, "landing is indexable");
   assert.doesNotMatch(html, /vigilo|lantern/i, "old product names must not appear");
+});
+
+test("auth pages are noindex and signup carries no beta copy", () => {
+  for (const name of ["signup.html", "login.html", "verify.html", "reset.html"]) {
+    assert.match(page(name), /<meta name="robots" content="noindex">/, `${name} must be noindex`);
+  }
+  assert.doesNotMatch(page("signup.html"), /\bbeta\b/i);
+  assert.match(page("signup.html"), /No card required\./);
+});
+
+test("robots.txt and sitemap.xml exist and name only the public routes", () => {
+  const publicDir = path.join(pagesDir, "..", "..", "..", "public");
+  const robots = readFileSync(path.join(publicDir, "robots.txt"), "utf8");
+  assert.match(robots, /^User-agent: \*$/m);
+  assert.match(robots, /^Disallow: \/api\/$/m);
+  assert.match(robots, /^Sitemap: https:\/\/itrackceu\.com\/sitemap\.xml$/m);
+  const sitemap = readFileSync(path.join(publicDir, "sitemap.xml"), "utf8");
+  for (const loc of ["https://itrackceu.com/", "https://itrackceu.com/login", "https://itrackceu.com/signup"]) {
+    assert.match(sitemap, new RegExp(`<loc>${loc.replace(/[/.]/g, "\\$&")}</loc>`));
+  }
+  assert.doesNotMatch(sitemap, /credentials|history|profile/);
+  const favicon = readFileSync(path.join(publicDir, "favicon.ico"));
+  assert.equal(favicon.readUInt16LE(2), 1, "favicon.ico is an ICO container (type 1)");
 });
 
 test("signup form posts the fields auth-routes reads", () => {

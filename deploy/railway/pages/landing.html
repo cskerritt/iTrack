@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>iTrack — credential and CE renewal tracking</title>
-<meta name="description" content="iTrack keeps your professional licenses, certifications, and CE hours in one place — and reminds you before anything lapses. Free during beta.">
+<meta name="description" content="iTrack keeps your professional licenses, certifications, and CE hours in one place — and reminds you before anything lapses.">
 <style>
   /* Duplicated verbatim across deploy/railway/pages/*.html — these pages are
      deliberately self-contained. Tokens mirror app/globals.css. */
@@ -50,11 +50,6 @@
   .flash { display: none; border-radius: 10px; padding: 10px 12px; font-size: 14px; margin-bottom: 8px; }
   .flash.error { background: var(--coral-soft); color: #b3261e; }
   .flash.ok { background: var(--ok-soft); color: var(--ok-ink); }
-  .badge {
-    display: inline-block; background: var(--amber-soft); color: var(--amber);
-    font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
-    padding: 4px 10px; border-radius: 999px;
-  }
 </style>
 <style>
   .hero { text-align: center; padding: 64px 0 48px; }
@@ -66,18 +61,6 @@
   .feature .glyph { font-size: 26px; margin-bottom: 10px; }
   .feature h3 { font-size: 16px; margin-bottom: 6px; letter-spacing: -0.01em; }
   .feature p { font-size: 14px; color: var(--ink-muted); }
-  .pricing { padding: 24px 0 56px; text-align: center; }
-  .pricing h2 { font-size: 28px; letter-spacing: -0.02em; margin-bottom: 6px; }
-  .pricing p.sub { color: var(--ink-muted); margin-bottom: 24px; }
-  .tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; max-width: 640px; margin: 0 auto; text-align: left; }
-  .tier { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 24px; display: flex; flex-direction: column; }
-  .tier h3 { font-size: 18px; }
-  .tier .price { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; margin: 8px 0 2px; }
-  .tier .cadence { font-size: 13px; color: var(--ink-muted); margin-bottom: 14px; }
-  .tier ul { list-style: none; margin-bottom: 18px; }
-  .tier li { font-size: 14px; padding: 5px 0 5px 24px; position: relative; }
-  .tier li::before { content: "✓"; position: absolute; left: 0; color: var(--accent); font-weight: 700; }
-  .tier .btn { margin-top: auto; }
   footer { border-top: 1px solid var(--line); padding: 24px 0 40px; text-align: center; font-size: 13px; color: var(--ink-muted); }
 </style>
 </head>
@@ -92,7 +75,6 @@
   </nav>
 
   <header class="hero">
-    <span class="badge">Free during beta</span>
     <h1>Every credential.<br>Every renewal. On time.</h1>
     <p class="lede">iTrack keeps your professional licenses, certifications, and CE hours in one place — and reminds you before anything lapses.</p>
     <div class="cta-row">
@@ -108,37 +90,8 @@
     <div class="feature"><div class="glyph">🗂️</div><h3>Evidence vault</h3><p>Keep certificates and proof of completion beside each credential, and export everything when an auditor asks.</p></div>
   </section>
 
-  <section class="pricing" aria-label="Pricing">
-    <h2>Simple pricing</h2>
-    <p class="sub">Everything is free while iTrack is in beta.</p>
-    <div class="tiers">
-      <div class="tier">
-        <h3>Free</h3>
-        <div class="price">$0</div>
-        <div class="cadence">ad-supported</div>
-        <ul>
-          <li>Unlimited credentials</li>
-          <li>Renewal &amp; CE reminders</li>
-          <li>Evidence vault and export</li>
-        </ul>
-        <a class="btn btn-primary" href="/signup">Sign up free</a>
-      </div>
-      <div class="tier">
-        <h3>Pro <span class="badge">coming soon</span></h3>
-        <div class="price">$9.99/mo</div>
-        <div class="cadence">or $79/yr</div>
-        <ul>
-          <li>Everything in Free</li>
-          <li>No ads</li>
-          <li>Priority support</li>
-        </ul>
-        <a class="btn btn-quiet" href="/signup">Start free today</a>
-      </div>
-    </div>
-  </section>
-
   <footer>
-    iTrack is in beta — free while we build. Questions? <a href="mailto:support@itrackceu.com">Get in touch</a>.
+    Questions? <a href="mailto:support@itrackceu.com">Get in touch</a>.
   </footer>
 </div>
 </body>
