@@ -316,12 +316,26 @@ test("request-target normalisation, security headers, compression and caching", 
     }
   });
 
-  await t.test("a backslash anywhere in the request target is rejected, not read as a slash", async () => {
-    for (const target of ["/\\evil.example/x", "/\\\\evil.example", "/credentials\\abc", "/login\\", "/?next=\\x"]) {
+  await t.test("a backslash in the request path is rejected, not read as a slash", async () => {
+    for (const target of ["/\\evil.example/x", "/\\\\evil.example", "/credentials\\abc", "/login\\", "/x\\y?next=/ok"]) {
       const response = await rawRequest(base, { path: target, headers: { accept: "text/html" } });
       assert.equal(response.status, 400, target);
       assert.deepEqual(JSON.parse(response.body), { error: "bad_request_target" });
     }
+  });
+
+  await t.test("a backslash in the query is not a bad target: it reaches safeNextPath and collapses to /", async () => {
+    // Browsers do send a raw backslash in a query (it is outside the query
+    // percent-encode set), so a lured link must get a page, not JSON.
+    const page = await rawRequest(base, { path: "/login?next=/x\\y", headers: { accept: "text/html" } });
+    assert.equal(page.status, 200, "a page navigation gets the page");
+    assert.match(page.headers["content-type"], /text\/html/);
+    const bounce = await rawRequest(base, { path: "/credentials?tab=a\\b", headers: { accept: "text/html" } });
+    assert.equal(bounce.status, 303);
+    assert.equal(bounce.headers.location, "/login?next=%2F", "a target carrying a backslash is never carried into next");
+    const landing = await rawRequest(base, { path: "/?next=\\x", headers: { accept: "text/html" } });
+    assert.equal(landing.status, 200);
+    assert.match(landing.headers["content-type"], /text\/html/);
   });
 
   await t.test("a next outside printable ASCII collapses to / rather than breaking the login redirect", async () => {
@@ -402,6 +416,9 @@ test("request-target normalisation, security headers, compression and caching", 
       ["br ; q=1.0 , gzip", "br"],
       ["gzip;q=abc, br", "br"],
       ["deflate, sdch", null],
+      // RFC 9110 §8.4.1.3: x-gzip is gzip.
+      ["x-gzip", "gzip"],
+      ["x-gzip;q=0.6, br;q=0.5", "gzip"],
     ]) {
       const response = await fetch(`${base}/`, { headers: { accept: "text/html", "accept-encoding": offered } });
       assert.equal(response.headers.get("content-encoding"), expected, offered);
@@ -492,4 +509,31 @@ test("POST /api/client-error logs one structured line and is rate limited per se
   assert.equal(anonymous.status, 204, "an unauthenticated beacon is accepted (keyed by IP)");
   assert.equal(JSON.parse(lines[8]).session, false);
   assert.equal((await get(base, "/api/client-error")).status, 405);
+});
+
+test("a legacy session whose address is not a legal header value is refused: no proxy, no 500", async (t) => {
+  const stack = await startStack();
+  t.after(() => stack.close());
+  const logs = [];
+  const errors = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (...args) => logs.push(args.map(String).join(" "));
+  console.error = (...args) => errors.push(args.map(String).join(" "));
+  t.after(() => { console.log = originalLog; console.error = originalError; });
+  // A row from before EMAIL_RE. U+0101 is above Latin-1, so http.request
+  // would throw ERR_INVALID_CHAR writing it as the identity header.
+  const { userId } = stack.store.createVerifiedUser({ email: "ā@e.co", displayName: "Legacy", password: "longenough1" });
+  const cookie = `${SESSION_COOKIE}=${signValue(stack.store.createSession(userId), "gw-secret")}`;
+  const before = stack.upstreamSeen();
+  const html = await get(stack.base, "/credentials", { accept: "text/html", cookie });
+  assert.equal(html.status, 303);
+  assert.equal(html.headers.get("location"), "/login?next=%2Fcredentials");
+  const json = await get(stack.base, "/api/workspace", { accept: "application/json", cookie });
+  assert.equal(json.status, 401);
+  assert.equal(stack.upstreamSeen(), before, "nothing reached the worker");
+  assert.deepEqual(errors, [], "no gateway error, no stack trace");
+  assert.equal(logs.length, 2, "one clear line per refused request");
+  assert.deepEqual(JSON.parse(logs[0]), { event: "auth_session_refused", reason: "email_not_header_safe", userId });
+  assert.doesNotMatch(logs.join("\n"), /@e\.co/, "ids, never addresses");
 });

@@ -18,8 +18,11 @@
 //                        accounts at startup for addresses with no account;
 //                        existing accounts are never touched (see bootstrap.mjs)
 //   PUBLIC_BASE_URL      canonical origin, e.g. https://itrackceu.com; the
-//                        CSRF check and email links use it, and it is the
-//                        Host the worker is told on every proxied request
+//                        CSRF check and email links use it, it is the Host the
+//                        worker is told on every proxied request, and the
+//                        worker runtime reports it as request.url's origin
+//                        (worker-args.mjs), which the worker's same-origin
+//                        check on saves compares against the browser's Origin
 //   RESEND_API_KEY, AUTH_EMAIL_FROM   transactional email
 //   VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT   web push
 //
@@ -37,11 +40,20 @@ import { createAuthRoutes } from "./auth-routes.mjs";
 import { applyBootstrapUsers, parseBootstrapUsers } from "./bootstrap.mjs";
 import { createResendSender } from "./email.mjs";
 import { createGateway } from "./gateway.mjs";
+import { wranglerDevArgs } from "./worker-args.mjs";
 
 const PUBLIC_PORT = Number.parseInt(process.env.PORT ?? "8080", 10);
 const WORKER_PORT = 8787;
 const PERSIST_DIR = process.env.PERSIST_DIR ?? "/data/wrangler-state";
 const CRON_INTERVAL_MS = 15 * 60 * 1000;
+// The canonical origin. The CSRF check and email links use it, the gateway
+// pins the forwarded Host to its host, and the worker runtime is told to
+// report it as request.url's origin (worker-args.mjs).
+const baseUrl =
+  process.env.PUBLIC_BASE_URL ??
+  (process.env.RAILWAY_PUBLIC_DOMAIN
+    ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+    : `http://localhost:${PUBLIC_PORT}`);
 
 // Shared only between this process and the worker it spawns; authorizes the
 // internal scheduled-delivery route that replaces cron triggers here.
@@ -49,33 +61,21 @@ const INTERNAL_SCHEDULED_SECRET = randomBytes(32).toString("hex");
 
 // Worker vars are not inherited from the process environment; forward the
 // ones the worker reads (VAPID push credentials) explicitly.
-const workerVarArgs = [
-  "VAPID_PUBLIC_KEY",
-  "VAPID_PRIVATE_KEY",
-  "VAPID_SUBJECT",
-].flatMap((name) =>
-  process.env[name] ? ["--var", `${name}:${process.env[name]}`] : [],
-);
-workerVarArgs.push(
-  "--var",
-  `INTERNAL_SCHEDULED_SECRET:${INTERNAL_SCHEDULED_SECRET}`,
-);
+const workerVars = {};
+for (const name of ["VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT"]) {
+  if (process.env[name]) workerVars[name] = process.env[name];
+}
+workerVars.INTERNAL_SCHEDULED_SECRET = INTERNAL_SCHEDULED_SECRET;
 
 const worker = spawn(
   "npx",
-  [
-    "wrangler",
-    "dev",
-    "--config",
-    "dist/server/wrangler.json",
-    "--port",
-    String(WORKER_PORT),
-    "--ip",
-    "127.0.0.1",
-    "--persist-to",
-    PERSIST_DIR,
-    ...workerVarArgs,
-  ],
+  wranglerDevArgs({
+    configPath: "dist/server/wrangler.json",
+    port: WORKER_PORT,
+    persistDir: PERSIST_DIR,
+    baseUrl,
+    vars: workerVars,
+  }),
   {
     stdio: "inherit",
     env: {
@@ -173,11 +173,16 @@ try {
   console.error(`Refusing to start: ${error.message}`);
   process.exit(1);
 }
-const baseUrl =
-  process.env.PUBLIC_BASE_URL ??
-  (process.env.RAILWAY_PUBLIC_DOMAIN
-    ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
-    : `http://localhost:${PUBLIC_PORT}`);
+// Self-serve signup accepted any non-space address until EMAIL_RE; a row with
+// a character above U+00FF cannot be proxied (its session is refused with an
+// auth_session_refused line) and one with any non-ASCII fails the current
+// rule. Almost certainly none exist — say so, or say which, at every boot.
+const legacyIds = store.nonAsciiEmailUserIds();
+if (legacyIds.length > 0) {
+  console.warn(
+    `[auth] ${legacyIds.length} account(s) carry a non-ASCII address the current signup rule refuses (ids: ${legacyIds.join(", ")}); fix or delete the row in auth.db — a session for an address above U+00FF is refused, not proxied`,
+  );
+}
 const authRoutes = createAuthRoutes({
   store,
   secret: sessionSecret,

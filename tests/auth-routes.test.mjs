@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { AuthStore } from "../deploy/railway/auth.mjs";
 import {
   EMAIL_RE,
+  HEADER_VALUE_RE,
   RESPONSE_FLOOR_MS,
   RateLimiter,
   clientIp,
@@ -34,7 +35,7 @@ function makeRoutes({ sendResult = { ok: true }, mailConfigured, onSend } = {}) 
     baseUrl: "https://itrack.test",
     now: () => clock,
     sleep: async (ms) => { sleeps.push(ms); },
-    sendEmail: async (message) => { sent.push(message); onSend?.(tick); return sendResult; },
+    sendEmail: async (message) => { sent.push(message); await onSend?.(tick); return sendResult; },
     ...(mailConfigured === undefined ? {} : { mailConfigured }),
   });
   return { store, routes, sent, sleeps, burns, tick };
@@ -70,6 +71,9 @@ async function post(routes, pathname, body, headers) {
 }
 
 const form = (fields) => new URLSearchParams(fields).toString();
+// Lets detached work — the mail send the routes start and never await — run
+// out before the next assertion.
+const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 test("cookie signing round-trips and rejects tampering", () => {
   const signed = signValue("abc123", SECRET);
@@ -142,12 +146,15 @@ test("signup is enumeration-neutral: unverified duplicate re-sends, verified dup
   assert.equal(res.headers.location, "/signup?error=invalid");
   ({ res } = await post(routes, "/auth/signup", form({ email: "ok@e.co", name: "O", password: "short" })));
   assert.equal(res.headers.location, "/signup?error=invalid");
-  const down = makeRoutes({ sendResult: { ok: false, error: "mail_unconfigured" } });
-  ({ res } = await post(down.routes, "/auth/signup", form({ email: "x@e.co", name: "X", password: "longenough1" })));
-  assert.equal(res.headers.location, "/signup?sent=1&mail=unconfigured&email=x%40e.co");
-  const failed = makeRoutes({ sendResult: { ok: false, error: "send_failed" } });
-  ({ res } = await post(failed.routes, "/auth/signup", form({ email: "y@e.co", name: "Y", password: "longenough1" })));
-  assert.equal(res.headers.location, "/signup?sent=1&mail=failed&email=y%40e.co");
+  // Whatever the sender answers, it answers after the redirect has gone out:
+  // a delivery failure is logged, never shown. Only the branch with an
+  // account to mail can fail to send, so different copy would name it.
+  for (const error of ["send_failed", "mail_unconfigured"]) {
+    const failing = makeRoutes({ sendResult: { ok: false, error } });
+    ({ res } = await post(failing.routes, "/auth/signup", form({ email: "y@e.co", name: "Y", password: "longenough1" })));
+    assert.equal(res.headers.location, "/signup?sent=1&email=y%40e.co", error);
+    await settle();
+  }
 });
 
 test("verify is a POST: needs the token AND the current password, consumes the token, signs in, fails closed", async () => {
@@ -390,15 +397,158 @@ test("signup, request-reset and resend pad every branch to the response floor an
   assert.deepEqual(slept(), [250], "the rate-limited answer waits out the floor too");
 });
 
-test("the response floor is measured from request start: slow work shortens or removes the wait", async () => {
-  const slow = makeRoutes({ onSend: (tick) => tick(300) });
+test("the response floor is measured from request start: slow work on the path shortens or removes the wait", async () => {
+  // Work every branch shares — the hash, the store — is what may eat into the
+  // floor. Simulate it on the store, not on the sender: the sender is off the
+  // response path (next tests), so its pace cannot show here at all.
+  const slowStore = (bundle, ms) => {
+    const createUser = bundle.store.createUser.bind(bundle.store);
+    bundle.store.createUser = (args) => { bundle.tick(ms); return createUser(args); };
+    return bundle;
+  };
+  const slow = slowStore(makeRoutes(), 300);
   let { res } = await post(slow.routes, "/auth/signup", form({ email: "s@e.co", name: "S", password: "longenough1" }));
   assert.equal(res.headers.location, "/signup?sent=1&email=s%40e.co");
   assert.deepEqual(slow.sleeps, [], "300 ms of real work already clears a 250 ms floor");
-  const partial = makeRoutes({ onSend: (tick) => tick(100) });
+  const partial = slowStore(makeRoutes(), 100);
   ({ res } = await post(partial.routes, "/auth/signup", form({ email: "p@e.co", name: "P", password: "longenough1" })));
   assert.equal(res.headers.location, "/signup?sent=1&email=p%40e.co");
   assert.deepEqual(partial.sleeps, [150], "only the remainder is slept");
+});
+
+test("the sender is off the response path: a send slower than the floor changes neither the wait nor the copy of the branch that mails", async () => {
+  // The sender takes 600 ms — past the floor — and only the branches with
+  // something to mail ever call it. Each pair below is one branch that mails
+  // and one that does not; their redirect timing and copy must be identical.
+  const slow = makeRoutes({ onSend: async (tick) => { await settle(); tick(600); } });
+  const { store, routes, sent, sleeps } = slow;
+  const timing = async (pathname, fields, headers) => {
+    const { res } = await post(routes, pathname, form(fields), headers);
+    const slept = sleeps.splice(0);
+    await settle(); // let the detached send run out before the next request
+    return { location: res.headers.location, slept };
+  };
+  const fresh = await timing("/auth/signup", { email: "a@e.co", name: "A", password: "longenough1" });
+  assert.equal(sent.length, 1, "the fresh signup mails");
+  store.verifyEmail(sent[0].text.match(/token=([A-Za-z0-9_-]+)/)[1], "longenough1");
+  const taken = await timing("/auth/signup", { email: "a@e.co", name: "A2", password: "longenough1" });
+  assert.equal(sent.length, 1, "the taken address mails nothing");
+  assert.deepEqual(fresh, { location: "/signup?sent=1&email=a%40e.co", slept: [250] });
+  assert.deepEqual(taken, fresh, "same copy, same wait: the 600 ms send never shortened it");
+
+  const known = await timing("/auth/request-reset", { email: "a@e.co" });
+  const unknown = await timing("/auth/request-reset", { email: "ghost@e.co" });
+  assert.equal(sent.length, 2, "only the known address got a reset link");
+  assert.deepEqual(known, { location: "/reset?sent=1", slept: [250] });
+  assert.deepEqual(unknown, known);
+
+  store.createUser({ email: "pending@e.co", displayName: "P", password: "longenough1" });
+  const pending = await timing("/auth/resend", { email: "pending@e.co" }, { "x-forwarded-for": "10.9.0.1" });
+  const nobody = await timing("/auth/resend", { email: "ghost@e.co" }, { "x-forwarded-for": "10.9.0.2" });
+  assert.equal(sent.length, 3, "only the pending address got a new link");
+  assert.deepEqual(pending, { location: "/login?sent=1", slept: [250] });
+  assert.deepEqual(nobody, pending);
+});
+
+test("the redirect goes out before the sender answers; a failing or throwing sender only logs", async () => {
+  const lines = [];
+  const original = console.log;
+  console.log = (...args) => lines.push(args.map(String).join(" "));
+  try {
+    // A sender that answers only when the test lets it.
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const held = makeRoutes({ sendResult: { ok: false, error: "send_failed" }, onSend: () => gate });
+    const answered = post(held.routes, "/auth/signup", form({ email: "h@e.co", name: "H", password: "longenough1" }));
+    const first = await Promise.race([answered.then(() => "redirected"), settle().then(() => "still waiting for the sender")]);
+    assert.equal(first, "redirected");
+    let { res } = await answered;
+    assert.equal(res.headers.location, "/signup?sent=1&email=h%40e.co", "neutral copy: the sender has not even answered yet");
+    assert.deepEqual(held.sleeps, [250]);
+    assert.equal(held.sent.length, 1, "…and the send was started");
+    assert.equal(lines.length, 0);
+    release();
+    await settle();
+    assert.deepEqual(JSON.parse(lines[0]), { event: "auth_mail_failed", kind: "verification", error: "send_failed" });
+
+    // A sender that rejects, and one that throws before returning a promise:
+    // neither reaches the response, and neither is an unhandled rejection.
+    const rejecting = makeRoutes({ onSend: async () => { throw new Error("boom"); } });
+    ({ res } = await post(rejecting.routes, "/auth/signup", form({ email: "r@e.co", name: "R", password: "longenough1" })));
+    assert.equal(res.headers.location, "/signup?sent=1&email=r%40e.co");
+    await settle();
+    assert.deepEqual(JSON.parse(lines[1]), { event: "auth_mail_failed", kind: "verification", error: "threw" });
+    const throwing = createAuthRoutes({
+      store: new AuthStore(":memory:"), secret: SECRET, baseUrl: "https://itrack.test", sleep: async () => {},
+      sendEmail: () => { throw new Error("sync boom"); },
+    });
+    ({ res } = await post(throwing, "/auth/signup", form({ email: "t@e.co", name: "T", password: "longenough1" })));
+    assert.equal(res.statusCode, 303);
+    assert.equal(res.headers.location, "/signup?sent=1&email=t%40e.co");
+    await settle();
+    assert.deepEqual(JSON.parse(lines[2]), { event: "auth_mail_failed", kind: "verification", error: "threw" });
+    assert.equal(lines.length, 3);
+    for (const line of lines) assert.doesNotMatch(line, /token=|@e\.co|boom/, "no link, address or sender detail in logs");
+  } finally {
+    console.log = original;
+  }
+});
+
+test("with real timers every branch answers at the floor, not at the sender's pace", async () => {
+  const store = new AuthStore(":memory:");
+  const timers = [];
+  // A sender that takes two seconds; the floor is 250 ms.
+  const sendEmail = () => new Promise((resolve) => {
+    const timer = setTimeout(() => resolve({ ok: true }), 2000);
+    timer.unref();
+    timers.push(timer);
+  });
+  const routes = createAuthRoutes({ store, secret: SECRET, baseUrl: "https://itrack.test", sendEmail });
+  store.createVerifiedUser({ email: "taken@e.co", displayName: "T", password: "longenough1" });
+  const timed = async (pathname, fields) => {
+    const started = performance.now();
+    const { res } = await post(routes, pathname, form(fields));
+    return { location: res.headers.location, ms: performance.now() - started };
+  };
+  const samples = [
+    await timed("/auth/signup", { email: "fresh@e.co", name: "F", password: "longenough1" }),
+    await timed("/auth/signup", { email: "taken@e.co", name: "T", password: "longenough1" }),
+    await timed("/auth/request-reset", { email: "taken@e.co" }),
+    await timed("/auth/request-reset", { email: "ghost@e.co" }),
+  ];
+  assert.equal(timers.length, 2, "the fresh signup and the known reset address were mailed");
+  for (const { location, ms } of samples) {
+    assert.doesNotMatch(location, /[?&]mail=/);
+    assert.ok(ms >= 200, `${location}: ${ms.toFixed(0)} ms is under the floor`);
+    assert.ok(ms < 1200, `${location}: ${ms.toFixed(0)} ms — the response waited for the sender`);
+  }
+  for (const timer of timers) clearTimeout(timer);
+});
+
+test("a session whose address cannot be written as a header is refused with a log line, not proxied into a 500", () => {
+  const lines = [];
+  const original = console.log;
+  console.log = (...args) => lines.push(args.map(String).join(" "));
+  try {
+    const { store, routes } = makeRoutes();
+    const requestFor = ({ userId }) => ({
+      headers: { cookie: `${SESSION_COOKIE}=${signValue(store.createSession(userId), SECRET)}` },
+    });
+    // Above U+00FF: Node's http.request throws ERR_INVALID_CHAR on the header.
+    const above = store.createVerifiedUser({ email: "ā@e.co", displayName: "Legacy", password: "longenough1" });
+    assert.equal(routes.sessionForRequest(requestFor(above)), null);
+    assert.deepEqual(JSON.parse(lines[0]), { event: "auth_session_refused", reason: "email_not_header_safe", userId: above.userId });
+    assert.doesNotMatch(lines[0], /@e\.co/, "no address in logs");
+    // Latin-1 is a legal header value; such a row still signs in.
+    const latin1 = store.createVerifiedUser({ email: "josé@e.co", displayName: "J", password: "longenough1" });
+    assert.equal(routes.sessionForRequest(requestFor(latin1))?.user.email, "josé@e.co");
+    assert.equal(lines.length, 1);
+    assert.equal(HEADER_VALUE_RE.test("plain@e.co"), true);
+    assert.equal(HEADER_VALUE_RE.test("tab" + String.fromCharCode(9) + "here"), true);
+    assert.equal(HEADER_VALUE_RE.test("nul" + String.fromCharCode(0)), false);
+  } finally {
+    console.log = original;
+  }
 });
 
 test("mail unconfigured: signup, request-reset and resend show the support copy, decided by configuration, not by account existence", async () => {
@@ -473,6 +623,7 @@ test("emails never carry the display name and failures never log the link", asyn
     await post(routes, "/auth/signup", form({
       email: "lure@e.co", name: "URGENT: your RN license lapses Friday", password: "longenough1",
     }));
+    await settle(); // the send finishes after the redirect
     assert.equal(sent.length, 1);
     assert.doesNotMatch(sent[0].text, /URGENT/);
     assert.doesNotMatch(sent[0].html, /URGENT/);

@@ -93,8 +93,10 @@ export function createGateway({ authRoutes, baseUrl, pagesDir, upstreamPort, now
   function chooseEncoding(req) {
     const weights = new Map();
     for (const item of String(req.headers["accept-encoding"] ?? "").split(",")) {
-      const [name, ...params] = item.split(";").map((part) => part.trim().toLowerCase());
-      if (!name) continue;
+      const [token, ...params] = item.split(";").map((part) => part.trim().toLowerCase());
+      if (!token) continue;
+      // RFC 9110 §8.4.1.3: `x-gzip` is gzip under its older name.
+      const name = token === "x-gzip" ? "gzip" : token;
       let q = 1;
       for (const param of params) {
         const [key, value] = param.split("=").map((part) => part.trim());
@@ -247,11 +249,17 @@ export function createGateway({ authRoutes, baseUrl, pagesDir, upstreamPort, now
     const rawTarget = req.url ?? "/";
     // critic-07: a `//host/path` target parses as host + path and a `//x`
     // target classifies differently from `/x`. The URL parser also reads a
-    // backslash as a slash, so `/\host/path` is the same trick spelled
-    // differently — and no browser ever sends a raw backslash (RFC 3986 has no
-    // place for one). Reject both shapes, then collapse repeated slashes
-    // inside the path so routing and proxying agree on one normalised target.
-    if (!rawTarget.startsWith("/") || rawTarget.startsWith("//") || rawTarget.includes("\\")) {
+    // backslash in the path as a slash, so `/\host/path` is the same trick
+    // spelled differently — and no browser sends a raw backslash there (RFC
+    // 3986 has no place for one). The query is different: the parser leaves
+    // a backslash in it alone, browsers do send one there (it is outside the
+    // query percent-encode set), and a lured `/login?next=/x\y` is a page
+    // navigation that must reach safeNextPath — which collapses it to `/` —
+    // rather than be answered with JSON. So the rule covers the path only.
+    // Then collapse repeated slashes so routing and proxying agree on one
+    // normalised target.
+    const rawPath = rawTarget.split("?", 1)[0];
+    if (!rawTarget.startsWith("/") || rawTarget.startsWith("//") || rawPath.includes("\\")) {
       sendJson(req, res, 400, { error: "bad_request_target" });
       return;
     }
@@ -259,9 +267,13 @@ export function createGateway({ authRoutes, baseUrl, pagesDir, upstreamPort, now
     const pathname = url.pathname.replace(/\/{2,}/g, "/");
     const target = pathname + url.search;
     // A public-prefix request is proxied verbatim without a session. The URL
-    // parser resolves `..` segments but leaves `%2e`, `%2f` and `%5c` alone,
-    // so `/assets/..%2fapi/workspace` still starts with a public prefix here
-    // and would reach the worker, which may decode it into a private path.
+    // parser resolves dot segments — including a whole segment spelled `%2e`
+    // or `%2e%2e` — but it never decodes `%2f` or `%5c`, and it leaves a
+    // partly encoded segment such as `x%2e%2e` alone, so
+    // `/assets/..%2fapi/workspace` still starts with a public prefix here and
+    // would reach the worker, which may decode it into a private path. The
+    // `%2e` half of the rule is belt-and-braces; `%2f` and `%5c` are what it
+    // closes.
     if (PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix)) && /%(2e|2f|5c)/i.test(pathname)) {
       sendJson(req, res, 400, { error: "bad_request_target" });
       return;

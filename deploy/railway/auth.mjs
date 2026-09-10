@@ -334,6 +334,18 @@ export class AuthStore {
     return user ? { email: user.email } : null;
   }
 
+  // Rows whose address is not printable ASCII — created before signup
+  // enforced EMAIL_RE (auth-routes.mjs). The address becomes a request header
+  // to the worker: one above U+00FF cannot be written at all (the gateway
+  // refuses such sessions), the rest merely fail the current rule. Ids, not
+  // addresses, so the boot log that reports them stays free of addresses.
+  nonAsciiEmailUserIds() {
+    return this.db
+      .prepare("SELECT id FROM users WHERE email GLOB '*[^ -~]*' ORDER BY created_at, id")
+      .all()
+      .map((row) => row.id);
+  }
+
   cleanup() {
     const now = this.now();
     const removed = this.db

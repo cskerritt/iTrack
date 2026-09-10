@@ -114,6 +114,10 @@ test("signup sent state names the address, shows neutral copy, and offers resend
   assert.match(html, /id="flash-sent">If that address can be used, we've sent an email to it\./);
   assert.match(html, /id="flash-mail-unconfigured">Email delivery is not set up yet; contact support@itrackceu\.com/);
   assert.doesNotMatch(html, /email-taken|already has an account/i);
+  // A delivery failure never reaches the copy: only the branch with an
+  // account to mail can fail to send, so a "couldn't send" state would name it.
+  assert.doesNotMatch(html, /flash-mail-failed|couldn't send the email/i);
+  assert.match(html, /params\.get\("mail"\) === "unconfigured" \? "flash-mail-unconfigured" : "flash-sent"/);
   assert.match(html, /<form action="\/auth\/resend" method="post" id="resend-form"/);
   assert.match(html, /<input type="hidden" name="return" value="signup">/);
 });

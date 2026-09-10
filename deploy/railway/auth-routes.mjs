@@ -10,6 +10,12 @@ export const COOKIE_REISSUE_AFTER_MS = 24 * 60 * 60 * 1000;
 // outside Latin-1 makes Node's http.request throw — so a non-ASCII address
 // would sign up fine and then 500 on every authenticated request.
 export const EMAIL_RE = /^[\x21-\x3f\x41-\x7e]+@[\x21-\x3f\x41-\x7e]+\.[\x21-\x3f\x41-\x7e]{2,}$/;
+// What Node will write as a header value: tab, printable ASCII and Latin-1.
+// Anything else makes http.request throw ERR_INVALID_CHAR. EMAIL_RE keeps new
+// addresses inside this set; a row created under the older, looser signup
+// rule is checked against it before its session is honoured
+// (sessionForRequest), and serve.mjs counts such rows at boot.
+export const HEADER_VALUE_RE = /^[\t\x20-\x7e\x80-\xff]*$/;
 const MAX_BODY_BYTES = 32 * 1024;
 
 const RATE_LIMITER_SWEEP_THRESHOLD = 50000;
@@ -161,9 +167,14 @@ function resetEmail(baseUrl, token) {
 
 const ACCOUNT_LOCK_DELAY_MS = 2000;
 // Signup, request-reset and resend answer with the same copy whether or not
-// the address has an account, but the branches do different work (hash,
-// token, mail send). Every branch is padded to at least this long, measured
-// from the start of the request, so the response time says nothing either.
+// the address has an account, but the branches do different work: one hashes
+// a password, another burns a dummy hash, one issues a token. Every branch
+// is padded to at least this long, measured from the start of the request.
+// The floor is a minimum, not a ceiling, so nothing slower than the work all
+// branches share may sit on the response path — the mail send in particular
+// is started and never awaited (dispatch()), because a remote sender that
+// takes longer than the floor would otherwise separate the branch that mails
+// from the branch that does not by wall clock alone.
 export const RESPONSE_FLOOR_MS = 250;
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -194,6 +205,15 @@ export function createAuthRoutes({
     if (!raw) return null;
     const user = store.sessionUser(raw);
     if (!user) return null;
+    // The address becomes the worker's identity header. A row from before
+    // EMAIL_RE could carry a character Node cannot write into a header, and
+    // proxying it would throw — a 500 on every request, forever. Refuse the
+    // session and say why (by id, never by address) so the operator can fix
+    // the row; serve.mjs counts these rows at boot.
+    if (!HEADER_VALUE_RE.test(user.email)) {
+      console.log(JSON.stringify({ event: "auth_session_refused", reason: "email_not_header_safe", userId: user.id }));
+      return null;
+    }
     return { user, raw, cookie };
   }
 
@@ -214,14 +234,30 @@ export function createAuthRoutes({
 
   // security-M-03: never the link, never the address. The event kind and the
   // sender's error code are all an operator needs to know mail is broken.
-  async function deliver(kind, email, message) {
-    const result = await sendEmail({
-      to: email, subject: message.subject, html: message.html, text: message.text,
-    });
-    if (!result.ok) {
-      console.log(JSON.stringify({ event: "auth_mail_failed", kind, error: result.error }));
+  function logMailFailure(kind, error) {
+    console.log(JSON.stringify({ event: "auth_mail_failed", kind, error }));
+  }
+
+  // Starts the send and returns at once; the caller redirects at the response
+  // floor without waiting for the sender. Only the branches that have
+  // something to mail ever get here, so a sender slower than the floor would
+  // otherwise make them answer later than the branches that mail nothing —
+  // the timing oracle the floor exists to close — and a sender outage would
+  // give them different copy. Delivery problems are logged here and surface
+  // nowhere else: the page shows the same neutral copy either way.
+  function dispatch(kind, email, message) {
+    let pending;
+    try {
+      pending = Promise.resolve(sendEmail({
+        to: email, subject: message.subject, html: message.html, text: message.text,
+      }));
+    } catch (error) {
+      pending = Promise.reject(error);
     }
-    return result;
+    pending.then(
+      (result) => { if (!result?.ok) logMailFailure(kind, result?.error ?? "no_result"); },
+      () => logMailFailure(kind, "threw"),
+    );
   }
 
   async function handle(req, res, pathname) {
@@ -293,10 +329,8 @@ export function createAuthRoutes({
         store.burnPasswordCheck(password);
       }
       if (!mailConfigured) return finish(sentPage("unconfigured"));
-      if (!created) return finish(sentPage(null));
-      const result = await deliver("verification", email, verificationEmail(baseUrl, created.verifyToken));
-      if (result.ok) return finish(sentPage(null));
-      return finish(sentPage(result.error === "mail_unconfigured" ? "unconfigured" : "failed"));
+      if (created) dispatch("verification", email, verificationEmail(baseUrl, created.verifyToken));
+      return finish(sentPage(null));
     }
 
     if (route === "login") {
@@ -371,7 +405,7 @@ export function createAuthRoutes({
       if (!resetLimiter.allow(`reset:${ip}`)) return finish("/reset?error=rate-limited");
       if (!mailConfigured) return finish("/reset?sent=1&mail=unconfigured");
       const issued = store.createResetToken(email);
-      if (issued) await deliver("reset", email, resetEmail(baseUrl, issued.token));
+      if (issued) dispatch("reset", email, resetEmail(baseUrl, issued.token));
       else store.burnPasswordCheck(password);
       return finish("/reset?sent=1");
     }
@@ -394,7 +428,7 @@ export function createAuthRoutes({
     if (!resendLimiter.allow(`resend:${ip}`)) return finish(limitedTo);
     if (!mailConfigured) return finish(returnTo("unconfigured"));
     const reissued = EMAIL_RE.test(email) ? store.newVerifyToken(email) : null;
-    if (reissued) await deliver("verification", email, verificationEmail(baseUrl, reissued.token));
+    if (reissued) dispatch("verification", email, verificationEmail(baseUrl, reissued.token));
     else store.burnPasswordCheck(password);
     return finish(returnTo(null));
   }

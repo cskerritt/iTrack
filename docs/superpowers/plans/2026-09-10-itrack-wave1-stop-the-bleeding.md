@@ -4051,6 +4051,7 @@ curl -si -X POST $B/auth/login --data-urlencode 'email=ops@example.test' --data-
 Then with the cookie value from the login response in `$C`:
 ```bash
 curl -s $B/api/workspace -H 'accept: application/json' -H "cookie: $C" | head -c 200   # 200 JSON workspace for ops@example.test
+curl -si -X POST $B/api/workspace -H 'accept: application/json' -H 'content-type: application/json' -H 'origin: http://localhost:8080' -H "cookie: $C" --data '{}' | head -1   # 400 (action is required) from the worker — NOT 403 cross_origin_request: serve.mjs passes --local-upstream/--upstream-protocol from PUBLIC_BASE_URL so request.url's origin matches the browser's Origin on saves
 curl -si -X POST $B/auth/logout -H 'origin: http://localhost:8080' -H "cookie: $C" | grep -iE '^(HTTP|set-cookie)'   # 303, Max-Age=0
 curl -s -o /dev/null -w '%{http_code}\n' $B/api/workspace -H 'accept: application/json' -H "cookie: $C"   # 401 after logout
 ```

@@ -273,3 +273,16 @@ test("owner-first squat: neither the squatter's link nor a resend confirms a pas
   assert.equal(store.authenticate("own@e.co", "owner-pass-222").ok, true);
   assert.equal(store.authenticate("own@e.co", "squatter-pass-1").ok, false, "the squatter's password never survives");
 });
+
+test("nonAsciiEmailUserIds names, by id only, the rows the current signup rule would refuse", () => {
+  const { store } = makeStore();
+  assert.deepEqual(store.nonAsciiEmailUserIds(), []);
+  const plain = store.createUser({ email: "ok@e.co", displayName: "O", password: "x".repeat(10) });
+  // Both predate EMAIL_RE: Latin-1 (a legal header value) and above it (not).
+  const latin1 = store.createUser({ email: "josé@e.co", displayName: "J", password: "x".repeat(10) });
+  const above = store.createVerifiedUser({ email: "ā@e.co", displayName: "A", password: "x".repeat(10) });
+  const ids = store.nonAsciiEmailUserIds();
+  assert.deepEqual(new Set(ids), new Set([latin1.userId, above.userId]));
+  assert.equal(ids.includes(plain.userId), false);
+  for (const id of ids) assert.match(id, /^acct_/, "ids, never addresses");
+});

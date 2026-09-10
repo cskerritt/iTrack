@@ -58,7 +58,7 @@ Chris-owned items run in parallel from day one (section 10). Wave 1 does not wai
 
 ### 3.3 Wave 1 verification
 
-`npm test` green (after test rewrite for the gateway), `npm run typecheck`, `npm run lint`; Docker build + run-check with only `AUTH_BOOTSTRAP_USERS` set; Playwright: landing 200 for curl-with-Accept, Googlebot UA, HEAD, no-Accept; `/api/workspace` unauthenticated → JSON 401 without `WWW-Authenticate`; signup → verify page → POST confirm → app; log-activity typing does not crash; sign out works; robots/sitemap/favicon/og 200 unauthenticated; headers present. Then live on itrackceu.com after merge.
+`npm test` green (after test rewrite for the gateway), `npm run typecheck`, `npm run lint`; Docker build + run-check with only `AUTH_BOOTSTRAP_USERS` set, including a sign-in through the gateway as that account and an authenticated `POST /api/workspace` that the worker answers (400 `action is required`), not `403 cross_origin_request` — the worker runtime builds `request.url` from the Host alone (scheme fixed at http) unless `serve.mjs` passes `--local-upstream`/`--upstream-protocol` derived from `PUBLIC_BASE_URL`, and the worker's same-origin check on saves compares the browser's `Origin` against that; Playwright: landing 200 for curl-with-Accept, Googlebot UA, HEAD, no-Accept; `/api/workspace` unauthenticated → JSON 401 without `WWW-Authenticate`; signup → verify page → POST confirm → app; log-activity typing does not crash; sign out works; robots/sitemap/favicon/og 200 unauthenticated; headers present. Then live on itrackceu.com after merge.
 
 ## 4. Wave 2 — Foundation
 
