@@ -69,6 +69,12 @@ import {
   type TabName,
 } from "./lib/navigation";
 import {
+  SESSION_ENDED_MESSAGE,
+  UNEXPECTED_RESPONSE_MESSAGE,
+  readApiResponse,
+} from "./lib/apiResponse";
+import { routeTitle } from "./lib/routeTitle";
+import {
   nextRequirementSelection,
   requirementIncompatibilityMessage,
 } from "./lib/requirementCompatibility";
@@ -1922,6 +1928,24 @@ export function ITrackApp() {
     restoreSelectionBeforeActivityEntry,
   ]);
 
+  // A 401 from any fetch means the session lapsed. Drop the workspace so the
+  // existing WorkspaceLoadFailure "Reload and sign in" state renders, and
+  // close every sheet that is not itself gated on `workspace`: a mounted
+  // Modal marks its surroundings inert, so a Reload state rendered behind
+  // one is neither perceivable nor operable (app-ux-M-01). `error` carries
+  // the session message so any surface that still renders it says why.
+  const handleSessionEnded = useCallback(() => {
+    setWorkspace(null);
+    setWorkspaceLoadFailed(true);
+    setWorkspaceLoadFailureStatus(401);
+    setEditingActivity(null);
+    setTaskEditor(null);
+    setInstallHelpOpen(false);
+    setClassificationRepair(null);
+    setEvidenceActivity(null);
+    setError(SESSION_ENDED_MESSAGE);
+  }, []);
+
   const loadWorkspace = useCallback(async () => {
     // Two row-level writes can now be in flight at once, so two refetches can
     // be too. A response that has been overtaken is dropped rather than
@@ -1937,7 +1961,16 @@ export function ITrackApp() {
         cache: "no-store",
       });
       responseStatus = response.status;
-      const data = (await response.json()) as Workspace & { error?: string };
+      const parsed = await readApiResponse<Workspace & { error?: string }>(response);
+      if (parsed.kind === "session-ended") {
+        // A refetch can 401 while a workspace is still on screen (the
+        // banner's Try again, the reload after a write). Drop it so the
+        // Reload-and-sign-in state renders instead of a retry loop.
+        if (!superseded()) handleSessionEnded();
+        throw new Error(SESSION_ENDED_MESSAGE);
+      }
+      if (parsed.kind === "unexpected") throw new Error(UNEXPECTED_RESPONSE_MESSAGE);
+      const data = parsed.data;
       if (!response.ok) {
         throw new Error(data.error || "We couldn’t load your renewal workspace.");
       }
@@ -1970,7 +2003,7 @@ export function ITrackApp() {
       );
       return false;
     }
-  }, []);
+  }, [handleSessionEnded]);
 
   // The searchable template catalog is global reference data, so it is fetched
   // once per session — when the chooser first opens — instead of riding along
@@ -1984,10 +2017,13 @@ export function ITrackApp() {
         const response = await fetch("/api/catalog", {
           headers: { accept: "application/json" },
         });
-        const data = (await response.json()) as {
-          catalog?: CatalogRule[];
-          error?: string;
-        };
+        const parsed = await readApiResponse<{ catalog?: CatalogRule[]; error?: string }>(response);
+        if (parsed.kind === "session-ended") {
+          handleSessionEnded();
+          throw new Error(SESSION_ENDED_MESSAGE);
+        }
+        if (parsed.kind === "unexpected") throw new Error(UNEXPECTED_RESPONSE_MESSAGE);
+        const data = parsed.data;
         if (!response.ok || !Array.isArray(data.catalog)) {
           throw new Error(
             data.error || "We couldn’t load the credential templates.",
@@ -2004,7 +2040,7 @@ export function ITrackApp() {
     })();
     catalogRequest.current = request;
     return request;
-  }, []);
+  }, [handleSessionEnded]);
 
   const openCredentialSetup = useCallback(() => {
     setError("");
@@ -2221,12 +2257,14 @@ export function ITrackApp() {
             signal: controller.signal,
           },
         );
-        const result = (await response.json()) as {
-          target?: {
-            credentialId?: unknown;
-            reminderKey?: unknown;
-          };
-        };
+        const parsed = await readApiResponse<{
+          target?: { credentialId?: unknown; reminderKey?: unknown };
+        }>(response);
+        if (parsed.kind === "session-ended") {
+          if (!controller.signal.aborted) handleSessionEnded();
+          return;
+        }
+        const result = parsed.kind === "json" ? parsed.data : {};
         if (controller.signal.aborted) return;
         setPendingReminderLaunch(null);
         if (
@@ -2279,7 +2317,7 @@ export function ITrackApp() {
       }
     })();
     return () => controller.abort();
-  }, [navigateToTab, pendingReminderLaunch, workspace]);
+  }, [handleSessionEnded, navigateToTab, pendingReminderLaunch, workspace]);
 
   useEffect(() => {
     if (!highlightedReminderKey || view !== "home") return;
@@ -2409,6 +2447,27 @@ export function ITrackApp() {
       ) ?? null
     );
   }, [detailCredentialId, workspace]);
+
+  // app-ux-17 / a11y-03: every route names itself in the tab and hands focus
+  // to its heading, so screen readers hear the move and keyboard users start
+  // at the top. The first paint keeps the browser's own focus (skip link).
+  const announcedRouteRef = useRef<string | null>(null);
+  useEffect(() => {
+    document.title = routeTitle(nav.route, detailCredential?.credentialName ?? null);
+    const key = buildPath(nav.route);
+    if (announcedRouteRef.current === null) {
+      announcedRouteRef.current = key;
+      return;
+    }
+    if (announcedRouteRef.current === key) return;
+    announcedRouteRef.current = key;
+    const heading = document.querySelector<HTMLElement>(
+      nav.route.detail ? ".screen-pushed h1" : ".screen-root h1",
+    );
+    if (!heading) return;
+    if (!heading.hasAttribute("tabindex")) heading.setAttribute("tabindex", "-1");
+    heading.focus({ preventScroll: true });
+  }, [nav.route, detailCredential]);
 
   // A pop is a navigation, so the route drops the detail the instant it
   // happens — but the screen still has to leave the stage. Hold the departing
@@ -2616,12 +2675,18 @@ export function ITrackApp() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action, payload }),
       });
-      const result = (await response.json()) as {
+      const parsed = await readApiResponse<{
         ok?: boolean;
         error?: string;
         code?: string;
         id?: string;
-      };
+      }>(response);
+      if (parsed.kind === "session-ended") {
+        handleSessionEnded();
+        return null;
+      }
+      if (parsed.kind === "unexpected") throw new Error(UNEXPECTED_RESPONSE_MESSAGE);
+      const result = parsed.data;
       if (!response.ok) {
         if (
           [
@@ -2685,12 +2750,18 @@ export function ITrackApp() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action, payload }),
     });
-    const result = (await response.json()) as {
+    const parsed = await readApiResponse<{
       ok?: boolean;
       error?: string;
       code?: string;
       id?: string;
-    };
+    }>(response);
+    if (parsed.kind === "session-ended") {
+      handleSessionEnded();
+      throw new Error(SESSION_ENDED_MESSAGE);
+    }
+    if (parsed.kind === "unexpected") throw new Error(UNEXPECTED_RESPONSE_MESSAGE);
+    const result = parsed.data;
     if (!response.ok) {
       throw new Error(result.error || "Phone-alert setup did not save.");
     }
@@ -3293,10 +3364,13 @@ export function ITrackApp() {
         method: "POST",
         body: payload,
       });
-      const result = (await response.json()) as {
-        evidence?: EvidenceFile;
-        error?: string;
-      };
+      const parsed = await readApiResponse<{ evidence?: EvidenceFile; error?: string }>(response);
+      if (parsed.kind === "session-ended") {
+        handleSessionEnded();
+        throw new Error(SESSION_ENDED_MESSAGE);
+      }
+      if (parsed.kind === "unexpected") throw new Error(UNEXPECTED_RESPONSE_MESSAGE);
+      const result = parsed.data;
       if (!response.ok || !result.evidence) {
         throw new Error(result.error || "The proof file did not upload.");
       }
@@ -3325,10 +3399,13 @@ export function ITrackApp() {
         `/api/evidence?activityId=${encodeURIComponent(activity.id)}`,
         { headers: { accept: "application/json" }, cache: "no-store" },
       );
-      const result = (await response.json()) as {
-        evidence?: EvidenceFile[];
-        error?: string;
-      };
+      const parsed = await readApiResponse<{ evidence?: EvidenceFile[]; error?: string }>(response);
+      if (parsed.kind === "session-ended") {
+        handleSessionEnded();
+        throw new Error(SESSION_ENDED_MESSAGE);
+      }
+      if (parsed.kind === "unexpected") throw new Error(UNEXPECTED_RESPONSE_MESSAGE);
+      const result = parsed.data;
       if (!response.ok) {
         throw new Error(result.error || "The proof files could not be loaded.");
       }
@@ -3369,10 +3446,13 @@ export function ITrackApp() {
         `/api/evidence/${encodeURIComponent(evidence.id)}`,
         { method: "DELETE" },
       );
-      const result = (await response.json()) as {
-        error?: string;
-        code?: string;
-      };
+      const parsed = await readApiResponse<{ error?: string; code?: string }>(response);
+      if (parsed.kind === "session-ended") {
+        handleSessionEnded();
+        throw new Error(SESSION_ENDED_MESSAGE);
+      }
+      if (parsed.kind === "unexpected") throw new Error(UNEXPECTED_RESPONSE_MESSAGE);
+      const result = parsed.data;
       if (!response.ok) {
         if (result.code === "evidence_delete_retry") {
           setEvidenceFiles((current) =>
@@ -4135,6 +4215,8 @@ export function ITrackApp() {
               className={`screen screen-root${
                 detailCredential ? " screen-under" : ""
               }`}
+              inert={Boolean(detailCredential)}
+              aria-hidden={detailCredential ? "true" : undefined}
             >
               {!workspace ? (
                 !isOnline ? (
@@ -4517,12 +4599,10 @@ export function ITrackApp() {
                   value={activityDraft.title}
                   maxLength={ACTIVITY_DRAFT_TITLE_MAX_LENGTH}
                   disabled={scanningActivityEvidence}
-                  onChange={(event) =>
-                    setActivityDraft((current) => ({
-                      ...current,
-                      title: event.currentTarget.value,
-                    }))
-                  }
+                  onChange={(event) => {
+                    const title = event.currentTarget.value;
+                    setActivityDraft((current) => ({ ...current, title }));
+                  }}
                   required
                 />
                 {activityScan.suggestions.title ? (
@@ -4545,12 +4625,10 @@ export function ITrackApp() {
                     type="date"
                     value={activityDraft.completionDate}
                     disabled={scanningActivityEvidence}
-                    onChange={(event) =>
-                      setActivityDraft((current) => ({
-                        ...current,
-                        completionDate: event.currentTarget.value,
-                      }))
-                    }
+                    onChange={(event) => {
+                      const completionDate = event.currentTarget.value;
+                      setActivityDraft((current) => ({ ...current, completionDate }));
+                    }}
                     min={
                       confirmedCarryoverWindowStart(activityCredential) ??
                       activityCredential?.cycleStart
@@ -4588,20 +4666,18 @@ export function ITrackApp() {
                     placeholder="1.0"
                     value={activityDraft.totalUnits}
                     disabled={scanningActivityEvidence}
-                    onChange={(event) =>
-                      setActivityDraft((current) => {
-                        const totalUnits = event.currentTarget.value;
-                        return {
-                          ...current,
-                          totalUnits,
-                          allocatedUnits:
-                            !current.allocatedUnits ||
-                            current.allocatedUnits === current.totalUnits
-                              ? totalUnits
-                              : current.allocatedUnits,
-                        };
-                      })
-                    }
+                    onChange={(event) => {
+                      const totalUnits = event.currentTarget.value;
+                      setActivityDraft((current) => ({
+                        ...current,
+                        totalUnits,
+                        allocatedUnits:
+                          !current.allocatedUnits ||
+                          current.allocatedUnits === current.totalUnits
+                            ? totalUnits
+                            : current.allocatedUnits,
+                      }));
+                    }}
                     required
                   />
                   {activityScan.suggestions.credits ? (
@@ -4626,12 +4702,10 @@ export function ITrackApp() {
                     placeholder="1.0"
                     value={activityDraft.allocatedUnits}
                     disabled={scanningActivityEvidence}
-                    onChange={(event) =>
-                      setActivityDraft((current) => ({
-                        ...current,
-                        allocatedUnits: event.currentTarget.value,
-                      }))
-                    }
+                    onChange={(event) => {
+                      const allocatedUnits = event.currentTarget.value;
+                      setActivityDraft((current) => ({ ...current, allocatedUnits }));
+                    }}
                     required
                   />
                   <small>
@@ -4745,12 +4819,10 @@ export function ITrackApp() {
                   value={activityDraft.provider}
                   maxLength={ACTIVITY_DRAFT_PROVIDER_MAX_LENGTH}
                   disabled={scanningActivityEvidence}
-                  onChange={(event) =>
-                    setActivityDraft((current) => ({
-                      ...current,
-                      provider: event.currentTarget.value,
-                    }))
-                  }
+                  onChange={(event) => {
+                    const provider = event.currentTarget.value;
+                    setActivityDraft((current) => ({ ...current, provider }));
+                  }}
                   required={isNremtCredential(activityCredential)}
                 />
                 {activityScan.suggestions.provider ? (
@@ -9255,12 +9327,11 @@ function AccountView({
           {workspace.user.isDemo ? (
             <span className="demo-label">Local preview</span>
           ) : (
-            <a
-              className="button button-outline"
-              href="/signout-with-chatgpt?return_to=%2F"
-            >
-              Sign out
-            </a>
+            <form method="post" action="/auth/logout" className="account-signout">
+              <button className="button button-outline" type="submit">
+                Sign out
+              </button>
+            </form>
           )}
         </section>
         <section className="card account-momentum">

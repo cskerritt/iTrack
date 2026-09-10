@@ -3401,6 +3401,7 @@ a {
 }
 
 .account-profile .button,
+.account-profile .account-signout,
 .account-profile .demo-label {
   grid-column: 1 / -1;
   justify-self: start;
@@ -6615,4 +6616,26 @@ button:disabled:active {
     background: ButtonText;
     color: ButtonFace;
   }
+}
+
+/* Error fallback (ErrorBoundary, app/error.tsx, app/not-found.tsx). */
+.error-fallback {
+  max-width: 520px;
+  margin: 15vh auto 0;
+  padding: 0 20px;
+  text-align: center;
+}
+.error-fallback h1 {
+  font-size: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+.error-fallback p {
+  color: var(--ink-muted);
+  margin-bottom: 1rem;
+}
+.error-fallback-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
 }

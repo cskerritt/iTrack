@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
 <title>Verify email — iTrack</title>
 <style>
   /* Duplicated verbatim across deploy/railway/pages/*.html — these pages are
@@ -49,11 +50,6 @@
   .flash { display: none; border-radius: 10px; padding: 10px 12px; font-size: 14px; margin-bottom: 8px; }
   .flash.error { background: var(--coral-soft); color: #b3261e; }
   .flash.ok { background: var(--ok-soft); color: var(--ok-ink); }
-  .badge {
-    display: inline-block; background: var(--amber-soft); color: var(--amber);
-    font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
-    padding: 4px 10px; border-radius: 999px;
-  }
 </style>
 </head>
 <body>
@@ -62,13 +58,48 @@
     <a class="brand" href="/">i<span>Track</span></a>
   </nav>
   <main class="card">
-    <h1>Verification link problem</h1>
-    <div class="flash error" id="flash-expired" style="display:block">
-      This verification link is invalid, already used, or expired.
+    <div id="confirm-view" style="display:none">
+      <h1>Confirm your email</h1>
+      <p class="sub">One more step: enter the password you chose when you signed up, and you'll be signed in.</p>
+      <div class="flash error" id="confirm-flash-password">That password doesn't match this account. Try again — or, if you're sure it's right, <a href="/signup">sign up again</a> with this address to set a new password and get a fresh link.</div>
+      <div class="flash error" id="confirm-flash-rate-limited">Too many attempts. Wait a few minutes and try again.</div>
+      <form action="/auth/verify" method="post">
+        <input type="hidden" name="token" id="token">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" required autocomplete="current-password" autofocus>
+        <button class="btn btn-primary" type="submit">Confirm my email</button>
+      </form>
     </div>
-    <p class="sub">Log in to request a fresh link — we'll offer to resend it if your account still needs verification.</p>
-    <a class="btn btn-primary" href="/login" style="width:100%">Go to login</a>
+    <div id="problem-view" style="display:none">
+      <h1>That link didn't work</h1>
+      <div class="flash error" id="flash-expired" style="display:block">
+        This verification link is invalid, already used, or expired. If you already confirmed, just log in.
+      </div>
+      <p class="sub">Need a new link? Enter your email and we'll send one if the account still needs verification.</p>
+      <form action="/auth/resend" method="post">
+        <label for="resend-email">Email</label>
+        <input id="resend-email" name="email" type="email" required autocomplete="email">
+        <button class="btn btn-primary" type="submit">Send a new link</button>
+      </form>
+      <p class="note"><a href="/login">Go to login</a></p>
+    </div>
   </main>
 </div>
+<script>
+  const params = new URLSearchParams(location.search);
+  const token = params.get("token");
+  const error = params.get("error");
+  // A wrong password or a rate limit keeps the link alive, so those come
+  // back to the confirm form with the token; anything else is a dead link.
+  const retryable = !error || error === "password" || error === "rate-limited";
+  if (token && retryable) {
+    document.getElementById("token").value = token;
+    const flash = error && document.getElementById("confirm-flash-" + error);
+    if (flash) flash.style.display = "block";
+    document.getElementById("confirm-view").style.display = "block";
+  } else {
+    document.getElementById("problem-view").style.display = "block";
+  }
+</script>
 </body>
 </html>

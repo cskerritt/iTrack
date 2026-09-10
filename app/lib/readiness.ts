@@ -1,9 +1,8 @@
 /**
  * The dashboard hero's three numbers — days to renewal, counted credits, and
- * the readiness ring — used to live only inside `ITrackApp.tsx`. They now live
- * here so that anything else publishing them (today the iOS widget feed in
- * `widgetSummary.ts`) derives them with the *same* arithmetic instead of
- * growing a second, quietly diverging notion of "ready".
+ * the readiness ring — used to live only inside `ITrackApp.tsx`. They live
+ * here so that anything else publishing them derives them with the *same*
+ * arithmetic instead of growing a second, quietly diverging notion of "ready".
  *
  * The shapes below are deliberately looser than the client's own `Credential`
  * and `Requirement` types: the server-side workspace payload types some of
@@ -45,24 +44,6 @@ export function clampPercent(value: number) {
 export function daysUntilDate(value: string, nowMs: number) {
   const deadline = new Date(`${value.slice(0, 10)}T23:59:59`);
   return Math.ceil((deadline.getTime() - nowMs) / 86_400_000);
-}
-
-/**
- * The same count, but anchored to a calendar date the caller already
- * resolved in the *user's* zone rather than the runtime's. Server-side
- * renderers (the iOS widget feed) run on workerd, whose zone is always UTC,
- * so counting from an epoch there would show a US user a different number
- * than the app shows them; passing today's local date in sidesteps that.
- *
- * Counting whole calendar days and adding one is exactly what the
- * end-of-deadline-day arithmetic above resolves to at any wall-clock time
- * of day.
- */
-export function daysUntilDateFromToday(value: string, today: string) {
-  const deadline = Date.parse(`${value.slice(0, 10)}T00:00:00.000Z`);
-  const anchor = Date.parse(`${today.slice(0, 10)}T00:00:00.000Z`);
-  if (Number.isNaN(deadline) || Number.isNaN(anchor)) return null;
-  return Math.round((deadline - anchor) / 86_400_000) + 1;
 }
 
 export function requirementEarned(requirement: ReadinessRequirement) {

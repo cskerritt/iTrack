@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
+import { ClientErrorBeacon } from "./components/ClientErrorBeacon";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./globals.css";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -101,7 +103,10 @@ export default function RootLayout({
        * (--font-ui in globals.css), so there is no webfont variable to hang
        * on the body and no font request on the critical path.
        */}
-      <body>{children}</body>
+      <body>
+        <ClientErrorBeacon />
+        <ErrorBoundary>{children}</ErrorBoundary>
+      </body>
     </html>
   );
 }

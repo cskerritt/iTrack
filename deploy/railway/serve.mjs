@@ -2,33 +2,32 @@
 //
 // The app is built for Cloudflare Workers, so this process supervises
 // wrangler's local runtime (workerd) serving the production build with
-// file-backed D1/R2 state, and fronts it with an auth proxy (Basic Auth
-// plus self-serve signup accounts; see gateway.mjs) that injects the
-// trusted `oai-authenticated-user-*` identity headers the worker expects
-// from its normal hosting platform. It also fires the */15 cron trigger
-// that delivers scheduled push reminders.
-//
-// One path opts out of auth entirely — the iOS widget feed, which carries
-// its own bearer token for the worker to check; see WIDGET_FEED_PATH in
-// gateway.mjs.
+// file-backed D1/R2 state, and fronts it with the auth gateway (gateway.mjs)
+// that turns a signed session cookie into the trusted
+// `oai-authenticated-user-*` identity headers the worker expects. It also
+// fires the */15 cron trigger that delivers scheduled push reminders.
 //
 // Configuration (environment):
-//   PORT          public listen port (Railway sets this)
-//   ITRACK_USERS  semicolon-separated "username:password:email[:Display Name]"
-//                 entries; required unless ITRACK_OPEN_IDENTITY is set — the
-//                 process fails closed at startup without a bootstrap
-//                 identity source, even though self-serve signup accounts
-//                 (SQLite) also exist (VIGILO_USERS, then LANTERN_USERS, are
-//                 accepted as legacy fallbacks from the product's earlier
-//                 names)
-//   ITRACK_OPEN_IDENTITY
-//                 "email[:Display Name]" — DISABLES authentication entirely and
-//                 signs every visitor in as this identity. Anyone with the URL
-//                 can read and write that identity's data; only use it while
-//                 the deployment URL is private. Remove the variable to restore
-//                 Basic Auth via ITRACK_USERS.
-//   PERSIST_DIR   durable state directory (default /data/wrangler-state);
-//                 mount a Railway volume at /data or all data is lost on deploy
+//   PORT                 public listen port (Railway sets this)
+//   PERSIST_DIR          durable state directory (default /data/wrangler-state);
+//                        mount a Railway volume at /data or all data is lost
+//   AUTH_SESSION_SECRET  optional; otherwise generated once and persisted in
+//                        /data/auth-session-secret
+//   AUTH_DB_PATH         optional; default /data/auth.db
+//   AUTH_BOOTSTRAP_USERS "email:password[;email:password]" — creates VERIFIED
+//                        accounts at startup for addresses with no account;
+//                        existing accounts are never touched (see bootstrap.mjs)
+//   PUBLIC_BASE_URL      canonical origin, e.g. https://itrackceu.com; the
+//                        CSRF check and email links use it, it is the Host the
+//                        worker is told on every proxied request, and the
+//                        worker runtime reports it as request.url's origin
+//                        (worker-args.mjs), which the worker's same-origin
+//                        check on saves compares against the browser's Origin
+//   RESEND_API_KEY, AUTH_EMAIL_FROM   transactional email
+//   VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT   web push
+//
+// Fail-closed at startup: a session secret must exist and the auth database
+// must open; otherwise the process exits 1 before listening.
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -38,106 +37,45 @@ import { fileURLToPath } from "node:url";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { AuthStore } from "./auth.mjs";
 import { createAuthRoutes } from "./auth-routes.mjs";
+import { applyBootstrapUsers, parseBootstrapUsers } from "./bootstrap.mjs";
 import { createResendSender } from "./email.mjs";
 import { createGateway } from "./gateway.mjs";
+import { wranglerDevArgs } from "./worker-args.mjs";
 
 const PUBLIC_PORT = Number.parseInt(process.env.PORT ?? "8080", 10);
 const WORKER_PORT = 8787;
 const PERSIST_DIR = process.env.PERSIST_DIR ?? "/data/wrangler-state";
 const CRON_INTERVAL_MS = 15 * 60 * 1000;
-
-function parseUsers(raw) {
-  const users = new Map();
-  for (const entry of (raw ?? "").split(";")) {
-    const trimmed = entry.trim();
-    if (!trimmed) continue;
-    const [username, password, email, ...nameParts] = trimmed.split(":");
-    if (!username || !password || !email || !email.includes("@")) {
-      console.error(
-        "ITRACK_USERS entries must look like username:password:email[:Display Name]",
-      );
-      process.exit(1);
-    }
-    users.set(username, {
-      password,
-      email: email.toLowerCase(),
-      displayName: nameParts.join(":") || null,
-    });
-  }
-  return users;
-}
-
-function parseOpenIdentity(raw) {
-  const trimmed = (raw ?? "").trim();
-  if (!trimmed) return null;
-  const [email, ...nameParts] = trimmed.split(":");
-  if (!email || !email.includes("@")) {
-    console.error("ITRACK_OPEN_IDENTITY must look like email[:Display Name]");
-    process.exit(1);
-  }
-  return {
-    email: email.toLowerCase(),
-    displayName: nameParts.join(":") || null,
-  };
-}
-
-const OPEN_IDENTITY = parseOpenIdentity(process.env.ITRACK_OPEN_IDENTITY);
-
-const USERS = parseUsers(
-  process.env.ITRACK_USERS ??
-    process.env.VIGILO_USERS ??
-    process.env.LANTERN_USERS,
-);
-if (USERS.size === 0 && !OPEN_IDENTITY) {
-  // Fail closed: self-serve signup accounts exist, but a bootstrap identity
-  // source is still required. A lost env var must fail loudly at startup,
-  // not quietly 401 the iOS app.
-  console.error(
-    "Refusing to start: no ITRACK_USERS or ITRACK_OPEN_IDENTITY configured. Self-serve signup accounts exist, but a bootstrap identity source is still required.",
-  );
-  process.exit(1);
-}
+// The canonical origin. The CSRF check and email links use it, the gateway
+// pins the forwarded Host to its host, and the worker runtime is told to
+// report it as request.url's origin (worker-args.mjs).
+const baseUrl =
+  process.env.PUBLIC_BASE_URL ??
+  (process.env.RAILWAY_PUBLIC_DOMAIN
+    ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+    : `http://localhost:${PUBLIC_PORT}`);
 
 // Shared only between this process and the worker it spawns; authorizes the
 // internal scheduled-delivery route that replaces cron triggers here.
 const INTERNAL_SCHEDULED_SECRET = randomBytes(32).toString("hex");
 
 // Worker vars are not inherited from the process environment; forward the
-// ones the worker reads (VAPID push + APNs credentials, widget token)
-// explicitly.
-const workerVarArgs = [
-  "VAPID_PUBLIC_KEY",
-  "VAPID_PRIVATE_KEY",
-  "VAPID_SUBJECT",
-  "APNS_TEAM_ID",
-  "APNS_KEY_ID",
-  "APNS_PRIVATE_KEY",
-  "APNS_BUNDLE_ID",
-  "APNS_ENVIRONMENT",
-  "ITRACK_WIDGET_TOKEN",
-].flatMap((name) =>
-  process.env[name] ? ["--var", `${name}:${process.env[name]}`] : [],
-);
-workerVarArgs.push(
-  "--var",
-  `INTERNAL_SCHEDULED_SECRET:${INTERNAL_SCHEDULED_SECRET}`,
-);
+// ones the worker reads (VAPID push credentials) explicitly.
+const workerVars = {};
+for (const name of ["VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT"]) {
+  if (process.env[name]) workerVars[name] = process.env[name];
+}
+workerVars.INTERNAL_SCHEDULED_SECRET = INTERNAL_SCHEDULED_SECRET;
 
 const worker = spawn(
   "npx",
-  [
-    "wrangler",
-    "dev",
-    "--config",
-    "dist/server/wrangler.json",
-    "--port",
-    String(WORKER_PORT),
-    "--ip",
-    "127.0.0.1",
-    "--persist-to",
-    PERSIST_DIR,
-    ...workerVarArgs,
-  ],
+  wranglerDevArgs({
+    configPath: "dist/server/wrangler.json",
+    port: WORKER_PORT,
+    persistDir: PERSIST_DIR,
+    baseUrl,
+    vars: workerVars,
+  }),
   {
     stdio: "inherit",
     env: {
@@ -198,9 +136,9 @@ async function fireCron() {
   }
 }
 
-// Request handling (Basic Auth, widget-feed exemption, self-serve auth
-// routes, public pages, proxying) lives in gateway.mjs so it can be tested
-// against a stub upstream without spawning wrangler.
+// Request handling (session auth, public pages, allowlist, proxying) lives in
+// gateway.mjs so it can be tested against a stub upstream without spawning
+// wrangler.
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const STATE_ROOT = path.dirname(PERSIST_DIR); // /data in production
 mkdirSync(STATE_ROOT, { recursive: true });
@@ -222,12 +160,29 @@ if (!sessionSecret) {
   process.exit(1);
 }
 
-const store = new AuthStore(process.env.AUTH_DB_PATH ?? path.join(STATE_ROOT, "auth.db"));
-const baseUrl =
-  process.env.PUBLIC_BASE_URL ??
-  (process.env.RAILWAY_PUBLIC_DOMAIN
-    ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
-    : `http://localhost:${PUBLIC_PORT}`);
+let store;
+try {
+  store = new AuthStore(process.env.AUTH_DB_PATH ?? path.join(STATE_ROOT, "auth.db"));
+} catch (error) {
+  console.error("Refusing to start: the auth database could not be opened", error);
+  process.exit(1);
+}
+try {
+  applyBootstrapUsers(store, parseBootstrapUsers(process.env.AUTH_BOOTSTRAP_USERS));
+} catch (error) {
+  console.error(`Refusing to start: ${error.message}`);
+  process.exit(1);
+}
+// Self-serve signup accepted any non-space address until EMAIL_RE; a row with
+// a character above U+00FF cannot be proxied (its session is refused with an
+// auth_session_refused line) and one with any non-ASCII fails the current
+// rule. Almost certainly none exist — say so, or say which, at every boot.
+const legacyIds = store.nonAsciiEmailUserIds();
+if (legacyIds.length > 0) {
+  console.warn(
+    `[auth] ${legacyIds.length} account(s) carry a non-ASCII address the current signup rule refuses (ids: ${legacyIds.join(", ")}); fix or delete the row in auth.db — a session for an address above U+00FF is refused, not proxied`,
+  );
+}
 const authRoutes = createAuthRoutes({
   store,
   secret: sessionSecret,
@@ -239,10 +194,8 @@ const authRoutes = createAuthRoutes({
 });
 const server = http.createServer(
   createGateway({
-    users: USERS,
-    openIdentity: OPEN_IDENTITY,
     authRoutes,
-    store,
+    baseUrl,
     pagesDir: path.join(HERE, "pages"),
     upstreamPort: WORKER_PORT,
   }),
@@ -252,10 +205,7 @@ await waitForWorker();
 setInterval(fireCron, CRON_INTERVAL_MS);
 fireCron();
 server.listen(PUBLIC_PORT, "0.0.0.0", () => {
-  const mode = OPEN_IDENTITY
-    ? `OPEN ACCESS — no authentication, all visitors act as ${OPEN_IDENTITY.email}`
-    : `${USERS.size} user${USERS.size === 1 ? "" : "s"}`;
   console.log(
-    `iTrack proxy listening on :${PUBLIC_PORT} (${mode}, self-serve signup enabled), state in ${PERSIST_DIR}`,
+    `iTrack gateway listening on :${PUBLIC_PORT} (session-cookie auth, self-serve signup enabled), state in ${PERSIST_DIR}`,
   );
 });

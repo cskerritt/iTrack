@@ -3461,7 +3461,7 @@ Claude-Session: https://claude.ai/code/session_01VToavJMqYSQkJG4MRunbBk"
 - Create: `app/lib/apiResponse.ts`
 - Modify: `app/ITrackApp.tsx` (import; `handleSessionEnded`; the eight call sites; sign-out markup at `:9256-9263`)
 - Modify: `package.json` (`build:nav-test` adds `apiResponse.ts`)
-- Test: `tests/api-response.test.mjs`, `tests/app-source-guards.test.mjs` (two new guards)
+- Test: `tests/api-response.test.mjs`, `tests/app-source-guards.test.mjs` (three new guards), `tests/e2e/session-ended-mid-save.spec.ts` (Playwright, not part of `npm test`)
 
 **Interfaces:**
 - Consumes: `WorkspaceLoadFailure` (existing, renders when `workspace === null && workspaceLoadFailed`), `POST /auth/logout` (existing; CSRF satisfied by the browser's same-origin `Origin` header).
@@ -3470,7 +3470,9 @@ Claude-Session: https://claude.ai/code/session_01VToavJMqYSQkJG4MRunbBk"
   - `export const SESSION_ENDED_MESSAGE = "Your sign-in needs to be refreshed."`
   - `export type ApiResult<T> = { kind: "json"; ok: boolean; status: number; data: T } | { kind: "session-ended"; status: 401 } | { kind: "unexpected"; status: number; text: string }`
   - `export async function readApiResponse<T>(response: Response): Promise<ApiResult<T>>`
-  - In `ITrackApp`: `const handleSessionEnded = useCallback(() => { setWorkspace(null); setWorkspaceLoadFailed(true); setWorkspaceLoadFailureStatus(401); setError(""); }, [])`.
+  - In `ITrackApp`: `const handleSessionEnded = useCallback(() => { setWorkspace(null); setWorkspaceLoadFailed(true); setWorkspaceLoadFailureStatus(401); setEditingActivity(null); setTaskEditor(null); setInstallHelpOpen(false); setClassificationRepair(null); setEvidenceActivity(null); setError(SESSION_ENDED_MESSAGE); }, [])` — the one place that puts the app into the session-ended state. It closes every modal that is not gated on `workspace` (see the amendment below), and leaves `error` holding the session message, the same state the cold-load path leaves behind.
+
+> **Amendment (review of Task 13, 2026-09-10).** The first cut of this task had `handleSessionEnded` only drop the workspace, and `loadWorkspace` map a 401 to a thrown `SESSION_ENDED_MESSAGE` without dropping it. Review found two gaps: (1) the four editors that are not gated on `workspace` — `PersonalTaskEditorModal`, `ActivityEditorModal`, the classification-repair modal, the proof modal (and the install-help modal) — stayed mounted over the Reload state after a 401 mid-save, and `Modal`'s focus trap marks its surroundings `inert` + `aria-hidden`, so the "Reload and sign in" button was rendered but neither perceivable nor operable until the user cancelled (spec 3.2 requires the state to be *shown*); (2) a 401 on a refetch while a workspace was displayed (the banner's Try again, the reload after a write) showed a retry banner instead of the Reload state, because `WorkspaceLoadFailure` renders only when `workspace === null`. Both are closed by making `handleSessionEnded` the single entry into the session-ended state (it closes those modals) and by calling it from `loadWorkspace`'s session-ended branch (skipped for a superseded response). `runAction`'s branch stays `handleSessionEnded(); return null;`. The `.json()` guard is widened to any receiver, a guard pins "every modal not gated on `workspace` is closed by `handleSessionEnded`", and `tests/e2e/session-ended-mid-save.spec.ts` pins both paths in a browser.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3523,10 +3525,11 @@ test("messages are the exact spec copy", () => {
 Append to `tests/app-source-guards.test.mjs`:
 
 ```js
-test("client code never calls response.json() directly (app-ux-M-01 / architecture-M-04)", () => {
+test("client code never calls .json() on a fetch Response directly (app-ux-M-01 / architecture-M-04)", () => {
   for (const { file, source } of readClientSources()) {
     if (file.startsWith("api/") || file === "lib/apiResponse.ts") continue;
-    assert.doesNotMatch(source, /\bresponse\.json\(\)/, `${file}: use readApiResponse() from app/lib/apiResponse.ts`);
+    // Any receiver, so `res.json()` and `.then((r) => r.json())` are fenced too.
+    assert.doesNotMatch(source, /\.json\(\s*\)/, `${file}: use readApiResponse() from app/lib/apiResponse.ts`);
   }
 });
 
@@ -3590,12 +3593,21 @@ Immediately before `const loadWorkspace = useCallback(async () => {` (line 1925)
 
 ```ts
   // A 401 from any fetch means the session lapsed. Drop the workspace so the
-  // existing WorkspaceLoadFailure "Reload and sign in" state renders.
+  // existing WorkspaceLoadFailure "Reload and sign in" state renders, and
+  // close every sheet that is not itself gated on `workspace`: a mounted
+  // Modal marks its surroundings inert, so a Reload state rendered behind
+  // one is neither perceivable nor operable (app-ux-M-01). `error` carries
+  // the session message so any surface that still renders it says why.
   const handleSessionEnded = useCallback(() => {
     setWorkspace(null);
     setWorkspaceLoadFailed(true);
     setWorkspaceLoadFailureStatus(401);
-    setError("");
+    setEditingActivity(null);
+    setTaskEditor(null);
+    setInstallHelpOpen(false);
+    setClassificationRepair(null);
+    setEvidenceActivity(null);
+    setError(SESSION_ENDED_MESSAGE);
   }, []);
 ```
 
@@ -3612,7 +3624,13 @@ with
 
 ```ts
       const parsed = await readApiResponse<Workspace & { error?: string }>(response);
-      if (parsed.kind === "session-ended") throw new Error(SESSION_ENDED_MESSAGE);
+      if (parsed.kind === "session-ended") {
+        // A refetch can 401 while a workspace is still on screen (the
+        // banner's Try again, the reload after a write). Drop it so the
+        // Reload-and-sign-in state renders instead of a retry loop.
+        if (!superseded()) handleSessionEnded();
+        throw new Error(SESSION_ENDED_MESSAGE);
+      }
       if (parsed.kind === "unexpected") throw new Error(UNEXPECTED_RESPONSE_MESSAGE);
       const data = parsed.data;
       if (!response.ok) {
@@ -3620,7 +3638,7 @@ with
       }
 ```
 
-(the existing `catch` records `responseStatus` = 401 in `workspaceLoadFailureStatus`, which is what `WorkspaceLoadFailure` keys its "Reload and sign in" copy on).
+and change `loadWorkspace`'s dependency array from `[]` to `[handleSessionEnded]` (the existing `catch` records `responseStatus` = 401 in `workspaceLoadFailureStatus`, which is what `WorkspaceLoadFailure` keys its "Reload and sign in" copy on; `handleSessionEnded` has already nulled the workspace so that state actually renders).
 
 **catalog** (lines 1987-1995) — replace
 
@@ -3814,7 +3832,7 @@ with
 - [ ] **Step 5: Run the tests, typecheck, lint**
 
 Run: `npm run build:nav-test && node --experimental-sqlite --test tests/api-response.test.mjs tests/app-source-guards.test.mjs && npm run typecheck && npm run lint`
-Expected: PASS. Then stop the dev server and run `npm run build && node --experimental-sqlite --test tests/rendered-html.test.mjs` — expected PASS (the pins at `tests/rendered-html.test.mjs:7753-7757` — `status === 401 || status === 403`, `Reload and sign in` — are untouched).
+Expected: PASS. With the dev server up, run `npx playwright test tests/e2e/session-ended-mid-save.spec.ts` — expected PASS (two cases: a 401 on the personal-task save, and a 401 on the workspace refetch after a write conflict; both end with the editor gone and "Reload and sign in" visible and enabled without cancelling). Then stop the dev server and run `npm run build && node --experimental-sqlite --test tests/rendered-html.test.mjs` — expected PASS (the pins at `tests/rendered-html.test.mjs:7753-7757` — `status === 401 || status === 403`, `Reload and sign in` — are untouched).
 
 - [ ] **Step 6: Manual check on the dev server**
 
@@ -3823,7 +3841,7 @@ Start `npm run dev`, open `http://localhost:3000/profile`: the demo identity sho
 - [ ] **Step 7: Commit**
 
 ```bash
-git add app/lib/apiResponse.ts app/ITrackApp.tsx package.json tests/api-response.test.mjs tests/app-source-guards.test.mjs
+git add app/lib/apiResponse.ts app/ITrackApp.tsx package.json tests/api-response.test.mjs tests/app-source-guards.test.mjs tests/e2e/session-ended-mid-save.spec.ts
 git commit -m "feat(app): sign out via POST /auth/logout form; JSON-safe fetch helper with session-ended state
 
 app-ux-02, app-ux-M-01, architecture-M-04.
@@ -4033,6 +4051,7 @@ curl -si -X POST $B/auth/login --data-urlencode 'email=ops@example.test' --data-
 Then with the cookie value from the login response in `$C`:
 ```bash
 curl -s $B/api/workspace -H 'accept: application/json' -H "cookie: $C" | head -c 200   # 200 JSON workspace for ops@example.test
+curl -si -X POST $B/api/workspace -H 'accept: application/json' -H 'content-type: application/json' -H 'origin: http://localhost:8080' -H "cookie: $C" --data '{}' | head -1   # 400 (action is required) from the worker — NOT 403 cross_origin_request: serve.mjs passes --local-upstream/--upstream-protocol from PUBLIC_BASE_URL so request.url's origin matches the browser's Origin on saves
 curl -si -X POST $B/auth/logout -H 'origin: http://localhost:8080' -H "cookie: $C" | grep -iE '^(HTTP|set-cookie)'   # 303, Max-Age=0
 curl -s -o /dev/null -w '%{http_code}\n' $B/api/workspace -H 'accept: application/json' -H "cookie: $C"   # 401 after logout
 ```

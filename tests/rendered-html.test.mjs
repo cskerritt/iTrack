@@ -672,6 +672,15 @@ test("iTrack product contract", async (t) => {
     }
   });
 
+  await t.test("unknown paths render the not-found route with a 404", async () => {
+    const response = await fetchWorker("http://localhost/definitely-not-a-route", {
+      headers: { accept: "text/html" },
+    });
+    assert.equal(response.status, 404);
+    assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+    assert.match(await response.text(), /Page not found/);
+  });
+
   await t.test("pushes credential detail onto the navigation stack", async () => {
     // Opening a credential is a navigation, not a state swap: it writes a
     // history entry, so the iOS back gesture, the browser back button and a
@@ -4658,7 +4667,7 @@ export {
         /category\.kind === "informational"[\s\S]*?Track \$\{category\.name\}/,
       );
       // The zero-hour readiness branch now lives in the shared readiness
-      // module (the iOS widget feed derives the same score), so the contract
+      // module, so the contract
       // is asserted where the arithmetic actually is.
       assert.match(
         await readFile(
@@ -7838,6 +7847,7 @@ export {
       dentalCheckpointMigration,
       dentalCheckpointSnapshotSource,
       apnsMigration,
+      dropApnsMigration,
     ] = await Promise.all([
         readFile(
           new URL("../dist/server/wrangler.json", import.meta.url),
@@ -7928,13 +7938,17 @@ export {
           new URL("../drizzle/0012_redundant_kate_bishop.sql", import.meta.url),
           "utf8",
         ),
+        readFile(
+          new URL("../drizzle/0013_drop_apns.sql", import.meta.url),
+          "utf8",
+        ),
       ]);
 
     const wrangler = JSON.parse(wranglerSource);
     assert.equal(wrangler.d1_databases?.[0]?.binding, "DB");
     assert.equal(wrangler.r2_buckets?.[0]?.binding, "EVIDENCE");
 
-    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}\n${attestationMigration}\n${weeklyPeriodMigration}\n${archiveMigration}\n${pushMigration}\n${dentalCheckpointMigration}\n${apnsMigration}`;
+    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}\n${attestationMigration}\n${weeklyPeriodMigration}\n${archiveMigration}\n${pushMigration}\n${dentalCheckpointMigration}\n${apnsMigration}\n${dropApnsMigration}`;
     const migratedTables = new Set(
       [...migration.matchAll(/CREATE TABLE `([^`]+)`/g)].map(
         (match) => match[1],
@@ -7965,12 +7979,16 @@ export {
       "weekly_quest_claims",
       "badge_events",
       "dental_checkpoint_states",
-      "apns_devices",
-      "apns_delivery_ledger",
     ];
     assert.deepEqual(
       requiredTables.filter((tableName) => !migratedTables.has(tableName)),
       [],
+    );
+    assert.match(dropApnsMigration, /DROP TABLE `apns_delivery_ledger`;/);
+    assert.match(dropApnsMigration, /DROP TABLE `apns_devices`;/);
+    assert.ok(
+      dropApnsMigration.indexOf("apns_delivery_ledger") < dropApnsMigration.indexOf("apns_devices"),
+      "the ledger (child) is dropped before the devices table it references",
     );
     assert.match(
       migration,
@@ -8049,7 +8067,7 @@ export {
     const migrationJournal = JSON.parse(migrationJournalSource);
     assert.equal(
       migrationJournal.entries.at(-1)?.tag,
-      "0012_redundant_kate_bishop",
+      "0013_drop_apns",
     );
     const dentalCheckpointSnapshot = JSON.parse(
       dentalCheckpointSnapshotSource,
@@ -8428,7 +8446,7 @@ export {
       );
       assert.equal(
         journalEntries.at(-1)?.tag,
-        "0012_redundant_kate_bishop",
+        "0013_drop_apns",
       );
 
       assert.match(

@@ -76,7 +76,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
-  last_seen_at INTEGER NOT NULL
+  last_seen_at INTEGER NOT NULL,
+  cookie_issued_at INTEGER NOT NULL DEFAULT 0
 );
 `;
 
@@ -86,10 +87,26 @@ export class AuthStore {
     this.now = now;
     this.db.exec("PRAGMA foreign_keys = ON;");
     this.db.exec(SCHEMA);
+    this.#upgradeSchema();
   }
 
   close() {
     this.db.close();
+  }
+
+  // Additive migrations for auth.db files created by earlier builds. Each
+  // guard is idempotent so the constructor can run on every boot.
+  #upgradeSchema() {
+    const sessionColumns = this.db
+      .prepare("PRAGMA table_info(sessions)")
+      .all()
+      .map((row) => row.name);
+    if (!sessionColumns.includes("cookie_issued_at")) {
+      this.db.exec(
+        "ALTER TABLE sessions ADD COLUMN cookie_issued_at INTEGER NOT NULL DEFAULT 0",
+      );
+      this.db.exec("UPDATE sessions SET cookie_issued_at = created_at WHERE cookie_issued_at = 0");
+    }
   }
 
   #issueToken(userId, kind, ttlMs) {
@@ -126,6 +143,27 @@ export class AuthStore {
 
   createUser({ email, displayName, password }) {
     const normalized = String(email).trim().toLowerCase();
+    const existing = this.db
+      .prepare("SELECT id, verified_at FROM users WHERE email = ?")
+      .get(normalized);
+    if (existing && existing.verified_at !== null) throw new AuthError("email-taken");
+    if (existing) {
+      // An unverified address is still claimable: whoever proves they own the
+      // inbox wins, so the earlier name, hash and links are all replaced.
+      this.db
+        .prepare(
+          "UPDATE users SET display_name = ?, password_scrypt = ?, created_at = ? WHERE id = ?",
+        )
+        .run(displayName ?? null, hashPassword(password), this.now(), existing.id);
+      this.db
+        .prepare("DELETE FROM tokens WHERE user_id = ? AND kind = 'verify'")
+        .run(existing.id);
+      return {
+        userId: existing.id,
+        verifyToken: this.#issueToken(existing.id, "verify", VERIFY_TTL_MS),
+        replaced: true,
+      };
+    }
     const userId = `acct_${randomUUID()}`;
     try {
       this.db
@@ -139,10 +177,61 @@ export class AuthStore {
       }
       throw error;
     }
-    return { userId, verifyToken: this.#issueToken(userId, "verify", VERIFY_TTL_MS) };
+    return {
+      userId,
+      verifyToken: this.#issueToken(userId, "verify", VERIFY_TTL_MS),
+      replaced: false,
+    };
   }
 
-  verifyEmail(rawToken) {
+  // Startup bootstrap: creates a VERIFIED account only when no row exists for
+  // the address. Existing rows (verified or not) are never modified.
+  createVerifiedUser({ email, displayName, password }) {
+    const normalized = String(email).trim().toLowerCase();
+    const existing = this.db.prepare("SELECT id FROM users WHERE email = ?").get(normalized);
+    if (existing) return { userId: existing.id, created: false };
+    const userId = `acct_${randomUUID()}`;
+    const now = this.now();
+    this.db
+      .prepare(
+        "INSERT INTO users (id, email, display_name, password_scrypt, created_at, verified_at) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(userId, normalized, displayName ?? null, hashPassword(password), now, now);
+    return { userId, created: true };
+  }
+
+  // The account behind a live verify link, without consuming it. null when
+  // the link is unknown, used, expired, or not a verify link.
+  #liveVerifyToken(rawToken) {
+    const row = this.db
+      .prepare(
+        `SELECT t.expires_at, t.used_at, u.id AS user_id, u.email, u.password_scrypt
+           FROM tokens t JOIN users u ON u.id = t.user_id
+          WHERE t.token_hash = ? AND t.kind = 'verify'`,
+      )
+      .get(sha256Hex(String(rawToken ?? "")));
+    if (!row || row.used_at !== null || row.expires_at < this.now()) return null;
+    return row;
+  }
+
+  peekVerifyToken(rawToken) {
+    const row = this.#liveVerifyToken(rawToken);
+    return row ? { userId: row.user_id, email: row.email } : null;
+  }
+
+  // Consumes a verify link and marks the account verified — but only when
+  // `password` matches the account's CURRENT hash. A link proves inbox
+  // access, not that its holder set the password on the row: an unverified
+  // row is claimable (createUser), so a later signup may have swapped the
+  // hash, and newVerifyToken hands out links for whatever hash is current.
+  // Without this check the inbox owner would confirm — and be signed into —
+  // an account whose password belongs to whoever signed up last. A wrong
+  // password does not consume the link, so a typo is retryable; the caller
+  // rate-limits the attempts.
+  verifyEmail(rawToken, password) {
+    const live = this.#liveVerifyToken(rawToken);
+    if (!live) return null;
+    if (!verifyPassword(String(password ?? ""), live.password_scrypt)) return null;
     const userId = this.#consumeToken(rawToken, "verify");
     if (!userId) return null;
     this.db
@@ -154,13 +243,18 @@ export class AuthStore {
 
   newVerifyToken(email) {
     const row = this.db
-      .prepare("SELECT id, display_name, verified_at FROM users WHERE email = ?")
+      .prepare("SELECT id, verified_at FROM users WHERE email = ?")
       .get(String(email ?? "").trim().toLowerCase());
     if (!row || row.verified_at !== null) return null;
-    return {
-      token: this.#issueToken(row.id, "verify", VERIFY_TTL_MS),
-      displayName: row.display_name,
-    };
+    return { token: this.#issueToken(row.id, "verify", VERIFY_TTL_MS) };
+  }
+
+  // Costs exactly one scrypt and returns nothing. For the branch of a flow
+  // that would otherwise answer without hashing (a taken signup address, an
+  // unknown reset or resend address) so it takes as long as the branch that
+  // does.
+  burnPasswordCheck(password) {
+    verifyPassword(String(password ?? ""), DUMMY_STORED);
   }
 
   authenticate(email, password) {
@@ -185,16 +279,16 @@ export class AuthStore {
     const now = this.now();
     this.db
       .prepare(
-        "INSERT INTO sessions (session_hash, user_id, created_at, expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO sessions (session_hash, user_id, created_at, expires_at, last_seen_at, cookie_issued_at) VALUES (?, ?, ?, ?, ?, ?)",
       )
-      .run(sha256Hex(raw), userId, now, now + SESSION_TTL_MS, now);
+      .run(sha256Hex(raw), userId, now, now + SESSION_TTL_MS, now, now);
     return raw;
   }
 
   sessionUser(rawSessionId) {
     const hash = sha256Hex(String(rawSessionId ?? ""));
     const row = this.db
-      .prepare("SELECT user_id, expires_at FROM sessions WHERE session_hash = ?")
+      .prepare("SELECT user_id, expires_at, cookie_issued_at FROM sessions WHERE session_hash = ?")
       .get(hash);
     const now = this.now();
     if (!row) return null;
@@ -205,7 +299,14 @@ export class AuthStore {
     this.db
       .prepare("UPDATE sessions SET expires_at = ?, last_seen_at = ? WHERE session_hash = ?")
       .run(now + SESSION_TTL_MS, now, hash);
-    return this.#userById(row.user_id);
+    const user = this.#userById(row.user_id);
+    return user ? { ...user, cookieIssuedAt: Number(row.cookie_issued_at) } : null;
+  }
+
+  markCookieIssued(rawSessionId) {
+    this.db
+      .prepare("UPDATE sessions SET cookie_issued_at = ? WHERE session_hash = ?")
+      .run(this.now(), sha256Hex(String(rawSessionId ?? "")));
   }
 
   deleteSession(rawSessionId) {
@@ -216,13 +317,10 @@ export class AuthStore {
 
   createResetToken(email) {
     const row = this.db
-      .prepare("SELECT id, display_name FROM users WHERE email = ? AND verified_at IS NOT NULL")
+      .prepare("SELECT id FROM users WHERE email = ? AND verified_at IS NOT NULL")
       .get(String(email ?? "").trim().toLowerCase());
     if (!row) return null;
-    return {
-      token: this.#issueToken(row.id, "reset", RESET_TTL_MS),
-      displayName: row.display_name,
-    };
+    return { token: this.#issueToken(row.id, "reset", RESET_TTL_MS) };
   }
 
   resetPassword(rawToken, newPassword) {
@@ -234,6 +332,18 @@ export class AuthStore {
     this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
     const user = this.#userById(userId);
     return user ? { email: user.email } : null;
+  }
+
+  // Rows whose address is not printable ASCII — created before signup
+  // enforced EMAIL_RE (auth-routes.mjs). The address becomes a request header
+  // to the worker: one above U+00FF cannot be written at all (the gateway
+  // refuses such sessions), the rest merely fail the current rule. Ids, not
+  // addresses, so the boot log that reports them stays free of addresses.
+  nonAsciiEmailUserIds() {
+    return this.db
+      .prepare("SELECT id FROM users WHERE email GLOB '*[^ -~]*' ORDER BY created_at, id")
+      .all()
+      .map((row) => row.id);
   }
 
   cleanup() {

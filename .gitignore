@@ -42,3 +42,7 @@ next-env.d.ts
 /outputs/
 /work/
 *.tsbuildinfo
+
+# playwright (npm run test:e2e)
+/test-results/
+/playwright-report/

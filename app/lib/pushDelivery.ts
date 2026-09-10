@@ -59,10 +59,10 @@ const SUBSCRIPTION_SCAN_BUDGET = 64;
 const MAX_DELIVERIES_PER_RUN = 8;
 const DELIVERY_CONCURRENCY = 4;
 const READY_FETCH_LIMIT = MAX_DELIVERIES_PER_RUN * 4;
-// Exported so the APNs channel alerts with the same words: the copy stays
-// deliberately free of credential details, because it lands on a lock screen.
-export const GENERIC_TITLE = "iTrack check-in";
-export const GENERIC_BODY = "You have a renewal item that needs attention.";
+// Web push is the only delivery channel. The copy stays deliberately free of
+// credential details, because it lands on a lock screen.
+const GENERIC_TITLE = "iTrack check-in";
+const GENERIC_BODY = "You have a renewal item that needs attention.";
 // The push topic predates the iTrack product name and is load-bearing: it
 // collapses a device's pending alerts, and the installed service worker still
 // falls back to the same string. Leave it as-is.
