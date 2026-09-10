@@ -35,7 +35,7 @@ export async function startStack({ upstreamHandler } = {}) {
     sendEmail: async (message) => { sent.push(message); return { ok: true }; },
   });
   const gateway = http.createServer(
-    createGateway({ authRoutes, store, pagesDir, upstreamPort: upstream.address().port, now }),
+    createGateway({ authRoutes, baseUrl: BASE_URL, pagesDir, upstreamPort: upstream.address().port, now }),
   );
   await new Promise((resolve) => gateway.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${gateway.address().port}`;
@@ -61,6 +61,25 @@ export const postForm = (base, pathname, fields, headers = {}) =>
     headers: { "content-type": "application/x-www-form-urlencoded", origin: BASE_URL, ...headers },
     body: new URLSearchParams(fields).toString(),
   });
+
+// http.request with `setHost: false`: sends the Host header and the request
+// target exactly as given, which fetch() would rewrite or normalise away.
+// (Node's server answers an HTTP/1.1 request with no Host at all with a bare
+// 400 before the gateway sees it, so a Host is always sent.)
+export function rawRequest(base, { method = "GET", path = "/", headers = {} } = {}) {
+  const { hostname, port, host } = new URL(base);
+  return new Promise((resolve, reject) => {
+    const request = http.request({ hostname, port, method, path, headers: { host, ...headers }, setHost: false }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => resolve({
+        status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks).toString("utf8"),
+      }));
+    });
+    request.on("error", reject);
+    request.end();
+  });
+}
 
 // Creates a verified account and returns a Cookie header value for it.
 export async function signedInCookie(stack, email = "user@e.co", password = "correct-pass-11") {
@@ -190,6 +209,41 @@ test("gateway routes by path and Accept, never by User-Agent", async (t) => {
     assert.equal(seen.headers.cookie, cookie, "the session cookie still reaches the worker unchanged");
   });
 
+  await t.test("the worker hears the canonical Host and none of the client's X-Forwarded-Host/Proto", async () => {
+    const cookie = await signedInCookie(stack, "host@e.co");
+    const response = await rawRequest(base, {
+      path: "/credentials",
+      headers: {
+        host: "evil.example", "x-forwarded-host": "evil.example", "x-forwarded-proto": "http",
+        accept: "text/html", cookie,
+      },
+    });
+    assert.equal(response.status, 200);
+    const seen = stack.upstreamSeen();
+    assert.equal(seen.headers.host, "gw.test", "PUBLIC_BASE_URL's host, whatever the client claimed");
+    assert.equal(seen.headers["x-forwarded-host"], undefined);
+    assert.equal(seen.headers["x-forwarded-proto"], undefined);
+    const anonymous = await rawRequest(base, { path: "/robots.txt", headers: { host: "localhost:8787", "x-forwarded-host": "localhost" } });
+    assert.equal(anonymous.status, 200);
+    assert.equal(stack.upstreamSeen().headers.host, "gw.test", "public assets too");
+    assert.equal(stack.upstreamSeen().headers["x-forwarded-host"], undefined);
+  });
+
+  await t.test("encoded dot segments under a public prefix are rejected before anything is proxied", async () => {
+    const before = stack.upstreamSeen();
+    for (const target of [
+      "/assets/..%2fapi/workspace", "/assets/..%2Fapi/workspace", "/icons/%2e%2e%5cx.png",
+      "/_next/static/%2E%2E%2Fchunk.js", "/ocr/a%5C..%5Cb.js", "/assets/x%2e%2e/y",
+    ]) {
+      const response = await get(base, target);
+      assert.equal(response.status, 400, target);
+      assert.deepEqual(await response.json(), { error: "bad_request_target" });
+    }
+    assert.equal(stack.upstreamSeen(), before, "nothing reached the worker");
+    const fine = await get(base, "/assets/app-1.2.3%20x.js");
+    assert.equal(fine.status, 200, "other percent-encoding under a public prefix still proxies");
+  });
+
   await t.test("signup -> verify -> session cookie -> app", async () => {
     const signup = await postForm(base, "/auth/signup", { email: "db@e.co", name: "DB User", password: "longenough1" });
     assert.equal(signup.status, 303);
@@ -221,7 +275,7 @@ test("a throwing store cannot crash the gateway (exception barrier)", async (t) 
     store: stubStore, secret: "gw-secret", baseUrl: BASE_URL, sendEmail: async () => ({ ok: true }),
   });
   const gateway = http.createServer(
-    createGateway({ authRoutes, store: stubStore, pagesDir, upstreamPort: 1 }),
+    createGateway({ authRoutes, baseUrl: BASE_URL, pagesDir, upstreamPort: 1 }),
   );
   await new Promise((resolve) => gateway.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => gateway.close(resolve)));
@@ -259,6 +313,24 @@ test("request-target normalisation, security headers, compression and caching", 
       const response = await fetch(`${base}${target}`, { headers: { accept: "text/html" }, redirect: "manual" });
       assert.equal(response.status, 400, target);
       assert.deepEqual(await response.json(), { error: "bad_request_target" });
+    }
+  });
+
+  await t.test("a backslash anywhere in the request target is rejected, not read as a slash", async () => {
+    for (const target of ["/\\evil.example/x", "/\\\\evil.example", "/credentials\\abc", "/login\\", "/?next=\\x"]) {
+      const response = await rawRequest(base, { path: target, headers: { accept: "text/html" } });
+      assert.equal(response.status, 400, target);
+      assert.deepEqual(JSON.parse(response.body), { error: "bad_request_target" });
+    }
+  });
+
+  await t.test("a next outside printable ASCII collapses to / rather than breaking the login redirect", async () => {
+    stack.store.createVerifiedUser({ email: "next@e.co", displayName: "N", password: "longenough1" });
+    for (const next of ["/credentials/\u0100", "/caf\u00e9", "/a b"]) {
+      const response = await postForm(base, "/auth/login", { email: "next@e.co", password: "longenough1", next });
+      assert.equal(response.status, 303, JSON.stringify(next));
+      assert.equal(response.headers.get("location"), "/");
+      assert.match(response.headers.get("set-cookie"), new RegExp(`^${SESSION_COOKIE}=`));
     }
   });
 
@@ -317,6 +389,26 @@ test("request-target normalisation, security headers, compression and caching", 
     assert.equal(verify.headers.get("cache-control"), "no-store", "the token-bearing page is never cached");
   });
 
+  await t.test("Accept-Encoding q-values are honoured: a declined encoding is never sent", async () => {
+    for (const [offered, expected] of [
+      ["gzip, br;q=0", "gzip"],
+      ["br;q=0, gzip;q=0", null],
+      ["br;q=0,gzip;q=0,*;q=0", null],
+      ["*;q=0, gzip", "gzip"],
+      ["*", "br"],
+      ["gzip;q=0.5, br;q=0.3", "gzip"],
+      ["gzip;q=0.5, br;q=0.5", "br"],
+      ["identity", null],
+      ["br ; q=1.0 , gzip", "br"],
+      ["gzip;q=abc, br", "br"],
+      ["deflate, sdch", null],
+    ]) {
+      const response = await fetch(`${base}/`, { headers: { accept: "text/html", "accept-encoding": offered } });
+      assert.equal(response.headers.get("content-encoding"), expected, offered);
+      assert.match(await response.text(), /Every credential\./, offered);
+    }
+  });
+
   await t.test("HEAD on a compressed page sends headers only", async () => {
     const response = await fetch(`${base}/`, { method: "HEAD", headers: { accept: "text/html", "accept-encoding": "gzip" } });
     assert.equal(response.status, 200);
@@ -342,6 +434,27 @@ test("authenticated requests re-issue the session cookie once it is a day old", 
   assert.match(reissued, /Max-Age=2592000/);
   const again = await get(base, "/api/workspace", { accept: "application/json", cookie });
   assert.equal(again.headers.get("set-cookie"), null, "only once per day");
+});
+
+test("the re-issued session cookie is appended to the worker's own set-cookie headers, never replacing them", async (t) => {
+  const stack = await startStack({
+    upstreamHandler: (req, res) => {
+      res.writeHead(200, { "content-type": "text/plain", "set-cookie": ["a=1; Path=/", "b=2; Path=/"] });
+      res.end("ok");
+    },
+  });
+  t.after(() => stack.close());
+  const { base, clock } = stack;
+  const cookie = await signedInCookie(stack, "jar@e.co");
+  const fresh = await get(base, "/credentials", { accept: "text/html", cookie });
+  assert.deepEqual(fresh.headers.getSetCookie(), ["a=1; Path=/", "b=2; Path=/"], "worker cookies pass through untouched");
+  clock.now += 24 * 60 * 60 * 1000 + 1;
+  const stale = await get(base, "/credentials", { accept: "text/html", cookie });
+  const jar = stale.headers.getSetCookie();
+  assert.equal(jar.length, 3, "two from the worker plus the gateway's re-issue");
+  assert.deepEqual(jar.slice(0, 2), ["a=1; Path=/", "b=2; Path=/"]);
+  assert.equal(jar[2].split(";")[0], cookie);
+  assert.match(jar[2], /Max-Age=2592000/);
 });
 
 test("POST /api/client-error logs one structured line and is rate limited per session", async (t) => {

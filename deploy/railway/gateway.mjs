@@ -68,7 +68,9 @@ export function applySecurityHeaders(res) {
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
 }
 
-export function createGateway({ authRoutes, store, pagesDir, upstreamPort, now = () => Date.now() }) {
+export function createGateway({ authRoutes, baseUrl, pagesDir, upstreamPort, now = () => Date.now() }) {
+  // The worker hears one Host — the canonical one — whatever the client sent.
+  const publicHost = new URL(baseUrl).host;
   const pageCache = new Map();
   function loadPage(name) {
     if (!pageCache.has(name)) {
@@ -84,11 +86,29 @@ export function createGateway({ authRoutes, store, pagesDir, upstreamPort, now =
     return pageCache.get(name);
   }
 
+  // Accept-Encoding with q-values (RFC 9110 §12.5.3): an encoding the client
+  // lists with q=0 is declined even though its name appears in the header; a
+  // `*` covers whatever is not listed explicitly. Highest q wins, brotli on a
+  // tie. A q that does not parse counts as declined.
   function chooseEncoding(req) {
-    const offered = String(req.headers["accept-encoding"] ?? "");
-    if (/\bbr\b/.test(offered)) return "br";
-    if (/\bgzip\b/.test(offered)) return "gzip";
-    return null;
+    const weights = new Map();
+    for (const item of String(req.headers["accept-encoding"] ?? "").split(",")) {
+      const [name, ...params] = item.split(";").map((part) => part.trim().toLowerCase());
+      if (!name) continue;
+      let q = 1;
+      for (const param of params) {
+        const [key, value] = param.split("=").map((part) => part.trim());
+        if (key !== "q") continue;
+        const parsed = Number(value);
+        q = Number.isFinite(parsed) && value !== "" ? Math.max(0, Math.min(1, parsed)) : 0;
+      }
+      weights.set(name, q);
+    }
+    const weightOf = (name) => weights.get(name) ?? weights.get("*") ?? 0;
+    const br = weightOf("br");
+    const gzip = weightOf("gzip");
+    if (br <= 0 && gzip <= 0) return null;
+    return br >= gzip ? "br" : "gzip";
   }
 
   function servePage(req, res, name, { cacheControl = PUBLIC_CACHE_CONTROL, status = 200 } = {}) {
@@ -116,13 +136,19 @@ export function createGateway({ authRoutes, store, pagesDir, upstreamPort, now =
     res.end(req.method === "HEAD" ? undefined : body);
   }
 
-  function proxy(req, res, target, identity, { publicAsset = false, extraHeaders = {} } = {}) {
+  function proxy(req, res, target, identity, { publicAsset = false, setCookie = null } = {}) {
     const headers = { ...req.headers };
     for (const name of Object.keys(headers)) {
       if (name.startsWith("oai-")) delete headers[name];
     }
     delete headers.connection;
     delete headers.authorization;
+    // The worker derives its identity fallback and `metadataBase` from the
+    // host it is told about. Tell it the canonical one and nothing else: the
+    // client's Host and X-Forwarded-* are its claims, not facts.
+    headers.host = publicHost;
+    delete headers["x-forwarded-host"];
+    delete headers["x-forwarded-proto"];
     if (identity) {
       headers["oai-authenticated-user-email"] = identity.email;
       if (identity.displayName) {
@@ -133,7 +159,12 @@ export function createGateway({ authRoutes, store, pagesDir, upstreamPort, now =
     const upstream = http.request(
       { host: "127.0.0.1", port: upstreamPort, method: req.method, path: target, headers },
       (workerResponse) => {
-        const responseHeaders = { ...workerResponse.headers, ...extraHeaders, ...SECURITY_HEADERS };
+        const responseHeaders = { ...workerResponse.headers, ...SECURITY_HEADERS };
+        // Node hands set-cookie over as an array. The gateway's re-issued
+        // session cookie joins the worker's cookies; it never replaces them.
+        if (setCookie) {
+          responseHeaders["set-cookie"] = [...(workerResponse.headers["set-cookie"] ?? []), setCookie];
+        }
         if (publicAsset && !responseHeaders["cache-control"]) {
           responseHeaders["cache-control"] = PUBLIC_CACHE_CONTROL;
         }
@@ -215,16 +246,26 @@ export function createGateway({ authRoutes, store, pagesDir, upstreamPort, now =
     applySecurityHeaders(res);
     const rawTarget = req.url ?? "/";
     // critic-07: a `//host/path` target parses as host + path and a `//x`
-    // target classifies differently from `/x`. Reject anything that does not
-    // start with exactly one slash, then collapse repeated slashes inside the
-    // path so routing and proxying agree on one normalised target.
-    if (!rawTarget.startsWith("/") || rawTarget.startsWith("//")) {
+    // target classifies differently from `/x`. The URL parser also reads a
+    // backslash as a slash, so `/\host/path` is the same trick spelled
+    // differently — and no browser ever sends a raw backslash (RFC 3986 has no
+    // place for one). Reject both shapes, then collapse repeated slashes
+    // inside the path so routing and proxying agree on one normalised target.
+    if (!rawTarget.startsWith("/") || rawTarget.startsWith("//") || rawTarget.includes("\\")) {
       sendJson(req, res, 400, { error: "bad_request_target" });
       return;
     }
     const url = new URL(rawTarget, "http://placeholder");
     const pathname = url.pathname.replace(/\/{2,}/g, "/");
     const target = pathname + url.search;
+    // A public-prefix request is proxied verbatim without a session. The URL
+    // parser resolves `..` segments but leaves `%2e`, `%2f` and `%5c` alone,
+    // so `/assets/..%2fapi/workspace` still starts with a public prefix here
+    // and would reach the worker, which may decode it into a private path.
+    if (PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix)) && /%(2e|2f|5c)/i.test(pathname)) {
+      sendJson(req, res, 400, { error: "bad_request_target" });
+      return;
+    }
 
     if (pathname === "/healthz") {
       res.writeHead(200, { "content-type": "text/plain", "cache-control": "no-store" });
@@ -269,7 +310,7 @@ export function createGateway({ authRoutes, store, pagesDir, upstreamPort, now =
     if (session) {
       const identity = { email: session.user.email, displayName: session.user.displayName };
       const reissued = authRoutes.slideSessionCookie(session, now());
-      proxy(req, res, target, identity, reissued ? { extraHeaders: { "set-cookie": reissued } } : {});
+      proxy(req, res, target, identity, { setCookie: reissued });
       return;
     }
 

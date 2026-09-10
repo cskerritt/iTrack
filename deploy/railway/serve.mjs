@@ -18,7 +18,8 @@
 //                        accounts at startup for addresses with no account;
 //                        existing accounts are never touched (see bootstrap.mjs)
 //   PUBLIC_BASE_URL      canonical origin, e.g. https://itrackceu.com; the
-//                        CSRF check and email links use it
+//                        CSRF check and email links use it, and it is the
+//                        Host the worker is told on every proxied request
 //   RESEND_API_KEY, AUTH_EMAIL_FROM   transactional email
 //   VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT   web push
 //
@@ -189,7 +190,7 @@ const authRoutes = createAuthRoutes({
 const server = http.createServer(
   createGateway({
     authRoutes,
-    store,
+    baseUrl,
     pagesDir: path.join(HERE, "pages"),
     upstreamPort: WORKER_PORT,
   }),
