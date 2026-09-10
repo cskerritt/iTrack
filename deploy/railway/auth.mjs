@@ -243,13 +243,18 @@ export class AuthStore {
 
   newVerifyToken(email) {
     const row = this.db
-      .prepare("SELECT id, display_name, verified_at FROM users WHERE email = ?")
+      .prepare("SELECT id, verified_at FROM users WHERE email = ?")
       .get(String(email ?? "").trim().toLowerCase());
     if (!row || row.verified_at !== null) return null;
-    return {
-      token: this.#issueToken(row.id, "verify", VERIFY_TTL_MS),
-      displayName: row.display_name,
-    };
+    return { token: this.#issueToken(row.id, "verify", VERIFY_TTL_MS) };
+  }
+
+  // Costs exactly one scrypt and returns nothing. For the branch of a flow
+  // that would otherwise answer without hashing (a taken signup address, an
+  // unknown reset or resend address) so it takes as long as the branch that
+  // does.
+  burnPasswordCheck(password) {
+    verifyPassword(String(password ?? ""), DUMMY_STORED);
   }
 
   authenticate(email, password) {
@@ -312,13 +317,10 @@ export class AuthStore {
 
   createResetToken(email) {
     const row = this.db
-      .prepare("SELECT id, display_name FROM users WHERE email = ? AND verified_at IS NOT NULL")
+      .prepare("SELECT id FROM users WHERE email = ? AND verified_at IS NOT NULL")
       .get(String(email ?? "").trim().toLowerCase());
     if (!row) return null;
-    return {
-      token: this.#issueToken(row.id, "reset", RESET_TTL_MS),
-      displayName: row.display_name,
-    };
+    return { token: this.#issueToken(row.id, "reset", RESET_TTL_MS) };
   }
 
   resetPassword(rawToken, newPassword) {

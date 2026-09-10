@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { AuthStore } from "../deploy/railway/auth.mjs";
 import {
+  EMAIL_RE,
+  RESPONSE_FLOOR_MS,
   RateLimiter,
   clientIp,
   createAuthRoutes,
@@ -14,20 +16,28 @@ import {
 
 const SECRET = "test-secret";
 
-function makeRoutes({ sendResult = { ok: true } } = {}) {
+// `sleeps` records every delay the routes asked for: the 250 ms response
+// floor on signup/reset/resend and the 2 s account-lock delay on login.
+// `burns` records each dummy-scrypt burn on a branch that hashed nothing.
+function makeRoutes({ sendResult = { ok: true }, mailConfigured, onSend } = {}) {
   let clock = 1_700_000_000_000;
   const store = new AuthStore(":memory:", { now: () => clock });
+  const burns = [];
+  const burn = store.burnPasswordCheck.bind(store);
+  store.burnPasswordCheck = (password) => { burns.push(password); burn(password); };
   const sent = [];
   const sleeps = [];
+  const tick = (ms) => (clock += ms);
   const routes = createAuthRoutes({
     store,
     secret: SECRET,
     baseUrl: "https://itrack.test",
     now: () => clock,
     sleep: async (ms) => { sleeps.push(ms); },
-    sendEmail: async (message) => { sent.push(message); return sendResult; },
+    sendEmail: async (message) => { sent.push(message); onSend?.(tick); return sendResult; },
+    ...(mailConfigured === undefined ? {} : { mailConfigured }),
   });
-  return { store, routes, sent, sleeps, tick: (ms) => (clock += ms) };
+  return { store, routes, sent, sleeps, burns, tick };
 }
 
 function fakeReq({ method = "POST", url = "/", body = "", headers = {} } = {}) {
@@ -192,6 +202,7 @@ test("verify shares the per-account limiter with login: 10 wrong passwords lock 
   const { store, routes, sent, sleeps } = makeRoutes();
   await post(routes, "/auth/signup", form({ email: "acct@e.co", name: "A", password: "longenough1" }));
   const token = sent[0].text.match(/token=([A-Za-z0-9_-]+)/)[1];
+  sleeps.length = 0; // the signup's response floor, not a lockout delay
   for (let i = 0; i < 10; i += 1) {
     const { res } = await post(routes, "/auth/verify", form({ token, password: "wrong-pass-1" }),
       { "x-forwarded-for": `10.0.${i}.1` });
@@ -265,13 +276,14 @@ test("login flow: unverified and wrong password share one generic error; verifie
   assert.match(setCookie, /HttpOnly/);
   assert.match(setCookie, /SameSite=Lax/);
   const signed = setCookie.split(";")[0].split("=")[1];
-  const user = routes.userForRequest({ headers: { cookie: `${SESSION_COOKIE}=${signed}` } });
-  assert.equal(user.email, "l@e.co");
+  const session = routes.sessionForRequest({ headers: { cookie: `${SESSION_COOKIE}=${signed}` } });
+  assert.equal(session.user.email, "l@e.co");
+  assert.equal(routes.userForRequest, undefined, "no production caller; not exported");
   ({ res } = await post(routes, "/auth/login", form({ email: "l@e.co", password: "wrong-pass-1" })));
   assert.equal(res.headers.location, "/login?error=bad-credentials");
   ({ res } = await post(routes, "/auth/logout", "", { cookie: `${SESSION_COOKIE}=${signed}` }));
   assert.equal(res.headers.location, "/");
-  assert.equal(routes.userForRequest({ headers: { cookie: `${SESSION_COOKIE}=${signed}` } }), null);
+  assert.equal(routes.sessionForRequest({ headers: { cookie: `${SESSION_COOKIE}=${signed}` } }), null);
 });
 
 test("login honours a same-origin next and collapses everything else to /", async () => {
@@ -286,10 +298,139 @@ test("login honours a same-origin next and collapses everything else to /", asyn
     ["/auth/logout", "/"],
     ["/x\\y", "/"],
     ["", "/"],
+    // Outside printable ASCII 0x21-0x7E: a Location header cannot carry it
+    // (Node refuses anything above U+00FF outright), so it collapses to `/`
+    // rather than turning a successful login into a 500.
+    ["/caf\u00e9", "/"],
+    ["/credentials/\u0100", "/"],
+    ["/a b", "/"],
+    ["/tab\tx", "/"],
+    ["/ok-!$&'()*+,;=:@~?q=1#f", "/ok-!$&'()*+,;=:@~?q=1#f"],
   ]) {
     const { res } = await post(routes, "/auth/login", form({ email: "n@e.co", password: "longenough1", next }));
     assert.equal(res.headers.location, expected, `next=${next}`);
   }
+});
+
+test("EMAIL_RE accepts printable ASCII only: a non-ASCII address is refused at signup", async () => {
+  for (const email of ["first.last+tag@sub.example.co", "a!#$%&'*/=?^_`{|}~-@e.co"]) {
+    assert.equal(EMAIL_RE.test(email), true, email);
+  }
+  for (const email of ["jos\u00e9@e.co", "a@\u00e9.co", "a@e.c\u00f6", "a b@e.co", "a@b@e.co", "a@e.c", "\u0100@e.co"]) {
+    assert.equal(EMAIL_RE.test(email), false, email);
+  }
+  const { routes, sent } = makeRoutes();
+  const { res } = await post(routes, "/auth/signup", form({ email: "jos\u00e9@e.co", name: "J", password: "longenough1" }));
+  assert.equal(res.headers.location, "/signup?error=invalid");
+  assert.equal(sent.length, 0);
+});
+
+test("the per-IP login limiter counts failures only: a dozen logins from one address do not lock it", async () => {
+  const { store, routes } = makeRoutes();
+  store.createVerifiedUser({ email: "ok@e.co", displayName: "O", password: "longenough1" });
+  for (let i = 0; i < 12; i += 1) {
+    const { res } = await post(routes, "/auth/login", form({ email: "ok@e.co", password: "longenough1" }));
+    assert.equal(res.headers.location, "/", `login ${i + 1}`);
+    assert.match(res.headers["set-cookie"], new RegExp(`^${SESSION_COOKIE}=`));
+  }
+  // Ten failures — spread over unknown accounts so the per-account bucket
+  // stays out of the picture — still lock the address for everyone.
+  for (let i = 0; i < 10; i += 1) {
+    const { res } = await post(routes, "/auth/login", form({ email: `x${i}@e.co`, password: "wrong-pass-1" }));
+    assert.equal(res.headers.location, "/login?error=bad-credentials");
+  }
+  let { res } = await post(routes, "/auth/login", form({ email: "ok@e.co", password: "longenough1" }));
+  assert.equal(res.headers.location, "/login?error=rate-limited", "even the right password is refused from a locked address");
+  assert.equal(res.headers["set-cookie"], undefined);
+  ({ res } = await post(routes, "/auth/login", form({ email: "ok@e.co", password: "longenough1" }),
+    { "x-forwarded-for": "198.51.100.7" }));
+  assert.equal(res.headers.location, "/", "another address is unaffected");
+});
+
+test("signup, request-reset and resend pad every branch to the response floor and burn a scrypt where nothing was hashed", async () => {
+  assert.equal(RESPONSE_FLOOR_MS, 250);
+  const { store, routes, sent, sleeps, burns } = makeRoutes();
+  const slept = () => sleeps.splice(0);
+  let { res } = await post(routes, "/auth/signup", form({ email: "t@e.co", name: "T", password: "longenough1" }));
+  assert.equal(res.headers.location, "/signup?sent=1&email=t%40e.co");
+  assert.deepEqual(slept(), [250]);
+  assert.deepEqual(burns, [], "a fresh signup hashed a real password");
+  store.verifyEmail(sent[0].text.match(/token=([A-Za-z0-9_-]+)/)[1], "longenough1");
+  ({ res } = await post(routes, "/auth/signup", form({ email: "t@e.co", name: "T2", password: "another-pass1" })));
+  assert.equal(res.headers.location, "/signup?sent=1&email=t%40e.co");
+  assert.deepEqual(slept(), [250]);
+  assert.deepEqual(burns, ["another-pass1"], "the taken branch pays for the hash it skipped");
+  ({ res } = await post(routes, "/auth/signup", form({ email: "bad", name: "B", password: "longenough1" })));
+  assert.equal(res.headers.location, "/signup?error=invalid");
+  assert.deepEqual(slept(), [250], "even a rejected form waits out the floor");
+
+  ({ res } = await post(routes, "/auth/request-reset", form({ email: "t@e.co" })));
+  assert.equal(res.headers.location, "/reset?sent=1");
+  assert.deepEqual(slept(), [250]);
+  assert.equal(burns.length, 1, "a real reset issues a token instead of burning");
+  ({ res } = await post(routes, "/auth/request-reset", form({ email: "ghost@e.co" })));
+  assert.equal(res.headers.location, "/reset?sent=1");
+  assert.deepEqual(slept(), [250]);
+  assert.equal(burns.length, 2, "an unknown reset address burns a scrypt");
+
+  await post(routes, "/auth/signup", form({ email: "u@e.co", name: "U", password: "longenough1" }));
+  slept();
+  ({ res } = await post(routes, "/auth/resend", form({ email: "u@e.co" })));
+  assert.equal(res.headers.location, "/login?sent=1");
+  assert.deepEqual(slept(), [250]);
+  assert.equal(burns.length, 2, "a real resend issues a token instead of burning");
+  ({ res } = await post(routes, "/auth/resend", form({ email: "ghost@e.co" })));
+  assert.equal(res.headers.location, "/login?sent=1");
+  assert.deepEqual(slept(), [250]);
+  assert.equal(burns.length, 3, "an unknown resend address burns a scrypt");
+  await post(routes, "/auth/resend", form({ email: "u@e.co" }));
+  slept();
+  ({ res } = await post(routes, "/auth/resend", form({ email: "u@e.co" })));
+  assert.equal(res.headers.location, "/login?error=rate-limited");
+  assert.deepEqual(slept(), [250], "the rate-limited answer waits out the floor too");
+});
+
+test("the response floor is measured from request start: slow work shortens or removes the wait", async () => {
+  const slow = makeRoutes({ onSend: (tick) => tick(300) });
+  let { res } = await post(slow.routes, "/auth/signup", form({ email: "s@e.co", name: "S", password: "longenough1" }));
+  assert.equal(res.headers.location, "/signup?sent=1&email=s%40e.co");
+  assert.deepEqual(slow.sleeps, [], "300 ms of real work already clears a 250 ms floor");
+  const partial = makeRoutes({ onSend: (tick) => tick(100) });
+  ({ res } = await post(partial.routes, "/auth/signup", form({ email: "p@e.co", name: "P", password: "longenough1" })));
+  assert.equal(res.headers.location, "/signup?sent=1&email=p%40e.co");
+  assert.deepEqual(partial.sleeps, [150], "only the remainder is slept");
+});
+
+test("mail unconfigured: signup, request-reset and resend show the support copy, decided by configuration, not by account existence", async () => {
+  const { store, routes, sent } = makeRoutes({ mailConfigured: false, sendResult: { ok: false, error: "mail_unconfigured" } });
+  store.createVerifiedUser({ email: "known@e.co", displayName: "K", password: "longenough1" });
+  store.createUser({ email: "pending@e.co", displayName: "P", password: "longenough1" });
+  for (const email of ["known@e.co", "ghost@e.co"]) {
+    const { res } = await post(routes, "/auth/request-reset", form({ email }));
+    assert.equal(res.headers.location, "/reset?sent=1&mail=unconfigured", email);
+  }
+  let ip = 0;
+  for (const email of ["pending@e.co", "ghost@e.co", "known@e.co"]) {
+    let { res } = await post(routes, "/auth/resend", form({ email }), { "x-forwarded-for": `10.1.0.${ip += 1}` });
+    assert.equal(res.headers.location, "/login?sent=1&mail=unconfigured", email);
+    ({ res } = await post(routes, "/auth/resend", form({ email, return: "signup" }), { "x-forwarded-for": `10.1.0.${ip += 1}` }));
+    assert.equal(res.headers.location, `/signup?sent=1&mail=unconfigured&email=${encodeURIComponent(email)}`, email);
+  }
+  for (const email of ["known@e.co", "fresh@e.co"]) {
+    const { res } = await post(routes, "/auth/signup", form({ email, name: "N", password: "longenough1" }));
+    assert.equal(res.headers.location, `/signup?sent=1&mail=unconfigured&email=${encodeURIComponent(email)}`, email);
+  }
+  assert.equal(sent.length, 0, "nothing is handed to the sender while mail is unconfigured");
+  assert.equal(store.authenticate("fresh@e.co", "longenough1").reason, "unverified", "the account exists and can be verified once mail works");
+  assert.equal(store.authenticate("known@e.co", "longenough1").ok, true, "the existing account is untouched");
+
+  // The flag defaults to what the sender itself reports (email.mjs).
+  const send = Object.assign(async () => ({ ok: false, error: "mail_unconfigured" }), { mailConfigured: false });
+  const fromSender = createAuthRoutes({
+    store: new AuthStore(":memory:"), secret: SECRET, baseUrl: "https://itrack.test", sleep: async () => {}, sendEmail: send,
+  });
+  const { res } = await post(fromSender, "/auth/request-reset", form({ email: "any@e.co" }));
+  assert.equal(res.headers.location, "/reset?sent=1&mail=unconfigured", "read off the sender when not passed explicitly");
 });
 
 test("per-account limiter: after 10 failures the account answers generically after a 2 s delay", async () => {

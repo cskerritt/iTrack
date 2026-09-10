@@ -5,7 +5,11 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 export const SESSION_COOKIE = "itrack_session";
 const SESSION_MAX_AGE_S = 30 * 24 * 60 * 60;
 export const COOKIE_REISSUE_AFTER_MS = 24 * 60 * 60 * 1000;
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+// Printable ASCII only (0x21-0x7E, minus `@`) on both sides of the `@`. The
+// address travels to the worker as a request header, and a header value
+// outside Latin-1 makes Node's http.request throw — so a non-ASCII address
+// would sign up fine and then 500 on every authenticated request.
+export const EMAIL_RE = /^[\x21-\x3f\x41-\x7e]+@[\x21-\x3f\x41-\x7e]+\.[\x21-\x3f\x41-\x7e]{2,}$/;
 const MAX_BODY_BYTES = 32 * 1024;
 
 const RATE_LIMITER_SWEEP_THRESHOLD = 50000;
@@ -92,12 +96,16 @@ const AUTH_PAGE_PREFIXES = ["/login", "/signup", "/reset", "/verify", "/auth/"];
 
 // Where to send someone after they sign in. Only a same-origin relative path
 // survives; anything else (absolute URL, protocol-relative `//host`, a
-// backslash trick, control characters, an auth page) collapses to `/`.
+// backslash trick, anything outside printable ASCII 0x21-0x7E, an auth page)
+// collapses to `/`. The value becomes a Location header, and Node refuses to
+// write a header carrying a character above U+00FF — so the check has to be
+// at least as strict as the header rules, or a bad `next` turns a successful
+// login into a 500 that carries the freshly minted session cookie.
 export function safeNextPath(value) {
   if (typeof value !== "string") return "/";
   if (value.length === 0 || value.length > 2048) return "/";
   if (!value.startsWith("/") || value.startsWith("//")) return "/";
-  if (/[\\\u0000-\u001f\u007f]/.test(value)) return "/";
+  if (value.includes("\\") || /[^\x21-\x7e]/.test(value)) return "/";
   if (AUTH_PAGE_PREFIXES.some((prefix) => value === prefix || value.startsWith(`${prefix}`))) return "/";
   return value;
 }
@@ -152,9 +160,26 @@ function resetEmail(baseUrl, token) {
 }
 
 const ACCOUNT_LOCK_DELAY_MS = 2000;
+// Signup, request-reset and resend answer with the same copy whether or not
+// the address has an account, but the branches do different work (hash,
+// token, mail send). Every branch is padded to at least this long, measured
+// from the start of the request, so the response time says nothing either.
+export const RESPONSE_FLOOR_MS = 250;
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () => Date.now(), sleep = defaultSleep }) {
+export function createAuthRoutes({
+  store,
+  sendEmail,
+  secret,
+  baseUrl,
+  now = () => Date.now(),
+  sleep = defaultSleep,
+  // The sender says whether it can deliver at all (email.mjs); the flows use
+  // that to show the support line instead of pretending to send — decided
+  // from configuration, never from whether the address has an account.
+  mailConfigured = sendEmail.mailConfigured !== false,
+  responseFloorMs = RESPONSE_FLOOR_MS,
+}) {
   const signupLimiter = new RateLimiter(5, 60 * 60 * 1000, { now });
   const loginLimiter = new RateLimiter(10, 15 * 60 * 1000, { now });
   const accountLimiter = new RateLimiter(10, 15 * 60 * 1000, { now });
@@ -170,10 +195,6 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
     const user = store.sessionUser(raw);
     if (!user) return null;
     return { user, raw, cookie };
-  }
-
-  function userForRequest(req) {
-    return sessionForRequest(req)?.user ?? null;
   }
 
   function issueSessionCookie(res, userId) {
@@ -205,6 +226,15 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
 
   async function handle(req, res, pathname) {
     if (!pathname.startsWith("/auth/")) return false;
+    const startedAt = now();
+
+    // Redirect no sooner than `responseFloorMs` after the request started.
+    async function finish(location) {
+      const remaining = responseFloorMs - (now() - startedAt);
+      if (remaining > 0) await sleep(remaining);
+      redirect(res, location);
+      return true;
+    }
 
     // security-07: browsers send Origin on every cross-site POST and on
     // same-site form posts; Referer covers the rare client that omits it.
@@ -246,31 +276,39 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
     const name = (fields.get("name") ?? "").trim();
 
     if (route === "signup") {
-      if (!signupLimiter.allow(`signup:${ip}`)) return redirect(res, "/signup?error=rate-limited"), true;
+      if (!signupLimiter.allow(`signup:${ip}`)) return finish("/signup?error=rate-limited");
       if (!EMAIL_RE.test(email) || password.length < 10 || name.length < 1 || name.length > 80) {
-        return redirect(res, "/signup?error=invalid"), true;
+        return finish("/signup?error=invalid");
       }
-      const sentPage = `/signup?sent=1&email=${encodeURIComponent(email)}`;
-      let created;
+      const sentPage = (mail) =>
+        `/signup?sent=1${mail ? `&mail=${mail}` : ""}&email=${encodeURIComponent(email)}`;
+      let created = null;
       try {
         created = store.createUser({ email, displayName: name, password });
       } catch (error) {
+        if (error?.code !== "email-taken") throw error;
         // A verified account already owns this address. Say exactly what a
-        // fresh signup says (infra-M-02) and send nothing.
-        if (error?.code === "email-taken") return redirect(res, sentPage), true;
-        throw error;
+        // fresh signup says (infra-M-02), send nothing — and still pay for
+        // the hash the fresh signup would have computed.
+        store.burnPasswordCheck(password);
       }
+      if (!mailConfigured) return finish(sentPage("unconfigured"));
+      if (!created) return finish(sentPage(null));
       const result = await deliver("verification", email, verificationEmail(baseUrl, created.verifyToken));
-      if (result.ok) return redirect(res, sentPage), true;
-      const reason = result.error === "mail_unconfigured" ? "unconfigured" : "failed";
-      return redirect(res, `/signup?sent=1&mail=${reason}&email=${encodeURIComponent(email)}`), true;
+      if (result.ok) return finish(sentPage(null));
+      return finish(sentPage(result.error === "mail_unconfigured" ? "unconfigured" : "failed"));
     }
 
     if (route === "login") {
-      if (!loginLimiter.allow(`login:${ip}`)) return redirect(res, "/login?error=rate-limited"), true;
+      // The per-IP bucket counts failures only: ten people signing in from one
+      // office address must not lock the address out. The probe is
+      // non-counting; each failed attempt below counts.
+      const ipKey = `login:${ip}`;
+      if (!loginLimiter.check(ipKey)) return redirect(res, "/login?error=rate-limited"), true;
       const accountKey = `account:${email}`;
       if (!accountLimiter.check(accountKey)) {
         // Tripped: fixed delay, generic answer, no scrypt.
+        loginLimiter.allow(ipKey);
         await sleep(ACCOUNT_LOCK_DELAY_MS);
         return redirect(res, "/login?error=bad-credentials"), true;
       }
@@ -278,6 +316,7 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
       if (!attempt.ok) {
         // security-04: `unverified` and `bad-credentials` collapse into one
         // answer; the resend form on the login page covers the unverified case.
+        loginLimiter.allow(ipKey);
         accountLimiter.allow(accountKey);
         return redirect(res, "/login?error=bad-credentials"), true;
       }
@@ -302,14 +341,17 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
       const pending = store.peekVerifyToken(token);
       if (!pending) return redirect(res, "/verify?error=expired"), true;
       const retry = (error) => `/verify?error=${error}&token=${encodeURIComponent(token)}`;
-      if (!loginLimiter.allow(`login:${ip}`)) return redirect(res, retry("rate-limited")), true;
+      const ipKey = `login:${ip}`;
+      if (!loginLimiter.check(ipKey)) return redirect(res, retry("rate-limited")), true;
       const accountKey = `account:${pending.email}`;
       if (!accountLimiter.check(accountKey)) {
+        loginLimiter.allow(ipKey);
         await sleep(ACCOUNT_LOCK_DELAY_MS);
         return redirect(res, retry("password")), true;
       }
       const verified = store.verifyEmail(token, password);
       if (!verified) {
+        loginLimiter.allow(ipKey);
         accountLimiter.allow(accountKey);
         return redirect(res, retry("password")), true;
       }
@@ -326,10 +368,12 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
     }
 
     if (route === "request-reset") {
-      if (!resetLimiter.allow(`reset:${ip}`)) return redirect(res, "/reset?error=rate-limited"), true;
+      if (!resetLimiter.allow(`reset:${ip}`)) return finish("/reset?error=rate-limited");
+      if (!mailConfigured) return finish("/reset?sent=1&mail=unconfigured");
       const issued = store.createResetToken(email);
       if (issued) await deliver("reset", email, resetEmail(baseUrl, issued.token));
-      return redirect(res, "/reset?sent=1"), true;
+      else store.burnPasswordCheck(password);
+      return finish("/reset?sent=1");
     }
 
     if (route === "reset") {
@@ -342,17 +386,18 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
     }
 
     // resend — its own limiter and its own email field (landing-auth-06).
-    const returnTo = fields.get("return") === "signup"
-      ? `/signup?sent=1&email=${encodeURIComponent(email)}`
-      : "/login?sent=1";
-    const limitedTo = fields.get("return") === "signup" ? "/signup?error=rate-limited" : "/login?error=rate-limited";
-    if (!resendLimiter.allow(`resend:${ip}`)) return redirect(res, limitedTo), true;
+    const fromSignup = fields.get("return") === "signup";
+    const returnTo = (mail) => fromSignup
+      ? `/signup?sent=1${mail ? `&mail=${mail}` : ""}&email=${encodeURIComponent(email)}`
+      : `/login?sent=1${mail ? `&mail=${mail}` : ""}`;
+    const limitedTo = fromSignup ? "/signup?error=rate-limited" : "/login?error=rate-limited";
+    if (!resendLimiter.allow(`resend:${ip}`)) return finish(limitedTo);
+    if (!mailConfigured) return finish(returnTo("unconfigured"));
     const reissued = EMAIL_RE.test(email) ? store.newVerifyToken(email) : null;
-    if (reissued) {
-      await deliver("verification", email, verificationEmail(baseUrl, reissued.token));
-    }
-    return redirect(res, returnTo), true;
+    if (reissued) await deliver("verification", email, verificationEmail(baseUrl, reissued.token));
+    else store.burnPasswordCheck(password);
+    return finish(returnTo(null));
   }
 
-  return { handle, userForRequest, sessionForRequest, issueSessionCookie, slideSessionCookie };
+  return { handle, sessionForRequest, issueSessionCookie, slideSessionCookie };
 }

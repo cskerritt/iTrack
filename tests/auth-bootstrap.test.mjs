@@ -16,7 +16,12 @@ test("parseBootstrapUsers splits entries on ; and each on the first : only", () 
 });
 
 test("parseBootstrapUsers rejects malformed entries without echoing the password", () => {
-  for (const raw of ["nocolon", "not-an-email:longenough-1", "ok@example.test:short"]) {
+  for (const raw of [
+    "nocolon", "not-an-email:longenough-1", "ok@example.test:short",
+    // Non-ASCII local parts are refused here for the same reason signup
+    // refuses them: the address becomes a request header to the worker.
+    "jos\u00e9@example.test:longenough-1", "ok@\u00e9xample.test:longenough-1",
+  ]) {
     assert.throws(() => parseBootstrapUsers(raw), (error) => {
       assert.match(error.message, /AUTH_BOOTSTRAP_USERS/);
       assert.doesNotMatch(error.message, /longenough-1|short/);

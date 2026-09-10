@@ -10,6 +10,9 @@ test("unconfigured sender reports mail_unconfigured without fetching", async () 
   assert.deepEqual(await send({ to: "a@b.co", subject: "s", html: "<p>h</p>", text: "t" }),
     { ok: false, error: "mail_unconfigured" });
   assert.equal(called, false);
+  assert.equal(send.mailConfigured, false, "reported up front, so flows need not attempt a send to find out");
+  assert.equal(createResendSender({ apiKey: "k", from: "" }).mailConfigured, false, "both halves are required");
+  assert.equal(createResendSender({ apiKey: "", from: "f@e.co" }).mailConfigured, false);
 });
 
 test("posts to Resend with bearer auth and payload", async () => {
@@ -22,6 +25,7 @@ test("posts to Resend with bearer auth and payload", async () => {
       return { ok: true, status: 200, text: async () => "{}" };
     },
   });
+  assert.equal(send.mailConfigured, true);
   const result = await send({ to: "user@e.co", subject: "Verify", html: "<p>x</p>", text: "x" });
   assert.deepEqual(result, { ok: true });
   assert.equal(captured.url, "https://api.resend.com/emails");

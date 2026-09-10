@@ -1,8 +1,11 @@
 // Minimal Resend client. When unconfigured it reports `mail_unconfigured`
-// so the caller can show the support address instead of pretending to send.
+// so the caller can show the support address instead of pretending to send;
+// `mailConfigured` on the returned function says the same thing up front, so
+// a flow can show that copy before — and regardless of — any lookup.
 export function createResendSender({ apiKey, from, fetchImpl = fetch }) {
-  return async ({ to, subject, html, text }) => {
-    if (!apiKey || !from) return { ok: false, error: "mail_unconfigured" };
+  const mailConfigured = Boolean(apiKey && from);
+  const send = async ({ to, subject, html, text }) => {
+    if (!mailConfigured) return { ok: false, error: "mail_unconfigured" };
     try {
       const response = await fetchImpl("https://api.resend.com/emails", {
         method: "POST",
@@ -22,4 +25,6 @@ export function createResendSender({ apiKey, from, fetchImpl = fetch }) {
       return { ok: false, error: "send_failed" };
     }
   };
+  send.mailConfigured = mailConfigured;
+  return send;
 }

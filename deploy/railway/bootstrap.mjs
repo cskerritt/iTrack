@@ -4,7 +4,8 @@
 // never modified, which makes the variable safe to leave set and safe to
 // delete after the first boot. The password is read, hashed, and dropped —
 // it is never logged and never echoed in an error.
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+import { EMAIL_RE } from "./auth-routes.mjs";
+
 const MIN_PASSWORD_LENGTH = 10;
 
 export function parseBootstrapUsers(raw) {

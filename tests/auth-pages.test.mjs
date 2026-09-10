@@ -77,6 +77,9 @@ test("login page: next field, generic error, and a resend form with its own emai
   assert.match(html, /href="\/reset"/);
   assert.doesNotMatch(html, /flash-unverified/, "no unverified-specific state");
   assert.match(html, /id="flash-sent">If that address can be used, we've sent an email to it\./);
+  assert.match(html, /id="flash-mail-unconfigured">Email delivery is not set up yet; contact support@itrackceu\.com/,
+    "the resend form lands here, so the unconfigured-mail copy lives here too");
+  assert.match(html, /params\.get\("mail"\) === "unconfigured" \? "flash-mail-unconfigured" : "flash-sent"/);
   const resendForm = html.match(/<form action="\/auth\/resend" method="post"[\s\S]*?<\/form>/);
   assert.ok(resendForm, "resend form present");
   assert.match(resendForm[0], /<input id="resend-email" name="email" type="email" required/, "resend has its own visible email input");
@@ -98,6 +101,12 @@ test("verify page: the confirm form posts the token AND the current password; pr
   assert.match(html, /If you already confirmed, just log in\./);
   assert.match(html, /action="\/auth\/resend"/);
   assert.match(html, /href="\/login"/);
+  // The resend form redirects to /login, and the route's rate-limited answer
+  // always carries the token (which selects the confirm view), so the problem
+  // view can never show a sent or rate-limited state.
+  const problemView = html.match(/<div id="problem-view"[\s\S]*?<\/main>/)[0];
+  assert.doesNotMatch(problemView, /id="flash-sent"|id="flash-rate-limited"/, "unreachable flash elements removed");
+  assert.match(problemView, /id="flash-expired"/);
 });
 
 test("signup sent state names the address, shows neutral copy, and offers resend", () => {
@@ -109,8 +118,11 @@ test("signup sent state names the address, shows neutral copy, and offers resend
   assert.match(html, /<input type="hidden" name="return" value="signup">/);
 });
 
-test("reset page uses the neutral sent copy", () => {
-  assert.match(page("reset.html"), /id="flash-sent">If that address can be used, we've sent an email to it\./);
+test("reset page uses the neutral sent copy and the unconfigured-mail copy with the support line", () => {
+  const html = page("reset.html");
+  assert.match(html, /id="flash-sent">If that address can be used, we've sent an email to it\./);
+  assert.match(html, /id="flash-mail-unconfigured">Email delivery is not set up yet; contact support@itrackceu\.com/);
+  assert.match(html, /params\.get\("mail"\) === "unconfigured" \? "flash-mail-unconfigured" : "flash-sent"/);
 });
 
 test("reset page has both request and set-password forms", () => {

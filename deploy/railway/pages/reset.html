@@ -63,6 +63,7 @@
       <h1>Reset your password</h1>
       <p class="sub">Enter your email and we'll send a reset link.</p>
       <div class="flash ok" id="flash-sent">If that address can be used, we've sent an email to it.</div>
+      <div class="flash error" id="flash-mail-unconfigured">Email delivery is not set up yet; contact support@itrackceu.com</div>
       <div class="flash error" id="flash-rate-limited">Too many requests. Try again in an hour.</div>
       <form action="/auth/request-reset" method="post">
         <label for="email">Email</label>
@@ -94,7 +95,10 @@
     document.getElementById("set-view").style.display = "block";
     if (token) document.getElementById("token").value = token;
   }
-  if (params.get("sent")) document.getElementById("flash-sent").style.display = "block";
+  if (params.get("sent")) {
+    const sentFlash = params.get("mail") === "unconfigured" ? "flash-mail-unconfigured" : "flash-sent";
+    document.getElementById(sentFlash).style.display = "block";
+  }
   if (error === "expired") {
     document.getElementById("request-view").style.display = "none";
     document.getElementById("set-view").style.display = "block";
