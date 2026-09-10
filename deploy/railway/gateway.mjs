@@ -1,104 +1,94 @@
-// Request routing for the Railway proxy, extracted from serve.mjs so it can
+// Request routing for the Railway gateway, extracted from serve.mjs so it can
 // be tested against a stub upstream without spawning wrangler.
+//
+// One credential: the signed `itrack_session` cookie. Routing decisions use
+// the request path and the Accept header only; the client's UA string is
+// never consulted (no browser or bot sniffing).
 import http from "node:http";
 import path from "node:path";
 import { readFileSync } from "node:fs";
-import { createHash, timingSafeEqual } from "node:crypto";
-import { RateLimiter, clientIp } from "./auth-routes.mjs";
+import { safeNextPath } from "./auth-routes.mjs";
 
-const WIDGET_FEED_PATH = "/api/widget-summary";
-// Basic-auth success cache: repeated identical credentials (the iOS app
-// sends Basic on every request) cost one sha256 instead of one synchronous
-// scrypt. Entries are keyed by a hash of the credentials, expire quickly,
-// and the map is capped so junk cannot grow it without bound.
-const BASIC_CACHE_TTL_MS = 5 * 60 * 1000;
-const BASIC_CACHE_MAX = 1000;
 const PAGE_ROUTES = new Map([
   ["/signup", "signup.html"],
   ["/login", "login.html"],
   ["/reset", "reset.html"],
+  ["/verify", "verify.html"],
 ]);
+// Served without a session, with caching. Everything here is either a static
+// file the build copies into dist/client or a worker route that reads no
+// identity (the manifest).
+const PUBLIC_EXACT = new Set([
+  "/robots.txt",
+  "/sitemap.xml",
+  "/favicon.ico",
+  "/manifest.webmanifest",
+  "/og.png",
+  "/offline.html",
+  "/sw.js",
+  "/icon-192.png",
+  "/icon-512.png",
+  "/apple-touch-icon.png",
+]);
+const PUBLIC_PREFIXES = ["/icons/", "/assets/", "/_next/static/", "/ocr/"];
+const PUBLIC_CACHE_CONTROL = "public, max-age=300";
+// Query keys the service worker's notificationclick opens `/` with. A bare
+// `/` is the landing page; `/` carrying one of these is an app deep link and
+// must round-trip through /login?next= instead of being swallowed.
+const LAUNCH_PARAMETERS = ["delivery", "view"];
 
-function digest(value) {
-  return createHash("sha256").update(value).digest();
+export function isPublicPath(pathname) {
+  return PUBLIC_EXACT.has(pathname) || PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
 
-function safeEqual(left, right) {
-  return timingSafeEqual(digest(left), digest(right));
+function wantsHtml(req) {
+  if (req.method !== "GET" && req.method !== "HEAD") return false;
+  const accept = req.headers.accept;
+  if (accept === undefined || accept === "") return true;
+  return accept.includes("text/html") || accept.includes("*/*");
 }
 
-function decodeBasic(header) {
-  if (!header?.startsWith("Basic ")) return null;
-  let decoded;
-  try {
-    decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
-  } catch {
-    return null;
-  }
-  const separator = decoded.indexOf(":");
-  if (separator === -1) return null;
-  return { username: decoded.slice(0, separator), password: decoded.slice(separator + 1) };
+export function applySecurityHeaders(res) {
+  // Filled in by Task 4 (security header set from spec 3.1).
 }
 
-export function createGateway({ users, openIdentity, authRoutes, store, pagesDir, upstreamPort }) {
+export function createGateway({ authRoutes, store, pagesDir, upstreamPort, now = () => Date.now() }) {
   const pageCache = new Map();
-  function servePage(res, name, status = 200) {
+  function loadPage(name) {
     if (!pageCache.has(name)) {
-      pageCache.set(name, readFileSync(path.join(pagesDir, name)));
+      pageCache.set(name, { raw: readFileSync(path.join(pagesDir, name)) });
     }
+    return pageCache.get(name);
+  }
+
+  function servePage(req, res, name, { cacheControl = PUBLIC_CACHE_CONTROL, status = 200 } = {}) {
+    const page = loadPage(name);
+    const body = page.raw;
     res.writeHead(status, {
       "content-type": "text/html; charset=utf-8",
-      "cache-control": "no-store",
+      "cache-control": cacheControl,
+      "content-length": body.length,
     });
-    res.end(pageCache.get(name));
+    res.end(req.method === "HEAD" ? undefined : body);
   }
 
-  const basicCache = new Map();
-  // Gates the synchronous-scrypt path in store.authenticate: without it, a
-  // stream of junk Basic headers would block the event loop for every client
-  // (widget feed included). Cache hits above never touch this limiter, so a
-  // legitimate client consumes at most ~one slot per cache TTL.
-  const basicFailLimiter = new RateLimiter(20, 15 * 60 * 1000);
-
-  function basicIdentity(header, req) {
-    const credentials = decodeBasic(header);
-    if (!credentials) return null;
-    const envUser = users.get(credentials.username);
-    // Always compare so unknown usernames cost the same time.
-    const expected = envUser?.password ?? "missing-user-placeholder";
-    if (envUser && safeEqual(credentials.password, expected)) {
-      return { email: envUser.email, displayName: envUser.displayName };
-    }
-    // DB accounts authenticate with email as the Basic username.
-    const cacheKey = createHash("sha256")
-      .update(`${credentials.username}:${credentials.password}`)
-      .digest("hex");
-    const cached = basicCache.get(cacheKey);
-    if (cached) {
-      if (cached.expires > Date.now()) return cached.identity;
-      basicCache.delete(cacheKey);
-    }
-    if (!basicFailLimiter.allow(`basic:${clientIp(req)}`)) return null;
-    const attempt = store.authenticate(credentials.username, credentials.password);
-    if (attempt.ok) {
-      const identity = { email: attempt.user.email, displayName: attempt.user.displayName };
-      if (basicCache.size >= BASIC_CACHE_MAX) {
-        // Maps iterate in insertion order; drop the oldest entry.
-        basicCache.delete(basicCache.keys().next().value);
-      }
-      basicCache.set(cacheKey, { identity, expires: Date.now() + BASIC_CACHE_TTL_MS });
-      return identity;
-    }
-    return null;
+  function sendJson(req, res, status, payload) {
+    const body = JSON.stringify(payload);
+    res.writeHead(status, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "content-length": Buffer.byteLength(body),
+    });
+    res.end(req.method === "HEAD" ? undefined : body);
   }
 
-  function proxy(req, res, identity, { keepAuthorization = false } = {}) {
+  function proxy(req, res, target, identity, { publicAsset = false, extraHeaders = {} } = {}) {
     const headers = { ...req.headers };
     for (const name of Object.keys(headers)) {
       if (name.startsWith("oai-")) delete headers[name];
     }
     delete headers.connection;
-    if (!keepAuthorization) delete headers.authorization;
+    delete headers.authorization;
     if (identity) {
       headers["oai-authenticated-user-email"] = identity.email;
       if (identity.displayName) {
@@ -107,9 +97,13 @@ export function createGateway({ users, openIdentity, authRoutes, store, pagesDir
       }
     }
     const upstream = http.request(
-      { host: "127.0.0.1", port: upstreamPort, method: req.method, path: req.url, headers },
+      { host: "127.0.0.1", port: upstreamPort, method: req.method, path: target, headers },
       (workerResponse) => {
-        res.writeHead(workerResponse.statusCode ?? 502, workerResponse.headers);
+        const responseHeaders = { ...workerResponse.headers, ...extraHeaders };
+        if (publicAsset && !responseHeaders["cache-control"]) {
+          responseHeaders["cache-control"] = PUBLIC_CACHE_CONTROL;
+        }
+        res.writeHead(workerResponse.statusCode ?? 502, responseHeaders);
         workerResponse.pipe(res);
       },
     );
@@ -124,12 +118,15 @@ export function createGateway({ users, openIdentity, authRoutes, store, pagesDir
   }
 
   async function handleRequest(req, res) {
-    const url = new URL(req.url ?? "/", "http://placeholder");
+    applySecurityHeaders(res);
+    const rawTarget = req.url ?? "/";
+    const url = new URL(rawTarget, "http://placeholder");
     const pathname = url.pathname;
+    const target = pathname + url.search;
 
     if (pathname === "/healthz") {
-      res.writeHead(200, { "content-type": "text/plain" });
-      res.end("ok");
+      res.writeHead(200, { "content-type": "text/plain", "cache-control": "no-store" });
+      res.end(req.method === "HEAD" ? undefined : "ok");
       return;
     }
 
@@ -143,76 +140,46 @@ export function createGateway({ users, openIdentity, authRoutes, store, pagesDir
       return;
     }
 
-    if (pathname === WIDGET_FEED_PATH) {
-      proxy(req, res, null, { keepAuthorization: true });
-      return;
-    }
-
-    // Open-identity mode keeps its historical behavior: everything proxies,
-    // no public pages, no self-serve auth.
-    if (openIdentity) {
-      proxy(req, res, openIdentity);
-      return;
-    }
-
     if (pathname.startsWith("/auth/")) {
       await authRoutes.handle(req, res, pathname);
       return;
     }
 
-    if (req.method === "GET" && pathname === "/verify") {
-      const verified = store.verifyEmail(url.searchParams.get("token") ?? "");
-      if (verified) {
-        authRoutes.issueSessionCookie(res, verified.userId);
-        res.writeHead(303, { location: "/" });
-        res.end();
-      } else {
-        servePage(res, "verify.html");
+    if ((req.method === "GET" || req.method === "HEAD") && PAGE_ROUTES.has(pathname)) {
+      // The verify page is reached from a secret URL; keep it out of caches.
+      servePage(req, res, PAGE_ROUTES.get(pathname), {
+        cacheControl: pathname === "/verify" ? "no-store" : PUBLIC_CACHE_CONTROL,
+      });
+      return;
+    }
+
+    if (isPublicPath(pathname)) {
+      proxy(req, res, target, null, { publicAsset: true });
+      return;
+    }
+
+    const session = authRoutes.sessionForRequest(req);
+    if (session) {
+      const identity = { email: session.user.email, displayName: session.user.displayName };
+      proxy(req, res, target, identity);
+      return;
+    }
+
+    if (wantsHtml(req) && !pathname.startsWith("/api/")) {
+      const isLaunchLink = LAUNCH_PARAMETERS.some((key) => url.searchParams.has(key));
+      if (pathname === "/" && !isLaunchLink) {
+        servePage(req, res, "landing.html");
+        return;
       }
-      return;
-    }
-
-    if (req.method === "GET" && PAGE_ROUTES.has(pathname)) {
-      servePage(res, PAGE_ROUTES.get(pathname));
-      return;
-    }
-
-    const sessionUser = authRoutes.userForRequest(req);
-    const identity = sessionUser
-      ? { email: sessionUser.email, displayName: sessionUser.displayName }
-      : basicIdentity(req.headers.authorization, req);
-
-    if (identity) {
-      proxy(req, res, identity);
-      return;
-    }
-
-    const wantsHtml = req.method === "GET" && (req.headers.accept ?? "").includes("text/html");
-    // DO NOT serve landing/redirect HTML to non-browser clients. The
-    // production iOS app is a Capacitor WKWebView shell that signs in by
-    // ANSWERING the 401 Basic challenge below: it sends GET / with a
-    // text/html Accept, no Authorization header, no cookie, and a UA that
-    // ends in "Mobile/15E148" WITHOUT a "Safari/" token. Every mainstream
-    // browser carries "Safari/" (desktop Firefox carries "Firefox/"), so the
-    // landing page and /login redirect are gated on those tokens; anything
-    // else falls through to the 401 challenge. Fails safe: an odd browser
-    // sees a Basic prompt, but the iOS app never sees marketing copy.
-    const ua = req.headers["user-agent"] ?? "";
-    const isBrowser = ua.includes("Safari/") || ua.includes("Firefox/");
-    if (wantsHtml && isBrowser && pathname === "/") {
-      servePage(res, "landing.html");
-      return;
-    }
-    if (wantsHtml && isBrowser) {
-      res.writeHead(303, { location: "/login" });
+      const next = safeNextPath(target);
+      res.writeHead(303, {
+        location: `/login?next=${encodeURIComponent(next)}`,
+        "cache-control": "no-store",
+      });
       res.end();
       return;
     }
-    res.writeHead(401, {
-      "www-authenticate": 'Basic realm="iTrack", charset="UTF-8"',
-      "content-type": "text/plain",
-    });
-    res.end("Authentication required");
+    sendJson(req, res, 401, { error: "unauthenticated" });
   }
 
   // Exception barrier: a throwing route (bad token, unreadable page file,

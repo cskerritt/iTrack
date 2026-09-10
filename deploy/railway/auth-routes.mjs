@@ -80,13 +80,27 @@ export function clientIp(req) {
   return req.socket?.remoteAddress ?? "unknown";
 }
 
-function readBody(req) {
+const AUTH_PAGE_PREFIXES = ["/login", "/signup", "/reset", "/verify", "/auth/"];
+
+// Where to send someone after they sign in. Only a same-origin relative path
+// survives; anything else (absolute URL, protocol-relative `//host`, a
+// backslash trick, control characters, an auth page) collapses to `/`.
+export function safeNextPath(value) {
+  if (typeof value !== "string") return "/";
+  if (value.length === 0 || value.length > 2048) return "/";
+  if (!value.startsWith("/") || value.startsWith("//")) return "/";
+  if (/[\\\u0000-\u001f\u007f]/.test(value)) return "/";
+  if (AUTH_PAGE_PREFIXES.some((prefix) => value === prefix || value.startsWith(`${prefix}`))) return "/";
+  return value;
+}
+
+export function readBody(req, maxBytes = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
     req.on("data", (chunk) => {
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > maxBytes) {
         reject(new Error("body too large"));
         req.destroy?.();
         return;
@@ -138,16 +152,23 @@ function resetEmail(baseUrl, name, token) {
 }
 
 export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () => Date.now() }) {
+  const expectedOrigin = new URL(baseUrl).origin;
   const signupLimiter = new RateLimiter(5, 60 * 60 * 1000, { now });
   const loginLimiter = new RateLimiter(10, 15 * 60 * 1000, { now });
   const resetLimiter = new RateLimiter(3, 60 * 60 * 1000, { now });
 
-  function userForRequest(req) {
+  function sessionForRequest(req) {
     const cookie = readCookie(req, SESSION_COOKIE);
     if (!cookie) return null;
     const raw = unsignValue(cookie, secret);
     if (!raw) return null;
-    return store.sessionUser(raw);
+    const user = store.sessionUser(raw);
+    if (!user) return null;
+    return { user, raw, cookie };
+  }
+
+  function userForRequest(req) {
+    return sessionForRequest(req)?.user ?? null;
   }
 
   function issueSessionCookie(res, userId) {
@@ -168,13 +189,10 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
   async function handle(req, res, pathname) {
     if (!pathname.startsWith("/auth/")) return false;
 
-    // CSRF: browsers always send Origin on cross-site POSTs; when present it
-    // must match our host. Referer is the fallback for older clients.
-    const host = req.headers.host;
     const declared = req.headers.origin ?? req.headers.referer;
     if (declared) {
       try {
-        if (new URL(declared).host !== host) {
+        if (new URL(declared).origin !== expectedOrigin) {
           res.writeHead(403, { "content-type": "text/plain" });
           res.end("Cross-origin request rejected");
           return true;
@@ -264,5 +282,5 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
     return redirect(res, "/login?resent=1"), true;
   }
 
-  return { handle, userForRequest, issueSessionCookie };
+  return { handle, userForRequest, sessionForRequest, issueSessionCookie };
 }

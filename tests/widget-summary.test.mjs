@@ -672,59 +672,6 @@ test("the route refuses callers the token gate rejects", async () => {
   assert.equal(wrong.headers.get("www-authenticate"), 'Bearer realm="iTrack"');
 });
 
-// The Railway proxy's request handling lives in deploy/railway/gateway.mjs
-// (behaviour is exercised end to end in tests/auth-gateway.test.mjs); the two
-// widget exemptions are additionally pinned by reading the source so a
-// refactor cannot silently widen them. Without them the endpoint is
-// unreachable in production: the auth gate 401s a bearer request, and the
-// header strip would remove the token before the worker ever sees it.
-test("the Railway proxy lets the widget feed through with its token", async () => {
-  const source = readFileSync(
-    new URL("../deploy/railway/gateway.mjs", import.meta.url),
-    "utf8",
-  );
-  assert.match(
-    source,
-    /const WIDGET_FEED_PATH = "\/api\/widget-summary";/,
-    "the exemption must be an exact path, not a prefix",
-  );
-  assert.match(
-    source,
-    /if \(pathname === WIDGET_FEED_PATH\) \{\s*proxy\(req, res, null, \{ keepAuthorization: true \}\);/,
-    "the widget feed proxies with no identity and keeps its bearer token",
-  );
-  // The widget branch must come before every auth path — open identity,
-  // /auth/* routes, and the session/Basic identity resolution — so it can
-  // never be given an identity or gated behind one.
-  const widgetAt = source.indexOf("pathname === WIDGET_FEED_PATH");
-  assert.ok(widgetAt !== -1);
-  assert.ok(
-    widgetAt < source.indexOf("if (openIdentity)"),
-    "the widget feed must dispatch before open-identity handling",
-  );
-  assert.ok(
-    widgetAt < source.indexOf("basicIdentity(req.headers.authorization"),
-    "the widget feed must skip the auth gate",
-  );
-  // The strip stays the default for every authenticated path: it is what
-  // stops a caller supplying its own credentials to the worker. Only the
-  // widget feed opts out via keepAuthorization.
-  assert.match(
-    source,
-    /if \(!keepAuthorization\) delete headers\.authorization;/,
-  );
-  assert.equal(
-    source.match(/delete headers\.authorization;/g)?.length,
-    1,
-    "authorization is deleted in exactly one place — the shared proxy strip",
-  );
-  assert.equal(
-    source.match(/keepAuthorization: true/g)?.length,
-    1,
-    "only the widget feed keeps its Authorization header",
-  );
-});
-
 test("the route reports 404 before any workspace exists", async () => {
   const sqlite = new DatabaseSync(":memory:");
   for (const statement of schemaStatements) sqlite.exec(statement);
