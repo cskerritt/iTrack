@@ -73,6 +73,7 @@ import {
   UNEXPECTED_RESPONSE_MESSAGE,
   readApiResponse,
 } from "./lib/apiResponse";
+import { routeTitle } from "./lib/routeTitle";
 import {
   nextRequirementSelection,
   requirementIncompatibilityMessage,
@@ -2447,6 +2448,27 @@ export function ITrackApp() {
     );
   }, [detailCredentialId, workspace]);
 
+  // app-ux-17 / a11y-03: every route names itself in the tab and hands focus
+  // to its heading, so screen readers hear the move and keyboard users start
+  // at the top. The first paint keeps the browser's own focus (skip link).
+  const announcedRouteRef = useRef<string | null>(null);
+  useEffect(() => {
+    document.title = routeTitle(nav.route, detailCredential?.credentialName ?? null);
+    const key = buildPath(nav.route);
+    if (announcedRouteRef.current === null) {
+      announcedRouteRef.current = key;
+      return;
+    }
+    if (announcedRouteRef.current === key) return;
+    announcedRouteRef.current = key;
+    const heading = document.querySelector<HTMLElement>(
+      nav.route.detail ? ".screen-pushed h1" : ".screen-root h1",
+    );
+    if (!heading) return;
+    if (!heading.hasAttribute("tabindex")) heading.setAttribute("tabindex", "-1");
+    heading.focus({ preventScroll: true });
+  }, [nav.route, detailCredential]);
+
   // A pop is a navigation, so the route drops the detail the instant it
   // happens — but the screen still has to leave the stage. Hold the departing
   // credential for as long as its exit animation is playing.
@@ -4193,6 +4215,8 @@ export function ITrackApp() {
               className={`screen screen-root${
                 detailCredential ? " screen-under" : ""
               }`}
+              inert={Boolean(detailCredential)}
+              aria-hidden={detailCredential ? "true" : undefined}
             >
               {!workspace ? (
                 !isOnline ? (

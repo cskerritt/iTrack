@@ -120,3 +120,12 @@ test("sign out is a POST form to /auth/logout, not a link (app-ux-02)", () => {
     "a POST form to /auth/logout exists",
   );
 });
+
+test("the parked screen is inert while a credential is pushed, and routes set document.title (app-ux-09, a11y-01, app-ux-17, a11y-03)", () => {
+  const sources = readClientSources();
+  assert.ok(
+    sources.some(({ source }) => /screen screen-root[\s\S]{0,200}?inert=\{Boolean\(detailCredential\)\}/.test(source)),
+    "screen-root carries inert={Boolean(detailCredential)}",
+  );
+  assert.ok(sources.some(({ source }) => /document\.title = routeTitle\(/.test(source)), "document.title is set from routeTitle()");
+});
