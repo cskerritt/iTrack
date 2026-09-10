@@ -74,13 +74,14 @@ box.
 Production runs on Railway: pushes to `main` auto-deploy. The container
 (`Dockerfile` + `deploy/railway/serve.mjs`) builds the app, runs it under
 wrangler's local workerd runtime with file-backed D1/R2 state on a volume
-mounted at `/data`, and fronts it with a Basic Auth proxy that injects the
-identity headers. Configure users with the `ITRACK_USERS` environment
-variable (`username:password:email[:Display Name]`, `;`-separated; the older
-`VIGILO_USERS` and `LANTERN_USERS` names still work) and set
-`VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` for web push.
-The proxy fires scheduled push delivery every 15 minutes through a
-secret-guarded internal route.
+mounted at `/data`, and fronts it with a session-cookie auth gateway that
+injects the identity headers. Accounts are self-serve (email + password,
+verified by email via Resend: `RESEND_API_KEY`, `AUTH_EMAIL_FROM`,
+`PUBLIC_BASE_URL`). To create the first verified account before email works,
+set `AUTH_BOOTSTRAP_USERS="email:password"` for one boot; existing accounts
+are never modified by it. Set `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` /
+`VAPID_SUBJECT` for web push. The gateway fires scheduled push delivery
+every 15 minutes through a secret-guarded internal route.
 
 Structured activities and allocations are separate from renewal submissions.
 This preserves the difference between learning completed, credit documented,

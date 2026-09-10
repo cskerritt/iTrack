@@ -33,6 +33,7 @@ import { fileURLToPath } from "node:url";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { AuthStore } from "./auth.mjs";
 import { createAuthRoutes } from "./auth-routes.mjs";
+import { applyBootstrapUsers, parseBootstrapUsers } from "./bootstrap.mjs";
 import { createResendSender } from "./email.mjs";
 import { createGateway } from "./gateway.mjs";
 
@@ -170,6 +171,12 @@ try {
   store = new AuthStore(process.env.AUTH_DB_PATH ?? path.join(STATE_ROOT, "auth.db"));
 } catch (error) {
   console.error("Refusing to start: the auth database could not be opened", error);
+  process.exit(1);
+}
+try {
+  applyBootstrapUsers(store, parseBootstrapUsers(process.env.AUTH_BOOTSTRAP_USERS));
+} catch (error) {
+  console.error(`Refusing to start: ${error.message}`);
   process.exit(1);
 }
 const baseUrl =
