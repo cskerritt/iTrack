@@ -35,6 +35,13 @@ export class RateLimiter {
     bucket.count += 1;
     return bucket.count <= this.limit;
   }
+  // Non-counting probe: would `allow(key)` succeed right now?
+  check(key) {
+    const now = this.now();
+    const bucket = this.buckets.get(key);
+    if (!bucket || now - bucket.start >= this.windowMs) return true;
+    return bucket.count < this.limit;
+  }
 }
 
 function hmac(value, secret) {
@@ -124,39 +131,35 @@ function sessionCookieHeader(signed) {
 
 const CLEAR_COOKIE = `${SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
 
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (ch) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch],
-  );
-}
-
-function verificationEmail(baseUrl, name, token) {
+// landing-auth-M-01: nothing user-controlled goes into an email body. The
+// greeting is fixed; the address is the envelope, not the copy.
+function verificationEmail(baseUrl, token) {
   const link = `${baseUrl}/verify?token=${token}`;
-  const greeting = name ? `Hi ${name},` : "Hi,";
   return {
     subject: "Verify your iTrack email",
-    text: `${greeting}\n\nConfirm your email to activate your iTrack account:\n${link}\n\nThis link expires in 24 hours. If you didn't sign up, ignore this email.`,
-    html: `<p>${escapeHtml(greeting)}</p><p>Confirm your email to activate your iTrack account:</p><p><a href="${link}">${link}</a></p><p>This link expires in 24 hours. If you didn't sign up, ignore this email.</p>`,
-    link,
+    text: `Hi,\n\nConfirm your email to activate your iTrack account:\n${link}\n\nThis link expires in 24 hours. If you didn't sign up, ignore this email.`,
+    html: `<p>Hi,</p><p>Confirm your email to activate your iTrack account:</p><p><a href="${link}">${link}</a></p><p>This link expires in 24 hours. If you didn't sign up, ignore this email.</p>`,
   };
 }
 
-function resetEmail(baseUrl, name, token) {
+function resetEmail(baseUrl, token) {
   const link = `${baseUrl}/reset?token=${token}`;
-  const greeting = name ? `Hi ${name},` : "Hi,";
   return {
     subject: "Reset your iTrack password",
-    text: `${greeting}\n\nReset your iTrack password:\n${link}\n\nThis link expires in 1 hour. If you didn't request this, ignore this email.`,
-    html: `<p>${escapeHtml(greeting)}</p><p>Reset your iTrack password:</p><p><a href="${link}">${link}</a></p><p>This link expires in 1 hour. If you didn't request this, ignore this email.</p>`,
-    link,
+    text: `Hi,\n\nReset your iTrack password:\n${link}\n\nThis link expires in 1 hour. If you didn't request this, ignore this email.`,
+    html: `<p>Hi,</p><p>Reset your iTrack password:</p><p><a href="${link}">${link}</a></p><p>This link expires in 1 hour. If you didn't request this, ignore this email.</p>`,
   };
 }
 
-export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () => Date.now() }) {
-  const expectedOrigin = new URL(baseUrl).origin;
+const ACCOUNT_LOCK_DELAY_MS = 2000;
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () => Date.now(), sleep = defaultSleep }) {
   const signupLimiter = new RateLimiter(5, 60 * 60 * 1000, { now });
   const loginLimiter = new RateLimiter(10, 15 * 60 * 1000, { now });
+  const accountLimiter = new RateLimiter(10, 15 * 60 * 1000, { now });
   const resetLimiter = new RateLimiter(3, 60 * 60 * 1000, { now });
+  const expectedOrigin = new URL(baseUrl).origin;
 
   function sessionForRequest(req) {
     const cookie = readCookie(req, SESSION_COOKIE);
@@ -187,12 +190,14 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
     return sessionCookieHeader(session.cookie);
   }
 
+  // security-M-03: never the link, never the address. The event kind and the
+  // sender's error code are all an operator needs to know mail is broken.
   async function deliver(kind, email, message) {
     const result = await sendEmail({
       to: email, subject: message.subject, html: message.html, text: message.text,
     });
     if (!result.ok) {
-      console.log(`[auth] ${kind} link for ${email}: ${message.link} (email ${result.error})`);
+      console.log(JSON.stringify({ event: "auth_mail_failed", kind, error: result.error }));
     }
     return result;
   }
@@ -200,19 +205,22 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
   async function handle(req, res, pathname) {
     if (!pathname.startsWith("/auth/")) return false;
 
+    // security-07: browsers send Origin on every cross-site POST and on
+    // same-site form posts; Referer covers the rare client that omits it.
+    // Neither present means a non-browser client or a stripped header —
+    // reject, because SameSite=Lax cannot protect a login that sets a brand
+    // new cookie.
     const declared = req.headers.origin ?? req.headers.referer;
-    if (declared) {
-      try {
-        if (new URL(declared).origin !== expectedOrigin) {
-          res.writeHead(403, { "content-type": "text/plain" });
-          res.end("Cross-origin request rejected");
-          return true;
-        }
-      } catch {
-        res.writeHead(403, { "content-type": "text/plain" });
-        res.end("Cross-origin request rejected");
-        return true;
-      }
+    let declaredOrigin = null;
+    try {
+      declaredOrigin = declared ? new URL(declared).origin : null;
+    } catch {
+      declaredOrigin = null;
+    }
+    if (declaredOrigin !== expectedOrigin) {
+      res.writeHead(403, { "content-type": "text/plain" });
+      res.end("Cross-origin request rejected");
+      return true;
     }
 
     const route = pathname.slice("/auth/".length);
@@ -248,16 +256,27 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
         if (error?.code === "email-taken") return redirect(res, "/signup?error=email-taken"), true;
         throw error;
       }
-      const result = await deliver("verification", email, verificationEmail(baseUrl, name, created.verifyToken));
+      const result = await deliver("verification", email, verificationEmail(baseUrl, created.verifyToken));
       return redirect(res, result.ok ? "/signup?sent=1" : "/signup?sent=1&mail=down"), true;
     }
 
     if (route === "login") {
       if (!loginLimiter.allow(`login:${ip}`)) return redirect(res, "/login?error=rate-limited"), true;
+      const accountKey = `account:${email}`;
+      if (!accountLimiter.check(accountKey)) {
+        // Tripped: fixed delay, generic answer, no scrypt.
+        await sleep(ACCOUNT_LOCK_DELAY_MS);
+        return redirect(res, "/login?error=bad-credentials"), true;
+      }
       const attempt = store.authenticate(email, password);
-      if (!attempt.ok) return redirect(res, `/login?error=${attempt.reason}`), true;
+      if (!attempt.ok) {
+        // security-04: `unverified` and `bad-credentials` collapse into one
+        // answer; the resend form on the login page covers the unverified case.
+        accountLimiter.allow(accountKey);
+        return redirect(res, "/login?error=bad-credentials"), true;
+      }
       issueSessionCookie(res, attempt.user.id);
-      return redirect(res, "/"), true;
+      return redirect(res, safeNextPath(fields.get("next"))), true;
     }
 
     if (route === "logout") {
@@ -271,7 +290,7 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
     if (route === "request-reset") {
       if (!resetLimiter.allow(`reset:${ip}`)) return redirect(res, "/reset?error=rate-limited"), true;
       const issued = store.createResetToken(email);
-      if (issued) await deliver("reset", email, resetEmail(baseUrl, issued.displayName, issued.token));
+      if (issued) await deliver("reset", email, resetEmail(baseUrl, issued.token));
       return redirect(res, "/reset?sent=1"), true;
     }
 
@@ -288,7 +307,7 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
     if (!resetLimiter.allow(`reset:${ip}`)) return redirect(res, "/login?error=rate-limited"), true;
     const reissued = store.newVerifyToken(email);
     if (reissued) {
-      await deliver("verification", email, verificationEmail(baseUrl, reissued.displayName, reissued.token));
+      await deliver("verification", email, verificationEmail(baseUrl, reissued.token));
     }
     return redirect(res, "/login?resent=1"), true;
   }

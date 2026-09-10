@@ -18,14 +18,16 @@ function makeRoutes({ sendResult = { ok: true } } = {}) {
   let clock = 1_700_000_000_000;
   const store = new AuthStore(":memory:", { now: () => clock });
   const sent = [];
+  const sleeps = [];
   const routes = createAuthRoutes({
     store,
     secret: SECRET,
     baseUrl: "https://itrack.test",
     now: () => clock,
+    sleep: async (ms) => { sleeps.push(ms); },
     sendEmail: async (message) => { sent.push(message); return sendResult; },
   });
-  return { store, routes, sent, tick: (ms) => (clock += ms) };
+  return { store, routes, sent, sleeps, tick: (ms) => (clock += ms) };
 }
 
 function fakeReq({ method = "POST", url = "/", body = "", headers = {} } = {}) {
@@ -123,7 +125,7 @@ test("signup maps duplicate, invalid, and mail-down outcomes", async () => {
   assert.equal(res.headers.location, "/signup?error=invalid");
   ({ res } = await post(routes, "/auth/signup", form({ email: "ok@e.co", name: "O", password: "short" })));
   assert.equal(res.headers.location, "/signup?error=invalid");
-  const down = makeRoutes({ sendResult: { ok: false, error: "email-not-configured" } });
+  const down = makeRoutes({ sendResult: { ok: false, error: "mail_unconfigured" } });
   ({ res } = await post(down.routes, "/auth/signup", form({ email: "x@e.co", name: "X", password: "longenough1" })));
   assert.equal(res.headers.location, "/signup?sent=1&mail=down");
 });
@@ -137,11 +139,11 @@ test("signup rate limit trips at 5 per hour per ip", async () => {
   assert.equal(res.headers.location, "/signup?error=rate-limited");
 });
 
-test("login flow: unverified, verified, wrong password, cookie, logout", async () => {
+test("login flow: unverified and wrong password share one generic error; verified logs in; logout clears", async () => {
   const { store, routes, sent } = makeRoutes();
   await post(routes, "/auth/signup", form({ email: "l@e.co", name: "L", password: "longenough1" }));
   let { res } = await post(routes, "/auth/login", form({ email: "l@e.co", password: "longenough1" }));
-  assert.equal(res.headers.location, "/login?error=unverified");
+  assert.equal(res.headers.location, "/login?error=bad-credentials", "unverified is not distinguishable");
   const token = sent[0].text.match(/token=([A-Za-z0-9_-]+)/)[1];
   assert.ok(store.verifyEmail(token));
   ({ res } = await post(routes, "/auth/login", form({ email: "l@e.co", password: "longenough1" })));
@@ -158,6 +160,87 @@ test("login flow: unverified, verified, wrong password, cookie, logout", async (
   ({ res } = await post(routes, "/auth/logout", "", { cookie: `${SESSION_COOKIE}=${signed}` }));
   assert.equal(res.headers.location, "/");
   assert.equal(routes.userForRequest({ headers: { cookie: `${SESSION_COOKIE}=${signed}` } }), null);
+});
+
+test("login honours a same-origin next and collapses everything else to /", async () => {
+  const { store, routes } = makeRoutes();
+  store.createVerifiedUser({ email: "n@e.co", displayName: "N", password: "longenough1" });
+  for (const [next, expected] of [
+    ["/credentials/abc?tab=plan", "/credentials/abc?tab=plan"],
+    ["/?delivery=push-1", "/?delivery=push-1"],
+    ["https://evil.example/", "/"],
+    ["//evil.example/", "/"],
+    ["/login", "/"],
+    ["/auth/logout", "/"],
+    ["/x\\y", "/"],
+    ["", "/"],
+  ]) {
+    const { res } = await post(routes, "/auth/login", form({ email: "n@e.co", password: "longenough1", next }));
+    assert.equal(res.headers.location, expected, `next=${next}`);
+  }
+});
+
+test("per-account limiter: after 10 failures the account answers generically after a 2 s delay", async () => {
+  const { store, routes, sleeps } = makeRoutes();
+  store.createVerifiedUser({ email: "acct@e.co", displayName: "A", password: "longenough1" });
+  for (let i = 0; i < 10; i += 1) {
+    const { res } = await post(routes, "/auth/login", form({ email: "acct@e.co", password: "wrong-pass-1" }),
+      { "x-forwarded-for": `10.0.${i}.1` });
+    assert.equal(res.headers.location, "/login?error=bad-credentials");
+  }
+  assert.deepEqual(sleeps, [], "no delay while under the limit");
+  let authenticateCalls = 0;
+  const original = store.authenticate.bind(store);
+  store.authenticate = (...args) => { authenticateCalls += 1; return original(...args); };
+  const { res } = await post(routes, "/auth/login", form({ email: "acct@e.co", password: "longenough1" }),
+    { "x-forwarded-for": "10.9.9.9" });
+  assert.equal(res.headers.location, "/login?error=bad-credentials", "even the right password is refused while tripped");
+  assert.deepEqual(sleeps, [2000]);
+  assert.equal(authenticateCalls, 0, "scrypt is not burned for a tripped account");
+});
+
+test("CSRF: /auth/* POST without Origin and Referer is rejected; a matching Referer suffices", async () => {
+  const { routes } = makeRoutes();
+  let { res } = await post(routes, "/auth/login", form({ email: "a@e.co", password: "longenough1" }), { origin: undefined });
+  assert.equal(res.statusCode, 403);
+  ({ res } = await post(routes, "/auth/login", form({ email: "a@e.co", password: "longenough1" }),
+    { origin: undefined, referer: "https://itrack.test/login?next=%2F" }));
+  assert.equal(res.statusCode, 303);
+  ({ res } = await post(routes, "/auth/login", form({ email: "a@e.co", password: "longenough1" }),
+    { origin: "https://itrack.test.evil.example" }));
+  assert.equal(res.statusCode, 403);
+});
+
+test("emails never carry the display name and failures never log the link", async () => {
+  const lines = [];
+  const original = console.log;
+  console.log = (...args) => lines.push(args.map(String).join(" "));
+  try {
+    const { routes, sent } = makeRoutes({ sendResult: { ok: false, error: "send_failed" } });
+    await post(routes, "/auth/signup", form({
+      email: "lure@e.co", name: "URGENT: your RN license lapses Friday", password: "longenough1",
+    }));
+    assert.equal(sent.length, 1);
+    assert.doesNotMatch(sent[0].text, /URGENT/);
+    assert.doesNotMatch(sent[0].html, /URGENT/);
+    assert.match(sent[0].text, /^Hi,\n/);
+    assert.equal(lines.length, 1);
+    assert.doesNotMatch(lines[0], /token=/, "no link in logs");
+    assert.doesNotMatch(lines[0], /lure@e\.co/, "no address in logs");
+    assert.deepEqual(JSON.parse(lines[0]), { event: "auth_mail_failed", kind: "verification", error: "send_failed" });
+  } finally {
+    console.log = original;
+  }
+});
+
+test("RateLimiter.check probes without counting", () => {
+  let clock = 0;
+  const limiter = new RateLimiter(2, 1000, { now: () => clock });
+  assert.equal(limiter.check("k"), true);
+  assert.equal(limiter.check("k"), true);
+  limiter.allow("k"); limiter.allow("k");
+  assert.equal(limiter.check("k"), false);
+  assert.equal(limiter.check("other"), true);
 });
 
 test("reset flow: request always says sent, reset changes password", async () => {
