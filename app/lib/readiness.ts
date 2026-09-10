@@ -1,9 +1,8 @@
 /**
  * The dashboard hero's three numbers — days to renewal, counted credits, and
- * the readiness ring — used to live only inside `ITrackApp.tsx`. They now live
- * here so that anything else publishing them (today the iOS widget feed in
- * `widgetSummary.ts`) derives them with the *same* arithmetic instead of
- * growing a second, quietly diverging notion of "ready".
+ * the readiness ring — used to live only inside `ITrackApp.tsx`. They live
+ * here so that anything else publishing them derives them with the *same*
+ * arithmetic instead of growing a second, quietly diverging notion of "ready".
  *
  * The shapes below are deliberately looser than the client's own `Credential`
  * and `Requirement` types: the server-side workspace payload types some of
@@ -50,7 +49,7 @@ export function daysUntilDate(value: string, nowMs: number) {
 /**
  * The same count, but anchored to a calendar date the caller already
  * resolved in the *user's* zone rather than the runtime's. Server-side
- * renderers (the iOS widget feed) run on workerd, whose zone is always UTC,
+ * callers run on workerd, whose zone is always UTC,
  * so counting from an epoch there would show a US user a different number
  * than the app shows them; passing today's local date in sidesteps that.
  *

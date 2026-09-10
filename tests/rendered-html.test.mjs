@@ -4658,7 +4658,7 @@ export {
         /category\.kind === "informational"[\s\S]*?Track \$\{category\.name\}/,
       );
       // The zero-hour readiness branch now lives in the shared readiness
-      // module (the iOS widget feed derives the same score), so the contract
+      // module, so the contract
       // is asserted where the arithmetic actually is.
       assert.match(
         await readFile(

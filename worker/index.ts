@@ -19,7 +19,6 @@ interface Env {
   APNS_PRIVATE_KEY?: string;
   APNS_BUNDLE_ID?: string;
   APNS_ENVIRONMENT?: string;
-  ITRACK_WIDGET_TOKEN?: string;
   /**
    * When set, POST /internal/run-scheduled with a matching
    * x-internal-scheduled-secret header runs the same push delivery as the

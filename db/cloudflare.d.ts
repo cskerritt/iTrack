@@ -89,7 +89,6 @@ declare module "cloudflare:workers" {
     APNS_PRIVATE_KEY?: string;
     APNS_BUNDLE_ID?: string;
     APNS_ENVIRONMENT?: string;
-    ITRACK_WIDGET_TOKEN?: string;
     [binding: string]: unknown;
   };
 }
