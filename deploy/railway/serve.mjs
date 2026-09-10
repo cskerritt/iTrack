@@ -52,11 +52,6 @@ const workerVarArgs = [
   "VAPID_PUBLIC_KEY",
   "VAPID_PRIVATE_KEY",
   "VAPID_SUBJECT",
-  "APNS_TEAM_ID",
-  "APNS_KEY_ID",
-  "APNS_PRIVATE_KEY",
-  "APNS_BUNDLE_ID",
-  "APNS_ENVIRONMENT",
 ].flatMap((name) =>
   process.env[name] ? ["--var", `${name}:${process.env[name]}`] : [],
 );

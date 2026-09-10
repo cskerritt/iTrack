@@ -59,7 +59,7 @@ const SUBSCRIPTION_SCAN_BUDGET = 64;
 const MAX_DELIVERIES_PER_RUN = 8;
 const DELIVERY_CONCURRENCY = 4;
 const READY_FETCH_LIMIT = MAX_DELIVERIES_PER_RUN * 4;
-// Exported so the APNs channel alerts with the same words: the copy stays
+// Exported so every channel alerts with the same words: the copy stays
 // deliberately free of credential details, because it lands on a lock screen.
 export const GENERIC_TITLE = "iTrack check-in";
 export const GENERIC_BODY = "You have a renewal item that needs attention.";

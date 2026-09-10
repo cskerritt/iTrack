@@ -8,10 +8,7 @@ const COMPLIANCE_PERIOD_RULE_SET_PREFIXES = [
   "pa-professional-educator-act-48-",
 ] as const;
 
-// "apns" carries no enable gate of its own: registering an iOS device is that
-// channel's opt-in, and the browser-push toggle is cleared for anyone without
-// a live browser subscription.
-export type ReminderChannel = "in_app" | "push" | "resolve" | "apns";
+export type ReminderChannel = "in_app" | "push" | "resolve";
 
 export type Reminder = {
   key: string;
