@@ -109,25 +109,67 @@ test("signup happy path sends verification and redirects", async () => {
     form({ email: "new@e.co", name: "New User", password: "longenough1" }));
   assert.equal(handled, true);
   assert.equal(res.statusCode, 303);
-  assert.equal(res.headers.location, "/signup?sent=1");
+  assert.equal(res.headers.location, "/signup?sent=1&email=new%40e.co");
   assert.equal(sent.length, 1);
   assert.equal(sent[0].to, "new@e.co");
   assert.equal(sent[0].subject, "Verify your iTrack email");
   assert.match(sent[0].text, /https:\/\/itrack\.test\/verify\?token=[A-Za-z0-9_-]+/);
 });
 
-test("signup maps duplicate, invalid, and mail-down outcomes", async () => {
-  const { routes } = makeRoutes();
-  await post(routes, "/auth/signup", form({ email: "dup@e.co", name: "D", password: "longenough1" }));
+test("signup is enumeration-neutral: unverified duplicate re-sends, verified duplicate says sent silently", async () => {
+  const { store, routes, sent } = makeRoutes();
   let { res } = await post(routes, "/auth/signup", form({ email: "dup@e.co", name: "D", password: "longenough1" }));
-  assert.equal(res.headers.location, "/signup?sent=1", "unverified duplicate is re-sent, not refused");
+  assert.equal(res.headers.location, "/signup?sent=1&email=dup%40e.co");
+  ({ res } = await post(routes, "/auth/signup", form({ email: "dup@e.co", name: "D2", password: "another-pass1" })));
+  assert.equal(res.headers.location, "/signup?sent=1&email=dup%40e.co");
+  assert.equal(sent.length, 2, "unverified duplicate gets a fresh link");
+  store.verifyEmail(sent[1].text.match(/token=([A-Za-z0-9_-]+)/)[1]);
+  ({ res } = await post(routes, "/auth/signup", form({ email: "dup@e.co", name: "D3", password: "third-pass-1" })));
+  assert.equal(res.headers.location, "/signup?sent=1&email=dup%40e.co", "verified duplicate looks identical");
+  assert.equal(sent.length, 2, "…but nothing is sent and nothing changes");
+  assert.equal(store.authenticate("dup@e.co", "another-pass1").ok, true);
   ({ res } = await post(routes, "/auth/signup", form({ email: "bad@no-tld.x", name: "B", password: "longenough1" })));
   assert.equal(res.headers.location, "/signup?error=invalid");
   ({ res } = await post(routes, "/auth/signup", form({ email: "ok@e.co", name: "O", password: "short" })));
   assert.equal(res.headers.location, "/signup?error=invalid");
   const down = makeRoutes({ sendResult: { ok: false, error: "mail_unconfigured" } });
   ({ res } = await post(down.routes, "/auth/signup", form({ email: "x@e.co", name: "X", password: "longenough1" })));
-  assert.equal(res.headers.location, "/signup?sent=1&mail=down");
+  assert.equal(res.headers.location, "/signup?sent=1&mail=unconfigured&email=x%40e.co");
+  const failed = makeRoutes({ sendResult: { ok: false, error: "send_failed" } });
+  ({ res } = await post(failed.routes, "/auth/signup", form({ email: "y@e.co", name: "Y", password: "longenough1" })));
+  assert.equal(res.headers.location, "/signup?sent=1&mail=failed&email=y%40e.co");
+});
+
+test("verify is a POST: consumes the token, signs in, and fails closed", async () => {
+  const { routes, sent } = makeRoutes();
+  await post(routes, "/auth/signup", form({ email: "v@e.co", name: "V", password: "longenough1" }));
+  const token = sent[0].text.match(/token=([A-Za-z0-9_-]+)/)[1];
+  let { res } = await post(routes, "/auth/verify", form({ token: "bogus" }));
+  assert.equal(res.headers.location, "/verify?error=expired");
+  assert.equal(res.headers["set-cookie"], undefined);
+  ({ res } = await post(routes, "/auth/verify", form({ token })));
+  assert.equal(res.statusCode, 303);
+  assert.equal(res.headers.location, "/");
+  assert.match(res.headers["set-cookie"], new RegExp(`^${SESSION_COOKIE}=`));
+  ({ res } = await post(routes, "/auth/verify", form({ token })));
+  assert.equal(res.headers.location, "/verify?error=expired", "single use");
+});
+
+test("resend has its own email field, its own limiter, and neutral outcomes", async () => {
+  const { routes, sent } = makeRoutes();
+  await post(routes, "/auth/signup", form({ email: "r@e.co", name: "R", password: "longenough1" }));
+  let { res } = await post(routes, "/auth/resend", form({ email: "r@e.co" }));
+  assert.equal(res.headers.location, "/login?sent=1");
+  assert.equal(sent.length, 2);
+  ({ res } = await post(routes, "/auth/resend", form({ email: "r@e.co", return: "signup" })));
+  assert.equal(res.headers.location, "/signup?sent=1&email=r%40e.co");
+  ({ res } = await post(routes, "/auth/resend", form({ email: "ghost@e.co" })));
+  assert.equal(res.headers.location, "/login?sent=1", "unknown address answers the same");
+  assert.equal(sent.length, 3, "nothing sent for an unknown address");
+  ({ res } = await post(routes, "/auth/resend", form({ email: "r@e.co" })));
+  assert.equal(res.headers.location, "/login?error=rate-limited", "4th resend in the hour is limited");
+  ({ res } = await post(routes, "/auth/request-reset", form({ email: "r@e.co" })));
+  assert.equal(res.headers.location, "/reset?sent=1", "the reset limiter is a separate bucket");
 });
 
 test("signup rate limit trips at 5 per hour per ip", async () => {

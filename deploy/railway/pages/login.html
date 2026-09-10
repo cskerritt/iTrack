@@ -50,6 +50,8 @@
   .flash { display: none; border-radius: 10px; padding: 10px 12px; font-size: 14px; margin-bottom: 8px; }
   .flash.error { background: var(--coral-soft); color: #b3261e; }
   .flash.ok { background: var(--ok-soft); color: var(--ok-ink); }
+  .resend { margin-top: 18px; font-size: 14px; }
+  .resend summary { cursor: pointer; color: var(--accent); }
 </style>
 </head>
 <body>
@@ -62,38 +64,41 @@
     <h1>Welcome back</h1>
     <p class="sub">Log in to your iTrack account.</p>
     <div class="flash ok" id="flash-reset">Password updated — log in with your new password.</div>
-    <div class="flash ok" id="flash-resent">If that account needs verification, a fresh link is on its way.</div>
-    <div class="flash error" id="flash-bad-credentials">That email and password don't match.</div>
+    <div class="flash ok" id="flash-sent">If that address can be used, we've sent an email to it.</div>
+    <div class="flash error" id="flash-bad-credentials">We couldn't sign you in with that email and password. If you just signed up, confirm your email first — you can request a new link below.</div>
     <div class="flash error" id="flash-rate-limited">Too many attempts. Wait a few minutes and try again.</div>
-    <div class="flash error" id="flash-unverified">
-      That account hasn't been verified yet. Check your email, or
-      <form action="/auth/resend" method="post" style="display:inline">
-        <input type="hidden" name="email" id="resend-email">
-        <button class="btn btn-quiet" type="submit" style="display:inline;width:auto;min-height:0;margin:0;padding:0;font-size:14px;">resend the link</button>
-      </form>.
-    </div>
     <form action="/auth/login" method="post">
+      <input type="hidden" name="next" id="next">
       <label for="email">Email</label>
       <input id="email" name="email" type="email" required autocomplete="email">
       <label for="password">Password</label>
       <input id="password" name="password" type="password" required autocomplete="current-password">
       <button class="btn btn-primary" type="submit">Log in</button>
     </form>
+    <details class="resend">
+      <summary>Need a new verification link?</summary>
+      <form action="/auth/resend" method="post">
+        <label for="resend-email">Email</label>
+        <input id="resend-email" name="email" type="email" required autocomplete="email">
+        <button class="btn btn-quiet" type="submit">Send a new link</button>
+      </form>
+    </details>
     <p class="note"><a href="/reset">Forgot your password?</a></p>
     <p class="note">New here? <a href="/signup">Create an account</a></p>
   </main>
 </div>
 <script>
   const params = new URLSearchParams(location.search);
-  for (const flag of ["reset", "resent"]) {
+  for (const flag of ["reset", "sent"]) {
     if (params.get(flag)) document.getElementById("flash-" + flag).style.display = "block";
   }
   const error = params.get("error");
   const flash = error && document.getElementById("flash-" + error);
   if (flash) flash.style.display = "block";
-  document.getElementById("email").addEventListener("input", (event) => {
-    document.getElementById("resend-email").value = event.target.value;
-  });
+  const next = params.get("next");
+  if (next && next.startsWith("/") && !next.startsWith("//")) {
+    document.getElementById("next").value = next;
+  }
 </script>
 </body>
 </html>

@@ -197,10 +197,10 @@ test("gateway routes by path and Accept, never by User-Agent", async (t) => {
     const verifyPage = await get(base, `/verify?token=${token}`, { accept: "text/html" });
     assert.equal(verifyPage.status, 200, "GET /verify renders a page and consumes nothing");
     assert.equal(verifyPage.headers.get("set-cookie"), null);
-    assert.ok(stack.store.verifyEmail(token), "token is still valid after the GET");
-    const login = await postForm(base, "/auth/login", { email: "db@e.co", password: "longenough1" });
-    assert.equal(login.status, 303);
-    const cookie = login.headers.get("set-cookie").split(";")[0];
+    const confirm = await postForm(base, "/auth/verify", { token });
+    assert.equal(confirm.status, 303);
+    assert.equal(confirm.headers.get("location"), "/");
+    const cookie = confirm.headers.get("set-cookie").split(";")[0];
     assert.match(cookie, new RegExp(`^${SESSION_COOKIE}=`));
     const app = await get(base, "/", { accept: "text/html", cookie });
     assert.equal(app.status, 200);

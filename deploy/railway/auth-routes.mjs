@@ -159,6 +159,7 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
   const loginLimiter = new RateLimiter(10, 15 * 60 * 1000, { now });
   const accountLimiter = new RateLimiter(10, 15 * 60 * 1000, { now });
   const resetLimiter = new RateLimiter(3, 60 * 60 * 1000, { now });
+  const resendLimiter = new RateLimiter(3, 60 * 60 * 1000, { now });
   const expectedOrigin = new URL(baseUrl).origin;
 
   function sessionForRequest(req) {
@@ -224,7 +225,7 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
     }
 
     const route = pathname.slice("/auth/".length);
-    const known = ["signup", "login", "logout", "request-reset", "reset", "resend"];
+    const known = ["signup", "login", "logout", "request-reset", "reset", "resend", "verify"];
     if (req.method !== "POST" || !known.includes(route)) {
       res.writeHead(404, { "content-type": "text/plain" });
       res.end("Not Found");
@@ -249,15 +250,20 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
       if (!EMAIL_RE.test(email) || password.length < 10 || name.length < 1 || name.length > 80) {
         return redirect(res, "/signup?error=invalid"), true;
       }
+      const sentPage = `/signup?sent=1&email=${encodeURIComponent(email)}`;
       let created;
       try {
         created = store.createUser({ email, displayName: name, password });
       } catch (error) {
-        if (error?.code === "email-taken") return redirect(res, "/signup?error=email-taken"), true;
+        // A verified account already owns this address. Say exactly what a
+        // fresh signup says (infra-M-02) and send nothing.
+        if (error?.code === "email-taken") return redirect(res, sentPage), true;
         throw error;
       }
       const result = await deliver("verification", email, verificationEmail(baseUrl, created.verifyToken));
-      return redirect(res, result.ok ? "/signup?sent=1" : "/signup?sent=1&mail=down"), true;
+      if (result.ok) return redirect(res, sentPage), true;
+      const reason = result.error === "mail_unconfigured" ? "unconfigured" : "failed";
+      return redirect(res, `/signup?sent=1&mail=${reason}&email=${encodeURIComponent(email)}`), true;
     }
 
     if (route === "login") {
@@ -277,6 +283,16 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
       }
       issueSessionCookie(res, attempt.user.id);
       return redirect(res, safeNextPath(fields.get("next"))), true;
+    }
+
+    if (route === "verify") {
+      // security-03 / landing-auth-05: the token is consumed here, on an
+      // explicit POST from the confirm page, never on the GET a mail scanner
+      // makes.
+      const verified = store.verifyEmail(fields.get("token") ?? "");
+      if (!verified) return redirect(res, "/verify?error=expired"), true;
+      issueSessionCookie(res, verified.userId);
+      return redirect(res, "/"), true;
     }
 
     if (route === "logout") {
@@ -303,13 +319,17 @@ export function createAuthRoutes({ store, sendEmail, secret, baseUrl, now = () =
       return redirect(res, result ? "/login?reset=1" : "/reset?error=expired"), true;
     }
 
-    // resend
-    if (!resetLimiter.allow(`reset:${ip}`)) return redirect(res, "/login?error=rate-limited"), true;
-    const reissued = store.newVerifyToken(email);
+    // resend — its own limiter and its own email field (landing-auth-06).
+    const returnTo = fields.get("return") === "signup"
+      ? `/signup?sent=1&email=${encodeURIComponent(email)}`
+      : "/login?sent=1";
+    const limitedTo = fields.get("return") === "signup" ? "/signup?error=rate-limited" : "/login?error=rate-limited";
+    if (!resendLimiter.allow(`resend:${ip}`)) return redirect(res, limitedTo), true;
+    const reissued = EMAIL_RE.test(email) ? store.newVerifyToken(email) : null;
     if (reissued) {
       await deliver("verification", email, verificationEmail(baseUrl, reissued.token));
     }
-    return redirect(res, "/login?resent=1"), true;
+    return redirect(res, returnTo), true;
   }
 
   return { handle, userForRequest, sessionForRequest, issueSessionCookie, slideSessionCookie };

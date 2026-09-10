@@ -68,13 +68,42 @@ test("signup form posts the fields auth-routes reads", () => {
   assert.match(html, /minlength="10"/);
 });
 
-test("login form posts credentials and links to reset + resend", () => {
+test("login page: next field, generic error, and a resend form with its own email input", () => {
   const html = page("login.html");
   assert.match(html, /action="\/auth\/login"/);
   assert.match(html, /name="email"/);
   assert.match(html, /name="password"/);
+  assert.match(html, /<input type="hidden" name="next" id="next">/);
   assert.match(html, /href="\/reset"/);
+  assert.doesNotMatch(html, /flash-unverified/, "no unverified-specific state");
+  assert.match(html, /id="flash-sent">If that address can be used, we've sent an email to it\./);
+  const resendForm = html.match(/<form action="\/auth\/resend" method="post"[\s\S]*?<\/form>/);
+  assert.ok(resendForm, "resend form present");
+  assert.match(resendForm[0], /<input id="resend-email" name="email" type="email" required/, "resend has its own visible email input");
+  assert.doesNotMatch(resendForm[0], /type="hidden" name="email"/);
+});
+
+test("verify page: POST confirm form and a problem view with resend", () => {
+  const html = page("verify.html");
+  assert.match(html, /<form action="\/auth\/verify" method="post"/);
+  assert.match(html, /<input type="hidden" name="token" id="token">/);
+  assert.match(html, />Confirm my email</);
+  assert.match(html, /If you already confirmed, just log in\./);
   assert.match(html, /action="\/auth\/resend"/);
+  assert.match(html, /href="\/login"/);
+});
+
+test("signup sent state names the address, shows neutral copy, and offers resend", () => {
+  const html = page("signup.html");
+  assert.match(html, /id="flash-sent">If that address can be used, we've sent an email to it\./);
+  assert.match(html, /id="flash-mail-unconfigured">Email delivery is not set up yet; contact support@itrackceu\.com/);
+  assert.doesNotMatch(html, /email-taken|already has an account/i);
+  assert.match(html, /<form action="\/auth\/resend" method="post" id="resend-form"/);
+  assert.match(html, /<input type="hidden" name="return" value="signup">/);
+});
+
+test("reset page uses the neutral sent copy", () => {
+  assert.match(page("reset.html"), /id="flash-sent">If that address can be used, we've sent an email to it\./);
 });
 
 test("reset page has both request and set-password forms", () => {
@@ -82,9 +111,4 @@ test("reset page has both request and set-password forms", () => {
   assert.match(html, /action="\/auth\/request-reset"/);
   assert.match(html, /action="\/auth\/reset"/);
   assert.match(html, /name="token"/);
-});
-
-test("verify page links back into the app and to login", () => {
-  const html = page("verify.html");
-  assert.match(html, /href="\/login"/);
 });

@@ -58,13 +58,41 @@
     <a class="brand" href="/">i<span>Track</span></a>
   </nav>
   <main class="card">
-    <h1>Verification link problem</h1>
-    <div class="flash error" id="flash-expired" style="display:block">
-      This verification link is invalid, already used, or expired.
+    <div id="confirm-view" style="display:none">
+      <h1>Confirm your email</h1>
+      <p class="sub">One more step: confirm that this address is yours and you'll be signed in.</p>
+      <form action="/auth/verify" method="post">
+        <input type="hidden" name="token" id="token">
+        <button class="btn btn-primary" type="submit">Confirm my email</button>
+      </form>
     </div>
-    <p class="sub">Log in to request a fresh link — we'll offer to resend it if your account still needs verification.</p>
-    <a class="btn btn-primary" href="/login" style="width:100%">Go to login</a>
+    <div id="problem-view" style="display:none">
+      <h1>That link didn't work</h1>
+      <div class="flash error" id="flash-expired" style="display:block">
+        This verification link is invalid, already used, or expired. If you already confirmed, just log in.
+      </div>
+      <div class="flash ok" id="flash-sent">If that address can be used, we've sent an email to it.</div>
+      <div class="flash error" id="flash-rate-limited">Too many requests. Try again in an hour.</div>
+      <p class="sub">Need a new link? Enter your email and we'll send one if the account still needs verification.</p>
+      <form action="/auth/resend" method="post">
+        <label for="resend-email">Email</label>
+        <input id="resend-email" name="email" type="email" required autocomplete="email">
+        <button class="btn btn-primary" type="submit">Send a new link</button>
+      </form>
+      <p class="note"><a href="/login">Go to login</a></p>
+    </div>
   </main>
 </div>
+<script>
+  const params = new URLSearchParams(location.search);
+  const token = params.get("token");
+  const error = params.get("error");
+  if (token && !error) {
+    document.getElementById("token").value = token;
+    document.getElementById("confirm-view").style.display = "block";
+  } else {
+    document.getElementById("problem-view").style.display = "block";
+  }
+</script>
 </body>
 </html>
