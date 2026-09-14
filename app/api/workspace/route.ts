@@ -11686,20 +11686,14 @@ async function savePushSubscription(
   }
   const subscription = validPushSubscription(payload);
   const deviceLabel = textField(payload, "deviceLabel", { max: 80 });
+  // Scoped to the caller (critic-08): a foreign endpoint reads as "not ours".
   const existing = await query(
     database,
-    `SELECT id, user_id AS userId
+    `SELECT id
      FROM push_subscriptions
-     WHERE endpoint = ?`,
-    [subscription.endpoint],
-  ).first<{ id: string; userId: string }>();
-  if (existing && existing.userId !== identity.userId) {
-    throw new RequestError(
-      "This browser subscription belongs to another account.",
-      409,
-      "push_subscription_conflict",
-    );
-  }
+     WHERE endpoint = ? AND user_id = ?`,
+    [subscription.endpoint, identity.userId],
+  ).first<{ id: string }>();
   const subscriptionId = existing?.id ?? crypto.randomUUID();
   const now = Date.now();
   const saveStatement = query(
@@ -11787,24 +11781,35 @@ async function savePushSubscription(
   }
   const [saved] = await database.batch(statements);
   if (Number(saved.meta?.changes ?? 0) === 0) {
-    const currentOwner = await query(
-      database,
-      `SELECT user_id AS userId
-       FROM push_subscriptions
-       WHERE endpoint = ?`,
-      [subscription.endpoint],
-    ).first<{ userId: string }>();
-    if (currentOwner && currentOwner.userId !== identity.userId) {
+    const activeDevices = Number(
+      (
+        await query(
+          database,
+          `SELECT COUNT(*) AS n
+           FROM push_subscriptions
+           WHERE user_id = ?
+             AND disabled_at IS NULL
+             AND (
+               expiration_time IS NULL
+               OR expiration_time > ?
+             )`,
+          [identity.userId, now],
+        ).first<{ n: number }>()
+      )?.n ?? 0,
+    );
+    if (activeDevices >= MAX_PUSH_DEVICES) {
       throw new RequestError(
-        "This browser subscription belongs to another account.",
+        `iTrack supports up to ${MAX_PUSH_DEVICES} active alert devices.`,
         409,
-        "push_subscription_conflict",
+        "push_device_limit",
       );
     }
+    // Deliberately neutral: whether another account already owns this
+    // browser's endpoint is not disclosed (critic-08).
     throw new RequestError(
-      `iTrack supports up to ${MAX_PUSH_DEVICES} active alert devices.`,
+      "This browser can’t be registered for alerts on this account. Clear this site’s notification permission in your browser settings and try again.",
       409,
-      "push_device_limit",
+      "push_subscription_unavailable",
     );
   }
   return subscriptionId;

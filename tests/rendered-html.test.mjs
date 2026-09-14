@@ -21236,8 +21236,9 @@ export {
       );
       assert.equal(conflict.status, 409);
       assert.deepEqual(await conflict.json(), {
-        error: "This browser subscription belongs to another account.",
-        code: "push_subscription_conflict",
+        error:
+          "This browser can’t be registered for alerts on this account. Clear this site’s notification permission in your browser settings and try again.",
+        code: "push_subscription_unavailable",
       });
 
       const preferenceResponse = await postWorkspace(

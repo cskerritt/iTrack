@@ -487,15 +487,11 @@ const FOREIGN_ID_PROBES = [
     payload: (s) => ({ endpoint: s.subscription.endpoint }),
     expect: { status: 404, code: "push_subscription_not_found" },
   },
-  // Documented exception: the endpoint lookup is not user-scoped, so a foreign
-  // endpoint answers 409 (an existence oracle, not a data leak; push endpoints
-  // are unguessable capability URLs). Ownership cannot change: the raw-row
-  // subtest below proves the subscription is still A's and still active.
-  // Task 2 replaces this row when it neutralises the oracle.
   {
     action: "savePushSubscription",
     payload: (s) => ({ subscription: s.subscription, deviceLabel: "Bravo browser", enableAccountPush: false }),
-    expect: { status: 409, code: "push_subscription_conflict" },
+    // Neutral 409 (Task 2, critic-08): whether A owns this endpoint is not disclosed.
+    expect: { status: 409, code: "push_subscription_unavailable" },
   },
   // Documented exception: removal is idempotent and user-scoped, so a foreign
   // endpoint is a silent no-op; the raw-row subtest proves A's subscription
