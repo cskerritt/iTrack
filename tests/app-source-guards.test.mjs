@@ -4,24 +4,8 @@
 // file under app/, not one path.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-const appDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "app");
-
-function walk(dir, out = []) {
-  for (const entry of readdirSync(dir)) {
-    const full = path.join(dir, entry);
-    if (statSync(full).isDirectory()) walk(full, out);
-    else if (/\.(tsx?|mts)$/.test(entry)) out.push(full);
-  }
-  return out;
-}
-
-export function readClientSources() {
-  return walk(appDir).map((file) => ({ file: path.relative(appDir, file), source: readFileSync(file, "utf8") }));
-}
+import { readClientSources } from "./helpers/clientSources.mjs";
+import { WORKSPACE_ACTIONS } from "./helpers/workspaceActions.mjs";
 
 // Returns the text of every `setX((current) => …)` updater body, found by
 // balancing parentheses from the opening `(` of the set call.
@@ -128,4 +112,18 @@ test("the parked screen is inert while a credential is pushed, and routes set do
     "screen-root carries inert={Boolean(detailCredential)}",
   );
   assert.ok(sources.some(({ source }) => /document\.title = routeTitle\(/.test(source)), "document.title is set from routeTitle()");
+});
+
+// tests/isolation.test.mjs probes every workspace action by name from
+// WORKSPACE_ACTIONS; this guard ties that list to the build from the source
+// side. It reads the `case "<name>":` labels out of whichever file under
+// app/api/ throws `unsupported_action`, so it survives the route split.
+test("every workspace dispatch label is in WORKSPACE_ACTIONS (critic-08)", () => {
+  const labels = new Set();
+  for (const { file, source } of readClientSources()) {
+    if (!file.startsWith("api/") || !source.includes("unsupported_action")) continue;
+    for (const match of source.matchAll(/^\s*case "([A-Za-z]+)":/gm)) labels.add(match[1]);
+  }
+  assert.ok(labels.size > 0, "found the workspace dispatch switch under app/api/");
+  assert.deepEqual([...labels].sort(), [...WORKSPACE_ACTIONS].sort());
 });
