@@ -1,0 +1,230 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700;12..96,800&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; background: #F5F2EA; color: #1C1A17; font-family: "Atkinson Hyperlegible", "Helvetica Neue", Arial, sans-serif; font-size: 15px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+    a { color: #2743B8; text-decoration: none; } a:hover { color: #1B2F86; text-decoration: underline; }
+    .display { font-family: "Bricolage Grotesque", "Helvetica Neue", Arial, sans-serif; letter-spacing: -0.02em; }
+    .mono { font-family: "IBM Plex Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+    .nav-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 8px; color: #5E5A52; font-weight: 700; font-size: 14px; }
+    .nav-item.active { background: #FFFDF8; color: #1C1A17; box-shadow: inset 0 0 0 1px #DAD5C8; }
+    .nav-item svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+    .row { display: grid; grid-template-columns: 72px minmax(0, 1fr) 132px 200px; gap: 20px; align-items: center; padding: 18px 20px; background: #FFFDF8; border: 1px solid #DAD5C8; border-radius: 12px; }
+    .eyebrow { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #5E5A52; font-weight: 700; }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 0 16px; border-radius: 8px; font-weight: 700; font-size: 14px; border: 1px solid transparent; }
+    .btn-primary { background: #2743B8; color: #FFFDF8; }
+    .btn-secondary { background: #FFFDF8; color: #1C1A17; border-color: #DAD5C8; }
+    .btn-quiet { background: transparent; color: #2743B8; }
+    .check { display: grid; grid-template-columns: 8px minmax(0,1fr) auto; gap: 12px; align-items: start; padding: 12px 0; border-top: 1px solid #DAD5C8; }
+    .check:first-child { border-top: 0; padding-top: 0; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 7px; }
+    .tick-label { font-family: "IBM Plex Mono", Menlo, monospace; font-size: 11px; fill: #5E5A52; }
+  </style>
+</helmet>
+
+<div style="display: grid; grid-template-columns: 232px minmax(0, 1fr); width: 1440px; min-height: 900px; background: #F5F2EA;">
+
+  <!-- Rail -->
+  <aside style="display: flex; flex-direction: column; gap: 28px; padding: 28px 20px; border-right: 1px solid #DAD5C8; background: #EBE7DC;">
+    <div class="display" style="display: flex; align-items: baseline; gap: 2px; font-size: 26px; font-weight: 800; color: #1C1A17;"><span style="color: #2743B8;">i</span>Track</div>
+    <nav style="display: flex; flex-direction: column; gap: 4px;">
+      <div class="nav-item active"><svg viewBox="0 0 24 24"><path d="M4 11.5 12 5l8 6.5V19a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"/></svg><span>Home</span></div>
+      <div class="nav-item"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg><span>Credentials</span></div>
+      <div class="nav-item"><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg><span>Activity log</span></div>
+      <div class="nav-item"><svg viewBox="0 0 24 24"><circle cx="12" cy="9" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/></svg><span>Account</span></div>
+    </nav>
+    <div class="btn btn-primary" style="min-height: 44px;"><svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;"><path d="M12 5v14M5 12h14"/></svg>Log activity</div>
+    <div style="margin-top: auto; padding: 14px; border: 1px dashed #DAD5C8; border-radius: 10px; font-size: 13px; color: #5E5A52; line-height: 1.45;">Rules come from the issuing body's published requirements, with a source link and review date on every template. The board's current instructions control.</div>
+  </aside>
+
+  <!-- Content -->
+  <main style="display: flex; flex-direction: column; gap: 28px; padding: 36px 44px 48px;">
+    <header style="display: flex; justify-content: space-between; align-items: flex-end; gap: 24px;">
+      <div style="display: flex; flex-direction: column; gap: 4px;">
+        <div class="eyebrow">Thursday, September 10, 2026</div>
+        <h1 class="display" style="margin: 0; font-size: 40px; font-weight: 700; line-height: 1.05;">Your renewals</h1>
+        <p style="margin: 6px 0 0; color: #5E5A52; font-size: 15px;">Three credentials on the record. One needs credits before November.</p>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <div class="btn btn-secondary">Renewal packet</div>
+        <div class="btn btn-primary">Log activity</div>
+      </div>
+    </header>
+
+    <div style="display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 28px; align-items: start;">
+
+      <!-- Ledger -->
+      <section style="display: flex; flex-direction: column; gap: 12px;">
+
+        <!-- Row: due soon -->
+        <div class="row" style="border-color: #E5C98A;">
+          <svg viewBox="0 0 72 72" style="width: 72px; height: 72px;">
+            <circle cx="36" cy="36" r="30" fill="none" stroke="#EBE7DC" stroke-width="7"/>
+            <circle cx="36" cy="36" r="30" fill="none" stroke="#8A5A00" stroke-width="7" stroke-linecap="round" stroke-dasharray="23.6 188.5" transform="rotate(-90 36 36)"/>
+            <text x="36" y="41" text-anchor="middle" font-family="Bricolage Grotesque, Arial" font-weight="700" font-size="17" fill="#1C1A17">13%</text>
+          </svg>
+          <div style="display: flex; flex-direction: column; gap: 6px; min-width: 0;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <div class="display" style="font-size: 19px; font-weight: 700;">Licensed Clinical Social Worker</div>
+              <span class="pill" style="background: #FBEFD3; color: #8A5A00;">Due soon</span>
+            </div>
+            <div style="font-size: 13px; color: #5E5A52;">New Jersey · State Board of Social Work Examiners</div>
+            <div style="display: flex; flex-direction: column; gap: 5px; margin-top: 4px;">
+              <div style="height: 6px; border-radius: 3px; background: #EBE7DC; position: relative;"><div style="position: absolute; inset: 0 auto 0 0; width: 12.5%; border-radius: 3px; background: #8A5A00;"></div><div style="position: absolute; top: -3px; left: 50%; width: 1px; height: 12px; background: #5E5A52;"></div></div>
+              <div class="mono" style="font-size: 12px; color: #5E5A52;"><span style="color: #1C1A17; font-weight: 500;">5 of 40</span> credits count · 20 clinical minimum · 5 ethics</div>
+            </div>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 0;">
+            <div class="display" style="font-size: 40px; font-weight: 800; line-height: 1; color: #1C1A17; font-variant-numeric: tabular-nums;">82</div>
+            <div class="eyebrow" style="margin-top: 4px;">days left</div>
+            <div class="mono" style="font-size: 12px; color: #5E5A52; margin-top: 2px;">Nov 30, 2026</div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 8px; align-items: stretch;">
+            <div class="btn btn-secondary" style="min-height: 38px;">Log clinical credits</div>
+            <div style="font-size: 12px; color: #5E5A52; text-align: center;">35 credits still needed</div>
+          </div>
+        </div>
+
+        <!-- Row: on track -->
+        <div class="row">
+          <svg viewBox="0 0 72 72" style="width: 72px; height: 72px;">
+            <circle cx="36" cy="36" r="30" fill="none" stroke="#EBE7DC" stroke-width="7"/>
+            <circle cx="36" cy="36" r="30" fill="none" stroke="#2743B8" stroke-width="7" stroke-linecap="round" stroke-dasharray="116.9 188.5" transform="rotate(-90 36 36)"/>
+            <text x="36" y="41" text-anchor="middle" font-family="Bricolage Grotesque, Arial" font-weight="700" font-size="17" fill="#1C1A17">62%</text>
+          </svg>
+          <div style="display: flex; flex-direction: column; gap: 6px; min-width: 0;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <div class="display" style="font-size: 19px; font-weight: 700;">Certified Rehabilitation Counselor</div>
+              <span class="pill" style="background: #E3E8FA; color: #2743B8;">On track</span>
+            </div>
+            <div style="font-size: 13px; color: #5E5A52;">CRCC · five-year cycle</div>
+            <div style="display: flex; flex-direction: column; gap: 5px; margin-top: 4px;">
+              <div style="height: 6px; border-radius: 3px; background: #EBE7DC; position: relative;"><div style="position: absolute; inset: 0 auto 0 0; width: 62%; border-radius: 3px; background: #2743B8;"></div><div style="position: absolute; top: -3px; left: 10%; width: 1px; height: 12px; background: #5E5A52;"></div></div>
+              <div class="mono" style="font-size: 12px; color: #5E5A52;"><span style="color: #1C1A17; font-weight: 500;">62 of 100</span> credits count · 10 ethics minimum met</div>
+            </div>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: flex-end;">
+            <div class="display" style="font-size: 40px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums;">567</div>
+            <div class="eyebrow" style="margin-top: 4px;">days left</div>
+            <div class="mono" style="font-size: 12px; color: #5E5A52; margin-top: 2px;">Mar 31, 2028</div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <div class="btn btn-quiet" style="min-height: 38px; justify-content: flex-start;">View plan</div>
+            <div style="font-size: 12px; color: #5E5A52; text-align: center;">About 1 credit a week keeps pace</div>
+          </div>
+        </div>
+
+        <!-- Row: submitted -->
+        <div class="row">
+          <svg viewBox="0 0 72 72" style="width: 72px; height: 72px;">
+            <circle cx="36" cy="36" r="30" fill="none" stroke="#DDF0E6" stroke-width="7"/>
+            <circle cx="36" cy="36" r="30" fill="none" stroke="#22694E" stroke-width="7" stroke-linecap="round" stroke-dasharray="188.5 188.5" transform="rotate(-90 36 36)"/>
+            <path d="M26 37l7 7 13-14" fill="none" stroke="#22694E" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <div style="display: flex; flex-direction: column; gap: 6px; min-width: 0;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <div class="display" style="font-size: 19px; font-weight: 700;">Certified Life Care Planner</div>
+              <span class="pill" style="background: #DDF0E6; color: #22694E;">Submitted</span>
+            </div>
+            <div style="font-size: 13px; color: #5E5A52;">ICHCC · renewal sent Aug 28, awaiting acceptance</div>
+            <div style="display: flex; flex-direction: column; gap: 5px; margin-top: 4px;">
+              <div style="height: 6px; border-radius: 3px; background: #DDF0E6;"><div style="width: 100%; height: 6px; border-radius: 3px; background: #22694E;"></div></div>
+              <div class="mono" style="font-size: 12px; color: #5E5A52;"><span style="color: #1C1A17; font-weight: 500;">40 of 40</span> credits · confirmation #LCP-2026-0417</div>
+            </div>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: flex-end;">
+            <div class="display" style="font-size: 22px; font-weight: 700; line-height: 1.1; color: #22694E;">Sent</div>
+            <div class="eyebrow" style="margin-top: 4px;">13 days ago</div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <div class="btn btn-secondary" style="min-height: 38px;">Record acceptance</div>
+            <div style="font-size: 12px; color: #5E5A52; text-align: center;">Next cycle opens when accepted</div>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 10px; padding: 6px 4px 0; font-size: 13px; color: #5E5A52;">
+          <a href="#">Add a credential</a><span>·</span><a href="#">Archived (1)</a>
+        </div>
+      </section>
+
+      <!-- Instruments column -->
+      <aside style="display: flex; flex-direction: column; gap: 16px;">
+
+        <section style="display: flex; flex-direction: column; gap: 12px; padding: 20px; background: #FFFDF8; border: 1px solid #DAD5C8; border-radius: 12px;">
+          <div style="display: flex; justify-content: space-between; align-items: baseline;">
+            <div class="eyebrow">Next twelve months</div>
+            <div class="mono" style="font-size: 11px; color: #5E5A52;">Sep 2026 – Aug 2027</div>
+          </div>
+          <svg viewBox="0 0 340 92" style="width: 100%; height: 92px;">
+            <line x1="10" y1="52" x2="330" y2="52" stroke="#DAD5C8" stroke-width="2"/>
+            <g class="tick-label">
+              <line x1="10" y1="46" x2="10" y2="58" stroke="#DAD5C8"/><text x="10" y="76" text-anchor="middle">Sep</text>
+              <line x1="90" y1="47" x2="90" y2="57" stroke="#DAD5C8"/><text x="90" y="76" text-anchor="middle">Dec</text>
+              <line x1="170" y1="47" x2="170" y2="57" stroke="#DAD5C8"/><text x="170" y="76" text-anchor="middle">Mar</text>
+              <line x1="250" y1="47" x2="250" y2="57" stroke="#DAD5C8"/><text x="250" y="76" text-anchor="middle">Jun</text>
+              <line x1="330" y1="46" x2="330" y2="58" stroke="#DAD5C8"/><text x="330" y="76" text-anchor="end">Aug</text>
+            </g>
+            <line x1="18" y1="34" x2="18" y2="70" stroke="#1C1A17" stroke-width="1.5" stroke-dasharray="3 3"/>
+            <text x="18" y="28" font-family="IBM Plex Mono, Menlo" font-size="10" fill="#1C1A17" text-anchor="middle">today</text>
+            <g>
+              <circle cx="82" cy="52" r="8" fill="#FBEFD3" stroke="#8A5A00" stroke-width="2"/>
+              <text x="82" y="16" font-family="Atkinson Hyperlegible, Arial" font-size="11" font-weight="700" fill="#1C1A17" text-anchor="middle">LCSW</text>
+              <text x="82" y="28" font-family="IBM Plex Mono, Menlo" font-size="10" fill="#5E5A52" text-anchor="middle">Nov 30</text>
+            </g>
+            <g>
+              <circle cx="150" cy="52" r="6" fill="#E3E8FA" stroke="#2743B8" stroke-width="2"/>
+              <text x="150" y="16" font-family="Atkinson Hyperlegible, Arial" font-size="11" font-weight="700" fill="#1C1A17" text-anchor="middle">CRC audit window</text>
+              <text x="150" y="28" font-family="IBM Plex Mono, Menlo" font-size="10" fill="#5E5A52" text-anchor="middle">Feb 1</text>
+            </g>
+          </svg>
+          <div style="font-size: 12px; color: #5E5A52;">CRC renewal (Mar 2028) and CLCP next cycle sit beyond this window.</div>
+        </section>
+
+        <section style="display: flex; flex-direction: column; gap: 4px; padding: 20px; background: #FFFDF8; border: 1px solid #DAD5C8; border-radius: 12px;">
+          <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px;">
+            <div class="eyebrow">Needs attention</div>
+            <a href="#" style="font-size: 12px;">Reminder settings</a>
+          </div>
+          <div class="check">
+            <div class="dot" style="background: #8A5A00;"></div>
+            <div style="display: flex; flex-direction: column; gap: 2px;">
+              <div style="font-weight: 700; font-size: 14px;">Log 20 clinical credits by Oct 31</div>
+              <div style="font-size: 12px; color: #5E5A52;">LCSW · leaves a month for the ethics course</div>
+            </div>
+            <div style="display: flex; gap: 6px;"><div class="btn btn-quiet" style="min-height: 32px; padding: 0 8px; font-size: 13px;">Snooze</div><div class="btn btn-quiet" style="min-height: 32px; padding: 0 8px; font-size: 13px; color: #5E5A52;">Done</div></div>
+          </div>
+          <div class="check">
+            <div class="dot" style="background: #22694E;"></div>
+            <div style="display: flex; flex-direction: column; gap: 2px;">
+              <div style="font-weight: 700; font-size: 14px;">Check for CLCP acceptance</div>
+              <div style="font-size: 12px; color: #5E5A52;">ICHCC usually replies within 30 days</div>
+            </div>
+            <div style="display: flex; gap: 6px;"><div class="btn btn-quiet" style="min-height: 32px; padding: 0 8px; font-size: 13px;">Snooze</div><div class="btn btn-quiet" style="min-height: 32px; padding: 0 8px; font-size: 13px; color: #5E5A52;">Done</div></div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 8px 10px; background: #F5F2EA; border-radius: 8px; font-size: 12px; color: #5E5A52;">
+            <span>Snoozed "Upload ethics certificate" for 7 days.</span><a href="#" style="font-weight: 700;">Undo</a>
+          </div>
+        </section>
+
+        <section style="display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #1C1A17; color: #F5F2EA; border-radius: 12px;">
+          <div class="eyebrow" style="color: #C9C2B4;">Best next action</div>
+          <div class="display" style="font-size: 22px; font-weight: 700; line-height: 1.15; text-wrap: balance;">Book a clinical practice course this month.</div>
+          <div style="font-size: 13px; color: #C9C2B4;">20 of the 35 credits you still need must be clinical. Ethics can wait until October.</div>
+          <div class="btn" style="background: #F5F2EA; color: #1C1A17; align-self: flex-start; margin-top: 4px;">Log a course</div>
+        </section>
+
+      </aside>
+    </div>
+  </main>
+</div>
+</x-dc>
+</body>
+</html>

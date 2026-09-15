@@ -1,0 +1,403 @@
+/*
+ * iTrack design tokens — the professional's ledger (spec §5.1, mockup A).
+ * This is the ONE token file tools/contrast-audit.mjs reads claims from: its
+ * first rule is `:root {` and the dark remap is `@media (prefers-color-scheme: dark)`.
+ * No @font-face, @layer or @import may precede the :root block (fonts live in fonts.css).
+ */
+:root {
+  /*
+   * SURFACES — bone paper, a deeper paper for the rail and the phone app bar,
+   * and a warm near-white card. Cards separate by a --line hairline and a
+   * 12px radius, not by elevation (paper to card is 1.10 by design).
+   */
+  --paper: #f5f2ea;
+  --paper-deep: #ebe7dc;
+  --card: #fffdf8;
+
+  /*
+   * INK — body and muted. Every ink clears AA on every surface and soft fill
+   * it is approved for; the dark block restates each ratio.
+   *   --ink        15.5:1 on --paper, 14.1:1 on --paper-deep, 17.1:1 on --card
+   *   --ink-muted  6.1:1 on --paper, 5.6:1 on --paper-deep, 6.8:1 on --card,
+   *                5.6:1 on --accent-soft, 5.7:1 on --state-overdue-soft,
+   *                6.0:1 on --state-due-soon-soft, 5.8:1 on --state-complete-soft
+   */
+  --ink: #1c1a17;
+  --ink-muted: #5e5a52;
+
+  /*
+   * LINES — --line is the structural hairline (decorative, no claim). --line-strong
+   * is the perceivable boundary a text input wears (a11y-05), at least 3 to 1 on card and paper.
+   *   --line-strong  3.9:1 on --card, 3.6:1 on --paper, 3.2:1 on --paper-deep
+   */
+  --line: #dad5c8;
+  --line-strong: #847f74;
+
+  /*
+   * ACCENT — one fountain-pen blue. Text on every paper surface, a filled
+   * control carrying --on-accent, and the "on track" state. --on-accent is also
+   * the label on a destructive (--state-overdue) fill.
+   *   --accent        7.3:1 on --paper, 6.6:1 on --paper-deep, 8.0:1 on --card, 6.7:1 on --accent-soft
+   *                   6.6:1 on --track (mark)
+   *   --accent-hover  10.4:1 on --paper, 11.5:1 on --card
+   *   --on-accent     8.0:1 on --accent, 11.5:1 on --accent-hover, 6.4:1 on --state-overdue
+   */
+  --accent: #2743b8;
+  --accent-hover: #1b2f86;
+  --accent-soft: #e3e8fa;
+  --on-accent: #fffdf8;
+
+  /*
+   * SEMANTIC STATE — separate from the accent. Each state is a solid ink
+   * (pill text, ring arc, bar fill, timeline dot stroke) with a soft fill
+   * (pill and dot fill). Neutral is --ink-muted on a --paper-deep fill.
+   *   --state-overdue    5.4:1 on --state-overdue-soft, 6.4:1 on --card, 5.8:1 on --paper
+   *                      5.3:1 on --track (mark)
+   *   --state-due-soon   5.2:1 on --state-due-soon-soft, 5.8:1 on --card, 5.3:1 on --paper
+   *                      4.8:1 on --track (mark)
+   *   --state-complete   5.5:1 on --state-complete-soft, 6.5:1 on --card, 5.9:1 on --paper
+   *                      5.3:1 on --track (mark)
+   *   --state-neutral    5.6:1 on --state-neutral-soft, 6.8:1 on --card
+   *                      5.6:1 on --track (mark)
+   */
+  --state-overdue: #b3261e;
+  --state-overdue-soft: #fbe4e2;
+  --state-due-soon: #8a5a00;
+  --state-due-soon-soft: #fbefd3;
+  --state-complete: #22694e;
+  --state-complete-soft: #ddf0e6;
+  --state-neutral: #5e5a52;
+  --state-neutral-soft: #ebe7dc;
+  /* The due-soon row edge from the mockup: decorative only, never the sole signal. */
+  --edge-due-soon: #e5c98a;
+
+  /*
+   * INSTRUMENTS — the unfilled trough of a ring or bar (a trough, never a
+   * border), and the 1px minimum marker drawn across a credit bar.
+   */
+  --track: #ebe7dc;
+  --marker: #5e5a52;
+
+  /*
+   * INVERSE SURFACE — the "Best next action" card and the toast are the other
+   * scheme's page: ink in light, paper in dark. Text on it flips with it.
+   *   --on-inverse         15.5:1 on --inverse-surface
+   *   --on-inverse-muted   9.8:1 on --inverse-surface
+   *   --accent-on-inverse  7.6:1 on --inverse-surface
+   */
+  --inverse-surface: #1c1a17;
+  --on-inverse: #f5f2ea;
+  --on-inverse-muted: #c9c2b4;
+  --accent-on-inverse: #93a6ff;
+
+  /*
+   * FOCUS — one ring, the accent, 3px solid with a 2px offset, on every
+   * focusable thing including form fields (a11y-06).
+   *   --focus-ring  7.3:1 on --paper (mark), 8.0:1 on --card (mark)
+   */
+  --focus-ring: #2743b8;
+
+  /*
+   * CHANNEL TRIPLES — for the few surfaces painted at an alpha (the modal
+   * scrim, a lift over a panel, a shadow). Used only as rgb(var(--x) / a).
+   */
+  --paper-rgb: 245 242 234;
+  --card-rgb: 255 253 248;
+  --ink-rgb: 28 26 23;
+  --accent-rgb: 39 67 184;
+  --line-rgb: 218 213 200;
+  --on-inverse-rgb: 245 242 234;
+  --lift-rgb: 255 253 248;
+  --shade-rgb: 28 26 23;
+  --scrim: rgba(28, 26, 23, 0.55);
+
+  /* SHADOWS — ink at low alpha; used sparingly (modal, toast, dragged card). */
+  --shadow-sm: 0 1px 2px rgba(28, 26, 23, 0.06);
+  --shadow-md: 0 8px 24px rgba(28, 26, 23, 0.1);
+  --shadow-lg: 0 24px 64px rgba(28, 26, 23, 0.16);
+
+  /* RADII — 8 controls, 12 cards, 16 sheets and modals, pill. */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+
+  /*
+   * TYPE — three faces, self-hosted (fonts.css, Task 4). Display for titles,
+   * hero numerals and ring labels; body for everything else; mono for dates,
+   * ids and any column of digits. The Fallback faces are metric-matched
+   * local() fonts declared in fonts.css so the swap does not reflow.
+   */
+  --font-display: "Bricolage Grotesque", "Bricolage Grotesque Fallback", "Atkinson Hyperlegible", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Atkinson Hyperlegible", "Atkinson Hyperlegible Fallback", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "iTrack Mono", "iTrack Mono Fallback", ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --tracking-display: -0.02em;
+  --tracking-eyebrow: 0.08em;
+
+  /*
+   * TYPE SCALE — rem (a11y-14), nine steps, spec §5.1. Body is --text-md
+   * (1rem). Nothing declares a font-size below --text-2xs. --text-control is
+   * the single px in the system: the iOS zoom floor for editable values.
+   */
+  --text-2xs: 0.75rem;
+  --text-xs: 0.8125rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
+  --text-3xl: 2.25rem;
+  --text-4xl: 3rem;
+  --text-control: 16px;
+
+  /* CONTROLS AND TAP TARGETS */
+  --control-height: 40px;
+  --control-height-lg: 44px;
+  --control-height-sm: 32px;
+  --tap-min: 44px;
+  --tap-comfortable: 48px;
+
+  /*
+   * SHELL — the desktop rail, the content column (its content box: the
+   * padding sits outside --content-max), the Home ledger's right column
+   * (mockup README "Desktop shell": minmax(0, 1fr) 380px, 28px gap — declared
+   * here, consumed in Wave 4 with the Home extraction), the phone bar.
+   */
+  --rail-width: 232px;
+  --content-max: 1120px;
+  --ledger-aside-width: 380px;
+  --bottom-nav-height: 76px;
+
+  /*
+   * MOTION — three moments (spec §5.1); everything else is instant.
+   * --duration-fill: a credit bar filling, and a ring arc completing.
+   * --duration-complete: the check drawing after the arc completes.
+   * --duration-fold: a card folding to the ledger row (Wave 4).
+   * The reduced-motion block zeroes the durations.
+   */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --duration-fill: 400ms;
+  --duration-complete: 320ms;
+  --duration-fold: 360ms;
+}
+
+/*
+ * DARK SCHEME — the same ledger after dark. Paper darkens, ink lightens, the
+ * accent moves to the bright end of the same blue, and the inverse card
+ * becomes bone paper. Every token above is restated where it changes.
+ */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #15130f;
+    --paper-deep: #0f0e0b;
+    --card: #1f1c16;
+
+    /*
+     *   --ink        15.2:1 on --paper, 15.8:1 on --paper-deep, 13.9:1 on --card
+     *   --ink-muted  7.25:1 on --paper, 7.5:1 on --paper-deep, 6.6:1 on --card,
+     *                5.6:1 on --accent-soft, 5.8:1 on --state-overdue-soft,
+     *                5.4:1 on --state-due-soon-soft, 5.3:1 on --state-complete-soft
+     */
+    --ink: #ede8dc;
+    --ink-muted: #a8a196;
+
+    /*
+     *   --line-strong  3.5:1 on --card, 3.9:1 on --paper
+     */
+    --line: #332f27;
+    --line-strong: #78725f;
+
+    /*
+     *   --accent        8.1:1 on --paper, 8.4:1 on --paper-deep, 7.4:1 on --card, 6.3:1 on --accent-soft
+     *                   5.8:1 on --track (mark)
+     *   --accent-hover  10.6:1 on --paper, 9.7:1 on --card
+     *   --on-accent     8.1:1 on --accent, 10.6:1 on --accent-hover, 7.6:1 on --state-overdue
+     */
+    --accent: #93a6ff;
+    --accent-hover: #b4c1ff;
+    --accent-soft: #1e2750;
+    --on-accent: #15130f;
+
+    /*
+     *   --state-overdue    6.1:1 on --state-overdue-soft, 7.0:1 on --card, 7.6:1 on --paper
+     *                      5.5:1 on --track (mark)
+     *   --state-due-soon   7.5:1 on --state-due-soon-soft, 9.2:1 on --card, 10.05:1 on --paper
+     *                      7.2:1 on --track (mark)
+     *   --state-complete   7.2:1 on --state-complete-soft, 8.9:1 on --card, 9.7:1 on --paper
+     *                      7.0:1 on --track (mark)
+     *   --state-neutral    5.2:1 on --state-neutral-soft, 6.6:1 on --card
+     *                      5.2:1 on --track (mark)
+     */
+    --state-overdue: #f08a80;
+    --state-overdue-soft: #3d1f1c;
+    --state-due-soon: #e6b85c;
+    --state-due-soon-soft: #3a2a12;
+    --state-complete: #7fcba4;
+    --state-complete-soft: #163326;
+    --state-neutral: #a8a196;
+    --state-neutral-soft: #332f27;
+    --edge-due-soon: #6b5320;
+
+    --track: #332f27;
+    --marker: #a8a196;
+
+    /*
+     *   --on-inverse         14.2:1 on --inverse-surface
+     *   --on-inverse-muted   5.6:1 on --inverse-surface
+     *   --accent-on-inverse  6.7:1 on --inverse-surface
+     */
+    --inverse-surface: #ede8dc;
+    --on-inverse: #1c1a17;
+    --on-inverse-muted: #5e5a52;
+    --accent-on-inverse: #2743b8;
+
+    /*
+     *   --focus-ring  8.1:1 on --paper (mark), 7.4:1 on --card (mark)
+     */
+    --focus-ring: #93a6ff;
+
+    --paper-rgb: 21 19 15;
+    --card-rgb: 31 28 22;
+    --ink-rgb: 237 232 220;
+    --accent-rgb: 147 166 255;
+    --line-rgb: 51 47 39;
+    --on-inverse-rgb: 28 26 23;
+    --lift-rgb: 237 232 220;
+    --shade-rgb: 0 0 0;
+    --scrim: rgba(0, 0, 0, 0.66);
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+    --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.5);
+    --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.62);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fill: 0ms;
+    --duration-complete: 0ms;
+    --duration-fold: 0ms;
+  }
+}
+
+/*
+ * LEGACY ALIASES — BANNED FOR NEW CODE. Every pre-Wave-3 token name, mapped
+ * onto the new palette so app/ITrackApp.tsx keeps rendering until Wave 4
+ * extracts each screen. Wave 4 deletes this block; a new stylesheet may not
+ * reference any name in it (tests/contrast-audit.test.mjs). Values are var()
+ * references only — no literals, no claims.
+ */
+:root {
+  --white: var(--card);
+  --ink-deep: var(--ink);
+  --ink-soft: var(--accent);
+  --ink-label: var(--ink);
+  --ink-faint: var(--ink-muted);
+  --ink-placeholder: var(--ink-muted);
+  --ink-quiet: var(--ink-muted);
+  --ink-warm: var(--ink-muted);
+  --ink-amber: var(--state-due-soon);
+  --ink-amber-quiet: var(--state-due-soon);
+  --ink-amber-deep: var(--state-due-soon);
+  --ink-coral: var(--state-overdue);
+  --ink-coral-deep: var(--state-overdue);
+  --ink-coral-quiet: var(--state-overdue);
+  --ink-coral-faint: var(--state-overdue);
+  --ink-tint: var(--accent);
+  --ink-tint-link: var(--accent);
+  --ink-tint-quiet: var(--accent);
+  --ink-tint-deep: var(--accent);
+  --ink-blue: var(--accent);
+  --accent-ink: var(--accent);
+  --accent-bright: var(--accent-on-inverse);
+  --accent-control: var(--accent);
+  --accent-control-hover: var(--accent-hover);
+  --tint: var(--accent-soft);
+  --tint-bright: var(--accent-soft);
+  --amber: var(--state-due-soon);
+  --amber-soft: var(--state-due-soon-soft);
+  --coral: var(--state-overdue);
+  --coral-soft: var(--state-overdue-soft);
+  --danger: var(--state-overdue);
+  --danger-hover: var(--state-overdue);
+  --ink-surface: var(--inverse-surface);
+  --ink-surface-deep: var(--inverse-surface);
+  --ink-surface-hover: var(--inverse-surface);
+  --ink-surface-press: var(--inverse-surface);
+  --ink-surface-inset: var(--inverse-surface);
+  --on-dark: var(--on-inverse);
+  --on-dark-muted: var(--on-inverse-muted);
+  --on-dark-faint: var(--on-inverse-muted);
+  --on-mark: var(--card);
+  --wash: var(--paper);
+  --wash-deep: var(--paper-deep);
+  --wash-tint: var(--accent-soft);
+  --wash-amber: var(--state-due-soon-soft);
+  --wash-amber-soft: var(--state-due-soon-soft);
+  --wash-coral: var(--state-overdue-soft);
+  --wash-coral-deep: var(--state-overdue-soft);
+  --chip: var(--paper-deep);
+  --chip-tint: var(--accent-soft);
+  --chip-coral: var(--state-overdue-soft);
+  --chip-coral-deep: var(--state-overdue-soft);
+  --chip-blue: var(--accent-soft);
+  --highlight-amber: var(--state-due-soon-soft);
+  --amber-card-from: var(--state-due-soon-soft);
+  --track-quiet: var(--track);
+  --track-tint: var(--track);
+  --line-soft: var(--line);
+  --edge: var(--line);
+  --edge-soft: var(--line);
+  --edge-tint: var(--line);
+  --edge-quiet: var(--line);
+  --edge-mark: var(--line-strong);
+  --edge-accent: var(--accent);
+  --edge-accent-soft: var(--accent);
+  --edge-accent-pale: var(--line);
+  --edge-focus: var(--focus-ring);
+  --edge-amber: var(--edge-due-soon);
+  --edge-amber-soft: var(--edge-due-soon);
+  --edge-amber-card: var(--edge-due-soon);
+  --edge-amber-bright: var(--edge-due-soon);
+  --edge-coral: var(--state-overdue);
+  --edge-coral-warm: var(--state-overdue);
+  --edge-coral-soft: var(--state-overdue-soft);
+  --mark-check: var(--state-complete);
+  --mark-tint: var(--accent);
+  --mark-tint-bright: var(--accent);
+  --mark-tint-deep: var(--accent);
+  --mark-progress: var(--accent);
+  --mark-progress-quiet: var(--state-neutral);
+  --mark-progress-over: var(--state-overdue);
+  --mark-scan: var(--accent);
+  --mark-amber: var(--state-due-soon);
+  --mark-coral: var(--state-overdue);
+  --focus-ring-soft: rgb(var(--accent-rgb) / 0.36);
+  --focus-ring-danger: var(--state-overdue);
+  --focus-glow: rgb(var(--accent-rgb) / 0.16);
+  --focus-glow-strong: rgb(var(--accent-rgb) / 0.24);
+  --orb-from: var(--accent-soft);
+  --orb-to: var(--accent-soft);
+  --level-from: var(--accent);
+  --level-to: var(--accent);
+  --shimmer-base: var(--paper-deep);
+  --shimmer-peak: var(--card);
+  --veil-rgb: var(--on-inverse-rgb);
+  --wash-tint-rgb: var(--card-rgb);
+  --page-glow: transparent;
+  --page-backdrop: var(--paper);
+  --tint-accent: rgb(var(--accent-rgb) / 0.12);
+  --ring-accent: rgb(var(--accent-rgb) / 0.18);
+  --tint-amber: var(--state-due-soon-soft);
+  --edge-amber-veil: var(--edge-due-soon);
+  --edge-amber-ink: var(--edge-due-soon);
+  --font-ui: var(--font-body);
+  --press-scale: 1;
+  --press-dim: 1;
+  --press-ease: 0ms;
+  --screen-ease: linear;
+  --screen-push: 0ms;
+  --screen-pop: 0ms;
+  --screen-bleed: 0px;
+  --sidebar-width: var(--rail-width);
+}

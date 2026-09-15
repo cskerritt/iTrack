@@ -9,12 +9,12 @@
     <meta
       name="theme-color"
       media="(prefers-color-scheme: light)"
-      content="#f2f2f7"
+      content="#ebe7dc"
     />
     <meta
       name="theme-color"
       media="(prefers-color-scheme: dark)"
-      content="#0b0b0e"
+      content="#0f0e0b"
     />
     <link rel="icon" href="/icon-192.png" />
     <title>iTrack — Offline</title>
@@ -22,52 +22,42 @@
       /*
         This page is served from the cache with no stylesheet of its own, so it
         carries the app's tokens inline. Only the handful the page paints are
-        kept, and each is the value globals.css gives it in that scheme, with
-        two exceptions the app has no flat token for: --card is the app's card
-        at 0.92 so the haze behind it shows through, and --glow is the app's
-        --page-glow already composited over --paper, because a gradient stop
-        here cannot carry an alpha of its own. The text clears AA on the card
-        in both schemes — 16.5:1 / 13.4:1 for --ink, 7.3:1 / 8.6:1 for
-        --ink-muted, 6.2:1 / 7.3:1 for --ink-faint — as do the button label
-        (16.3:1 / 13.8:1) and the mark (6.8:1 / 6.3:1) on --ink-surface.
+        kept, and each is the value app/styles/tokens.css gives it in that scheme —
+        no alpha, no haze: the ledger has none. The text clears AA on the card in
+        both schemes — 17.1:1 / 13.9:1 for --ink, 6.8:1 / 6.6:1 for --ink-muted —
+        as do the button label (15.5:1 / 14.2:1, --on-inverse on --inverse-surface)
+        and the mark (7.6:1 / 6.7:1, --accent-on-inverse on --inverse-surface).
+        The type stays on the system stack: the woff2 faces are not precached.
       */
       :root {
         color-scheme: light dark;
-        font-family:
-          -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui,
-          "Segoe UI", Roboto, sans-serif;
-        --paper: #f2f2f7;
-        --glow: #e2e9f4;
-        --card: rgba(255, 255, 255, 0.92);
-        --line: #e3e3e8;
-        --ink: #1d1d21;
-        --ink-muted: #55555e;
-        --ink-faint: #5f5f68;
-        --ink-surface: #1f2024;
-        --on-dark: #ffffff;
-        --mark-ink: #5dacff;
-        --shadow: 0 24px 70px rgba(47, 47, 51, 0.12);
+        font-family: "Atkinson Hyperlegible", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        --paper: #f5f2ea;
+        --card: #fffdf8;
+        --line: #dad5c8;
+        --ink: #1c1a17;
+        --ink-muted: #5e5a52;
+        --inverse-surface: #1c1a17;
+        --on-inverse: #f5f2ea;
+        --accent-on-inverse: #93a6ff;
+        --shadow: 0 24px 64px rgba(28, 26, 23, 0.16);
         color: var(--ink);
         background: var(--paper);
       }
       @media (prefers-color-scheme: dark) {
         :root {
-          --paper: #0b0b0e;
-          --glow: #16283c;
-          --card: rgba(28, 28, 30, 0.92);
-          --line: #2c2c30;
-          --ink: #e5e5ea;
-          --ink-muted: #b8b8c1;
-          --ink-faint: #aaaab3;
-          --ink-surface: #26262b;
-          --on-dark: #f5f5f7;
-          --mark-ink: #5dacff;
-          --shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+          --paper: #15130f;
+          --card: #1f1c16;
+          --line: #332f27;
+          --ink: #ede8dc;
+          --ink-muted: #a8a196;
+          --inverse-surface: #ede8dc;
+          --on-inverse: #1c1a17;
+          --accent-on-inverse: #2743b8;
+          --shadow: 0 24px 64px rgba(0, 0, 0, 0.62);
         }
       }
-      * {
-        box-sizing: border-box;
-      }
+      * { box-sizing: border-box; }
       body {
         min-height: 100vh;
         margin: 0;
@@ -78,15 +68,13 @@
           max(24px, env(safe-area-inset-right))
           calc(24px + env(safe-area-inset-bottom))
           max(24px, env(safe-area-inset-left));
-        background:
-          radial-gradient(circle at 20% 10%, var(--glow) 0, transparent 38%),
-          var(--paper);
+        background: var(--paper);
       }
       main {
         width: min(100%, 430px);
         padding: 32px;
         border: 1px solid var(--line);
-        border-radius: 28px;
+        border-radius: 12px;
         background: var(--card);
         box-shadow: var(--shadow);
       }
@@ -95,32 +83,24 @@
         height: 56px;
         display: grid;
         place-items: center;
-        border-radius: 18px 18px 7px 7px;
-        color: var(--mark-ink);
-        background: var(--ink-surface);
+        border-radius: 12px;
+        color: var(--accent-on-inverse);
+        background: var(--inverse-surface);
         font-size: 28px;
       }
-      p {
-        color: var(--ink-muted);
-        line-height: 1.6;
-      }
+      p { color: var(--ink-muted); line-height: 1.6; }
       button {
         width: 100%;
         min-height: 48px;
         margin-top: 10px;
         border: 0;
-        border-radius: 999px;
-        color: var(--on-dark);
-        background: var(--ink-surface);
+        border-radius: 8px;
+        color: var(--on-inverse);
+        background: var(--inverse-surface);
         font: inherit;
         font-weight: 700;
       }
-      small {
-        display: block;
-        margin-top: 18px;
-        color: var(--ink-faint);
-        line-height: 1.5;
-      }
+      small { display: block; margin-top: 18px; color: var(--ink-muted); line-height: 1.5; }
     </style>
   </head>
   <body>

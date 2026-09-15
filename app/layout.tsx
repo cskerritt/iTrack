@@ -75,15 +75,15 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export const viewport: Viewport = {
   // This colours the browser and OS chrome — the address bar and the
-  // standalone status bar — not anything the app paints. Both schemes now
-  // name the page itself (--paper), which is what the mobile header under the
-  // bar is painted with at `rgb(var(--paper-rgb) / 0.9)`: on a platform where
-  // the status bar sits *inside* the app's own canvas, any bar that is not
-  // the page reads as a stripe. `light dark` lets the UA render form controls
-  // and scrollbars in the matching scheme.
+  // standalone status bar — not anything the app paints. Both schemes name
+  // --paper-deep, the surface the rail and the phone app bar are painted
+  // with (app/styles/tokens.css): on a phone the status bar sits directly on
+  // that bar, so a chrome colour that is not the bar's reads as a stripe.
+  // `light dark` lets the UA render form controls and scrollbars in the
+  // matching scheme.
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f2f2f7" },
-    { media: "(prefers-color-scheme: dark)", color: "#0b0b0e" },
+    { media: "(prefers-color-scheme: light)", color: "#ebe7dc" },
+    { media: "(prefers-color-scheme: dark)", color: "#0f0e0b" },
   ],
   colorScheme: "light dark",
   width: "device-width",
