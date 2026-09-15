@@ -37,7 +37,7 @@ function normalizedSql(value) {
 }
 
 function isOwnedCredentialCycleLookup(sql) {
-  return /SELECT id, status,(?: rule_set_id AS ruleSetId,)? cycle_start AS cycleStart, deadline FROM credentials WHERE id = \? AND user_id = \?/i.test(
+  return /SELECT id, status,(?: rule_set_id AS ruleSetId,)? cycle_start AS cycleStart, deadline(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
     sql,
   );
 }
@@ -7118,6 +7118,7 @@ export {
       dentalCheckpointSnapshotSource,
       apnsMigration,
       dropApnsMigration,
+      credentialArchiveMigration,
     ] = await Promise.all([
         readFile(
           new URL("../dist/server/wrangler.json", import.meta.url),
@@ -7212,13 +7213,17 @@ export {
           new URL("../drizzle/0013_drop_apns.sql", import.meta.url),
           "utf8",
         ),
+        readFile(
+          new URL("../drizzle/0014_credential_archive.sql", import.meta.url),
+          "utf8",
+        ),
       ]);
 
     const wrangler = JSON.parse(wranglerSource);
     assert.equal(wrangler.d1_databases?.[0]?.binding, "DB");
     assert.equal(wrangler.r2_buckets?.[0]?.binding, "EVIDENCE");
 
-    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}\n${attestationMigration}\n${weeklyPeriodMigration}\n${archiveMigration}\n${pushMigration}\n${dentalCheckpointMigration}\n${apnsMigration}\n${dropApnsMigration}`;
+    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}\n${attestationMigration}\n${weeklyPeriodMigration}\n${archiveMigration}\n${pushMigration}\n${dentalCheckpointMigration}\n${apnsMigration}\n${dropApnsMigration}\n${credentialArchiveMigration}`;
     const migratedTables = new Set(
       [...migration.matchAll(/CREATE TABLE `([^`]+)`/g)].map(
         (match) => match[1],
@@ -7259,6 +7264,18 @@ export {
     assert.ok(
       dropApnsMigration.indexOf("apns_delivery_ledger") < dropApnsMigration.indexOf("apns_devices"),
       "the ledger (child) is dropped before the devices table it references",
+    );
+    assert.match(
+      credentialArchiveMigration,
+      /ALTER TABLE `credentials` ADD `revision` integer DEFAULT 1 NOT NULL/,
+    );
+    assert.match(
+      credentialArchiveMigration,
+      /ALTER TABLE `credentials` ADD `archived_at` text/,
+    );
+    assert.match(
+      credentialArchiveMigration,
+      /CREATE INDEX `credentials_user_archive_deadline_idx` ON `credentials` \(`user_id`,`archived_at`,`deadline`\)/,
     );
     assert.match(
       migration,
@@ -7337,7 +7354,7 @@ export {
     const migrationJournal = JSON.parse(migrationJournalSource);
     assert.equal(
       migrationJournal.entries.at(-1)?.tag,
-      "0013_drop_apns",
+      "0014_credential_archive",
     );
     const dentalCheckpointSnapshot = JSON.parse(
       dentalCheckpointSnapshotSource,
@@ -7716,7 +7733,7 @@ export {
       );
       assert.equal(
         journalEntries.at(-1)?.tag,
-        "0013_drop_apns",
+        "0014_credential_archive",
       );
 
       assert.match(
@@ -13705,7 +13722,7 @@ export {
       const updateDatabase = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, status FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, status(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {
@@ -13927,7 +13944,7 @@ export {
       const updateDatabase = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, status FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, status(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {
@@ -14006,7 +14023,7 @@ export {
       const optionalCapDatabase = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, status FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, status(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {
@@ -15601,7 +15618,7 @@ export {
       const carryoverDeactivationDatabase = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, status FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, status(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {
@@ -16724,7 +16741,7 @@ export {
       const database = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, status, rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, status, rule_set_id AS ruleSetId(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {
@@ -16812,7 +16829,7 @@ export {
       const database = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, status, rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, status, rule_set_id AS ruleSetId(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {
@@ -16894,7 +16911,7 @@ export {
       const database = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, status, rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, status, rule_set_id AS ruleSetId(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {
@@ -16985,7 +17002,7 @@ export {
         const database = new FakeDatabase({
           resolveFirst(call) {
             if (
-              /SELECT id, status, rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+              /SELECT id, status, rule_set_id AS ruleSetId(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
                 call.sql,
               )
             ) {
@@ -19963,7 +19980,7 @@ export {
       const database = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, deadline FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, deadline(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {
@@ -22990,7 +23007,7 @@ export {
       const createDatabase = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, status FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, status(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {

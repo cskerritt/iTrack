@@ -218,4 +218,30 @@ test("full initialization and managed-catalog seed run against real SQLite", asy
       assert.equal((await getTableColumns("apns_delivery_ledger")).length, 0, "apns_delivery_ledger must not exist");
     },
   );
+
+  await t.test(
+    "credentials carry revision and archived_at (migration 0014)",
+    async () => {
+      const columnResult = await realDatabase
+        .prepare("PRAGMA table_info(credentials)")
+        .all();
+      const columns = new Map(
+        columnResult.results.map((column) => [column.name, column]),
+      );
+      assert.ok(columns.has("revision"), "credentials.revision must exist on a fresh boot");
+      assert.ok(columns.has("archived_at"), "credentials.archived_at must exist on a fresh boot");
+      assert.equal(columns.get("revision").notnull, 1);
+      assert.equal(columns.get("revision").dflt_value, "1");
+      assert.equal(columns.get("archived_at").notnull, 0);
+      const indexResult = await realDatabase
+        .prepare("PRAGMA index_list(credentials)")
+        .all();
+      assert.ok(
+        indexResult.results.some(
+          (index) => index.name === "credentials_user_archive_deadline_idx",
+        ),
+        "credentials_user_archive_deadline_idx must exist on a fresh boot",
+      );
+    },
+  );
 });

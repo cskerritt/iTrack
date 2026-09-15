@@ -3959,6 +3959,25 @@ async function assertNremtSubmissionComplete(
   }
 }
 
+const CREDENTIAL_ARCHIVED_MESSAGE =
+  "This credential is archived. Restore it before making changes.";
+
+// Archive is orthogonal to the active → submitted → renewed lifecycle (that
+// status set is load-bearing in the db/runtime.ts trigger guards), so every
+// credential write checks the nullable archived_at column after its ownership
+// 404 and before any status rule. Task 9's credential actions reuse this.
+function assertCredentialNotArchived(credential: {
+  archivedAt: string | null;
+}) {
+  if (credential.archivedAt) {
+    throw new RequestError(
+      CREDENTIAL_ARCHIVED_MESSAGE,
+      409,
+      "credential_archived",
+    );
+  }
+}
+
 async function assertCredentialStillMutable(
   database: D1Database,
   identity: RequestIdentity,
@@ -3967,9 +3986,11 @@ async function assertCredentialStillMutable(
 ) {
   const credential = await query(
     database,
-    `SELECT status FROM credentials WHERE id = ? AND user_id = ?`,
+    `SELECT status, archived_at AS archivedAt
+     FROM credentials
+     WHERE id = ? AND user_id = ?`,
     [credentialId, identity.userId],
-  ).first<{ status: string }>();
+  ).first<{ status: string; archivedAt: string | null }>();
   if (!credential) {
     throw new RequestError(
       "Credential not found.",
@@ -3977,6 +3998,7 @@ async function assertCredentialStillMutable(
       "credential_not_found",
     );
   }
+  assertCredentialNotArchived(credential);
   if (!["active", "submitted"].includes(credential.status)) {
     throw new RequestError(message, 409, "cycle_closed");
   }
@@ -4161,6 +4183,8 @@ export async function getWorkspace(
     seriesId: string;
     previousCredentialId: string | null;
     status: string;
+    revision: number;
+    archivedAt: string | null;
     submittedAt: string | null;
     confirmationNumber: string | null;
     submissionProof: string | null;
@@ -4297,6 +4321,8 @@ export async function getWorkspace(
         COALESCE(cycle.series_id, c.id) AS seriesId,
         cycle.previous_credential_id AS previousCredentialId,
         c.status,
+        c.revision,
+        c.archived_at AS archivedAt,
         rs.source_url AS sourceUrl,
         rs.source_title AS sourceTitle,
         rs.effective_date AS ruleEffectiveDate,
@@ -5139,6 +5165,52 @@ export async function getWorkspace(
     createDraftStorageNamespace(identity.userId),
   ]);
 
+  const mappedCredentials = credentialResult.results.map((credential) => {
+    const totalRequired = Number(credential.totalRequired);
+    const totalLoggedUnits = Number(credential.totalEarned);
+    const unclassifiedUnits = Math.min(
+      totalLoggedUnits,
+      unclassifiedUnitsByCredential.get(credential.id) ?? 0,
+    );
+    const totalRawEarned = Math.max(
+      0,
+      totalLoggedUnits - unclassifiedUnits,
+    );
+    const totalExcessUnits = Math.min(
+      totalRawEarned,
+      maximumExcessByCredential.get(credential.id) ?? 0,
+    );
+    const totalEarned = Math.max(0, totalRawEarned - totalExcessUnits);
+    return {
+      ...credential,
+      lifecycleKind: isIsc2AutomaticRenewalRuleSet(
+        credential.ruleSetId,
+      )
+        ? ("automatic_renewal" as const)
+        : isCompliancePeriodRuleSet(credential.ruleSetId)
+          ? ("compliance_period" as const)
+          : ("renewal" as const),
+      totalRequired,
+      totalLoggedUnits,
+      unclassifiedUnits,
+      classificationIssues:
+        classificationIssuesByCredential.get(credential.id) ?? [],
+      totalRawEarned,
+      totalExcessUnits,
+      totalEarned,
+      totalRemaining: Math.max(0, totalRequired - totalEarned),
+      totalProgressPercent:
+        totalRequired > 0
+          ? Math.min(100, Math.round((totalEarned / totalRequired) * 100))
+          : 100,
+      cycleMonths: Number(credential.cycleMonths),
+      requirements: requirementsByCredential.get(credential.id) ?? [],
+      tasks: tasksByCredential.get(credential.id) ?? [],
+      archivedTasks:
+        archivedTasksByCredential.get(credential.id) ?? [],
+    };
+  });
+
   return {
     user: {
       displayName: identity.displayName,
@@ -5162,51 +5234,17 @@ export async function getWorkspace(
     },
     progression,
     catalog,
-    credentials: credentialResult.results.map((credential) => {
-      const totalRequired = Number(credential.totalRequired);
-      const totalLoggedUnits = Number(credential.totalEarned);
-      const unclassifiedUnits = Math.min(
-        totalLoggedUnits,
-        unclassifiedUnitsByCredential.get(credential.id) ?? 0,
-      );
-      const totalRawEarned = Math.max(
-        0,
-        totalLoggedUnits - unclassifiedUnits,
-      );
-      const totalExcessUnits = Math.min(
-        totalRawEarned,
-        maximumExcessByCredential.get(credential.id) ?? 0,
-      );
-      const totalEarned = Math.max(0, totalRawEarned - totalExcessUnits);
-      return {
-        ...credential,
-        lifecycleKind: isIsc2AutomaticRenewalRuleSet(
-          credential.ruleSetId,
-        )
-          ? ("automatic_renewal" as const)
-          : isCompliancePeriodRuleSet(credential.ruleSetId)
-            ? ("compliance_period" as const)
-            : ("renewal" as const),
-        totalRequired,
-        totalLoggedUnits,
-        unclassifiedUnits,
-        classificationIssues:
-          classificationIssuesByCredential.get(credential.id) ?? [],
-        totalRawEarned,
-        totalExcessUnits,
-        totalEarned,
-        totalRemaining: Math.max(0, totalRequired - totalEarned),
-        totalProgressPercent:
-          totalRequired > 0
-            ? Math.min(100, Math.round((totalEarned / totalRequired) * 100))
-            : 100,
-        cycleMonths: Number(credential.cycleMonths),
-        requirements: requirementsByCredential.get(credential.id) ?? [],
-        tasks: tasksByCredential.get(credential.id) ?? [],
-        archivedTasks:
-          archivedTasksByCredential.get(credential.id) ?? [],
-      };
-    }),
+    // Archived credentials leave Home and Credentials; History shows them
+    // (Task 10). Both lists keep the same shape, so the packet route and
+    // Task 9's actions address either by id. `archivedCredentials` must stay
+    // ahead of `activities` — rendered-html pins the
+    // archivedTasksByCredential…archivedActivities order.
+    credentials: mappedCredentials.filter(
+      (credential) => !credential.archivedAt,
+    ),
+    archivedCredentials: mappedCredentials.filter((credential) =>
+      Boolean(credential.archivedAt),
+    ),
     activities: [...activitiesById.values()].filter(
       (activity) => !activity.archivedAt,
     ),
@@ -5905,7 +5943,8 @@ async function addActivity(
       id,
       status,
       cycle_start AS cycleStart,
-      deadline
+      deadline,
+      archived_at AS archivedAt
      FROM credentials
      WHERE id = ? AND user_id = ?`,
     [credentialId, identity.userId],
@@ -5914,6 +5953,7 @@ async function addActivity(
     status: string;
     cycleStart: string;
     deadline: string;
+    archivedAt: string | null;
   }>();
   if (!credential) {
     throw new RequestError(
@@ -5922,6 +5962,7 @@ async function addActivity(
       "credential_not_found",
     );
   }
+  assertCredentialNotArchived(credential);
   if (credential.status === "renewed") {
     throw new RequestError(
       "This renewal cycle is closed and cannot receive activities.",
@@ -7147,11 +7188,11 @@ async function createPersonalTask(
   const dueDate = isoDateField(payload, "dueDate", false);
   const credential = await query(
     database,
-    `SELECT id, status
+    `SELECT id, status, archived_at AS archivedAt
      FROM credentials
      WHERE id = ? AND user_id = ?`,
     [credentialId, identity.userId],
-  ).first<{ id: string; status: string }>();
+  ).first<{ id: string; status: string; archivedAt: string | null }>();
   if (!credential) {
     throw new RequestError(
       "Credential not found.",
@@ -7159,6 +7200,7 @@ async function createPersonalTask(
       "credential_not_found",
     );
   }
+  assertCredentialNotArchived(credential);
   if (!["active", "submitted"].includes(credential.status)) {
     throw new RequestError(
       "This renewal cycle is closed and its checklist is frozen.",
@@ -7883,11 +7925,17 @@ async function markSubmitted(
     `SELECT
       id,
       status,
-      rule_set_id AS ruleSetId
+      rule_set_id AS ruleSetId,
+      archived_at AS archivedAt
      FROM credentials
      WHERE id = ? AND user_id = ?`,
     [credentialId, identity.userId],
-  ).first<{ id: string; status: string; ruleSetId: string | null }>();
+  ).first<{
+    id: string;
+    status: string;
+    ruleSetId: string | null;
+    archivedAt: string | null;
+  }>();
   if (!credential) {
     throw new RequestError(
       "Credential not found.",
@@ -7895,6 +7943,7 @@ async function markSubmitted(
       "credential_not_found",
     );
   }
+  assertCredentialNotArchived(credential);
   const isIsc2Checkpoint = isIsc2AutomaticRenewalRuleSet(
     credential.ruleSetId,
   );
@@ -8033,7 +8082,7 @@ async function markSubmitted(
     query(
       database,
       `UPDATE credentials
-       SET status = 'submitted', updated_at = CURRENT_TIMESTAMP
+       SET status = 'submitted', revision = revision + 1, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?
          AND user_id = ?
          AND status IN ('active', 'submitted')
@@ -8258,7 +8307,8 @@ async function addActivityAllocation(
         id,
         status,
         cycle_start AS cycleStart,
-        deadline
+        deadline,
+        archived_at AS archivedAt
        FROM credentials
        WHERE id = ? AND user_id = ?`,
       [credentialId, identity.userId],
@@ -8267,6 +8317,7 @@ async function addActivityAllocation(
       status: string;
       cycleStart: string;
       deadline: string;
+      archivedAt: string | null;
     }>(),
     query(
       database,
@@ -8287,6 +8338,7 @@ async function addActivityAllocation(
       "credential_not_found",
     );
   }
+  assertCredentialNotArchived(credential);
   if (activity.archivedAt) {
     throw new RequestError(
       "Restore this learning record before changing its allocations.",
@@ -9034,6 +9086,7 @@ async function markRenewalAccepted(
     jurisdiction: string;
     issuer: string;
     status: string;
+    archivedAt: string | null;
     cycleStart: string;
     deadline: string;
     totalRequired: number;
@@ -9088,6 +9141,7 @@ async function markRenewalAccepted(
         credential.jurisdiction,
         credential.issuer,
         credential.status,
+        credential.archived_at AS archivedAt,
         credential.cycle_start AS cycleStart,
         credential.deadline,
         credential.total_required AS totalRequired,
@@ -9139,6 +9193,7 @@ async function markRenewalAccepted(
       "credential_not_found",
     );
   }
+  assertCredentialNotArchived(credential);
   if (!submission || credential.status !== "submitted") {
     throw new RequestError(
       "Record the renewal submission before marking it accepted.",
@@ -10191,7 +10246,7 @@ async function markRenewalAccepted(
           VALUES ${REQUIREMENT_INCOMPATIBILITY_VALUES_SQL}
         )
       UPDATE credentials
-      SET status = 'renewed', updated_at = CURRENT_TIMESTAMP
+      SET status = 'renewed', revision = revision + 1, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
         AND user_id = ?
         AND status = 'submitted'
@@ -10817,11 +10872,11 @@ async function updateRequirementApplicability(
   const [credential, requirementResult] = await Promise.all([
     query(
       database,
-      `SELECT id, status
+      `SELECT id, status, archived_at AS archivedAt
        FROM credentials
        WHERE id = ? AND user_id = ?`,
       [credentialId, identity.userId],
-    ).first<{ id: string; status: string }>(),
+    ).first<{ id: string; status: string; archivedAt: string | null }>(),
     query(
       database,
       `SELECT
@@ -10848,6 +10903,7 @@ async function updateRequirementApplicability(
       "credential_not_found",
     );
   }
+  assertCredentialNotArchived(credential);
   if (credential.status === "renewed") {
     throw new RequestError(
       "This renewal cycle is closed and its requirements are frozen.",
@@ -11199,6 +11255,7 @@ async function updateRequirementApplicability(
              FROM rule_sets catalog_rule
              WHERE catalog_rule.id = credentials.rule_set_id
            ),
+           revision = revision + 1,
            updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
            AND user_id = ?
@@ -11265,6 +11322,7 @@ async function updateRequirementApplicability(
              FROM rule_sets catalog_rule
              WHERE catalog_rule.id = credentials.rule_set_id
            ),
+           revision = revision + 1,
            updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
            AND user_id = ?
@@ -12145,9 +12203,11 @@ async function setReminderState(
 
   const credential = await query(
     database,
-    `SELECT id, deadline FROM credentials WHERE id = ? AND user_id = ?`,
+    `SELECT id, deadline, archived_at AS archivedAt
+     FROM credentials
+     WHERE id = ? AND user_id = ?`,
     [credentialId, identity.userId],
-  ).first<{ id: string; deadline: string }>();
+  ).first<{ id: string; deadline: string; archivedAt: string | null }>();
   if (!credential) {
     throw new RequestError(
       "Credential not found.",
@@ -12155,6 +12215,7 @@ async function setReminderState(
       "credential_not_found",
     );
   }
+  assertCredentialNotArchived(credential);
 
   let validReminder = false;
   if (reminderKey === `deadline:${credentialId}:${credential.deadline}`) {
