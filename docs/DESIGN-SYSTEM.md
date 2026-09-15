@@ -19,9 +19,8 @@ with cards lifted to plain white; the ink is a near-neutral rather than a hue;
 the one saturated color is the system blue. Dark mode drops to a true near-black
 (`#0b0b0e`) with no tint at all — a tinted near-black is the thing that reads as
 "a website in dark mode" next to the platform's own — and the surfaces rise off it
-in small steps. Type is the system stack, so on an iPhone it is San Francisco.
-There is no webfont and no serif: display sizes are the same face carried by
-weight and tracking.
+in small steps. Type is the system stack; nothing loads on the critical path.
+Display sizes are the same face carried by weight and tracking.
 
 Blue carries progress and choice, amber carries attention, coral carries
 problems. The inverse surfaces (sidebar, hero, detail header, toast) are
@@ -128,10 +127,10 @@ Never introduce an ad-hoc value at a use site.
 
 ## Typography
 
-One family for everything — `--font-ui`, the system stack, which resolves to San
-Francisco on the phone. A downloaded display face is the loudest tell that a
-Capacitor shell is a website, and it costs a render-blocking round trip on the
-first paint the app shows.
+One family for everything — `--font-ui`, the system stack. The constraint is no
+render-blocking font request on first paint; a self-hosted subset with
+`font-display: swap` is allowed and the system stack is the fallback
+(ios-coupling-09).
 
 Phone-first scale, all `font-size` via tokens (floor `--text-2xs`, one documented
 exception: the 10px bottom-tab labels, carried by 20px icons):

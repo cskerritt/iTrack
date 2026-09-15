@@ -635,11 +635,10 @@ test("iTrack product contract", async (t) => {
   });
 
   await t.test("serves the app shell at every routed tab path", async () => {
-    // The nav stack writes real URLs (app/lib/navigation.ts), so a refresh, a
-    // deep link, or the iOS shell reloading its `server.url` can land on any
-    // of these. Each has to return the same shell rather than a 404, and each
-    // has to hydrate against the home root — the server has no window, so the
-    // tab is only adopted client-side.
+    // The nav stack writes real URLs (app/lib/navigation.ts), so a refresh or
+    // a deep link can land on any of these. Each has to return the same shell
+    // rather than a 404, and each has to hydrate against the home root — the
+    // server has no window, so the tab is only adopted client-side.
     for (const path of [
       "/",
       "/credentials",

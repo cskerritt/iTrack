@@ -99,9 +99,8 @@ export default function RootLayout({
   return (
     <html lang="en">
       {/*
-       * No font className: the app is set in the platform UI face
-       * (--font-ui in globals.css), so there is no webfont variable to hang
-       * on the body and no font request on the critical path.
+       * No font className: nothing requests a font on the critical path;
+       * --font-ui in globals.css is the system stack.
        */}
       <body>
         <ClientErrorBeacon />

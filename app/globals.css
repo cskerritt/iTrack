@@ -28,12 +28,10 @@
   --white: #ffffff;
 
   /*
-   * TYPEFACE — one stack for everything. There is no webfont: on the phone
-   * this resolves to San Francisco, which is the point. A downloaded display
-   * face is the single loudest tell that a Capacitor shell is a website, and
-   * it also costs a render-blocking round trip on the first paint the app
-   * shows. Display sizes are now the same face carried by weight and tracking
-   * (600 and -0.02em or tighter) rather than by a second family.
+   * TYPEFACE — one stack for everything. The constraint is that no font
+   * request blocks first paint: a self-hosted subset with font-display: swap
+   * is allowed, and the system stack is the fallback. Display sizes are the
+   * same face carried by weight and tracking.
    */
   --font-ui:
     -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI",

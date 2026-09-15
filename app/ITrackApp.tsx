@@ -2452,8 +2452,8 @@ export function ITrackApp() {
   // would unmount the screen for a frame and put it straight back, so the exit
   // would play on a freshly mounted element, which is a flash rather than a
   // transition. This shape also means *every* pop animates — the back control,
-  // the edge gesture, the browser's own back button, the shell's hardware
-  // back — because it watches the route rather than the thing that moved it.
+  // the edge gesture, the browser's own back button — because it watches the
+  // route rather than the thing that moved it.
   const [lastDetailCredential, setLastDetailCredential] =
     useState<Credential | null>(null);
   const [exitingDetail, setExitingDetail] = useState<Credential | null>(null);
