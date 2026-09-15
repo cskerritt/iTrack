@@ -19,11 +19,11 @@
  * WHICH FILES. `collectStylesheets` walks every .css under app/ (recursively)
  * and the <style> blocks of deploy/railway/pages/*.html. A .css file is a TOKEN
  * file iff its first rule — after comments and any leading `@import …;` /
- * `@charset …;` statements; app/globals.css opens with `@import "tailwindcss";`
- * — is `:root {`. Every page is a token file because each inlines its own
- * :root. Everything else under app/ is a CONSUMER. Today app/globals.css and
- * the five pages qualify; after the Wave 3 split only app/styles/tokens.css and
- * the pages will, and every per-screen stylesheet is a consumer.
+ * `@charset …;` statements — is `:root {`. Every page is a token file because
+ * each inlines its own :root. Everything else under app/ is a CONSUMER:
+ * app/globals.css opens with its @imports and a `@layer base` reset, so the
+ * only token file under app/ is app/styles/tokens.css, and every
+ * app/styles/<name>.css is a consumer.
  *
  * TOKEN BLOCKS of a token file are the first `:root {` block and, when present,
  * the `@media (prefers-color-scheme: dark)` block — never a later :root such as
