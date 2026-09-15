@@ -130,3 +130,177 @@
     min-height: var(--control-height-lg);
   }
 }
+
+/* ===== MODAL / SHEET (spec §5.2) =====
+ * A centred card; below 540px the same dialog is a bottom-anchored sheet with
+ * no grabber, no slide and no scrim fade (mockup decision 6). The class names
+ * .modal-backdrop / .modal-card / .modal-header / .modal-body / .modal-close
+ * are the ones app/components/Modal.tsx renders and the e2e suite hooks; the
+ * legacy per-modal rules in log-activity.css and friends keep applying to
+ * them. .modal-eyebrow and .modal-title are new. */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  align-items: center;
+  justify-items: center;
+  overflow-y: auto;
+  background: var(--scrim);
+  padding:
+    calc(24px + env(safe-area-inset-top))
+    calc(24px + env(safe-area-inset-right))
+    calc(24px + env(safe-area-inset-bottom))
+    calc(24px + env(safe-area-inset-left));
+}
+
+.modal-card {
+  width: min(560px, 100%);
+  max-height: min(880px, calc(100vh - 48px));
+  max-height: min(
+    880px,
+    calc(
+      100dvh - 48px - env(safe-area-inset-top) -
+        env(safe-area-inset-bottom)
+    )
+  );
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-lg);
+}
+
+.modal-card[data-size="lg"] {
+  width: min(760px, 100%);
+}
+
+.modal-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+
+.modal-eyebrow {
+  display: block;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+}
+
+.modal-title {
+  margin: 2px 0 0;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: var(--tracking-display);
+}
+
+.modal-close {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: var(--control-height);
+  height: var(--control-height);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.modal-close:hover {
+  background: var(--paper-deep);
+}
+
+.modal-body {
+  padding: 20px 24px 24px;
+}
+
+@media (max-width: 540px) {
+  .modal-backdrop {
+    align-items: end;
+    padding:
+      env(safe-area-inset-top)
+      env(safe-area-inset-right)
+      0
+      env(safe-area-inset-left);
+  }
+
+  .modal-card {
+    width: 100%;
+    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - env(safe-area-inset-top) - 24px);
+    border-width: 1px 0 0;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  }
+
+  .modal-header {
+    padding:
+      18px
+      max(18px, env(safe-area-inset-right))
+      14px
+      max(18px, env(safe-area-inset-left));
+  }
+
+  .modal-body {
+    padding:
+      18px
+      max(18px, env(safe-area-inset-right))
+      calc(24px + env(safe-area-inset-bottom))
+      max(18px, env(safe-area-inset-left));
+  }
+}
+
+@media (max-width: 820px), (pointer: coarse) {
+  .modal-close {
+    width: var(--control-height-lg);
+    height: var(--control-height-lg);
+  }
+}
+
+/* The development-only /styleguide page (app/styleguide/Styleguide.tsx):
+ * one column of sections, each a wrapped row of samples under its heading. */
+.styleguide {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  width: min(var(--content-max), 100%);
+  margin: 0 auto;
+  padding: 36px 24px 48px;
+}
+
+.styleguide h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-3xl);
+  font-weight: 700;
+  letter-spacing: var(--tracking-display);
+}
+
+.styleguide section {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.styleguide h2 {
+  flex-basis: 100%;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: 700;
+  letter-spacing: var(--tracking-display);
+}

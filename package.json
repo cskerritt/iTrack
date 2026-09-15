@@ -10,7 +10,7 @@
     "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
     "test": "npm run build && npm run build:lib-test && node --experimental-sqlite --test tests/*.test.mjs",
-    "build:lib-test": "tsc app/lib/navigation.ts app/lib/clientError.ts app/lib/apiResponse.ts app/lib/routeTitle.ts app/lib/readiness.ts app/lib/activityDraft.ts app/lib/certificateOcr.ts app/lib/dates.ts app/lib/cycles.ts app/lib/fonts.ts app/lib/buttonClass.ts --outDir .test-build --module nodenext --target es2022",
+    "build:lib-test": "tsc app/lib/navigation.ts app/lib/clientError.ts app/lib/apiResponse.ts app/lib/routeTitle.ts app/lib/readiness.ts app/lib/activityDraft.ts app/lib/certificateOcr.ts app/lib/dates.ts app/lib/cycles.ts app/lib/fonts.ts app/lib/buttonClass.ts app/lib/modalStack.ts --outDir .test-build --module nodenext --target es2022",
     "build:nav-test": "npm run build:lib-test",
     "test:nav": "npm run build:nav-test && node --test tests/navigation.test.mjs",
     "typecheck": "tsc --noEmit",

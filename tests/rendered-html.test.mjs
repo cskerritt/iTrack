@@ -682,6 +682,17 @@ test("iTrack product contract", async (t) => {
     assert.match(await response.text(), /Page not found/);
   });
 
+  await t.test("the styleguide is a development-only route: the built worker answers 404", async () => {
+    // app/styleguide/page.tsx calls notFound() unless NODE_ENV is
+    // "development"; vinext inlines process.env.NODE_ENV as "production" in
+    // `npm run build`, so the worker under test never renders it.
+    const response = await fetchWorker("http://localhost/styleguide", {
+      headers: { accept: "text/html" },
+    });
+    assert.equal(response.status, 404);
+    assert.match(await response.text(), /Page not found/);
+  });
+
   await t.test(
     "keeps certificate OCR on-device and suggestions reviewable",
     async () => {

@@ -109,6 +109,7 @@ import {
   type ReminderLaunchTarget,
 } from "./lib/webPush";
 import { Icon, type IconName } from "./components/Icon";
+import { Modal } from "./components/Modal";
 
 const DENTAL_LINKED_APPLICABILITY_CHILD_CATEGORY_IDS = new Set<string>(
   DENTAL_LINKED_APPLICABILITY_CATEGORY_GROUPS.flatMap((categoryIds) =>
@@ -1553,124 +1554,6 @@ function useEdgeSwipeBack(
   }, [enabled, onBack, stackRef]);
 }
 
-// Below this width every modal is anchored to the bottom edge (see SHEET in
-// globals.css), which is the only shape a downward drag is a dismissal of.
-// Above it the dialog is centred and the gesture does not exist.
-const SHEET_MEDIA = "(max-width: 540px)";
-// How far the sheet has to be pushed before letting go means "close this", and
-// the sideways travel past which the finger is plainly doing something else.
-const SHEET_DISMISS_COMMIT = 120;
-const SHEET_DISMISS_ABANDON = 30;
-
-/**
- * The platform's sheet dismissal: push the sheet back down and it goes.
- *
- * It may only start from the top of the sheet's own scroll — below that the
- * finger belongs to the content, and a sheet that slides away while its reader
- * is scrolling back up is the most irritating gesture a phone can have. The
- * offset is published as a custom property rather than as React state for the
- * same reason the back gesture does it: this runs on every frame of a drag.
- */
-function useSheetDragDismiss(
-  cardRef: RefObject<HTMLElement | null>,
-  onDismiss: () => void,
-) {
-  // Read through a ref so the listeners are attached once, at mount, rather
-  // than re-attached — mid-drag, losing the gesture — every time the sheet's
-  // owner re-renders and hands down a fresh closure.
-  const dismissRef = useRef(onDismiss);
-  useEffect(() => {
-    dismissRef.current = onDismiss;
-  }, [onDismiss]);
-
-  // The gesture exists only at the width where the dialog *is* a bottom sheet,
-  // and that width can change under an open sheet — a phone rotates. Tracked
-  // live rather than read once at mount, so the gesture and the grabber that
-  // advertises it are never out of step with each other.
-  const [isSheet, setIsSheet] = useState(false);
-  useEffect(() => {
-    const media = window.matchMedia(SHEET_MEDIA);
-    const sync = () => setIsSheet(media.matches);
-    sync();
-    media.addEventListener("change", sync);
-    return () => media.removeEventListener("change", sync);
-  }, []);
-
-  useEffect(() => {
-    const card = cardRef.current;
-    if (!card || !isSheet) return;
-    let startX = 0;
-    let startY = 0;
-    let tracking = false;
-    const release = () => {
-      tracking = false;
-      card.classList.remove("sheet-dragging");
-    };
-    const rest = () => {
-      release();
-      card.style.removeProperty("--sheet-drag");
-    };
-    const onStart = (event: TouchEvent) => {
-      const touch = event.touches[0];
-      if (!touch) return;
-      tracking = card.scrollTop <= 0;
-      startX = touch.clientX;
-      startY = touch.clientY;
-      if (tracking) card.classList.add("sheet-dragging");
-    };
-    const onMove = (event: TouchEvent) => {
-      if (!tracking) return;
-      const touch = event.touches[0];
-      if (!touch) return;
-      const dy = touch.clientY - startY;
-      const dx = Math.abs(touch.clientX - startX);
-      // Upwards is the content's own scroll, and a sideways drag is a swipe
-      // through something inside the sheet; neither is this gesture.
-      if (dy < 0 || (dx > SHEET_DISMISS_ABANDON && dx > dy)) {
-        rest();
-        return;
-      }
-      card.style.setProperty("--sheet-drag", `${dy}px`);
-    };
-    const onEnd = (event: TouchEvent) => {
-      if (!tracking) return;
-      const dy = event.changedTouches[0]
-        ? event.changedTouches[0].clientY - startY
-        : 0;
-      if (dy > SHEET_DISMISS_COMMIT) {
-        // The offset stays where the finger left it deliberately: the sheet
-        // unmounts on the next render, so clearing it here would paint one
-        // frame of the sheet snapping back up before it disappeared.
-        //
-        // Unless the owner refuses to close — the log sheet holds itself open
-        // when a draft cannot be saved — in which case the sheet is still
-        // here a frame later and has to come back up, or it would sit parked
-        // at the drag offset with its controls pushed off-screen.
-        release();
-        dismissRef.current();
-        window.requestAnimationFrame(() => {
-          if (card.isConnected) card.style.removeProperty("--sheet-drag");
-        });
-        return;
-      }
-      rest();
-    };
-    card.addEventListener("touchstart", onStart, { passive: true });
-    card.addEventListener("touchmove", onMove, { passive: true });
-    card.addEventListener("touchend", onEnd);
-    card.addEventListener("touchcancel", onEnd);
-    return () => {
-      card.removeEventListener("touchstart", onStart);
-      card.removeEventListener("touchmove", onMove);
-      card.removeEventListener("touchend", onEnd);
-      card.removeEventListener("touchcancel", onEnd);
-      // A sheet that stops being a sheet mid-drag — the phone rotated — keeps
-      // neither the drag class nor the offset it was placed by.
-      rest();
-    };
-  }, [cardRef, isSheet]);
-}
-
 export function ITrackApp() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const nav = useNavigation();
@@ -2460,24 +2343,6 @@ export function ITrackApp() {
     const timeout = window.setTimeout(() => setToast(null), 6000);
     return () => window.clearTimeout(timeout);
   }, [toast]);
-
-  useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      closeActivityEntry();
-      setCredentialOpen(false);
-      setSubmissionOpen(false);
-      setAcceptanceOpen(false);
-      setRemindersOpen(false);
-      setAllocationActivity(null);
-      setClassificationRepair(null);
-      setEvidenceActivity(null);
-      setEditingActivity(null);
-      setTaskEditor(null);
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [closeActivityEntry]);
 
   const selectedCredential = useMemo(() => {
     if (!workspace) return null;
@@ -4375,7 +4240,7 @@ export function ITrackApp() {
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-app-root>
       <a className="skip-link" href="#main-content">
         Skip to content
       </a>
@@ -11339,159 +11204,6 @@ function PageGreeting({
       </div>
       {action}
     </header>
-  );
-}
-
-function Modal({
-  title,
-  eyebrow,
-  children,
-  onClose,
-}: {
-  title: string;
-  eyebrow: string;
-  children: ReactNode;
-  onClose: () => void;
-}) {
-  const backdropRef = useRef<HTMLDivElement>(null);
-  const dialogRef = useRef<HTMLElement>(null);
-  useSheetDragDismiss(dialogRef, onClose);
-
-  useEffect(() => {
-    const backdrop = backdropRef.current;
-    const dialog = dialogRef.current;
-    if (!backdrop || !dialog) return;
-
-    const previouslyFocused =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    const surroundingElements = backdrop.parentElement
-      ? Array.from(backdrop.parentElement.children).filter(
-          (element): element is HTMLElement =>
-            element instanceof HTMLElement && element !== backdrop,
-        )
-      : [];
-    const priorSurroundingState = surroundingElements.map((element) => ({
-      element,
-      inert: element.inert,
-      ariaHidden: element.getAttribute("aria-hidden"),
-    }));
-    const priorBodyOverflow = document.body.style.overflow;
-
-    for (const element of surroundingElements) {
-      element.inert = true;
-      element.setAttribute("aria-hidden", "true");
-    }
-    document.body.style.overflow = "hidden";
-
-    const focusableSelector = [
-      "a[href]",
-      "button:not([disabled])",
-      "input:not([disabled]):not([type='hidden'])",
-      "select:not([disabled])",
-      "textarea:not([disabled])",
-      "[tabindex]:not([tabindex='-1'])",
-    ].join(",");
-    const getFocusableElements = () =>
-      Array.from(
-        dialog.querySelectorAll<HTMLElement>(focusableSelector),
-      ).filter(
-        (element) =>
-          !element.hasAttribute("hidden") &&
-          element.getAttribute("aria-hidden") !== "true",
-      );
-    const requestedInitialFocus =
-      dialog.querySelector<HTMLElement>("[autofocus]");
-    (requestedInitialFocus ?? dialog).focus({ preventScroll: true });
-
-    const keepFocusInside = (event: KeyboardEvent) => {
-      if (event.key !== "Tab") return;
-      const focusableElements = getFocusableElements();
-      if (focusableElements.length === 0) {
-        event.preventDefault();
-        dialog.focus({ preventScroll: true });
-        return;
-      }
-      const first = focusableElements[0];
-      const last = focusableElements[focusableElements.length - 1];
-      const activeElement =
-        document.activeElement instanceof HTMLElement
-          ? document.activeElement
-          : null;
-
-      if (
-        event.shiftKey &&
-        (activeElement === first ||
-          activeElement === dialog ||
-          !activeElement ||
-          !dialog.contains(activeElement))
-      ) {
-        event.preventDefault();
-        last.focus();
-      } else if (
-        !event.shiftKey &&
-        (activeElement === last ||
-          activeElement === dialog ||
-          !activeElement ||
-          !dialog.contains(activeElement))
-      ) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    dialog.addEventListener("keydown", keepFocusInside);
-    return () => {
-      dialog.removeEventListener("keydown", keepFocusInside);
-      document.body.style.overflow = priorBodyOverflow;
-      for (const state of priorSurroundingState) {
-        state.element.inert = state.inert;
-        if (state.ariaHidden === null) {
-          state.element.removeAttribute("aria-hidden");
-        } else {
-          state.element.setAttribute("aria-hidden", state.ariaHidden);
-        }
-      }
-      if (previouslyFocused?.isConnected) {
-        previouslyFocused.focus({ preventScroll: true });
-      }
-    };
-  }, []);
-
-  return (
-    <div className="modal-backdrop" ref={backdropRef}>
-      <section
-        className="modal-card"
-        ref={dialogRef}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="modal-title"
-      >
-        <header className="modal-header">
-          {/*
-           * Decorative: it says the sheet can be pushed away, and the gesture
-           * and the close button are what actually do it. Hung off the sticky
-           * header so scrolling the sheet cannot carry the handle out of view.
-           */}
-          <span className="sheet-grabber" aria-hidden="true" />
-          <div>
-            <span className="section-kicker">{eyebrow}</span>
-            <h2 id="modal-title">{title}</h2>
-          </div>
-          <button
-            className="modal-close"
-            type="button"
-            aria-label="Close dialog"
-            onClick={onClose}
-          >
-            <Icon name="close" size={19} />
-          </button>
-        </header>
-        <div className="modal-body">{children}</div>
-      </section>
-    </div>
   );
 }
 
