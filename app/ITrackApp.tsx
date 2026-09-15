@@ -73,6 +73,15 @@ import {
   UNEXPECTED_RESPONSE_MESSAGE,
   readApiResponse,
 } from "./lib/apiResponse";
+import {
+  UTC_FALLBACK_ZONE,
+  addDaysIso,
+  addMonthsIso,
+  addYearsIso,
+  deviceZoneSuggestion,
+  effectiveDateZone,
+  todayLocal,
+} from "./lib/dates";
 import { routeTitle } from "./lib/routeTitle";
 import {
   nextRequirementSelection,
@@ -427,20 +436,6 @@ const pushSubscriptionIdentity = (
 ) =>
   `${subscription.endpoint}|${subscription.keys.p256dh}|${subscription.keys.auth}`;
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
-
-const nextYearIso = () => {
-  const date = new Date();
-  date.setFullYear(date.getFullYear() + 1);
-  return date.toISOString().slice(0, 10);
-};
-
-const yearAgoIso = () => {
-  const date = new Date();
-  date.setFullYear(date.getFullYear() - 1);
-  return date.toISOString().slice(0, 10);
-};
-
 function formatDate(value?: string | null, options?: Intl.DateTimeFormatOptions) {
   if (!value) return "Not set";
   const parsed = new Date(`${value.slice(0, 10)}T12:00:00`);
@@ -462,37 +457,24 @@ function daysUntil(value: string) {
   return daysUntilDate(value, Date.now());
 }
 
-function addDaysIso(value: string, days: number) {
-  const date = new Date(`${value.slice(0, 10)}T12:00:00.000Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
-function addMonthsIso(value: string, months: number) {
-  const date = new Date(`${value.slice(0, 10)}T12:00:00.000Z`);
-  const targetDay = date.getUTCDate();
-  date.setUTCDate(1);
-  date.setUTCMonth(date.getUTCMonth() + months);
-  const lastDay = new Date(
-    Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0),
-  ).getUTCDate();
-  date.setUTCDate(Math.min(targetDay, lastDay));
-  return date.toISOString().slice(0, 10);
-}
-
+// Default cycle window for a new credential, anchored on the caller's local
+// `today` (app/lib/dates.ts) rather than the UTC date. ABVE's fixed cycle is
+// the one template with hard-coded dates.
 function defaultCatalogCycleStart(
   rule: CatalogRule | null | undefined,
+  today: string,
 ) {
   if (isAbveCatalogRule(rule)) return "2025-01-01";
   return rule
-    ? addMonthsIso(nextYearIso(), -rule.cycleMonths)
-    : yearAgoIso();
+    ? addMonthsIso(addYearsIso(today, 1), -rule.cycleMonths)
+    : addYearsIso(today, -1);
 }
 
 function defaultCatalogDeadline(
   rule: CatalogRule | null | undefined,
+  today: string,
 ) {
-  return isAbveCatalogRule(rule) ? "2027-12-31" : nextYearIso();
+  return isAbveCatalogRule(rule) ? "2027-12-31" : addYearsIso(today, 1);
 }
 
 function confirmedCarryoverWindowStart(
@@ -1266,6 +1248,17 @@ function bestNextAction(
  */
 const FORM_ACTION_KEY = "form";
 
+// The time-zone offer banner's own key: its Use button greys out while the
+// preference write is on the wire without freezing any open sheet.
+const TIME_ZONE_ACTION_KEY = "time-zone";
+
+// Where "Not now" is remembered — per account and per device zone, under the
+// `itrack:` prefix (the `license-lantern:` draft prefix is load-bearing and
+// stays draft-only) — so the offer returns only after a genuine move.
+function zoneOfferStorageKey(draftStorageNamespace: string) {
+  return `itrack:time-zone-offer:v1:${draftStorageNamespace}`;
+}
+
 function taskActionKey(taskId: string) {
   return `task:${taskId}`;
 }
@@ -1672,7 +1665,11 @@ export function ITrackApp() {
   const [activityOpen, setActivityOpen] = useState(false);
   const [credentialOpen, setCredentialOpen] = useState(false);
   const [submissionOpen, setSubmissionOpen] = useState(false);
-  const [nremtSubmissionDate, setNremtSubmissionDate] = useState(todayIso());
+  // Pre-workspace placeholder in the device zone; openSubmission() replaces
+  // it with today() when the sheet opens.
+  const [nremtSubmissionDate, setNremtSubmissionDate] = useState(() =>
+    todayLocal(deviceTimeZone()),
+  );
   const [acceptanceOpen, setAcceptanceOpen] = useState(false);
   const [remindersOpen, setRemindersOpen] = useState(false);
   const [allocationActivity, setAllocationActivity] =
@@ -1712,7 +1709,7 @@ export function ITrackApp() {
   const [toast, setToast] = useState<ToastState | null>(null);
   const [activityDraft, setActivityDraft] = useState<ActivityDraft>(() => ({
     title: "",
-    completionDate: todayIso(),
+    completionDate: todayLocal(deviceTimeZone()),
     totalUnits: "",
     allocatedUnits: "",
     provider: "",
@@ -1731,6 +1728,44 @@ export function ITrackApp() {
   const [activityDraftPersistenceStatus, setActivityDraftPersistenceStatus] =
     useState<"idle" | "saving" | "saved" | "unavailable">("idle");
   const [isOnline, setIsOnline] = useState(true);
+  // The calendar "today" every default date comes from (critic-01): the
+  // stored reminder zone once the user has chosen one, the device's zone
+  // while it is still the 'UTC' fallback every account starts with.
+  const dateZone = useMemo(
+    () =>
+      effectiveDateZone(
+        workspace?.reminderPreferences.timeZone ?? UTC_FALLBACK_ZONE,
+        deviceTimeZone(),
+      ),
+    [workspace?.reminderPreferences.timeZone],
+  );
+  const today = useCallback(() => todayLocal(dateZone), [dateZone]);
+  // The one-tap offer: only while the stored zone is the literal 'UTC' and
+  // the device reports a real, different zone. Never evaluated during SSR
+  // because `workspace` is fetched on the client.
+  const [zoneOfferDismissed, setZoneOfferDismissed] = useState(false);
+  const zoneSuggestion = workspace
+    ? deviceZoneSuggestion(
+        workspace.reminderPreferences.timeZone,
+        deviceTimeZone(),
+      )
+    : null;
+  // A "Not now" from an earlier visit on this device. Read at render time
+  // rather than synced into state from an effect (react-hooks/
+  // set-state-in-effect): the read is idempotent, keyed on the account, and
+  // never runs during SSR because `workspace` is fetched on the client.
+  const zoneOfferDismissedEarlier = useMemo(() => {
+    const namespace = workspace?.user.draftStorageNamespace;
+    if (!namespace) return false;
+    try {
+      return (
+        window.localStorage.getItem(zoneOfferStorageKey(namespace)) ===
+        deviceTimeZone()
+      );
+    } catch {
+      return false;
+    }
+  }, [workspace?.user.draftStorageNamespace]);
   const [workspaceLoadFailed, setWorkspaceLoadFailed] = useState(false);
   const [workspaceLoadFailureStatus, setWorkspaceLoadFailureStatus] = useState<
     number | null
@@ -1774,7 +1809,7 @@ export function ITrackApp() {
     activityScanSequence.current += 1;
     setActivityDraft({
       title: "",
-      completionDate: todayIso(),
+      completionDate: today(),
       totalUnits: "",
       allocatedUnits: "",
       provider: "",
@@ -1789,7 +1824,7 @@ export function ITrackApp() {
     setActivityDraftRestored(false);
     setActivityDraftCredentialWarning("");
     setActivityDraftPersistenceStatus("idle");
-  }, []);
+  }, [today]);
 
   const persistActivityDraftNow = useCallback(() => {
     if (!activityDraftPersistenceEnabled.current || !draftStorageKey) {
@@ -3132,7 +3167,7 @@ export function ITrackApp() {
           : current.provider,
       completionDate:
         previousSuggestions.completionDate === current.completionDate
-          ? todayIso()
+          ? today()
           : current.completionDate,
       totalUnits:
         previousSuggestions.credits !== undefined &&
@@ -3628,7 +3663,7 @@ export function ITrackApp() {
 
   function openSubmission() {
     setError("");
-    setNremtSubmissionDate(todayIso());
+    setNremtSubmissionDate(today());
     setSubmissionOpen(true);
   }
 
@@ -3707,13 +3742,50 @@ export function ITrackApp() {
       {
         inAppEnabled: form.get("inAppEnabled") === "on",
         leadDays,
-        timeZone: String(form.get("timeZone") ?? "UTC"),
+        timeZone: String(form.get("timeZone") ?? deviceTimeZone()),
         pushEnabled: form.get("pushEnabled") === "on",
         pushHourLocal: Number(form.get("pushHourLocal") ?? 9),
       },
       "Reminder check-ins updated.",
     );
     if (result) setRemindersOpen(false);
+  }
+
+  // The one-tap offer persists the device zone through the existing
+  // preference action, so nothing new reaches the server. runAction's
+  // refetch updates reminderPreferences.timeZone, which unmounts the banner.
+  // A stale pushEnabled:true (the scheduler pauses push when the last device
+  // expires) can answer 409 push_subscription_required; that surfaces in the
+  // error banner with Try again, like any other write.
+  async function adoptDeviceTimeZone() {
+    if (!workspace || !zoneSuggestion) return;
+    const prefs = workspace.reminderPreferences;
+    await runAction(
+      "updateReminderPreferences",
+      {
+        inAppEnabled: prefs.inAppEnabled,
+        pushEnabled: prefs.pushEnabled,
+        pushHourLocal: prefs.pushHourLocal ?? 9,
+        leadDays: prefs.leadDays,
+        timeZone: zoneSuggestion,
+      },
+      `Reminders now use ${zoneSuggestion}.`,
+      TIME_ZONE_ACTION_KEY,
+    );
+  }
+
+  function dismissZoneOffer() {
+    if (workspace) {
+      try {
+        window.localStorage.setItem(
+          zoneOfferStorageKey(workspace.user.draftStorageNamespace),
+          deviceTimeZone(),
+        );
+      } catch {
+        // Private mode or a full store: the offer simply returns next load.
+      }
+    }
+    setZoneOfferDismissed(true);
   }
 
   async function setReminderState(
@@ -3727,7 +3799,7 @@ export function ITrackApp() {
         credentialId: reminder.credentialId,
         status,
         snoozedUntil:
-          status === "snoozed" ? addDaysIso(todayIso(), 7) : null,
+          status === "snoozed" ? addDaysIso(today(), 7) : null,
       },
       status === "snoozed"
         ? "Reminder snoozed for one week."
@@ -4330,6 +4402,33 @@ export function ITrackApp() {
               </div>
               <button type="button" onClick={() => void loadWorkspace()}>
                 Try again
+              </button>
+            </div>
+          ) : null}
+
+          {workspace &&
+          isOnline &&
+          zoneSuggestion &&
+          !zoneOfferDismissed &&
+          !zoneOfferDismissedEarlier ? (
+            <div className="zone-banner" role="status">
+              <div>
+                <strong>Your device is in {zoneSuggestion}</strong>
+                <small>Reminders and default dates currently use UTC.</small>
+              </div>
+              <button
+                type="button"
+                disabled={pendingActionKeys.includes(TIME_ZONE_ACTION_KEY)}
+                onClick={() => void adoptDeviceTimeZone()}
+              >
+                Use {zoneSuggestion}
+              </button>
+              <button
+                type="button"
+                className="link-button"
+                onClick={dismissZoneOffer}
+              >
+                Not now
               </button>
             </div>
           ) : null}
@@ -5475,7 +5574,7 @@ export function ITrackApp() {
                     requiresOfficialCatalogDates(selectedRule) &&
                     !isAbveCatalogRule(selectedRule)
                       ? ""
-                      : defaultCatalogCycleStart(selectedRule)
+                      : defaultCatalogCycleStart(selectedRule, today())
                   }
                   required
                 />
@@ -5490,7 +5589,7 @@ export function ITrackApp() {
                     requiresOfficialCatalogDates(selectedRule) &&
                     !isAbveCatalogRule(selectedRule)
                       ? ""
-                      : defaultCatalogDeadline(selectedRule)
+                      : defaultCatalogDeadline(selectedRule, today())
                   }
                   required
                 />
@@ -5705,7 +5804,7 @@ export function ITrackApp() {
                       onChange: (event: ChangeEvent<HTMLInputElement>) =>
                         setNremtSubmissionDate(event.currentTarget.value),
                     }
-                  : { defaultValue: todayIso() })}
+                  : { defaultValue: today() })}
                 required
               />
             </label>
@@ -5889,7 +5988,7 @@ export function ITrackApp() {
                   autoFocus
                   name="acceptedAt"
                   type="date"
-                  defaultValue={todayIso()}
+                  defaultValue={today()}
                   min={selectedCredential.submittedAt?.slice(0, 10)}
                   required
                 />
@@ -10121,7 +10220,8 @@ function AccountView({
               ? `Check-ins are scheduled ${workspace.reminderPreferences.leadDays.join(
                   ", ",
                 )} days before due dates.`
-              : "Choose when upcoming due dates should appear on Today."}
+              : "Choose when upcoming due dates should appear on Today."}{" "}
+            Times use {workspace.reminderPreferences.timeZone}.
           </p>
           <div className="account-card-actions">
             <button

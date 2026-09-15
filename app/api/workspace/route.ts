@@ -29,6 +29,7 @@ import {
 } from "@/db/identity";
 import { ensureUser, initializeDatabase } from "@/db/runtime";
 import { env } from "cloudflare:workers";
+import { todayLocal } from "../../lib/dates";
 import {
   isWebPushConfigured,
   sendWebPush,
@@ -2203,16 +2204,11 @@ function validTimeZone(value: string) {
   }
 }
 
+// One implementation of "today in a zone" for the whole app (critic-01).
+// The three callers (the weekly-progression period and the snooze check)
+// validate the zone first; todayLocal falls back to UTC on its own anyway.
 function todayInTimeZone(timeZone: string) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
-  const part = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((candidate) => candidate.type === type)?.value ?? "";
-  return `${part("year")}-${part("month")}-${part("day")}`;
+  return todayLocal(timeZone);
 }
 
 const PROGRESSION_ACTION_TYPES = [

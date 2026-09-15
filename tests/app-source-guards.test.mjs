@@ -161,3 +161,23 @@ test("no test file reads client source text (architecture-03)", () => {
   }
   assert.ok(scanned > 0, "scanned the test files");
 });
+
+// critic-01: every default date comes from todayLocal(zone) in
+// app/lib/dates.ts. A UTC "today" anywhere under app/ — a screen or an API
+// route — reintroduces the evening off-by-one, so the expression is banned
+// outright, and the retired helper's name is banned too so it cannot come
+// back under a fresh alias.
+test("no file under app/ computes today in UTC (critic-01)", () => {
+  for (const { file, source } of readClientSources()) {
+    assert.doesNotMatch(
+      source,
+      /new Date\(\)\s*\.toISOString\(\)\.slice\(0,\s*10\)/,
+      `${file}: use todayLocal(zone) from app/lib/dates.ts, never the UTC date`,
+    );
+    assert.doesNotMatch(
+      source,
+      /\bconst todayIso\b/,
+      `${file}: todayIso was retired by app/lib/dates.ts`,
+    );
+  }
+});

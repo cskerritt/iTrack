@@ -1,6 +1,7 @@
 import { getD1 } from "@/db";
 import { resolveRequestIdentity } from "@/db/identity";
 import { ensureUser, initializeDatabase } from "@/db/runtime";
+import { isValidTimeZone, todayLocal } from "../../lib/dates";
 
 export const dynamic = "force-dynamic";
 
@@ -109,7 +110,17 @@ export async function GET(request: Request) {
     const csv = `\uFEFF${[header, ...rows]
       .map((row) => row.map(csvCell).join(","))
       .join("\r\n")}\r\n`;
-    const today = new Date().toISOString().slice(0, 10);
+    // The download's date is the user's date, not the worker's UTC date.
+    const preference = await database
+      .prepare(
+        `SELECT time_zone AS timeZone
+         FROM reminder_preferences
+         WHERE user_id = ?`,
+      )
+      .bind(identity.userId)
+      .first<{ timeZone: string }>();
+    const zone = preference?.timeZone ?? "UTC";
+    const today = todayLocal(isValidTimeZone(zone) ? zone : "UTC");
 
     return new Response(csv, {
       headers: {

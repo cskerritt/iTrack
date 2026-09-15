@@ -5350,6 +5350,68 @@ a {
   padding: 0 12px;
 }
 
+/* The one-tap time-zone offer (critic-01): the offline banner's shape and
+   tokens, plus its Use and Not-now buttons. */
+.zone-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+  border: 1px solid var(--edge);
+  border-radius: 13px;
+  background: var(--wash-tint);
+  color: var(--ink-tint-deep);
+  padding: 12px 14px;
+}
+
+.zone-banner > div {
+  flex: 1 1 auto;
+}
+
+.zone-banner strong,
+.zone-banner small {
+  display: block;
+}
+
+.zone-banner strong {
+  font-size: var(--text-sm);
+}
+
+.zone-banner small {
+  margin-top: 2px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.zone-banner button {
+  min-height: var(--tap-min);
+  border: 1px solid var(--edge);
+  border-radius: 9px;
+  background: var(--white);
+  color: var(--ink-tint-deep);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 800;
+  padding: 0 12px;
+}
+
+.zone-banner button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.zone-banner .link-button {
+  border: 0;
+  background: transparent;
+  color: var(--ink-tint);
+  padding: 0 4px;
+}
+
+.zone-banner .link-button:hover {
+  text-decoration: underline;
+}
+
 .offline-workspace {
   display: flex;
   min-height: 420px;
@@ -6419,8 +6481,17 @@ button:disabled:active {
     justify-self: start;
   }
 
-  .offline-banner {
+  .offline-banner,
+  .zone-banner {
     align-items: flex-start;
+  }
+
+  .zone-banner {
+    flex-wrap: wrap;
+  }
+
+  .zone-banner > div {
+    flex-basis: 100%;
   }
 
   .offline-workspace {

@@ -20641,6 +20641,61 @@ export {
         );
         assert.equal(restoreLeadResponse.status, 200);
 
+        // critic-01 / spec §4: alerts go out at pushHourLocal in the STORED
+        // zone. A second credential due the next day (lead day 2026-07-27
+        // with leadDays [1]) proves the gate on the one active device: at
+        // 08:30 America/New_York nothing is materialised, at 09:05 one row is.
+        database.raw
+          .prepare(
+            `INSERT INTO credentials (
+               id, user_id, rule_set_id, credential_name, profession,
+               jurisdiction, issuer, cycle_start, deadline, total_required,
+               unit_label, status
+             ) VALUES (
+               'credential-push-local-clock',
+               ?,
+               NULL,
+               'Local clock credential',
+               'Testing',
+               'New York',
+               'Test board',
+               '2026-01-01',
+               '2026-07-28',
+               1,
+               'credit',
+               'active'
+             )`,
+          )
+          .run(ownerId);
+        const localClockKey =
+          "deadline:credential-push-local-clock:2026-07-28";
+        const ledgerRows = () =>
+          database.raw
+            .prepare(`SELECT COUNT(*) AS count FROM push_delivery_ledger`)
+            .get().count;
+        const localClockRows = () =>
+          database.raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM push_delivery_ledger
+               WHERE reminder_key = ?`,
+            )
+            .get(localClockKey).count;
+        const ledgerRowsBefore = ledgerRows();
+        await runScheduled(Date.parse("2026-07-27T12:30:00.000Z"));
+        assert.equal(
+          ledgerRows(),
+          ledgerRowsBefore,
+          "08:30 EDT is before the 9:00 stored-local hour: nothing is materialised",
+        );
+        assert.equal(localClockRows(), 0);
+        await runScheduled(Date.parse("2026-07-27T13:05:00.000Z"));
+        assert.equal(
+          localClockRows(),
+          1,
+          "09:05 EDT: the lead-day reminder is materialised for the one active device",
+        );
+
         const secondSubscription = await makeSubscription(
           "https://fcm.googleapis.com/fcm/send/expired-device",
         );
