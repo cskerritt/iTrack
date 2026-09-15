@@ -4,6 +4,7 @@
 // file under app/, not one path.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
 import { readClientSources } from "./helpers/clientSources.mjs";
 import { WORKSPACE_ACTIONS } from "./helpers/workspaceActions.mjs";
 
@@ -126,4 +127,37 @@ test("every workspace dispatch label is in WORKSPACE_ACTIONS (critic-08)", () =>
   }
   assert.ok(labels.size > 0, "found the workspace dispatch switch under app/api/");
   assert.deepEqual([...labels].sort(), [...WORKSPACE_ACTIONS].sort());
+});
+
+// Screen behaviour lives in tests/e2e/, pure modules in tests/*.test.mjs
+// against .test-build/. No test file may read the client's component or
+// stylesheet source, or the built client chunk, as text: those pins broke on
+// every refactor without catching a regression (architecture-03), and Wave 2
+// retired all 196 of them. Every tests/*.test.mjs is walked except the two
+// generic walkers (this file and tests/protected-identifiers.test.mjs), so
+// the pattern cannot come back in a new file either.
+test("no test file reads client source text (architecture-03)", () => {
+  let scanned = 0;
+  for (const name of readdirSync(new URL("./", import.meta.url))) {
+    if (
+      !/\.test\.mjs$/.test(name) ||
+      name === "app-source-guards.test.mjs" ||
+      name === "protected-identifiers.test.mjs"
+    ) {
+      continue;
+    }
+    scanned += 1;
+    const suite = readFileSync(new URL(`./${name}`, import.meta.url), "utf8");
+    assert.doesNotMatch(
+      suite,
+      /\.\.\/app\/(ITrackApp\.tsx|globals\.css|layout\.tsx)/,
+      `${name}: a readFile of a client source file is back — prove the behaviour in tests/e2e/ or a unit test instead`,
+    );
+    assert.doesNotMatch(
+      suite,
+      /ITrackApp-/,
+      `${name}: must not read the built ITrackApp-*.js chunk`,
+    );
+  }
+  assert.ok(scanned > 0, "scanned the test files");
 });

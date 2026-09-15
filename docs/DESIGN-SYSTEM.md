@@ -186,8 +186,9 @@ allows system color keywords inside that block and nowhere else.
 
 ## Tests
 
-`tests/rendered-html.test.mjs` renders the real HTML/CSS and pins, among ~2,110
-assertions: theme-color metas for both schemes, `color-scheme`, and
-token-referencing rules. When a rule moves from a literal to a token, move the
-assertion to pin the token. `tools/contrast-audit.mjs` is the separate gate for
-the token values themselves.
+`tests/rendered-html.test.mjs` renders the real HTML/CSS through the built
+worker and pins theme-color metas for both schemes, `color-scheme`, and the
+rendered packet; it never reads component or stylesheet source (Playwright
+specs under `tests/e2e/` cover screen behaviour, `tests/*.test.mjs` cover the
+pure modules). `tools/contrast-audit.mjs` is the separate gate for the token
+values themselves.
