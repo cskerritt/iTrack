@@ -100,6 +100,14 @@
   /*
    * CHANNEL TRIPLES — for the few surfaces painted at an alpha (the modal
    * scrim, a lift over a panel, a shadow). Used only as rgb(var(--x) / a).
+   * --lift-rgb is the card surface as channels in BOTH schemes: laid over a
+   * panel at an alpha it lightens on light paper and, after dark, reads as a
+   * card-coloured inset — never the ink, which would put a light fill under
+   * the light dark-scheme inks. The inks a consumer sets on a lift keep AA at
+   * every alpha painted (0.55 to 0.8); the dark block restates each ratio.
+   *   --state-due-soon  5.6:1 on --lift-rgb@0.62 over --state-due-soon-soft
+   *   --accent          7.8:1 on --lift-rgb@0.78 over --state-due-soon-soft
+   *   --ink-muted       6.75:1 on --lift-rgb@0.8 over --card, 6.2:1 on --lift-rgb@0.55 over --accent-soft
    */
   --paper-rgb: 245 242 234;
   --card-rgb: 255 253 248;
@@ -256,13 +264,19 @@
      */
     --focus-ring: #93a6ff;
 
+    /*
+     * The lift stays the card surface after dark, never the ink:
+     *   --state-due-soon  8.6:1 on --lift-rgb@0.62 over --state-due-soon-soft
+     *   --accent          7.1:1 on --lift-rgb@0.78 over --state-due-soon-soft
+     *   --ink-muted       6.6:1 on --lift-rgb@0.8 over --card, 6.2:1 on --lift-rgb@0.55 over --accent-soft
+     */
     --paper-rgb: 21 19 15;
     --card-rgb: 31 28 22;
     --ink-rgb: 237 232 220;
     --accent-rgb: 147 166 255;
     --line-rgb: 51 47 39;
     --on-inverse-rgb: 28 26 23;
-    --lift-rgb: 237 232 220;
+    --lift-rgb: 31 28 22;
     --shade-rgb: 0 0 0;
     --scrim: rgba(0, 0, 0, 0.66);
 

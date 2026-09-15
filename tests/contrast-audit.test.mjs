@@ -82,10 +82,22 @@ test("app/styles/tokens.css is the only token file under app/; every other style
   const blocks = tokenBlocks(tokens.css);
   assert.ok(blocks.light && blocks.dark, "tokens.css has a :root block and one prefers-color-scheme: dark remap");
   assert.equal(blocks.forced, null, "forced-colors blocks live in the consumer that owns the mark, never in tokens.css");
-  assert.ok(
-    auditStylesheet(tokens.css, tokens).claims.length >= 75,
-    "every ink, state pair, mark and focus ring documents its ratio in both blocks",
-  );
+  const report = auditStylesheet(tokens.css, tokens);
+  assert.ok(report.claims.length >= 75, "every ink, state pair, mark and focus ring documents its ratio in both blocks");
+  // A lift — rgb(var(--lift-rgb) / a) laid over a panel — is a channel triple
+  // no other claim reaches, so the inks consumers set on it claim their ratio
+  // over it in BOTH schemes. A light lift under the light dark-scheme inks
+  // (the Home check-in buttons at 1.4:1) is the regression this pins.
+  for (const scheme of ["light", "dark"]) {
+    const lifts = report.claims.filter(
+      (claim) => claim.scheme === scheme && /^--lift-rgb@[\d.]+ over --/.test(claim.surfaceExpr),
+    );
+    assert.ok(lifts.length >= 3, `${scheme}: the inks that sit on a lift claim their ratio over it (${lifts.length})`);
+    for (const claim of lifts) {
+      assert.equal(claim.result, "pass", `${scheme} ${claim.subject} on ${claim.surfaceExpr}: ${claim.result}`);
+      assert.ok(claim.actual >= 4.5, `${scheme} ${claim.subject} on ${claim.surfaceExpr} measures ${claim.actual}`);
+    }
+  }
   const globals = sheets.find((sheet) => sheet.path === "app/globals.css");
   assert.ok(globals, "app/globals.css is walked");
   assert.equal(globals.kind, "consumer", "globals.css opens with @import + resets, never :root");
