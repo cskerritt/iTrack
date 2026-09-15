@@ -4,6 +4,8 @@
 
 **Goal:** Public visitors to iTrack get a marketing landing page and can sign up with email + password (Resend-verified), while the existing Basic Auth path keeps working for the iOS app and env-var users.
 
+> Superseded 2026-09-10 — Basic auth and the iOS client it served were removed in Wave 1 (docs/superpowers/plans/2026-09-10-itrack-wave1-stop-the-bleeding.md); the session-cookie gateway is authoritative.
+
 **Architecture:** The Railway proxy (`deploy/railway/serve.mjs`) becomes an auth gateway. New modules: `auth.mjs` (SQLite user/session/token store via `node:sqlite`), `email.mjs` (Resend), `auth-routes.mjs` (HTTP handlers + rate limiting + cookies), `gateway.mjs` (request routing extracted from serve.mjs, testable without wrangler), `pages/*.html` (5 self-contained static pages). The Cloudflare worker (`worker/`, `db/`, `app/`) changes **zero lines** — it keeps trusting `oai-authenticated-user-email` headers injected by the proxy.
 
 **Tech Stack:** Node 22, `node:sqlite` (behind `--experimental-sqlite`), `node:crypto` scrypt, `node --test` runner, Resend HTTP API, plain HTML/CSS (no framework) for public pages.

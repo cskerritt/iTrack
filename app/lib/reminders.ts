@@ -248,6 +248,7 @@ export async function loadReminderData(
       WHERE task.user_id = ?
         AND credential.user_id = task.user_id
         AND credential.status <> 'renewed'
+        AND credential.archived_at IS NULL
         AND task.archived_at IS NULL
         AND task.status <> 'completed'
         AND task.kind <> 'submission'
@@ -271,6 +272,7 @@ export async function loadReminderData(
         ON acceptance.credential_id = credential.id
         AND acceptance.user_id = credential.user_id
       WHERE credential.user_id = ?
+        AND credential.archived_at IS NULL
         AND (
           credential.status = 'active'
           OR (

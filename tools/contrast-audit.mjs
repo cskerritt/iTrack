@@ -1,17 +1,44 @@
 #!/usr/bin/env node
 /**
- * Contrast audit for app/globals.css.
+ * Contrast audit for every stylesheet in the repo.
  *
- * The stylesheet documents, beside each muted/accent ink and each solid mark,
- * the WCAG ratio it holds against the surfaces it is approved for. Those
- * comments are a contract: they are what a future change is checked against.
- * This script re-derives every one of them from the token values actually in
- * the file and fails if a claim has drifted or dropped below its floor. It
- * also enforces the design-system invariant that no colour literal appears
- * outside the two :root blocks.
+ * Two invariants, one tool:
  *
- *   node tools/contrast-audit.mjs          audit, exit 1 on any failure
- *   node tools/contrast-audit.mjs --list   also print every passing claim
+ *   1. CLAIMS. A token file documents, beside each muted/accent ink and each
+ *      solid mark, the WCAG ratio it holds against the surfaces it is approved
+ *      for. Those comments are a contract: this script re-derives every one of
+ *      them from the token values actually in the file and fails if a claim has
+ *      drifted or dropped below its floor. Claims are read only from token
+ *      files; a token file with no claims (each public page) passes with 0.
+ *
+ *   2. LITERALS. No colour literal — hex, rgb()/rgba(), a named colour, or a
+ *      system colour outside a `@media (forced-colors …)` block — may appear
+ *      outside a token file's token blocks. A consumer stylesheet has no token
+ *      blocks, so every literal in it is a violation.
+ *
+ * WHICH FILES. `collectStylesheets` walks every .css under app/ (recursively)
+ * and the <style> blocks of deploy/railway/pages/*.html. A .css file is a TOKEN
+ * file iff its first rule — after comments and any leading `@import …;` /
+ * `@charset …;` statements; app/globals.css opens with `@import "tailwindcss";`
+ * — is `:root {`. Every page is a token file because each inlines its own
+ * :root. Everything else under app/ is a CONSUMER. Today app/globals.css and
+ * the five pages qualify; after the Wave 3 split only app/styles/tokens.css and
+ * the pages will, and every per-screen stylesheet is a consumer.
+ *
+ * TOKEN BLOCKS of a token file are the first `:root {` block and, when present,
+ * the `@media (prefers-color-scheme: dark)` block — never a later :root such as
+ * globals.css's responsive `@media (max-width: 1040px) { :root … }`. System
+ * colour keywords are allowed only inside `@media (forced-colors …)`; a file
+ * without that block allows none.
+ *
+ *   node tools/contrast-audit.mjs            audit every stylesheet; exit 1 on any failure or literal
+ *   node tools/contrast-audit.mjs --list     also print every passing claim
+ *   node tools/contrast-audit.mjs --json     every claim with its measurement, as JSON, for retuning
+ *                                            the comments in bulk (exit 1 only on an unresolved claim)
+ *   node tools/contrast-audit.mjs <path>…    audit just those .css/.html files (paths relative to the cwd)
+ *
+ * Importable as well as runnable: auditStylesheet(css, { path, kind }),
+ * collectStylesheets(root), tokenBlocks(css).
  *
  * CLAIM GRAMMAR (inside the token comments, one claim per ratio):
  *
@@ -38,13 +65,11 @@
  * and each case is rare enough to be worth naming at the site.
  */
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const CSS_PATH = resolve(ROOT, "app/globals.css");
-const CSS = readFileSync(CSS_PATH, "utf8");
 
 const TEXT_FLOOR = 4.5;
 const OBJECT_FLOOR = 3;
@@ -94,6 +119,12 @@ function parseColor(raw) {
 
 /* ------------------------------------------------------------------ parsing */
 
+/** Blank a span out while keeping every newline, so every index and line number still holds. */
+const blank = (s) => s.replace(/[^\n]/g, " ");
+
+/** Replace every comment with blanks of the same shape (newlines kept). */
+const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, blank);
+
 /** Byte range of the block whose opening brace follows `from`. */
 function blockRange(src, from) {
   const open = src.indexOf("{", from);
@@ -105,32 +136,109 @@ function blockRange(src, from) {
   throw new Error(`unbalanced block at ${from}`);
 }
 
-const LIGHT_RANGE = blockRange(CSS, CSS.indexOf(":root {"));
-const DARK_RANGE = blockRange(
-  CSS,
-  CSS.indexOf("@media (prefers-color-scheme: dark)"),
-);
+/**
+ * Range of the block that follows the first `marker`, or null when the file
+ * has no such block. (A bare `indexOf` of -1 would silently hand `blockRange`
+ * the first block in the file — which is how a page with no dark block used
+ * to read its :root as the dark block.)
+ */
+function optionalBlock(src, marker) {
+  const at = src.indexOf(marker);
+  return at < 0 ? null : blockRange(src, at);
+}
 
-const stripComments = (s) =>
-  s.replace(/\/\*[\s\S]*?\*\//g, (m) => " ".repeat(m.length));
+/**
+ * The token blocks of a stylesheet: the first `:root {` block, the dark
+ * remap, and the forced-colors block, each `null` when absent. Markers are
+ * searched with comments blanked, so prose that mentions a block does not
+ * count as one.
+ */
+export function tokenBlocks(css) {
+  const code = stripComments(css);
+  return {
+    light: optionalBlock(code, ":root {"),
+    dark: optionalBlock(code, "@media (prefers-color-scheme: dark)"),
+    forced: optionalBlock(code, "@media (forced-colors"),
+  };
+}
 
-function tokensIn([a, b]) {
+const LEADING_AT_STATEMENT = /^\s*@[a-z-]+[^;{}]*;/i;
+
+/** A .css file is a token file iff its first rule is `:root {`. */
+function isTokenStylesheet(css) {
+  let code = stripComments(css);
+  while (LEADING_AT_STATEMENT.test(code)) code = code.replace(LEADING_AT_STATEMENT, "");
+  return /^\s*:root \{/.test(code);
+}
+
+/**
+ * The CSS of an HTML page: the content of every <style>…</style> block, in
+ * order, with everything outside the blocks blanked to spaces (newlines
+ * kept), so a line number in the report is the HTML file's own.
+ */
+function styleBlocksOf(html) {
+  let css = "";
+  let cursor = 0;
+  for (const m of html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)) {
+    const start = m.index + m[0].length - "</style>".length - m[1].length;
+    css += blank(html.slice(cursor, start)) + m[1];
+    cursor = start + m[1].length;
+  }
+  return css + blank(html.slice(cursor));
+}
+
+function displayPath(root, file) {
+  const rel = relative(root, file);
+  return rel.startsWith("..") || isAbsolute(rel) ? file : rel.split(sep).join("/");
+}
+
+function loadStylesheet(root, file) {
+  const raw = readFileSync(file, "utf8");
+  const page = /\.html?$/i.test(file);
+  const css = page ? styleBlocksOf(raw) : raw;
+  return {
+    path: displayPath(root, file),
+    css,
+    kind: page || isTokenStylesheet(css) ? "tokens" : "consumer",
+  };
+}
+
+function walk(dir, out = []) {
+  for (const entry of readdirSync(dir).sort()) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) walk(full, out);
+    else out.push(full);
+  }
+  return out;
+}
+
+/** Every stylesheet the audit covers: app/**.css (recursive) + the pages' <style> blocks. */
+export function collectStylesheets(root = ROOT) {
+  const files = [
+    ...walk(join(root, "app")).filter((file) => file.endsWith(".css")),
+    ...walk(join(root, "deploy", "railway", "pages")).filter((file) => file.endsWith(".html")),
+  ];
+  return files.map((file) => loadStylesheet(root, file));
+}
+
+function tokensIn(css, range) {
+  const tokens = new Map();
+  if (!range) return tokens;
   // Comments are stripped first: prose like "not --accent: the platform blue"
   // otherwise reads as a declaration and swallows the one that follows it.
-  const body = stripComments(CSS.slice(a, b));
-  const tokens = new Map();
+  const body = stripComments(css.slice(range[0], range[1]));
   for (const m of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)) {
     tokens.set(m[1], m[2].trim());
   }
   return tokens;
 }
 
-const LIGHT = tokensIn(LIGHT_RANGE);
-const DARK = tokensIn(DARK_RANGE);
-
 /** Resolve a token in a scheme, falling back to the light block. */
-function resolve0(token, scheme) {
-  const raw = scheme === "dark" ? (DARK.get(token) ?? LIGHT.get(token)) : LIGHT.get(token);
+function resolve0(tokens, token, scheme) {
+  const raw =
+    scheme === "dark"
+      ? (tokens.dark.get(token) ?? tokens.light.get(token))
+      : tokens.light.get(token);
   if (raw === undefined) return null;
   return parseColor(raw);
 }
@@ -141,15 +249,15 @@ const ALIASES = new Map([["the amber card", "--amber-card-from"]]);
  * Resolve a surface expression to an opaque colour.
  * Understands "--a", "--a over --b" and "--a@0.2 over --b".
  */
-function resolveSurface(expr, scheme, selfToken) {
+function resolveSurface(tokens, expr, scheme, selfToken) {
   const text = expr.trim();
-  if (text === "the fill") return resolve0(selfToken, scheme);
-  if (ALIASES.has(text)) return resolve0(ALIASES.get(text), scheme);
+  if (text === "the fill") return resolve0(tokens, selfToken, scheme);
+  if (ALIASES.has(text)) return resolve0(tokens, ALIASES.get(text), scheme);
 
   const composite = /^(--[a-z0-9-]+)(?:@([\d.]+))?\s+over\s+(.+)$/i.exec(text);
   if (composite) {
-    const base = resolveSurface(composite[3], scheme, selfToken);
-    const top = resolve0(composite[1], scheme);
+    const base = resolveSurface(tokens, composite[3], scheme, selfToken);
+    const top = resolve0(tokens, composite[1], scheme);
     if (!base || !top) return null;
     const layer = [...top];
     layer.a = composite[2] !== undefined ? Number(composite[2]) : top.a;
@@ -157,7 +265,7 @@ function resolveSurface(expr, scheme, selfToken) {
     return over(layer, base);
   }
   if (/^--[a-z0-9-]+$/.test(text)) {
-    const c = resolve0(text, scheme);
+    const c = resolve0(tokens, text, scheme);
     return c && c.a !== undefined ? null : c;
   }
   return null;
@@ -170,13 +278,15 @@ function floorFor(subject) {
 }
 
 /**
- * Pull every documented claim out of the comments inside a :root block.
+ * Pull every documented claim out of the comments inside a token block.
  * A claim line looks like `*   --token   4.8:1 on --surface, 5.6:1 on --card`.
  */
-function claimsIn([a, b], scheme) {
+function claimsIn(css, range, scheme) {
   const claims = [];
-  const lines = CSS.slice(a, b).split("\n");
-  const start = CSS.slice(0, a).split("\n").length;
+  if (!range) return claims;
+  const [a, b] = range;
+  const lines = css.slice(a, b).split("\n");
+  const start = css.slice(0, a).split("\n").length;
 
   // A claim's owning token is the last `*  --token` seen; continuation lines
   // (a wrapped clause) inherit it.
@@ -211,37 +321,6 @@ function claimsIn([a, b], scheme) {
     }
   });
   return claims;
-}
-
-/* -------------------------------------------------------------------- audit */
-
-const failures = [];
-const passes = [];
-
-for (const claim of [
-  ...claimsIn(LIGHT_RANGE, "light"),
-  ...claimsIn(DARK_RANGE, "dark"),
-]) {
-  const bg = resolveSurface(claim.surfaceExpr, claim.scheme, claim.owner);
-  const rawFg = resolve0(claim.subject, claim.scheme);
-  if (!bg || !rawFg) {
-    failures.push({
-      ...claim,
-      kind: "unresolved",
-      detail: `cannot resolve ${!rawFg ? claim.subject : claim.surfaceExpr}`,
-    });
-    continue;
-  }
-  const actual = contrast(over(rawFg, bg), bg);
-  const floor = claim.large ? OBJECT_FLOOR : floorFor(claim.subject);
-  const record = { ...claim, actual, floor };
-  if (Math.abs(actual - claim.claimed) > DRIFT) {
-    failures.push({ ...record, kind: "drift" });
-  } else if (actual + 0.005 < floor) {
-    failures.push({ ...record, kind: "floor" });
-  } else {
-    passes.push(record);
-  }
 }
 
 /* ------------------------------------------------- token-literal invariant */
@@ -297,94 +376,154 @@ const SYSTEM_COLORS = new Set([
   "marktext",
 ]);
 
-/** Blank a span out while keeping every newline, so line numbers still hold. */
-const blank = (s) => s.replace(/[^\n]/g, " ");
-
-const literals = [];
-{
-  const masked =
-    CSS.slice(0, LIGHT_RANGE[0]) +
-    blank(CSS.slice(...LIGHT_RANGE)) +
-    CSS.slice(LIGHT_RANGE[1], DARK_RANGE[0]) +
-    blank(CSS.slice(...DARK_RANGE)) +
-    CSS.slice(DARK_RANGE[1]);
+/** Every colour literal outside the given token blocks (both may be null). */
+function literalsIn(css, { light, dark, forced }, path) {
+  let masked = css;
+  for (const range of [light, dark]) {
+    if (!range) continue;
+    masked = masked.slice(0, range[0]) + blank(masked.slice(range[0], range[1])) + masked.slice(range[1]);
+  }
   // Strip comments so prose that mentions a hex is not a violation.
   const code = stripComments(masked);
   const lineOf = (index) => code.slice(0, index).split("\n").length;
-  const forcedColors = blockRange(code, code.indexOf("@media (forced-colors"));
+  const inForced = (index) => Boolean(forced) && index >= forced[0] && index < forced[1];
+  const literals = [];
 
   for (const m of code.matchAll(/#[0-9a-f]{3,8}\b/gi)) {
-    literals.push({ line: lineOf(m.index), text: m[0] });
+    literals.push({ path, line: lineOf(m.index), text: m[0] });
   }
   for (const m of code.matchAll(/\brgba?\(([^)]*)\)/gi)) {
     if (/var\(--/.test(m[1])) continue; // rgb(var(--x) / a) is the token form
-    literals.push({ line: lineOf(m.index), text: m[0] });
+    literals.push({ path, line: lineOf(m.index), text: m[0] });
   }
   // Only the value side of a declaration can name a colour, and a token
   // reference is not a name — --mark-coral is a token, not the colour coral.
   const noTokens = code.replace(/--[a-z0-9-]+/gi, blank);
   for (const m of noTokens.matchAll(/:\s*([^;{}]+)[;}]/g)) {
     const valueStart = m.index + m[0].indexOf(m[1]);
-    const inForced = m.index >= forcedColors[0] && m.index < forcedColors[1];
     for (const w of m[1].matchAll(/[a-z][a-z]{2,}/gi)) {
       const word = w[0].toLowerCase();
-      if (NAMED_COLORS.has(word) || (SYSTEM_COLORS.has(word) && !inForced)) {
-        literals.push({ line: lineOf(valueStart + w.index), text: w[0] });
+      if (NAMED_COLORS.has(word) || (SYSTEM_COLORS.has(word) && !inForced(m.index))) {
+        literals.push({ path, line: lineOf(valueStart + w.index), text: w[0] });
       }
     }
   }
+  return literals.sort((x, y) => x.line - y.line);
+}
+
+/* -------------------------------------------------------------------- audit */
+
+/**
+ * Audit one stylesheet. `kind` is "tokens" or "consumer": claims are read and
+ * token blocks masked only for a token file; a consumer file masks nothing.
+ * Returns { path, kind, claims, failures, literals } where every claim carries
+ * `result` ("pass" | "drift" | "floor" | "unresolved") and `failures` is the
+ * subset whose result is not "pass".
+ */
+export function auditStylesheet(css, { path, kind }) {
+  const blocks = tokenBlocks(css);
+  const light = kind === "tokens" ? blocks.light : null;
+  const dark = kind === "tokens" ? blocks.dark : null;
+  const tokens = { light: tokensIn(css, light), dark: tokensIn(css, dark) };
+
+  const claims = [...claimsIn(css, light, "light"), ...claimsIn(css, dark, "dark")].map((claim) => {
+    const bg = resolveSurface(tokens, claim.surfaceExpr, claim.scheme, claim.owner);
+    const rawFg = resolve0(tokens, claim.subject, claim.scheme);
+    if (!bg || !rawFg) {
+      return {
+        ...claim,
+        path,
+        result: "unresolved",
+        detail: `cannot resolve ${!rawFg ? claim.subject : claim.surfaceExpr}`,
+      };
+    }
+    const actual = contrast(over(rawFg, bg), bg);
+    const floor = claim.large ? OBJECT_FLOOR : floorFor(claim.subject);
+    const record = { ...claim, path, actual, floor };
+    if (Math.abs(actual - claim.claimed) > DRIFT) return { ...record, result: "drift" };
+    if (actual + 0.005 < floor) return { ...record, result: "floor" };
+    return { ...record, result: "pass" };
+  });
+
+  return {
+    path,
+    kind,
+    claims,
+    failures: claims.filter((claim) => claim.result !== "pass"),
+    literals: literalsIn(css, { light, dark, forced: blocks.forced }, path),
+  };
 }
 
 /* ------------------------------------------------------------------ report */
 
-if (process.argv.includes("--json")) {
-  // Every claim with its measurement, for retuning the comments in bulk.
-  console.log(
-    JSON.stringify(
-      [...passes, ...failures.filter((f) => f.kind !== "unresolved")].sort(
-        (a, b) => a.line - b.line || a.nthOnLine - b.nthOnLine,
-      ),
-    ),
-  );
-  process.exit(failures.some((f) => f.kind === "unresolved") ? 1 : 0);
-}
-
-const listAll = process.argv.includes("--list");
 const pad = (s, n) => String(s).padEnd(n);
 
-if (listAll) {
-  for (const scheme of ["light", "dark"]) {
-    console.log(`\n${scheme.toUpperCase()} — ${passes.filter((p) => p.scheme === scheme).length} claims`);
-    for (const p of passes.filter((x) => x.scheme === scheme)) {
-      console.log(
-        `  ${pad(p.subject, 22)} ${p.actual.toFixed(2)}:1 on ${pad(p.surfaceExpr, 34)} (claims ${p.claimed})`,
-      );
+function printReport(reports, { list }) {
+  for (const report of reports) {
+    if (list) {
+      for (const scheme of ["light", "dark"]) {
+        const passes = report.claims.filter((c) => c.result === "pass" && c.scheme === scheme);
+        if (passes.length === 0) continue;
+        console.log(`\n${report.path} ${scheme.toUpperCase()} — ${passes.length} claims`);
+        for (const p of passes) {
+          console.log(
+            `  ${pad(p.subject, 22)} ${p.actual.toFixed(2)}:1 on ${pad(p.surfaceExpr, 34)} (claims ${p.claimed})`,
+          );
+        }
+      }
+    }
+    console.log(
+      `contrast-audit: ${report.path} — ${report.claims.length} claims, ` +
+        `${report.failures.length} failing, ${report.literals.length} literals`,
+    );
+    for (const f of report.failures) {
+      const at = `${report.path}:L${f.line}`;
+      if (f.result === "unresolved") {
+        console.log(`  FAIL ${at} ${f.scheme} ${f.subject}: ${f.detail}`);
+      } else if (f.result === "drift") {
+        console.log(
+          `  FAIL ${at} ${f.scheme} ${pad(f.subject, 22)} on ${pad(f.surfaceExpr, 30)} ` +
+            `claims ${f.claimed}:1, measures ${f.actual.toFixed(2)}:1`,
+        );
+      } else {
+        console.log(
+          `  FAIL ${at} ${f.scheme} ${pad(f.subject, 22)} on ${pad(f.surfaceExpr, 30)} ` +
+            `${f.actual.toFixed(2)}:1 is below the ${f.floor}:1 floor`,
+        );
+      }
+    }
+    for (const l of report.literals) {
+      console.log(`  FAIL ${report.path}:L${l.line} colour literal outside token blocks: ${l.text}`);
     }
   }
+  const failing = reports.reduce((n, r) => n + r.failures.length, 0);
+  const literals = reports.reduce((n, r) => n + r.literals.length, 0);
+  console.log(
+    `contrast-audit: ${reports.length} stylesheets, ${failing} failing claims, ` +
+      `${literals} colour literals outside token blocks`,
+  );
+  return failing + literals > 0 ? 1 : 0;
 }
 
-console.log(
-  `\ncontrast-audit: ${passes.length + failures.length} documented claims, ` +
-    `${failures.length} failing; ${literals.length} colour literals outside the :root blocks`,
-);
+function main(argv) {
+  const flags = new Set(argv.filter((arg) => arg.startsWith("--")));
+  const paths = argv.filter((arg) => !arg.startsWith("--"));
+  const sheets = paths.length
+    ? paths.map((p) => loadStylesheet(ROOT, resolve(p)))
+    : collectStylesheets(ROOT);
+  const reports = sheets.map((sheet) => auditStylesheet(sheet.css, sheet));
 
-for (const f of failures) {
-  if (f.kind === "unresolved") {
-    console.log(`  FAIL ${f.scheme} L${f.line} ${f.subject}: ${f.detail}`);
-  } else if (f.kind === "drift") {
-    console.log(
-      `  FAIL ${f.scheme} L${f.line} ${pad(f.subject, 22)} on ${pad(f.surfaceExpr, 30)} ` +
-        `claims ${f.claimed}:1, measures ${f.actual.toFixed(2)}:1`,
-    );
-  } else {
-    console.log(
-      `  FAIL ${f.scheme} L${f.line} ${pad(f.subject, 22)} on ${pad(f.surfaceExpr, 30)} ` +
-        `${f.actual.toFixed(2)}:1 is below the ${f.floor}:1 floor`,
-    );
+  if (flags.has("--json")) {
+    // Every claim with its measurement, for retuning the comments in bulk.
+    const claims = reports
+      .flatMap((r) => r.claims.filter((c) => c.result !== "unresolved"))
+      .sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line || a.nthOnLine - b.nthOnLine);
+    console.log(JSON.stringify(claims));
+    return reports.some((r) => r.claims.some((c) => c.result === "unresolved")) ? 1 : 0;
   }
-}
-for (const l of literals) {
-  console.log(`  FAIL colour literal outside :root — line ${l.line}: ${l.text}`);
+  return printReport(reports, { list: flags.has("--list") });
 }
 
-process.exit(failures.length + literals.length > 0 ? 1 : 0);
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  process.exit(main(process.argv.slice(2)));
+}

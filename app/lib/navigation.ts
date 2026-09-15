@@ -1,4 +1,4 @@
-// The URL contract for the iOS-style nav stack.
+// The URL contract for the nav stack.
 //
 // Every tab is a root route (`/`, `/credentials`, `/history`, `/profile`) and
 // detail screens push on top of their tab (`/credentials/:id`). Keeping the

@@ -4,24 +4,9 @@
 // file under app/, not one path.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-const appDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "app");
-
-function walk(dir, out = []) {
-  for (const entry of readdirSync(dir)) {
-    const full = path.join(dir, entry);
-    if (statSync(full).isDirectory()) walk(full, out);
-    else if (/\.(tsx?|mts)$/.test(entry)) out.push(full);
-  }
-  return out;
-}
-
-export function readClientSources() {
-  return walk(appDir).map((file) => ({ file: path.relative(appDir, file), source: readFileSync(file, "utf8") }));
-}
+import { readdirSync, readFileSync } from "node:fs";
+import { readClientSources } from "./helpers/clientSources.mjs";
+import { WORKSPACE_ACTIONS } from "./helpers/workspaceActions.mjs";
 
 // Returns the text of every `setX((current) => …)` updater body, found by
 // balancing parentheses from the opening `(` of the set call.
@@ -128,4 +113,90 @@ test("the parked screen is inert while a credential is pushed, and routes set do
     "screen-root carries inert={Boolean(detailCredential)}",
   );
   assert.ok(sources.some(({ source }) => /document\.title = routeTitle\(/.test(source)), "document.title is set from routeTitle()");
+});
+
+// tests/isolation.test.mjs probes every workspace action by name from
+// WORKSPACE_ACTIONS; this guard ties that list to the build from the source
+// side. It reads the `case "<name>":` labels out of whichever file under
+// app/api/ throws `unsupported_action`, so it survives the route split.
+test("every workspace dispatch label is in WORKSPACE_ACTIONS (critic-08)", () => {
+  const labels = new Set();
+  for (const { file, source } of readClientSources()) {
+    if (!file.startsWith("api/") || !source.includes("unsupported_action")) continue;
+    for (const match of source.matchAll(/^\s*case "([A-Za-z]+)":/gm)) labels.add(match[1]);
+  }
+  assert.ok(labels.size > 0, "found the workspace dispatch switch under app/api/");
+  assert.deepEqual([...labels].sort(), [...WORKSPACE_ACTIONS].sort());
+});
+
+// Screen behaviour lives in tests/e2e/, pure modules in tests/*.test.mjs
+// against .test-build/. No test file may read the client's component or
+// stylesheet source, or the built client chunk, as text: those pins broke on
+// every refactor without catching a regression (architecture-03), and Wave 2
+// retired all 196 of them. Every tests/*.test.mjs is walked except the two
+// generic walkers (this file and tests/protected-identifiers.test.mjs), so
+// the pattern cannot come back in a new file either.
+test("no test file reads client source text (architecture-03)", () => {
+  let scanned = 0;
+  for (const name of readdirSync(new URL("./", import.meta.url))) {
+    if (
+      !/\.test\.mjs$/.test(name) ||
+      name === "app-source-guards.test.mjs" ||
+      name === "protected-identifiers.test.mjs"
+    ) {
+      continue;
+    }
+    scanned += 1;
+    const suite = readFileSync(new URL(`./${name}`, import.meta.url), "utf8");
+    assert.doesNotMatch(
+      suite,
+      /\.\.\/app\/(ITrackApp\.tsx|globals\.css|layout\.tsx)/,
+      `${name}: a readFile of a client source file is back — prove the behaviour in tests/e2e/ or a unit test instead`,
+    );
+    assert.doesNotMatch(
+      suite,
+      /ITrackApp-/,
+      `${name}: must not read the built ITrackApp-*.js chunk`,
+    );
+  }
+  assert.ok(scanned > 0, "scanned the test files");
+});
+
+// critic-01: every default date comes from todayLocal(zone) in
+// app/lib/dates.ts. A UTC "today" anywhere under app/ — a screen or an API
+// route — reintroduces the evening off-by-one, so the expression is banned
+// outright, and the retired helper's name is banned too so it cannot come
+// back under a fresh alias.
+test("no file under app/ computes today in UTC (critic-01)", () => {
+  for (const { file, source } of readClientSources()) {
+    assert.doesNotMatch(
+      source,
+      /new Date\(\)\s*\.toISOString\(\)\.slice\(0,\s*10\)/,
+      `${file}: use todayLocal(zone) from app/lib/dates.ts, never the UTC date`,
+    );
+    assert.doesNotMatch(
+      source,
+      /\bconst todayIso\b/,
+      `${file}: todayIso was retired by app/lib/dates.ts`,
+    );
+  }
+});
+
+// One spelling of "open cycle" (app-ux-04, app-ux-18). The client used to
+// hand-roll `status !== "renewed"` at fourteen sites while the Home hero and
+// the detail stat, which had no such guard, counted down renewed cycles.
+// `isOpenCycle` / `isClosedCycle` in app/lib/cycles.ts are now the only place
+// the status vocabulary is compared, so a new screen cannot grow a fifteenth.
+test("the open-cycle test is spelled out only in app/lib/cycles.ts (app-ux-04, app-ux-18)", () => {
+  let scanned = 0;
+  for (const { file, source } of readClientSources()) {
+    if (file === "lib/cycles.ts") continue;
+    scanned += 1;
+    assert.doesNotMatch(
+      source,
+      /!==\s*["']renewed["']/,
+      `${file}: compare through isOpenCycle() from app/lib/cycles.ts, not against "renewed"`,
+    );
+  }
+  assert.ok(scanned > 0, "scanned the client sources");
 });

@@ -1,0 +1,78 @@
+// Replaces tests/rendered-html.test.mjs subtests: "pushes credential detail onto the navigation stack", "leaves no history entry the user cannot get out of", "slides screens in and out and follows the back gesture", "answers touch the way the platform does" — behaviour those pins encoded is asserted here against the running app.
+import { expect, freshIdentity, test } from "./fixtures";
+
+// The demo identity (localhost, no header) is read-only in every spec: its
+// seed is one NJ LCSW credential, an ethics activity and three tasks
+// (db/runtime.ts ensureDemoWorkspace). Nothing at this level saves.
+
+test("Home is the current tab, names the credential, and scores it", async ({ page, app }) => {
+  await app.goto("/");
+  await expect(app.tab("Home")).toHaveAttribute("aria-current", "page");
+  await expect(app.tab("Credentials")).not.toHaveAttribute("aria-current", "page");
+  await expect(page).toHaveTitle("Home · iTrack");
+  await expect(
+    page.getByRole("heading", { name: "Licensed Clinical Social Worker", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Best next action")).toBeVisible();
+  // The readiness ring and every other meter announce a value, not a shape.
+  const bars = page.getByRole("progressbar");
+  await expect(bars.first()).toBeVisible();
+  for (const bar of await bars.all()) {
+    await expect(bar).toHaveAttribute("aria-valuenow", /^\d+(\.\d+)?$/);
+  }
+  app.expectNoErrors();
+});
+
+test("View plan pushes the credential and the browser back button returns Home", async ({ page, app }) => {
+  await app.goto("/");
+  await page.getByRole("button", { name: "View plan" }).click();
+  await expect(page).toHaveURL(/\/credentials\/[^/]+$/);
+  await expect(page.locator("h1.push-title")).toHaveText("Licensed Clinical Social Worker");
+  await expect(page).toHaveTitle("Licensed Clinical Social Worker · iTrack");
+  await page.goBack();
+  await expect(page).toHaveURL(/^https?:\/\/[^/]+\/$/);
+  await expect(page).toHaveTitle("Home · iTrack");
+  // The pushed screen stays mounted while it slides out (screen-exiting,
+  // unmounted on animationend), and it names the credential twice; the
+  // Home heading is unique only once it has left.
+  await expect(page.locator("h1.push-title")).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Licensed Clinical Social Worker", exact: true }),
+  ).toBeVisible();
+  app.expectNoErrors();
+});
+
+test("Add task opens the personal-task sheet", async ({ page, app }) => {
+  await app.goto("/");
+  await page.getByRole("button", { name: "Add task", exact: true }).click();
+  await expect(app.dialog("Add a personal task")).toBeVisible();
+  app.expectNoErrors();
+});
+
+test.describe("Log credits", () => {
+  // Opening the sheet writes a browser draft only, but the check-in this
+  // test needs must not depend on what a human has dismissed in the shared
+  // demo workspace, so it is seeded under a throwaway identity.
+  test.use({ identity: freshIdentity() });
+
+  const isoDaysFromToday = (days: number) =>
+    new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+
+  test("a deadline check-in's Log credits opens the sheet with that credential chosen", async ({ page, app }) => {
+    // A deadline 20 days out sits inside the 30-day lead window, so Home
+    // shows a "Needs attention" check-in for it (app/lib/reminders.ts
+    // reminderActivationDate; lead days default to [90, 30, 7, 1]).
+    const { id } = await app.seedCredential({
+      credentialName: "E2E deadline credential",
+      cycleStart: isoDaysFromToday(-345),
+      deadline: isoDaysFromToday(20),
+    });
+    await app.goto("/");
+    await expect(page.getByText("Needs attention")).toBeVisible();
+    await page.getByRole("button", { name: "Log credits" }).click();
+    const sheet = app.dialog("Log completed learning");
+    await expect(sheet).toBeVisible();
+    await expect(sheet.locator('select[name="credentialId"]')).toHaveValue(id);
+    app.expectNoErrors();
+  });
+});

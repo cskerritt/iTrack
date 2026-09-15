@@ -117,4 +117,4 @@ Node.js `>=22.13.0` is required.
 - broader effective-dated profession/state rule research
 - a repeatable catalog research/review pipeline with richer provenance
 - evidence-bundle download and richer archive browsing
-- richer offline capture, native mobile packaging, and regulator/provider integrations
+- richer offline capture and regulator/provider integrations

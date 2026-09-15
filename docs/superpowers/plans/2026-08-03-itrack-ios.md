@@ -4,6 +4,8 @@
 
 **Goal:** A private TestFlight iOS app wrapping the hosted iTrack web app, adding APNs push reminders, WidgetKit widgets, and VisionKit certificate scanning; backend gains the APNs sender, widget endpoint, token registration, and re-enabled auth.
 
+> Retired 2026-09-10 — the iOS shell is withdrawn; superseded by docs/superpowers/specs/2026-09-10-itrack-web-redesign-design.md.
+
 **Architecture:** Two codebases. Backend work (Tasks 1–8) lands in the existing iTrack repo (`~/Documents/New project/Vigilo`): a new APNs delivery lib mirroring the existing web-push delivery, two small API routes, env plumbing. iOS work (Tasks 9–13) lands in a NEW repo `~/Documents/New project/iTrack-iOS`: a Capacitor shell with `server.url` pointing at Railway prod, plus Swift for auth, push, widgets, and scanning.
 
 **Tech Stack:** TypeScript (Cloudflare-Workers runtime, drizzle/D1), node:test with TS-transpile pattern, Capacitor (latest stable), Swift/SwiftUI (WidgetKit, VisionKit), Xcode 26.6.

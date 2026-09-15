@@ -4,6 +4,8 @@
 **Status:** Approved by Chris (brainstorming session)
 **Approach:** A — auth gateway in the Railway proxy (`deploy/railway/serve.mjs`)
 
+> Superseded 2026-09-10 — Basic auth and the iOS client it served were removed in Wave 1 (docs/superpowers/plans/2026-09-10-itrack-wave1-stop-the-bleeding.md); the session-cookie gateway is authoritative.
+
 ## Goal
 
 Open iTrack to the public: an unauthenticated visitor lands on a marketing

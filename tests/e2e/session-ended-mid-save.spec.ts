@@ -1,4 +1,5 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
+import { expect, test, type AppFixture } from "./fixtures";
 
 // app-ux-M-01 / architecture-M-04: a 401 on a write used to surface as a JSON
 // parse error. Reading it as "session ended" drops the workspace so the
@@ -7,6 +8,9 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 // Reload state was on screen yet neither perceivable nor operable until the
 // user happened to Cancel. The session-ended state has to be the only thing
 // on screen, without cancelling anything.
+//
+// Read-only against the demo workspace: every POST is intercepted before it
+// reaches the dev server.
 
 const SESSION_ENDED = {
   status: 401,
@@ -17,30 +21,10 @@ const SESSION_ENDED = {
 
 const isWorkspaceApi = (url: URL) => url.pathname === "/api/workspace";
 
-function collectPageErrors(page: Page) {
-  // A render-time throw is uncaught in production (pageerror); under
-  // `npm run dev` vinext's recovery boundary catches it and React reports it
-  // through console.error. Collect both.
-  const pageErrors: string[] = [];
-  page.on("pageerror", (error) => pageErrors.push(error.message));
-  page.on("console", (message) => {
-    const text = message.text();
-    if (message.type() === "error" && /^(?:[A-Z]\w*)?Error\b/.test(text)) {
-      pageErrors.push(text.split("\n")[0]);
-    }
-  });
-  return pageErrors;
-}
-
-async function openAddTask(page: Page) {
-  await page.goto("/");
-  // The shell is server-rendered before React hydrates; wait for the client
-  // to have fetched the workspace before clicking.
-  await expect(
-    page.locator('[aria-busy="true"][aria-label="Loading iTrack"]'),
-  ).toHaveCount(0, { timeout: 30_000 });
+async function openAddTask(app: AppFixture, page: Page) {
+  await app.goto("/");
   await page.getByRole("button", { name: "Add task" }).first().click();
-  const sheet = page.locator(".modal-card");
+  const sheet = app.dialog("Add a personal task");
   await expect(sheet).toBeVisible();
   await sheet.locator('input[name="title"]').fill("Request transcript");
   return sheet;
@@ -64,22 +48,20 @@ async function expectSessionEndedState(page: Page, sheet: Locator) {
   await expect(page.locator(".error-banner")).toHaveCount(0);
 }
 
-test("a 401 while saving a personal task closes the editor and shows Reload and sign in", async ({ page }) => {
-  const pageErrors = collectPageErrors(page);
+test("a 401 while saving a personal task closes the editor and shows Reload and sign in", async ({ app, page }) => {
   await page.route(isWorkspaceApi, async (route) => {
     if (route.request().method() === "POST") await route.fulfill(SESSION_ENDED);
     else await route.continue();
   });
 
-  const sheet = await openAddTask(page);
+  const sheet = await openAddTask(app, page);
   await sheet.getByRole("button", { name: "Add task" }).click();
 
   await expectSessionEndedState(page, sheet);
-  expect(pageErrors, pageErrors.join("\n")).toEqual([]);
+  app.expectNoErrors();
 });
 
-test("a 401 on the workspace refetch after a write conflict shows Reload and sign in", async ({ page }) => {
-  const pageErrors = collectPageErrors(page);
+test("a 401 on the workspace refetch after a write conflict shows Reload and sign in", async ({ app, page }) => {
   // A stale-revision conflict makes runAction refetch the workspace while one
   // is still on screen; that refetch is the 401 here. The write itself never
   // reaches the dev server.
@@ -102,9 +84,9 @@ test("a 401 on the workspace refetch after a write conflict shows Reload and sig
     }
   });
 
-  const sheet = await openAddTask(page);
+  const sheet = await openAddTask(app, page);
   await sheet.getByRole("button", { name: "Add task" }).click();
 
   await expectSessionEndedState(page, sheet);
-  expect(pageErrors, pageErrors.join("\n")).toEqual([]);
+  app.expectNoErrors();
 });

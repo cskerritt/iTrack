@@ -167,6 +167,8 @@ const TABLE_STATEMENTS = [
     total_required REAL NOT NULL,
     unit_label TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
+    revision INTEGER NOT NULL DEFAULT 1,
+    archived_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -1069,6 +1071,19 @@ const RICH_RULE_COLUMNS = [
     name: "dispatched_at",
     definition: "dispatched_at TEXT",
   },
+  // Migration 0014 (credential_archive). Mirrored here because
+  // initializeDatabase, not drizzle, is what an existing Railway volume runs;
+  // ensureRichRuleColumns below must list `credentials` for these to apply.
+  {
+    table: "credentials",
+    name: "revision",
+    definition: "revision INTEGER NOT NULL DEFAULT 1",
+  },
+  {
+    table: "credentials",
+    name: "archived_at",
+    definition: "archived_at TEXT",
+  },
 ] as const;
 
 const RICH_RULE_INDEX_STATEMENTS = [
@@ -1080,6 +1095,8 @@ const RICH_RULE_INDEX_STATEMENTS = [
     ON activities (user_id, archived_at, completion_date)`,
   `CREATE INDEX IF NOT EXISTS checklist_tasks_user_credential_archive_idx
     ON checklist_tasks (user_id, credential_id, archived_at, sort_order)`,
+  `CREATE INDEX IF NOT EXISTS credentials_user_archive_deadline_idx
+    ON credentials (user_id, archived_at, deadline)`,
 ] as const;
 
 const RULE_SET_ID = "nj-lcsw-sample-v1";
@@ -5626,6 +5643,7 @@ async function ensureRichRuleColumns(database: D1Database) {
     "checklist_tasks",
     "reminder_preferences",
     "push_delivery_ledger",
+    "credentials",
   ] as const) {
     const existing = await tableColumnNames(database, table);
     for (const column of RICH_RULE_COLUMNS) {

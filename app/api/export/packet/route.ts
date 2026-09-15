@@ -108,9 +108,12 @@ export async function GET(request: Request) {
     await ensureUser(database, identity);
 
     const workspace = await getWorkspace(database, identity);
-    const credential = workspace.credentials.find(
-      (candidate) => candidate.id === credentialId,
-    );
+    // An archived credential is hidden from Home and Credentials, not from
+    // its own paper trail: the packet keeps opening (spec §4, app-ux-03).
+    const credential = [
+      ...workspace.credentials,
+      ...workspace.archivedCredentials,
+    ].find((candidate) => candidate.id === credentialId);
     if (!credential) {
       return packetError(
         request,

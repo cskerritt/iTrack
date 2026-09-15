@@ -1,12 +1,16 @@
 # iTrack Design System
 
-The single source of truth is the two `:root` blocks at the top of `app/globals.css`:
-the light block defines every token; the `@media (prefers-color-scheme: dark)` block
-remaps the color tokens. **No color literal may appear anywhere else in the
-stylesheet or in components** — this invariant is enforced, not just asserted:
-`node tools/contrast-audit.mjs` fails on any hex, `rgb()`, or named color outside
-those two blocks. It is what makes dark mode a pure token remap with zero
-per-scheme component rules.
+The single source of truth is the two `:root` blocks at the top of the **token file** —
+`app/globals.css` today, `app/styles/tokens.css` after the Wave 3 split (a stylesheet is a
+token file iff its first rule, after any leading `@import`, is `:root {`; every public page
+is one too, because each inlines its own `:root`): the light block defines every token; the
+`@media (prefers-color-scheme: dark)` block remaps the color tokens. **No color literal may
+appear outside a token file's `:root`/dark blocks** — not in consumer stylesheets (the
+per-screen CSS after Wave 3), not in components, not in `deploy/railway/pages/*.html`. This
+is enforced, not just asserted: `node tools/contrast-audit.mjs` walks every stylesheet under
+`app/` and every page's `<style>` blocks with one rule set and fails on any hex, `rgb()`, or
+named color outside those blocks; `tests/contrast-audit.test.mjs` runs it under `npm test`.
+It is what makes dark mode a pure token remap with zero per-scheme component rules.
 
 ## Character
 
@@ -15,9 +19,8 @@ with cards lifted to plain white; the ink is a near-neutral rather than a hue;
 the one saturated color is the system blue. Dark mode drops to a true near-black
 (`#0b0b0e`) with no tint at all — a tinted near-black is the thing that reads as
 "a website in dark mode" next to the platform's own — and the surfaces rise off it
-in small steps. Type is the system stack, so on an iPhone it is San Francisco.
-There is no webfont and no serif: display sizes are the same face carried by
-weight and tracking.
+in small steps. Type is the system stack; nothing loads on the critical path.
+Display sizes are the same face carried by weight and tracking.
 
 Blue carries progress and choice, amber carries attention, coral carries
 problems. The inverse surfaces (sidebar, hero, detail header, toast) are
@@ -87,9 +90,9 @@ became `*-tint` (`--ink-tint`, `--mark-tint`, `--chip-tint`, `--track-tint`,
 Every muted-ink token, accent ink and solid mark documents, in a comment beside
 its value, its computed WCAG ratio on each surface it is approved for — **in both
 blocks**. Those comments are a contract, not a note: `tools/contrast-audit.mjs`
-re-derives all 92 of them from the token values in the file and fails if any has
-drifted by more than 0.05 or dropped below its floor. Run it before committing a
-token change.
+re-derives every documented claim (98 today) from the token values in the file and
+fails if any has drifted by more than 0.05 or dropped below its floor. Run it before
+committing a token change; `npm test` runs it too.
 
 The floors:
 
@@ -124,10 +127,10 @@ Never introduce an ad-hoc value at a use site.
 
 ## Typography
 
-One family for everything — `--font-ui`, the system stack, which resolves to San
-Francisco on the phone. A downloaded display face is the loudest tell that a
-Capacitor shell is a website, and it costs a render-blocking round trip on the
-first paint the app shows.
+One family for everything — `--font-ui`, the system stack. The constraint is no
+render-blocking font request on first paint; a self-hosted subset with
+`font-display: swap` is allowed and the system stack is the fallback
+(ios-coupling-09).
 
 Phone-first scale, all `font-size` via tokens (floor `--text-2xs`, one documented
 exception: the 10px bottom-tab labels, carried by 20px icons):
@@ -186,8 +189,9 @@ allows system color keywords inside that block and nowhere else.
 
 ## Tests
 
-`tests/rendered-html.test.mjs` renders the real HTML/CSS and pins, among ~2,110
-assertions: theme-color metas for both schemes, `color-scheme`, and
-token-referencing rules. When a rule moves from a literal to a token, move the
-assertion to pin the token. `tools/contrast-audit.mjs` is the separate gate for
-the token values themselves.
+`tests/rendered-html.test.mjs` renders the real HTML/CSS through the built
+worker and pins theme-color metas for both schemes, `color-scheme`, and the
+rendered packet; it never reads component or stylesheet source (Playwright
+specs under `tests/e2e/` cover screen behaviour, `tests/*.test.mjs` cover the
+pure modules). `tools/contrast-audit.mjs` is the separate gate for the token
+values themselves.

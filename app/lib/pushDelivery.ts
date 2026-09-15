@@ -109,6 +109,7 @@ async function validStoredSubscription(
   }
 }
 
+// Renameable: tags are per delivery, nothing stored depends on the "ll-" prefix (ios-coupling-11).
 function safeNotificationTag(deliveryId: string) {
   return `ll-${deliveryId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80)}`;
 }

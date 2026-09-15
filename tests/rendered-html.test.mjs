@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { register } from "node:module";
 import test from "node:test";
 
@@ -37,7 +37,7 @@ function normalizedSql(value) {
 }
 
 function isOwnedCredentialCycleLookup(sql) {
-  return /SELECT id, status,(?: rule_set_id AS ruleSetId,)? cycle_start AS cycleStart, deadline FROM credentials WHERE id = \? AND user_id = \?/i.test(
+  return /SELECT id, status,(?: rule_set_id AS ruleSetId,)? cycle_start AS cycleStart, deadline(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
     sql,
   );
 }
@@ -577,21 +577,6 @@ async function importTypeScriptModule(source) {
   );
 }
 
-async function readBuiltClientAppSource() {
-  const assets = await readdir(
-    new URL("../dist/client/assets/", import.meta.url),
-  );
-  const appAsset = assets.find(
-    (name) =>
-      name.startsWith("ITrackApp-") && name.endsWith(".js"),
-  );
-  assert.ok(appAsset, "missing built ITrackApp client asset");
-  return readFile(
-    new URL(`../dist/client/assets/${appAsset}`, import.meta.url),
-    "utf8",
-  );
-}
-
 function pngDimensions(contents) {
   assert.equal(contents.subarray(1, 4).toString("ascii"), "PNG");
   return {
@@ -650,11 +635,10 @@ test("iTrack product contract", async (t) => {
   });
 
   await t.test("serves the app shell at every routed tab path", async () => {
-    // The nav stack writes real URLs (app/lib/navigation.ts), so a refresh, a
-    // deep link, or the iOS shell reloading its `server.url` can land on any
-    // of these. Each has to return the same shell rather than a 404, and each
-    // has to hydrate against the home root — the server has no window, so the
-    // tab is only adopted client-side.
+    // The nav stack writes real URLs (app/lib/navigation.ts), so a refresh or
+    // a deep link can land on any of these. Each has to return the same shell
+    // rather than a 404, and each has to hydrate against the home root — the
+    // server has no window, so the tab is only adopted client-side.
     for (const path of [
       "/",
       "/credentials",
@@ -681,446 +665,23 @@ test("iTrack product contract", async (t) => {
     assert.match(await response.text(), /Page not found/);
   });
 
-  await t.test("pushes credential detail onto the navigation stack", async () => {
-    // Opening a credential is a navigation, not a state swap: it writes a
-    // history entry, so the iOS back gesture, the browser back button and a
-    // refresh all land where the user expects. The list view therefore stops
-    // rendering the detail inline beside it.
-    const [clientSource, stylesSource] = await Promise.all([
-      readFile(new URL("../app/ITrackApp.tsx", import.meta.url), "utf8"),
-      readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
-    ]);
-
-    assert.match(clientSource, /nav\.push\(\{ kind: "credential", id \}\)/);
-
-    // Both screens sit in the DOM together — the root parked underneath the
-    // pushed one — because the push/pop transition animates between them.
-    assert.match(
-      clientSource,
-      /className="screen-stack"[\s\S]{0,240}?screen screen-root[\s\S]{0,240}?screen-under/,
-    );
-    assert.match(
-      clientSource,
-      /className=\{`screen screen-pushed\$\{[\s\S]{0,200}?<CredentialDetailScreen/,
-    );
-    assert.match(clientSource, /<CredentialDetailScreen[\s\S]{0,900}?onBack=\{/);
-    assert.match(clientSource, /nav\.pop/);
-
-    // A deep link naming a deleted credential falls back to the list root —
-    // but only once the workspace has arrived, or a cold /credentials/<id>
-    // load would bounce off before the credential it names existed.
-    assert.match(
-      clientSource,
-      /!workspace \|\| !detailCredentialId \|\| detailCredential[\s\S]{0,80}?navigateToTab\("credentials"\)/,
-    );
-    // Back, forward and deep links move the URL without a tap, so the
-    // app-wide credential selection that Today, the log sheet and the
-    // submission actions read is mirrored from the routed id.
-    assert.match(
-      clientSource,
-      /parseRoute\(window\.location\.pathname\)\.detail\?\.id[\s\S]{0,200}?setSelectedCredentialId\([\s\S]{0,240}?addEventListener\("popstate"/,
-    );
-
-    const listStart = clientSource.indexOf("function CredentialsView(");
-    const detailStart = clientSource.indexOf(
-      "function CredentialDetailScreen(",
-    );
-    assert.ok(listStart > 0, "CredentialsView should still exist");
-    assert.ok(
-      detailStart > listStart,
-      "CredentialDetailScreen should follow CredentialsView",
-    );
-    assert.doesNotMatch(
-      clientSource.slice(listStart, detailStart),
-      /credential-detail/,
-    );
-
-    // Every pushed screen carries the iOS header: a back control labelled
-    // with the screen it returns to, then this screen's own title. The label
-    // is the tab the push was made *from* — Home opens credentials too, so a
-    // control hardcoded to "Credentials" would name a screen the user is not
-    // going back to.
-    assert.match(
-      clientSource,
-      /className="push-header"[\s\S]{0,400}?className="push-back"[\s\S]{0,240}?name="chevronLeft"[\s\S]{0,240}?<span>\{backLabel\}<\/span>[\s\S]{0,240}?className="push-title"/,
-    );
-    assert.match(clientSource, /backLabel=\{TAB_LABELS\[view\]\}/);
-    assert.match(stylesSource, /\.push-header \{/);
-    assert.match(stylesSource, /\.push-back \{/);
-    assert.match(stylesSource, /\.push-title \{/);
-  });
-
-  await t.test("leaves no history entry the user cannot get out of", async () => {
-    const clientSource = await readFile(
-      new URL("../app/ITrackApp.tsx", import.meta.url),
-      "utf8",
-    );
-
-    // Depth is read off the entry the browser landed on, never counted down
-    // per popstate: popstate fires on *forward* too, and a counter would then
-    // under-report and turn the next pop into a replace, destroying the
-    // pushed entry instead of leaving it.
-    assert.match(
-      clientSource,
-      /const onPop = \(event: PopStateEvent\)[\s\S]{0,400}?adopt\(event\.state\)/,
-    );
-    assert.match(clientSource, /readNavEntry\(state\)[\s\S]{0,120}?depthRef\.current = entry\?\.depth \?\? 0/);
-    assert.doesNotMatch(clientSource, /pushDepth/);
-
-    // Switching tabs from a pushed screen unwinds what the app pushed. Without
-    // the unwind the entry the push was made from is stranded under the tab
-    // root the switch writes, and back walks into the tab the user just left
-    // instead of leaving the app.
-    assert.match(
-      clientSource,
-      /pendingTabRef\.current = tab;[\s\S]{0,300}?window\.history\.go\(-depthRef\.current\)/,
-    );
-    assert.match(
-      clientSource,
-      /const pending = pendingTabRef\.current;[\s\S]{0,200}?commitTab\(pending\)/,
-    );
-
-    // Every entry the app writes is stamped, so a refresh or a forward press
-    // resolves to the same screen and the same tab it was left on.
-    assert.match(clientSource, /pushState\(\s*withNavEntry\(/);
-    assert.match(clientSource, /replaceState\(\s*withNavEntry\(/);
-    assert.match(clientSource, /routeAt\(window\.location\.pathname, entry\)/);
-
-    // Accepting a renewal replaces the cycle the pushed screen was opened on,
-    // so the screen is re-pointed at its successor rather than left showing
-    // the finished one.
-    assert.match(
-      clientSource,
-      /nav\.replaceDetail\(\{ kind: "credential", id: result\.id \}\)/,
-    );
-
-    // Leaving a pushed screen is not always a pop — a tab tap clears the
-    // detail too — so the parked scroll offset is only restored to the tab it
-    // was taken from.
-    assert.match(
-      clientSource,
-      /parkedScrollRef\.current = \{ tab: view, y: window\.scrollY \}/,
-    );
-    assert.match(clientSource, /parked\.tab === view/);
-
-    // Home's "Log credits" shortcut hands its credential to the sheet, which
-    // applies it *after* a restored draft has chosen its own — otherwise the
-    // draft's credential would win and the credits would land on it.
-    assert.match(
-      clientSource,
-      /function logCreditsFor\(id: string\) \{\s*openActivityEntryFor\(id\);/,
-    );
-    assert.match(clientSource, /const target = preselected \?\? credential;/);
-  });
-
-  await t.test("slides screens in and out and follows the back gesture", async () => {
-    const [clientSource, stylesSource] = await Promise.all([
-      readFile(new URL("../app/ITrackApp.tsx", import.meta.url), "utf8"),
-      readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
-    ]);
-
-    // Both screens share one grid cell so the arriving one can travel across
-    // the one it covers. Neither leaves the flow, and only the axis they
-    // travel on is clipped: a credential detail runs several viewports tall
-    // and the document — the one scroller on this page — has to reach its
-    // bottom while it is the screen on top.
-    assert.match(
-      stylesSource,
-      /\.screen-stack \{[^}]*display: grid;[^}]*overflow-x: clip;[^}]*overflow-y: visible;[^}]*\}/,
-    );
-    assert.match(
-      stylesSource,
-      /\.screen-stack > \.screen \{[^}]*grid-area: 1 \/ 1;[^}]*\}/,
-    );
-    assert.doesNotMatch(
-      stylesSource,
-      /\.screen-pushed \{[^}]*position: absolute/,
-    );
-
-    // A push arrives from beyond the right edge, a pop leaves the same way,
-    // and the screen underneath parks instead of sitting still.
-    assert.match(
-      stylesSource,
-      /@keyframes screen-in \{[\s\S]{0,200}?translateX\(100%\)/,
-    );
-    assert.match(
-      stylesSource,
-      /\.screen-pushed \{[^}]*animation: screen-in var\(--screen-push\) var\(--screen-ease\)/,
-    );
-    assert.match(
-      stylesSource,
-      /\.screen-pushed\.screen-exiting \{[^}]*animation: screen-out var\(--screen-pop\) var\(--screen-ease\) forwards/,
-    );
-    assert.match(
-      stylesSource,
-      /\.screen-root\.screen-under \{[^}]*transform: translateX\(calc\(-28%/,
-    );
-
-    // One custom property carries the gesture, so the pushed screen and the
-    // one parked under it track the same finger; the exit picks up from where
-    // the finger let go rather than snapping back to zero first.
-    assert.match(
-      stylesSource,
-      /\.screen-pushed \{[^}]*transform: translateX\(var\(--screen-drag, 0px\)\)/,
-    );
-    assert.match(
-      stylesSource,
-      /\.screen-root\.screen-under \{[^}]*var\(--screen-drag, 0px\)/,
-    );
-    assert.match(
-      stylesSource,
-      /@keyframes screen-out \{[\s\S]{0,200}?transform: translateX\(var\(--screen-drag, 0px\)\)/,
-    );
-    // A dragged screen is placed by the finger, not by a curve.
-    assert.match(
-      stylesSource,
-      /\.screen-stack\.screen-dragging [\s\S]{0,120}?\{[^}]*transition: none;[^}]*\}/,
-    );
-
-    // The departing screen stays mounted for the length of its exit — every
-    // pop animates, including the browser's own back button — and stops
-    // taking taps while it is on its way out.
-    assert.match(
-      clientSource,
-      /screen screen-pushed\$\{[\s\S]{0,160}?screen-exiting/,
-    );
-    assert.match(clientSource, /onAnimationEnd=\{finishScreenExit\}/);
-    assert.match(
-      stylesSource,
-      /\.screen-pushed\.screen-exiting \{[^}]*pointer-events: none/,
-    );
-
-    // The gesture listens on the document, not on the stack: its edge band
-    // overlaps the page gutter, where a touch never reaches the stack at all.
-    assert.match(
-      clientSource,
-      /useEdgeSwipeBack\(\s*screenStackRef,\s*Boolean\(detailCredential\),\s*nav\.pop,?\s*\)/,
-    );
-    assert.match(
-      clientSource,
-      /function useEdgeSwipeBack\([\s\S]{0,2600}?document\.addEventListener\(\s*"touchstart"/,
-    );
-    assert.match(
-      clientSource,
-      /clientX <= EDGE_SWIPE_ZONE[\s\S]{0,1200}?> EDGE_SWIPE_COMMIT/,
-    );
-    assert.match(
-      clientSource,
-      /setProperty\(\s*"--screen-drag"/,
-    );
-
-    // Reduced motion drops the choreography and keeps the direct
-    // manipulation: the parked offset goes, the finger's does not.
-    assert.match(
-      stylesSource,
-      /@media \(prefers-reduced-motion: reduce\) \{\s*\.screen-root,\s*\.screen-root\.screen-under \{[^}]*transform: none;/,
-    );
-
-    // A pushed screen opens at its own top the way a native one does, and the
-    // screen it covered comes back to where it was left.
-    assert.match(
-      clientSource,
-      /parkedScrollRef[\s\S]{0,600}?window\.scrollTo/,
-    );
-  });
-
-  await t.test("answers touch the way the platform does", async () => {
-    const [clientSource, stylesSource] = await Promise.all([
-      readFile(new URL("../app/ITrackApp.tsx", import.meta.url), "utf8"),
-      readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
-    ]);
-
-    // The grey flash a mobile browser paints over a tapped control is the
-    // clearest tell that a screen is a web page. It goes everywhere, not just
-    // on `button, a`: the label-wrapped rows are tap targets too.
-    assert.match(
-      stylesSource,
-      /^\* \{\n  -webkit-tap-highlight-color: transparent;\n\}/m,
-    );
-
-    // The press answer is keyed to the element, not to an enumerated list of
-    // class names, so a control added tomorrow cannot ship without one. A row
-    // whose own control is disabled still says nothing back.
-    assert.match(
-      stylesSource,
-      /button:active:not\(:disabled\)[\s\S]{0,700}?opacity: var\(--press-dim\);\n  transform: scale\(var\(--press-scale\)\);/,
-    );
-    assert.match(
-      stylesSource,
-      /\.task-toggle:active:not\(:has\(input:disabled\)\)/,
-    );
-
-    // Every modal is a bottom sheet on a phone, so it carries the platform's
-    // two affordances: a grabber that says it can be pushed away, and a drag
-    // that does it — from the top of its own scroll only, since below that the
-    // finger belongs to the content.
-    assert.match(clientSource, /className="sheet-grabber"/);
-    assert.match(stylesSource, /\.sheet-grabber \{/);
-    assert.match(
-      stylesSource,
-      /@keyframes sheet-up \{[\s\S]{0,200}?translateY\(100%\)/,
-    );
-    assert.match(
-      stylesSource,
-      /\.modal-card \{[^}]*animation: sheet-up var\(--screen-push\) var\(--screen-ease\)/,
-    );
-    assert.match(
-      stylesSource,
-      /\.modal-card \{[^}]*transform: translateY\(var\(--sheet-drag, 0px\)\)/,
-    );
-    assert.match(
-      stylesSource,
-      /\.modal-card\.sheet-dragging \{[^}]*transition: none/,
-    );
-    assert.match(clientSource, /setProperty\(\s*"--sheet-drag"/);
-    assert.match(
-      clientSource,
-      /card\.scrollTop <= 0[\s\S]{0,1200}?> SHEET_DISMISS_COMMIT/,
-    );
-
-    // Whatever is on top owns the finger: with a sheet up, an edge drag must
-    // not pop the screen underneath it.
-    assert.match(clientSource, /closest\("\.modal-backdrop"\)/);
-
-    // Haptics belong to the shell. The web build looks the plugin up and
-    // carries on without it rather than requiring one.
-    assert.match(clientSource, /Capacitor\?\.Plugins\?\.Haptics/);
-    assert.match(
-      clientSource,
-      /function selectTab\(tab: TabName\) \{\n    hapticTap\(\);/,
-    );
-    assert.match(
-      clientSource,
-      /const openActivityEntryFor = useCallback\(\n\s*\(preselectCredentialId: string\) => \{[\s\S]{0,200}?hapticTap\(\);/,
-    );
-    assert.match(
-      clientSource,
-      /"addActivity",[\s\S]{0,2400}?hapticTap\("medium"\);/,
-    );
-    assert.match(
-      clientSource,
-      /"markRenewalAccepted",[\s\S]{0,1600}?hapticTap\("medium"\);/,
-    );
-
-    // Re-tapping the tab you are on is not a navigation: it pops what is
-    // stacked on that tab, and with nothing stacked it returns to the top.
-    assert.match(
-      clientSource,
-      /tab !== view[\s\S]{0,140}?nav\.setTab\(tab\);[\s\S]{0,200}?nav\.popToRoot\(\);[\s\S]{0,200}?window\.scrollTo\(\{ top: 0 \}\)/,
-    );
-
-    // Home's "needs attention" cards are the shortest path to the thing that
-    // needs it: the card opens that credential, and a deadline offers the
-    // credit log already pointed at it.
-    assert.match(
-      clientSource,
-      /className="reminder-open"[\s\S]{0,300}?onOpenCredential\(reminder\.credentialId\)/,
-    );
-    assert.match(
-      clientSource,
-      /onLogCreditsFor\(reminder\.credentialId\)[\s\S]{0,120}?>\s*Log credits/,
-    );
-    // One implementation of "open this credential" and one of "log against
-    // this credential", shared by Home's cards and the credential list, both
-    // re-pointing the app at the credential. The log shortcut hands it to the
-    // sheet rather than selecting it first: the sheet restores any saved draft
-    // as it opens and picks that draft's credential, so a selection written
-    // beforehand would be overwritten by it.
-    assert.match(
-      clientSource,
-      /function openCredentialDetail\(id: string\) \{\n    setSelectedCredentialId\(id\);\n    nav\.push\(\{ kind: "credential", id \}\);\n  \}/,
-    );
-    assert.match(
-      clientSource,
-      /function logCreditsFor\(id: string\) \{\n    openActivityEntryFor\(id\);\n  \}/,
-    );
-    assert.match(clientSource, /onOpenCredential=\{openCredentialDetail\}/);
-    assert.match(clientSource, /onLogCreditsFor=\{logCreditsFor\}/);
-    assert.match(clientSource, /onSelect=\{openCredentialDetail\}/);
-  });
-
-  await t.test("removes the disposable starter preview", async () => {
-    const [page, layout, packageJson, previewFiles] = await Promise.all([
-      readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-      readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
-      readFile(new URL("../package.json", import.meta.url), "utf8"),
-      readdir(new URL("../app/_sites-preview", import.meta.url)).catch(
-        (error) => {
-          if (error?.code === "ENOENT") return [];
-          throw error;
-        },
-      ),
-    ]);
-
-    assert.deepEqual(previewFiles, []);
-    assert.doesNotMatch(page, /SkeletonPreview|codex-preview/i);
-    assert.doesNotMatch(layout, /Starter Project|_sites-preview|codex-preview/i);
-    assert.doesNotMatch(packageJson, /react-loading-skeleton/i);
-
-    const response = await fetchWorker("http://localhost/", {
-      headers: { accept: "text/html" },
-    });
-    const html = await response.text();
-    assert.doesNotMatch(
-      html,
-      /Your site is taking shape|Building your site|codex-preview|react-loading-skeleton/i,
-    );
-  });
-
   await t.test(
     "keeps certificate OCR on-device and suggestions reviewable",
     async () => {
       const [
-        clientSource,
         ocrSource,
         packageSource,
-        builtClientSource,
-        typescript,
       ] = await Promise.all([
-        readFile(
-          new URL("../app/ITrackApp.tsx", import.meta.url),
-          "utf8",
-        ),
         readFile(
           new URL("../app/lib/certificateOcr.ts", import.meta.url),
           "utf8",
         ),
         readFile(new URL("../package.json", import.meta.url), "utf8"),
-        readFile(
-          new URL(
-            "../dist/server/ssr/assets/ITrackApp-BvrpzBXC.js",
-            import.meta.url,
-          ),
-          "utf8",
-        ).catch(async () => {
-          const assets = await readdir(
-            new URL("../dist/server/ssr/assets/", import.meta.url),
-          );
-          const appAsset = assets.find((name) =>
-            name.startsWith("ITrackApp-"),
-          );
-          assert.ok(appAsset);
-          return readFile(
-            new URL(
-              `../dist/server/ssr/assets/${appAsset}`,
-              import.meta.url,
-            ),
-            "utf8",
-          );
-        }),
-        import("typescript"),
       ]);
 
       const packageJson = JSON.parse(packageSource);
       assert.equal(packageJson.dependencies["tesseract.js"], "7.0.0");
       assert.equal(packageJson.dependencies["@tesseract.js-data/eng"], "1.0.0");
-      assert.match(clientSource, /capture="environment"/);
-      assert.match(clientSource, /Start with the certificate/);
-      assert.match(clientSource, /Review every highlighted suggestion/);
-      assert.match(
-        clientSource,
-        /const evidenceFile = activityEvidenceFile[\s\S]*?result\?\.id && hasEvidenceFile[\s\S]*?uploadEvidence\(result\.id, evidenceFile\)/,
-      );
       assert.match(
         ocrSource,
         /workerPath: new URL\("worker\.min\.js", assetRoot\)\.href/,
@@ -1128,7 +689,6 @@ test("iTrack product contract", async (t) => {
       assert.match(ocrSource, /corePath: new URL\("core", assetRoot\)\.href/);
       assert.match(ocrSource, /langPath: new URL\("lang", assetRoot\)/);
       assert.doesNotMatch(ocrSource, /https?:\/\/|fetch\(/i);
-      assert.match(builtClientSource, /Start with the certificate/);
 
       const requiredAssets = [
         "worker.min.js",
@@ -1145,48 +705,6 @@ test("iTrack product contract", async (t) => {
         assert.ok(sourceAsset.size > 100_000, `${asset} source asset is empty`);
         assert.equal(builtAsset.size, sourceAsset.size);
       }
-
-      const compiled = typescript.default.transpileModule(ocrSource, {
-        compilerOptions: {
-          module: typescript.default.ModuleKind.ES2022,
-          target: typescript.default.ScriptTarget.ES2022,
-        },
-      }).outputText;
-      const parser = await import(
-        `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`
-      );
-      assert.deepEqual(
-        parser.extractCertificateSuggestions(
-          [
-            "Course Title: Trauma-Informed Practice",
-            "Provider: State Medical Society",
-            "Completion Date: July 24, 2026",
-            "3.5 CME credits",
-          ].join("\n"),
-        ),
-        {
-          title: "Trauma-Informed Practice",
-          provider: "State Medical Society",
-          completionDate: "2026-07-24",
-          credits: 3.5,
-        },
-      );
-      assert.deepEqual(
-        parser.extractCertificateSuggestions(
-          [
-            "Program: Patient Safety Essentials",
-            "Issued by: Clinical Learning Institute",
-            "Completed on: 7/22/2026",
-            "CEUs: 2",
-          ].join("\n"),
-        ),
-        {
-          title: "Patient Safety Essentials",
-          provider: "Clinical Learning Institute",
-          completionDate: "2026-07-22",
-          credits: 2,
-        },
-      );
     },
   );
 
@@ -1195,15 +713,11 @@ test("iTrack product contract", async (t) => {
     async () => {
       const { DatabaseSync } = await import("node:sqlite");
       const database = new SQLiteD1Database(DatabaseSync);
-      const [runtimeSource, workspaceRouteSource, clientSource] =
+      const [runtimeSource, workspaceRouteSource] =
         await Promise.all([
           readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
           readFile(
             new URL("../app/api/workspace/route.ts", import.meta.url),
-            "utf8",
-          ),
-          readFile(
-            new URL("../app/ITrackApp.tsx", import.meta.url),
             "utf8",
           ),
         ]);
@@ -1864,10 +1378,6 @@ test("iTrack product contract", async (t) => {
         workspaceRouteSource,
         /COMPLIANCE_PERIOD_RULE_SET_PREFIXES[\s\S]*?ny-professional-classroom-teacher-[\s\S]*?ny-professional-esol-bilingual-[\s\S]*?nj-employed-teacher-annual-pd-[\s\S]*?pa-professional-educator-act-48-/,
       );
-      assert.match(
-        clientSource,
-        /isFloridaMentalHealthPhaseCredential[\s\S]*?requiresCurrentNextTemplate[\s\S]*?Choose the phase shown by CE Broker/,
-      );
       database.close();
     },
   );
@@ -1881,17 +1391,12 @@ test("iTrack product contract", async (t) => {
         runtimeSource,
         pharmacySource,
         workspaceRouteSource,
-        clientSource,
         compatibilitySource,
       ] = await Promise.all([
         readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
         readFile(new URL("../db/catalog/pharmacy.ts", import.meta.url), "utf8"),
         readFile(
           new URL("../app/api/workspace/route.ts", import.meta.url),
-          "utf8",
-        ),
-        readFile(
-          new URL("../app/ITrackApp.tsx", import.meta.url),
           "utf8",
         ),
         readFile(
@@ -2273,10 +1778,6 @@ test("iTrack product contract", async (t) => {
         workspaceRouteSource,
         /PHARMACIST_RENEWAL_TASK_COPY[\s\S]*?every applicable certification requirement[\s\S]*?classify every activity by delivery mode and period source[\s\S]*?isManagedPharmacistCredential/,
       );
-      assert.match(
-        clientSource,
-        /isManagedPharmacistCredential[\s\S]*?profession === "Pharmacy"[\s\S]*?requiresOfficialNextPeriodAttestation[\s\S]*?isManagedPharmacistCredential/,
-      );
       database.close();
     },
   );
@@ -2286,7 +1787,7 @@ test("iTrack product contract", async (t) => {
     async () => {
       const { DatabaseSync } = await import("node:sqlite");
       const database = new SQLiteD1Database(DatabaseSync);
-      const [runtimeSource, rehabilitationSource, routeSource, clientSource] =
+      const [runtimeSource, rehabilitationSource, routeSource] =
         await Promise.all([
           readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
           readFile(
@@ -2295,10 +1796,6 @@ test("iTrack product contract", async (t) => {
           ),
           readFile(
             new URL("../app/api/workspace/route.ts", import.meta.url),
-            "utf8",
-          ),
-          readFile(
-            new URL("../app/ITrackApp.tsx", import.meta.url),
             "utf8",
           ),
         ]);
@@ -3276,10 +2773,6 @@ test("iTrack product contract", async (t) => {
           routeSource,
           /assertRehabilitationCertificationDates[\s\S]*?abve_fixed_cycle_required[\s\S]*?crcc_standard_cycle_required[\s\S]*?crcc_cycle_attestation_required/,
         );
-        assert.match(
-          clientSource,
-          /isRehabilitationCertificationCatalogRule[\s\S]*?I checked my ABVE member record[\s\S]*?I checked CRCCCONNECT[\s\S]*?CRCC accepted clock-hour allocation/,
-        );
       } finally {
         database.close();
       }
@@ -4156,17 +3649,12 @@ export {
         nursingSource,
         carryoverSource,
         workspaceRouteSource,
-        clientSource,
       ] = await Promise.all([
         readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
         readFile(new URL("../db/catalog/nursing.ts", import.meta.url), "utf8"),
         readFile(new URL("../app/lib/carryover.ts", import.meta.url), "utf8"),
         readFile(
           new URL("../app/api/workspace/route.ts", import.meta.url),
-          "utf8",
-        ),
-        readFile(
-          new URL("../app/ITrackApp.tsx", import.meta.url),
           "utf8",
         ),
       ]);
@@ -4651,21 +4139,6 @@ export {
         floridaNursingTotalUpdate,
         /catalog_rule\.is_current/,
       );
-      assert.match(
-        clientSource,
-        /selectedRule\.totalUnits > 0[\s\S]*?No general numeric CE total[\s\S]*?credential\.totalRequired > 0[\s\S]*?Mandated training is tracked in conditions and the checklist/,
-      );
-      assert.match(
-        clientSource,
-        // Same copy, same branches — the detail moved from a pane inside
-        // CredentialsView onto its own pushed screen, where the binding it
-        // reads is named `credential` rather than `selected`.
-        /credential\.totalRequired > 0[\s\S]*?"Checklist"[\s\S]*?credential\.totalRequired > 0[\s\S]*?This issuing organization does not set a general numeric[\s\S]*?continuing-education total/,
-      );
-      assert.match(
-        clientSource,
-        /category\.kind === "informational"[\s\S]*?Track \$\{category\.name\}/,
-      );
       // The zero-hour readiness branch now lives in the shared readiness
       // module, so the contract
       // is asserted where the arithmetic actually is.
@@ -4675,18 +4148,6 @@ export {
           "utf8",
         ),
         /credential\.totalRequired <= 0[\s\S]*?requirementProgressValue \* 60[\s\S]*?taskProgress \* 40/,
-      );
-      assert.match(
-        clientSource,
-        /"Training and checklist"[\s\S]*?`\$\{readiness\}% ready`[\s\S]*?No general numeric CE total applies[\s\S]*?Checklist checkpoint/,
-      );
-      assert.match(
-        clientSource,
-        /I confirmed the next period is a standard full-cycle[\s\S]*?isManagedNursingCredential\(selectedCredential\)[\s\S]*?renewal or registration/,
-      );
-      assert.match(
-        clientSource,
-        /requirement\.exclusiveGroup[\s\S]*?Choose only one activity type from this group[\s\S]*?requirement\.relation === "overlapping"[\s\S]*?May overlap another selected requirement/,
       );
       database.close();
     },
@@ -6662,16 +6123,12 @@ export {
   await t.test(
     "replaces incompatible requirement tags without blocking valid overlays",
     async () => {
-      const [compatibilitySource, clientSource] = await Promise.all([
+      const [compatibilitySource] = await Promise.all([
         readFile(
           new URL(
             "../app/lib/requirementCompatibility.ts",
             import.meta.url,
           ),
-          "utf8",
-        ),
-        readFile(
-          new URL("../app/ITrackApp.tsx", import.meta.url),
           "utf8",
         ),
       ]);
@@ -6957,14 +6414,6 @@ export {
           `${nonMentorCoreTag.name} replaces Mentor Coaching`,
         );
       }
-      assert.match(
-        clientSource,
-        /nextRequirementSelection\(current,\s*requirement,\s*selectable,\s*checked\)/,
-      );
-      assert.match(
-        clientSource,
-        /requirementIncompatibilityMessage\(\s*requirement,\s*selectable,\s*\)/,
-      );
     },
   );
 
@@ -7519,24 +6968,14 @@ export {
     async () => {
       const [
         manifestSource,
-        layoutSource,
-        clientSource,
-        builtClientSource,
         workerSource,
         builtWorkerSource,
         offlineSource,
         builtOfflineSource,
         headersSource,
         builtHeadersSource,
-        stylesSource,
       ] = await Promise.all([
         readFile(new URL("../app/manifest.ts", import.meta.url), "utf8"),
-        readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
-        readFile(
-          new URL("../app/ITrackApp.tsx", import.meta.url),
-          "utf8",
-        ),
-        readBuiltClientAppSource(),
         readFile(new URL("../public/sw.js", import.meta.url), "utf8"),
         readFile(new URL("../dist/client/sw.js", import.meta.url), "utf8"),
         readFile(new URL("../public/offline.html", import.meta.url), "utf8"),
@@ -7546,7 +6985,6 @@ export {
         ),
         readFile(new URL("../public/_headers", import.meta.url), "utf8"),
         readFile(new URL("../dist/client/_headers", import.meta.url), "utf8"),
-        readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
       ]);
 
       const manifestResponse = await fetchWorker(
@@ -7585,9 +7023,6 @@ export {
       );
       assert.match(manifestSource, /display:\s*"standalone"/);
       assert.match(manifestSource, /start_url:\s*"\/"/);
-      assert.match(layoutSource, /manifest:\s*"\/manifest\.webmanifest"/);
-      assert.match(layoutSource, /appleWebApp:\s*\{/);
-      assert.match(layoutSource, /viewportFit:\s*"cover"/);
 
       for (const [fileName, expectedDimensions] of [
         ["icon-192.png", { width: 192, height: 192 }],
@@ -7654,171 +7089,6 @@ export {
         /responseUrl\.pathname !== requestedUrl\.pathname/,
       );
       assert.match(workerSource, /\\bno-store\\b/);
-
-      for (const source of [clientSource, builtClientSource]) {
-        assert.match(source, /Saved in this browser/);
-        assert.match(source, /Saving in this browser/);
-        assert.match(source, /Browser draft unavailable/);
-        assert.match(source, /stored unencrypted in this browser/);
-        assert.match(source, /OCR-derived suggestions/);
-        assert.match(source, /raw OCR text/);
-        assert.doesNotMatch(
-          source,
-          /Draft protected on this device|device-only course draft|scan results are never stored/,
-        );
-        assert.match(source, /Offline — your cloud record is protected/);
-        assert.match(source, /Reconnect to save/);
-        assert.match(source, /Install on this device/);
-        assert.match(source, /date to calendar/);
-        assert.match(source, /Add all check-ins to calendar/);
-        assert.match(
-          source,
-          /calendar can alert on the lead days selected here/,
-        );
-      }
-      assert.match(
-        clientSource,
-        // As above: the "add to calendar" control rode the detail onto the
-        // pushed screen, where its credential binding is `credential`.
-        /<Icon name="plus"[\s\S]*?Add[\s\S]*?isCompliancePeriodCredential\(credential\)[\s\S]*?\? "compliance"[\s\S]*?: "renewal"[\s\S]*?date to calendar/,
-      );
-      assert.match(
-        clientSource,
-        /activityDraftStorageKey\(workspace\.user\.draftStorageNamespace\)/,
-      );
-      assert.doesNotMatch(
-        clientSource,
-        /activityDraftStorageKey\(workspace\.user\.email\)/,
-      );
-      assert.match(
-        clientSource,
-        /legacyActivityDraftStorageKey\(workspace\.user\.email\)/,
-      );
-      assert.match(
-        clientSource,
-        /localStorage\.setItem\(draftStorageKey, legacySerialized\)[\s\S]*?localStorage\.removeItem\(legacyDraftStorageKey\)/,
-      );
-      assert.match(
-        clientSource,
-        /activityDraftShouldBePurged\(serialized\)[\s\S]*?localStorage\.removeItem\(draftStorageKey\)/,
-      );
-      assert.match(
-        clientSource,
-        /localStorage\.setItem\([\s\S]*?setActivityDraftPersistenceStatus\("saved"\)[\s\S]*?catch[\s\S]*?setActivityDraftPersistenceStatus\("unavailable"\)/,
-      );
-      assert.match(
-        clientSource,
-        /const draftPersisted = persistActivityDraftNow\(\);[\s\S]*?if \(!draftPersisted\)[\s\S]*?couldn’t save your draft[\s\S]*?return;[\s\S]*?setActivityOpen\(false\)/,
-      );
-      assert.match(
-        clientSource,
-        /parseActivityDraft\(serialized\)[\s\S]*?setActivityDraftRestored\(true\)/,
-      );
-      assert.match(
-        clientSource,
-        /maxLength=\{ACTIVITY_DRAFT_TITLE_MAX_LENGTH\}/,
-      );
-      assert.match(
-        clientSource,
-        /maxLength=\{ACTIVITY_DRAFT_PROVIDER_MAX_LENGTH\}/,
-      );
-      assert.match(clientSource, /max=\{ACTIVITY_DRAFT_MAX_UNITS\}/);
-      assert.match(
-        clientSource,
-        /const allocatedUnits = Number\(form\.get\("allocatedUnits"\)\)[\s\S]*?nremtRequirementMatchPayload\([\s\S]*?allocatedUnits[\s\S]*?allocatedUnits,[\s\S]*?Credits to apply to this credential[\s\S]*?name="allocatedUnits"[\s\S]*?Keep the full certificate amount above/,
-      );
-      assert.match(
-        clientSource,
-        /navigator\.serviceWorker[\s\S]*?register\("\/sw\.js"/,
-      );
-      assert.match(clientSource, /window\.addEventListener\("offline"/);
-      assert.match(clientSource, /window\.addEventListener\("online"/);
-      assert.match(clientSource, /window\.addEventListener\("beforeinstallprompt"/);
-      assert.match(clientSource, /window\.addEventListener\("appinstalled"/);
-      assert.match(
-        clientSource,
-        /setSelectedCredentialId\(""\)[\s\S]*?credential originally linked to this draft is no longer active/,
-      );
-      assert.match(
-        clientSource,
-        /const activityCredential =[\s\S]*?selectedCredentialId,[\s\S]*?\?\? null/,
-      );
-      // Opening the sheet always captures the dashboard's credential, so a
-      // credential picked inside the sheet — or handed to it by a Home
-      // shortcut — cannot leak into the app-wide selection when the sheet
-      // closes without saving.
-      assert.match(
-        clientSource,
-        /const openActivityEntryFor = useCallback\([\s\S]*?if \(selectionBeforeActivityEntry\.current === null\) \{\s*selectionBeforeActivityEntry\.current = selectedCredentialId;\s*\}[\s\S]*?setActivityOpen\(true\)/,
-      );
-      assert.match(
-        clientSource,
-        /restoreSelectionBeforeActivityEntry\(\);\s*setActivityOpen\(false\)/,
-      );
-      assert.match(
-        clientSource,
-        /workspaceLoadFailed[\s\S]*?<WorkspaceLoadFailure[\s\S]*?function WorkspaceLoadFailure/,
-      );
-      assert.match(clientSource, /element\.inert = true/);
-      assert.match(clientSource, /event\.key !== "Tab"/);
-      assert.match(clientSource, /previouslyFocused\.focus/);
-      assert.match(clientSource, /status === 401 \|\| status === 403/);
-      assert.match(clientSource, /Reload and sign in/);
-      const baseStyles = stylesSource.split(
-        "@media (max-width: 1040px)",
-      )[0];
-      assert.match(
-        baseStyles,
-        /\.desktop-sidebar[\s\S]*?safe-area-inset-top[\s\S]*?safe-area-inset-bottom[\s\S]*?safe-area-inset-left/,
-      );
-      assert.match(
-        baseStyles,
-        /\.main-content[\s\S]*?safe-area-inset-top[\s\S]*?safe-area-inset-right[\s\S]*?safe-area-inset-bottom[\s\S]*?safe-area-inset-left/,
-      );
-      assert.match(
-        baseStyles,
-        /\.modal-backdrop[\s\S]*?safe-area-inset-top[\s\S]*?safe-area-inset-right[\s\S]*?safe-area-inset-bottom[\s\S]*?safe-area-inset-left/,
-      );
-      assert.match(
-        stylesSource,
-        /mobile-header[\s\S]*?safe-area-inset-top[\s\S]*?safe-area-inset-right[\s\S]*?safe-area-inset-left/,
-      );
-      assert.match(
-        stylesSource,
-        /mobile-nav[\s\S]*?safe-area-inset-right[\s\S]*?safe-area-inset-bottom[\s\S]*?safe-area-inset-left/,
-      );
-      assert.match(
-        stylesSource,
-        /\.capture-privacy\s*\{[^}]*font-size:\s*var\(--text-xs\)/,
-      );
-      assert.match(
-        stylesSource,
-        /\.draft-safety-note small\s*\{[^}]*font-size:\s*var\(--text-xs\)/,
-      );
-      assert.match(
-        stylesSource,
-        /\.draft-safety-note button\s*\{[^}]*min-height:\s*44px/,
-      );
-      assert.match(
-        stylesSource,
-        /--text-2xs:\s*12px;\s*--text-xs:\s*13px;\s*--text-sm:\s*14px;\s*--text-md:\s*15px;/,
-      );
-      assert.match(
-        stylesSource,
-        /--text-control:\s*16px;/,
-      );
-      assert.match(
-        stylesSource,
-        /\ninput,\nselect,\ntextarea \{\n  font-size: max\(var\(--text-control\), 1em\);\n\}/,
-      );
-      assert.match(
-        clientSource,
-        /reminderCalendarEvent\(\s*reminder,\s*preferredCalendarLeadDays\(\)/,
-      );
-      assert.match(
-        clientSource,
-        /credentialDeadlineCalendarEvent\(\s*credential,\s*preferredCalendarLeadDays\(\)/,
-      );
     },
   );
 
@@ -7848,6 +7118,7 @@ export {
       dentalCheckpointSnapshotSource,
       apnsMigration,
       dropApnsMigration,
+      credentialArchiveMigration,
     ] = await Promise.all([
         readFile(
           new URL("../dist/server/wrangler.json", import.meta.url),
@@ -7942,13 +7213,17 @@ export {
           new URL("../drizzle/0013_drop_apns.sql", import.meta.url),
           "utf8",
         ),
+        readFile(
+          new URL("../drizzle/0014_credential_archive.sql", import.meta.url),
+          "utf8",
+        ),
       ]);
 
     const wrangler = JSON.parse(wranglerSource);
     assert.equal(wrangler.d1_databases?.[0]?.binding, "DB");
     assert.equal(wrangler.r2_buckets?.[0]?.binding, "EVIDENCE");
 
-    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}\n${attestationMigration}\n${weeklyPeriodMigration}\n${archiveMigration}\n${pushMigration}\n${dentalCheckpointMigration}\n${apnsMigration}\n${dropApnsMigration}`;
+    const migration = `${baseMigration}\n${evidenceMigration}\n${lifecycleMigration}\n${richRuleMigration}\n${progressionMigration}\n${exclusiveGroupMigration}\n${attestationMigration}\n${weeklyPeriodMigration}\n${archiveMigration}\n${pushMigration}\n${dentalCheckpointMigration}\n${apnsMigration}\n${dropApnsMigration}\n${credentialArchiveMigration}`;
     const migratedTables = new Set(
       [...migration.matchAll(/CREATE TABLE `([^`]+)`/g)].map(
         (match) => match[1],
@@ -7989,6 +7264,18 @@ export {
     assert.ok(
       dropApnsMigration.indexOf("apns_delivery_ledger") < dropApnsMigration.indexOf("apns_devices"),
       "the ledger (child) is dropped before the devices table it references",
+    );
+    assert.match(
+      credentialArchiveMigration,
+      /ALTER TABLE `credentials` ADD `revision` integer DEFAULT 1 NOT NULL/,
+    );
+    assert.match(
+      credentialArchiveMigration,
+      /ALTER TABLE `credentials` ADD `archived_at` text/,
+    );
+    assert.match(
+      credentialArchiveMigration,
+      /CREATE INDEX `credentials_user_archive_deadline_idx` ON `credentials` \(`user_id`,`archived_at`,`deadline`\)/,
     );
     assert.match(
       migration,
@@ -8067,7 +7354,7 @@ export {
     const migrationJournal = JSON.parse(migrationJournalSource);
     assert.equal(
       migrationJournal.entries.at(-1)?.tag,
-      "0013_drop_apns",
+      "0014_credential_archive",
     );
     const dentalCheckpointSnapshot = JSON.parse(
       dentalCheckpointSnapshotSource,
@@ -8446,7 +7733,7 @@ export {
       );
       assert.equal(
         journalEntries.at(-1)?.tag,
-        "0013_drop_apns",
+        "0014_credential_archive",
       );
 
       assert.match(
@@ -9197,115 +8484,6 @@ export {
         ),
         false,
         "changing a setting must never award XP",
-      );
-    },
-  );
-
-  await t.test(
-    "ships an accessible phone-first weekly-rhythm control",
-    async () => {
-      const [clientSource, stylesSource] = await Promise.all([
-        readFile(
-          new URL("../app/ITrackApp.tsx", import.meta.url),
-          "utf8",
-        ),
-        readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
-      ]);
-
-      assert.match(
-        clientSource,
-        /window\.scrollTo\(\{\s*top:\s*0,\s*left:\s*0,\s*behavior:\s*"auto"\s*\}\);[\s\S]*?\[view\]/,
-      );
-      assert.match(
-        clientSource,
-        /weeklyGoalPresets\s*=\s*\[[\s\S]*?Light[\s\S]*?Steady[\s\S]*?Balanced[\s\S]*?Focused[\s\S]*?Ambitious[\s\S]*?\];/,
-      );
-      assert.match(clientSource, /<legend>Weekly action target<\/legend>/);
-      assert.match(
-        clientSource,
-        /Changes start next Monday[\s\S]*?Missed\s+days do not break your rhythm/i,
-      );
-      assert.match(
-        clientSource,
-        /className="readiness-ring"[\s\S]*?role="progressbar"[\s\S]*?aria-valuenow=\{readiness\}/,
-      );
-      assert.match(
-        stylesSource,
-        /\.weekly-goal-option\s*\{[^}]*min-height:\s*48px/,
-      );
-      // Phone stack: compliance first (credit progress, then the packet
-      // checklist, then the record of recent learning), with the Level/XP
-      // momentum card last instead of ahead of the requirement list.
-      const phoneStyles = stylesSource.split("@media (max-width: 820px)")[1];
-      assert.match(phoneStyles, /\.progress-card\s*\{[^}]*order:\s*1/);
-      assert.match(phoneStyles, /\.checklist-card\s*\{[^}]*order:\s*2/);
-      assert.match(phoneStyles, /\.recent-card\s*\{[^}]*order:\s*3/);
-      assert.match(phoneStyles, /\.progression-card\s*\{[^}]*order:\s*4/);
-      assert.doesNotMatch(stylesSource, /\.progression-card\s*\{[^}]*order:\s*-1/);
-      // The inbox heading counts every timely check-in, so every counted
-      // check-in stays reachable instead of stopping at the third.
-      assert.match(
-        clientSource,
-        /showAllReminders\s*\?\s*visibleReminders\s*:\s*visibleReminders\.slice\(0, 3\)/,
-      );
-      assert.match(
-        clientSource,
-        /View all \$\{visibleReminders\.length\} check-ins/,
-      );
-      // The raised + tab and the sidebar CTA are never inert: the sheet's own
-      // empty state explains the missing credential and routes to setup.
-      assert.match(
-        clientSource,
-        /className="mobile-add"\s*type="button"\s*aria-label="Log completed learning"\s*onClick=\{onAdd\}\s*>/,
-      );
-      assert.match(
-        clientSource,
-        /<button className="sidebar-add" type="button" onClick=\{onAdd\}>/,
-      );
-      // Phone rows label their own fields once the column head is hidden, and
-      // the course title wraps to two lines instead of clipping at one.
-      assert.match(
-        clientSource,
-        /<span className="sr-only record-field-label">Credential<\/span>/,
-      );
-      assert.match(
-        clientSource,
-        /<span className="sr-only record-field-label">Proof<\/span>/,
-      );
-      assert.match(
-        clientSource,
-        /<span className="sr-only record-field-label">Credits<\/span>/,
-      );
-      assert.match(
-        phoneStyles,
-        /\.records-table \.record-field-label\s*\{[^}]*position:\s*static[^}]*font-size:\s*var\(--text-2xs\)/,
-      );
-      assert.match(
-        stylesSource,
-        /\.record-title strong\s*\{[^}]*-webkit-line-clamp:\s*2/,
-      );
-      assert.doesNotMatch(
-        stylesSource,
-        /\.record-title strong\s*\{[^}]*white-space:\s*nowrap/,
-      );
-      assert.match(
-        stylesSource,
-        /\.mobile-nav \.nav-button\s*\{[^}]*min-height:\s*48px[^}]*font-size:\s*10px/,
-      );
-      // Quest sub-copy stays a real muted ink at the readable --text-xs size.
-      // It reads a token rather than a literal so the value is one the MUTED
-      // INK block documents an AA ratio for in both schemes.
-      assert.match(
-        stylesSource,
-        /\.quest-copy small\s*\{[^}]*color:\s*var\(--ink-quiet\)[^}]*font-size:\s*var\(--text-xs\)/,
-      );
-      assert.match(
-        stylesSource,
-        /\.quest-row button\s*\{[^}]*min-height:\s*44px[^}]*font-size:\s*var\(--text-sm\)/,
-      );
-      assert.doesNotMatch(
-        stylesSource,
-        /\.renewal-identity \.text-button\s*\{[^}]*font-size:\s*0/,
       );
     },
   );
@@ -10987,15 +10165,11 @@ export {
     async () => {
       const { DatabaseSync } = await import("node:sqlite");
       const database = new SQLiteD1Database(DatabaseSync);
-      const [runtimeSource, workspaceRouteSource, clientSource] =
+      const [runtimeSource, workspaceRouteSource] =
         await Promise.all([
           readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
           readFile(
             new URL("../app/api/workspace/route.ts", import.meta.url),
-            "utf8",
-          ),
-          readFile(
-            new URL("../app/ITrackApp.tsx", import.meta.url),
             "utf8",
           ),
         ]);
@@ -11301,16 +10475,8 @@ export {
         /ISC2_AUTOMATIC_RENEWAL_RULE_SET_PREFIX[\s\S]*?isIsc2AutomaticRenewalRuleSet[\s\S]*?startsWith\(ISC2_AUTOMATIC_RENEWAL_RULE_SET_PREFIX\)[\s\S]*?renewalTaskSpecs[\s\S]*?Submit required ISC2 CPEs and keep annual maintenance fees current[\s\S]*?Save an attested ISC2 requirements checkpoint/,
       );
       assert.match(
-        clientSource,
-        /isIsc2AutomaticRenewalCredential[\s\S]*?Save dashboard checkpoint[\s\S]*?Save an ISC2 dashboard checkpoint[\s\S]*?I checked the ISC2 Dashboard[\s\S]*?It shows this cycle’s required CPEs and annual maintenance[\s\S]*?fees as satisfied[\s\S]*?Close this cycle only after the dashboard displays renewed certification dates[\s\S]*?Awaiting ISC2 renewal/,
-      );
-      assert.match(
         workspaceRouteSource,
         /COMPLIANCE_PERIOD_RULE_SET_PREFIXES[\s\S]*?fl-insurance-producer-[\s\S]*?Verify official compliance status and save portal proof[\s\S]*?compliance_checkpoint_recorded[\s\S]*?compliance_checkpoint/,
-      );
-      assert.match(
-        clientSource,
-        /isCompliancePeriodCredential[\s\S]*?Active compliance period[\s\S]*?Record compliance[\s\S]*?Start next period/,
       );
       database.close();
     },
@@ -13369,80 +12535,6 @@ export {
   );
 
   await t.test(
-    "keeps the larger template chooser and alternative tags mobile-accessible",
-    async () => {
-      const [clientSource, styles] = await Promise.all([
-        readFile(
-          new URL("../app/ITrackApp.tsx", import.meta.url),
-          "utf8",
-        ),
-        readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
-      ]);
-      assert.match(clientSource, /<optgroup[\s\S]*?group\.profession/);
-      assert.match(
-        clientSource,
-        /setCatalogQuery\(event\.currentTarget\.value\);[\s\S]*?setSelectedRuleId\(""\);/,
-      );
-      assert.match(
-        clientSource,
-        /setSelectedRuleId\(event\.currentTarget\.value\)[\s\S]*?setCatalogQuery\(""\)/,
-      );
-      assert.match(
-        clientSource,
-        /catalogMatches\.length[\s\S]*?matches[\s\S]*?No exact match — enter my own requirements/,
-      );
-      assert.match(
-        clientSource,
-        /setSelectedRuleId\(""\)[\s\S]*?setCatalogQuery\(""\)[\s\S]*?setCustomCredential\(true\)[\s\S]*?No exact match — enter my own requirements/,
-      );
-      assert.match(clientSource, /Official source verified/);
-      assert.match(clientSource, /Transition rule · check assigned cycle/);
-      assert.match(clientSource, /Review date not set/);
-      assert.match(
-        clientSource,
-        /selectedRule\.sourceTitle[\s\S]*?className="source-caution"[\s\S]*?\{selectedRule\.sourceTitle\}/,
-      );
-      assert.match(
-        clientSource,
-        /selectedRequirementIds[\s\S]*?exclusiveGroup[\s\S]*?Choose only one activity type from this group/,
-      );
-      assert.match(
-        clientSource,
-        /allocation\.classificationMessage[\s\S]*?excluded from progress/,
-      );
-      assert.match(clientSource, /Historical cycle is frozen/);
-      assert.match(
-        styles,
-        /\.source-card p\s*\{[\s\S]*?font-size:\s*var\(--text-xs\)[\s\S]*?line-height:\s*1\.5/,
-      );
-      assert.match(
-        styles,
-        /\.source-card a\s*\{[\s\S]*?min-height:\s*44px/,
-      );
-      assert.match(
-        styles,
-        /\.catalog-custom-button\s*\{[\s\S]*?min-height:\s*44px/,
-      );
-      assert.match(
-        styles,
-        /--tap-min:\s*44px;\s*--tap-comfortable:\s*48px;/,
-      );
-      assert.match(
-        styles,
-        /\.condition-options span\s*\{[\s\S]*?min-height:\s*var\(--tap-min\)[\s\S]*?font-size:\s*var\(--text-sm\)/,
-      );
-      assert.match(
-        styles,
-        /\.condition-change\s*\{[\s\S]*?min-height:\s*var\(--tap-min\)[\s\S]*?font-size:\s*var\(--text-sm\)/,
-      );
-      assert.match(
-        styles,
-        /\.requirement-condition-actions button\s*\{[\s\S]*?min-height:\s*var\(--tap-min\)[\s\S]*?font-size:\s*var\(--text-sm\)/,
-      );
-    },
-  );
-
-  await t.test(
     "stores evidence metadata under private, owner-scoped R2 keys",
     async () => {
       const userId = await expectedStableUserId("owner@example.com");
@@ -14630,7 +13722,7 @@ export {
       const updateDatabase = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, status FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, status(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {
@@ -14852,7 +13944,7 @@ export {
       const updateDatabase = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, status FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, status(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {
@@ -14931,7 +14023,7 @@ export {
       const optionalCapDatabase = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, status FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, status(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {
@@ -16526,7 +15618,7 @@ export {
       const carryoverDeactivationDatabase = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, status FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, status(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {
@@ -17649,7 +16741,7 @@ export {
       const database = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, status, rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, status, rule_set_id AS ruleSetId(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {
@@ -17737,7 +16829,7 @@ export {
       const database = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, status, rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, status, rule_set_id AS ruleSetId(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {
@@ -17819,7 +16911,7 @@ export {
       const database = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, status, rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, status, rule_set_id AS ruleSetId(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {
@@ -17910,7 +17002,7 @@ export {
         const database = new FakeDatabase({
           resolveFirst(call) {
             if (
-              /SELECT id, status, rule_set_id AS ruleSetId FROM credentials WHERE id = \? AND user_id = \?/i.test(
+              /SELECT id, status, rule_set_id AS ruleSetId(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
                 call.sql,
               )
             ) {
@@ -20888,7 +19980,7 @@ export {
       const database = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, deadline FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, deadline(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {
@@ -21236,8 +20328,9 @@ export {
       );
       assert.equal(conflict.status, 409);
       assert.deepEqual(await conflict.json(), {
-        error: "This browser subscription belongs to another account.",
-        code: "push_subscription_conflict",
+        error:
+          "This browser can’t be registered for alerts on this account. Clear this site’s notification permission in your browser settings and try again.",
+        code: "push_subscription_unavailable",
       });
 
       const preferenceResponse = await postWorkspace(
@@ -21548,6 +20641,61 @@ export {
         );
         assert.equal(restoreLeadResponse.status, 200);
 
+        // critic-01 / spec §4: alerts go out at pushHourLocal in the STORED
+        // zone. A second credential due the next day (lead day 2026-07-27
+        // with leadDays [1]) proves the gate on the one active device: at
+        // 08:30 America/New_York nothing is materialised, at 09:05 one row is.
+        database.raw
+          .prepare(
+            `INSERT INTO credentials (
+               id, user_id, rule_set_id, credential_name, profession,
+               jurisdiction, issuer, cycle_start, deadline, total_required,
+               unit_label, status
+             ) VALUES (
+               'credential-push-local-clock',
+               ?,
+               NULL,
+               'Local clock credential',
+               'Testing',
+               'New York',
+               'Test board',
+               '2026-01-01',
+               '2026-07-28',
+               1,
+               'credit',
+               'active'
+             )`,
+          )
+          .run(ownerId);
+        const localClockKey =
+          "deadline:credential-push-local-clock:2026-07-28";
+        const ledgerRows = () =>
+          database.raw
+            .prepare(`SELECT COUNT(*) AS count FROM push_delivery_ledger`)
+            .get().count;
+        const localClockRows = () =>
+          database.raw
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM push_delivery_ledger
+               WHERE reminder_key = ?`,
+            )
+            .get(localClockKey).count;
+        const ledgerRowsBefore = ledgerRows();
+        await runScheduled(Date.parse("2026-07-27T12:30:00.000Z"));
+        assert.equal(
+          ledgerRows(),
+          ledgerRowsBefore,
+          "08:30 EDT is before the 9:00 stored-local hour: nothing is materialised",
+        );
+        assert.equal(localClockRows(), 0);
+        await runScheduled(Date.parse("2026-07-27T13:05:00.000Z"));
+        assert.equal(
+          localClockRows(),
+          1,
+          "09:05 EDT: the lead-day reminder is materialised for the one active device",
+        );
+
         const secondSubscription = await makeSubscription(
           "https://fcm.googleapis.com/fcm/send/expired-device",
         );
@@ -21768,7 +20916,6 @@ export {
       const [
         wranglerSource,
         serviceWorkerSource,
-        clientSource,
         pushDeliverySource,
       ] =
         await Promise.all([
@@ -21777,10 +20924,6 @@ export {
             "utf8",
           ),
           readFile(new URL("../public/sw.js", import.meta.url), "utf8"),
-          readFile(
-            new URL("../app/ITrackApp.tsx", import.meta.url),
-            "utf8",
-          ),
           readFile(
             new URL("../app/lib/pushDelivery.ts", import.meta.url),
             "utf8",
@@ -21799,19 +20942,6 @@ export {
         /GENERIC_NOTIFICATION_BODY[\s\S]*?showNotification/,
       );
       assert.match(serviceWorkerSource, /safeLaunchTarget/);
-      assert.match(clientSource, /handleEnablePhoneAlerts/);
-      assert.match(
-        clientSource,
-        /pushManager\.subscribe\(\{[\s\S]*?userVisibleOnly:\s*true[\s\S]*?applicationServerKey/,
-      );
-      assert.match(
-        clientSource,
-        /userVisibleOnly:\s*true[\s\S]*?applicationServerKey/,
-      );
-      assert.doesNotMatch(
-        clientSource,
-        /Notification\.requestPermission\(\)/,
-      );
       assert.match(
         pushDeliverySource,
         /function launchPath\(deliveryId: string\)[\s\S]{0,240}delivery:\s*deliveryId/,
@@ -23932,7 +23062,7 @@ export {
       const createDatabase = new FakeDatabase({
         resolveFirst(call) {
           if (
-            /SELECT id, status FROM credentials WHERE id = \? AND user_id = \?/i.test(
+            /SELECT id, status(?:, archived_at AS archivedAt)? FROM credentials WHERE id = \? AND user_id = \?/i.test(
               call.sql,
             )
           ) {
@@ -24292,28 +23422,6 @@ export {
       const runtimeSource = await readFile(
         new URL("../db/runtime.ts", import.meta.url),
         "utf8",
-      );
-      const appSource = await readFile(
-        new URL("../app/ITrackApp.tsx", import.meta.url),
-        "utf8",
-      );
-      assert.match(
-        appSource,
-        /credential-packet-card[\s\S]*?Prepare credential packet/,
-      );
-      assert.match(
-        appSource,
-        /\/api\/export\/packet\?credentialId=\$\{encodeURIComponent\([\s\S]*?target="_blank"[\s\S]*?rel="noopener noreferrer"/,
-      );
-      assert.match(appSource, /Reconnect to prepare packet/);
-      const packetGapLogic = appSource.slice(
-        appSource.indexOf("const requirementGapCount"),
-        appSource.indexOf("const proofGapCount"),
-      );
-      assert.ok(
-        packetGapLogic.indexOf('applicabilityStatus === "needs_confirmation"') <
-          packetGapLogic.indexOf("requirement.isActive !== false"),
-        "an unresolved conditional must count even while progress marks it inactive",
       );
       const runtimeModule = await importTypeScriptModule(
         `${runtimeSource}\nexport const __renewalPacketNonce = "renewal-packet";`,

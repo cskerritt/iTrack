@@ -508,6 +508,7 @@ export function renderRenewalPacket(data: RenewalPacketData) {
         )
       : 100;
 
+  // <meta name="license-lantern-packet-version"> is renameable: informational meta, not a contract (ios-coupling-11).
   return `<!doctype html>
 <html lang="en">
 <head>

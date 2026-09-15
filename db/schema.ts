@@ -132,12 +132,23 @@ export const credentials = sqliteTable(
     totalRequired: real("total_required").notNull(),
     unitLabel: text("unit_label").notNull(),
     status: text("status").notNull().default("active"),
+    // Migration 0014 (credential_archive): archive is a nullable timestamp,
+    // never a status value — the active/submitted/renewed set is load-bearing
+    // in db/runtime.ts trigger guards and every route guard. Mirrors the
+    // activities / checklist_tasks revision + archived_at pair.
+    revision: integer("revision").notNull().default(1),
+    archivedAt: text("archived_at"),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     index("credentials_user_deadline_idx").on(table.userId, table.deadline),
     index("credentials_rule_set_idx").on(table.ruleSetId),
+    index("credentials_user_archive_deadline_idx").on(
+      table.userId,
+      table.archivedAt,
+      table.deadline,
+    ),
   ],
 );
 
