@@ -4,6 +4,15 @@ import { useEffect, useState } from "react";
 import { Button } from "../components/Button";
 import { Icon } from "../components/Icon";
 import { Modal } from "../components/Modal";
+import {
+  Checkbox,
+  DateInput,
+  ErrorSummary,
+  Field,
+  Select,
+  TextInput,
+} from "../components/Form";
+import type { SelectOption } from "../lib/selectFilter";
 
 // The styleguide root is a page root like the app shell's: it carries
 // data-app-root so an open dialog makes it inert (the Modal contract), and
@@ -12,9 +21,29 @@ import { Modal } from "../components/Modal";
 // dialogs. Later tasks append sections in this shape: Form (Task 7), Toast
 // (Task 8), Instruments (Task 11), Empty states and errors (Task 12); Task 9
 // swaps the <h1> for PageHeader.
+// Fourteen entries: past SEARCHABLE_OPTION_COUNT, so the Select grows its
+// search input. Sample data for the styleguide only.
+const PROFESSIONS: SelectOption[] = [
+  { value: "counseling", label: "Counseling" },
+  { value: "dentistry", label: "Dentistry" },
+  { value: "ems", label: "Emergency medical services" },
+  { value: "life-care-planning", label: "Life care planning" },
+  { value: "nursing", label: "Nursing" },
+  { value: "occupational-therapy", label: "Occupational therapy" },
+  { value: "pharmacy", label: "Pharmacy" },
+  { value: "physical-therapy", label: "Physical therapy" },
+  { value: "psychology", label: "Psychology" },
+  { value: "rehabilitation-counseling", label: "Rehabilitation counseling" },
+  { value: "respiratory-therapy", label: "Respiratory therapy" },
+  { value: "social-work", label: "Social work" },
+  { value: "speech-language-pathology", label: "Speech-language pathology" },
+  { value: "vocational-evaluation", label: "Vocational evaluation" },
+];
+
 export function Styleguide() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [secondOpen, setSecondOpen] = useState(false);
+  const [formErrors, setFormErrors] = useState<{ name?: string }>({});
   useEffect(() => {
     document.title = "Styleguide · iTrack";
   }, []);
@@ -78,6 +107,56 @@ export function Styleguide() {
               )}
             </Modal>
           )}
+        </section>
+        <section aria-labelledby="sg-form">
+          <h2 id="sg-form">Form</h2>
+          <form
+            className="form-stack"
+            noValidate
+            onSubmit={(event) => {
+              event.preventDefault();
+              const name = String(
+                new FormData(event.currentTarget).get("name") ?? "",
+              ).trim();
+              setFormErrors(name ? {} : { name: "Enter a name" });
+            }}
+          >
+            <Field
+              id="sg-name"
+              label="Name"
+              hint="As it appears on the certificate"
+              error={formErrors.name}
+            >
+              <TextInput name="name" />
+            </Field>
+            <Field label="Completion date">
+              <DateInput name="completionDate" defaultValue="2026-09-15" />
+            </Field>
+            <Field label="Profession">
+              <Select
+                name="profession"
+                placeholder="Choose a profession"
+                options={PROFESSIONS}
+              />
+            </Field>
+            <Checkbox
+              name="attest"
+              label="I attest these dates are official"
+              description="Required before a submission"
+            />
+            <ErrorSummary
+              errors={
+                formErrors.name
+                  ? [{ fieldId: "sg-name", message: formErrors.name }]
+                  : []
+              }
+            />
+            <div className="form-actions">
+              <Button type="submit" variant="primary">
+                Save
+              </Button>
+            </div>
+          </form>
         </section>
       </main>
     </div>

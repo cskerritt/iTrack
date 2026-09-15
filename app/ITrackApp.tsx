@@ -82,6 +82,7 @@ import {
   readApiResponse,
 } from "./lib/apiResponse";
 import {
+  ISO_DATE_PATTERN,
   UTC_FALLBACK_ZONE,
   addDaysIso,
   addMonthsIso,
@@ -110,6 +111,15 @@ import {
 } from "./lib/webPush";
 import { Icon, type IconName } from "./components/Icon";
 import { Modal } from "./components/Modal";
+import {
+  DateInput,
+  ErrorSummary,
+  Field,
+  ModalError,
+  Select,
+  TextInput,
+} from "./components/Form";
+import { Button } from "./components/Button";
 
 const DENTAL_LINKED_APPLICABILITY_CHILD_CATEGORY_IDS = new Set<string>(
   DENTAL_LINKED_APPLICABILITY_CATEGORY_GROUPS.flatMap((categoryIds) =>
@@ -5203,53 +5213,44 @@ export function ITrackApp() {
               </>
             ) : (
               <>
-                <label className="field">
-                  <span>Find a credential template</span>
-                  <input
-                    autoFocus
-                    type="search"
-                    value={catalogQuery}
-                    onChange={(event) => {
-                      setCatalogQuery(event.currentTarget.value);
-                      setSelectedRuleId("");
-                    }}
-                    placeholder="Search profession, license, certification, or state"
-                  />
-                  <small aria-live="polite">
-                    {catalogStatus === "loading"
+                <Field
+                  label="Profession, credential, and state"
+                  hint={
+                    catalogStatus === "loading"
                       ? "Loading researched starting templates · custom plans are always available"
                       : catalogStatus === "error"
                         ? "Templates couldn’t be loaded · custom plans are always available"
-                        : `${catalogTemplates.length} researched starting templates · custom plans are always available`}
-                  </small>
-                </label>
-                <label className="field">
-                  <span>Profession, credential, and state</span>
-                  <select
+                        : `${catalogTemplates.length} researched starting templates · custom plans are always available`
+                  }
+                >
+                  <Select
                     name="ruleSetId"
                     value={selectedRuleId}
                     onChange={(event) => {
-                      setSelectedRuleId(event.currentTarget.value)
+                      setSelectedRuleId(event.currentTarget.value);
                       setCatalogQuery("");
                     }}
                     required
-                  >
-                    <option value="">Choose a rule template</option>
-                    {catalogGroups.map((group) => (
-                      <optgroup key={group.profession} label={group.profession}>
-                        {group.rules.map((rule) => (
-                          <option key={rule.id} value={rule.id}>
-                            {rule.credentialName} · {rule.jurisdiction}
-                          </option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
-                  <small aria-live="polite">
-                    {catalogMatches.length}{" "}
-                    {catalogMatches.length === 1 ? "match" : "matches"}
-                  </small>
-                </label>
+                    placeholder="Choose a rule template"
+                    searchable
+                    autoFocus
+                    searchLabel="Find a credential template"
+                    searchPlaceholder="Search profession, license, certification, or state"
+                    query={catalogQuery}
+                    onQueryChange={(query) => {
+                      setCatalogQuery(query);
+                      setSelectedRuleId("");
+                    }}
+                    options={catalogGroups.map((group) => ({
+                      label: group.profession,
+                      options: group.rules.map((rule) => ({
+                        value: rule.id,
+                        label: `${rule.credentialName} · ${rule.jurisdiction}`,
+                        keywords: `${rule.profession} ${rule.credentialName} ${rule.jurisdiction} ${rule.issuer}`,
+                      })),
+                    }))}
+                  />
+                </Field>
                 {catalogStatus === "error" ? (
                   <button
                     className="button button-outline catalog-custom-button"
@@ -6627,12 +6628,10 @@ export function ITrackApp() {
           }}
         >
           <div className="form-stack">
-            {error ? (
-              <div className="modal-error" role="alert">
-                <strong>Proof could not be updated</strong>
-                <span>{error}</span>
-              </div>
-            ) : null}
+            <ErrorSummary
+              title="Proof could not be updated"
+              errors={error ? [{ message: error }] : []}
+            />
             {evidenceIsFrozen ? (
               <div className="advisory-note frozen-proof-advisory">
                 <span aria-hidden="true">i</span>
@@ -9054,12 +9053,10 @@ function ActivityEditorModal({
       onClose={onClose}
     >
       <div className="form-stack">
-        {error ? (
-          <div className="modal-error" role="alert">
-            <strong>This correction did not save</strong>
-            <span>{error}</span>
-          </div>
-        ) : null}
+        <ErrorSummary
+          title="This correction did not save"
+          errors={error ? [{ message: error }] : []}
+        />
         {allocations.length ? (
           <div className="advisory-note">
             <span aria-hidden="true">i</span>
@@ -9330,11 +9327,7 @@ function CredentialEditorModal({
   return (
     <Modal eyebrow="Credential" title="Edit credential" onClose={onClose}>
       <form className="form-stack" onSubmit={handleSubmit}>
-        {error ? (
-          <div className="modal-error" role="alert">
-            <span>{error}</span>
-          </div>
-        ) : null}
+        <ErrorSummary errors={error ? [{ message: error }] : []} />
         <label className="field">
           <span>License or professional certification</span>
           <input
@@ -9541,11 +9534,7 @@ function ConfirmDeleteCredentialModal({
           onConfirm(value.trim(), orphans);
         }}
       >
-        {error ? (
-          <div className="modal-error" role="alert">
-            <span>{error}</span>
-          </div>
-        ) : null}
+        <ErrorSummary errors={error ? [{ message: error }] : []} />
         <ul>
           <li>
             Removes this credential, every past cycle, its checklist and
@@ -9619,16 +9608,43 @@ function PersonalTaskEditorModal({
   onArchive?: () => void;
 }) {
   const [confirmingArchive, setConfirmingArchive] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<{
+    title?: string;
+    dueDate?: string;
+  }>({});
   const editing = Boolean(task);
 
+  // Validated here, not by the browser: `noValidate` turns the native bubble
+  // off, each problem is written under its field and listed in a focused
+  // summary (a11y-09). The due date stays optional — the server accepts an
+  // empty one — so its message fires only for a value that is not a
+  // calendar date. `pending` is guarded here because Button expresses it as
+  // aria-disabled, which does not stop Enter in a text field from submitting.
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (pending) return;
     const form = new FormData(event.currentTarget);
-    onSave({
-      title: String(form.get("title") ?? ""),
-      dueDate: String(form.get("dueDate") ?? ""),
-    });
+    const title = String(form.get("title") ?? "").trim();
+    const dueDate = String(form.get("dueDate") ?? "");
+    const next: { title?: string; dueDate?: string } = {};
+    if (!title) next.title = "Enter a task name";
+    if (dueDate && !ISO_DATE_PATTERN.test(dueDate)) {
+      next.dueDate = "Enter a due date";
+    }
+    setFieldErrors(next);
+    if (next.title || next.dueDate) return;
+    onSave({ title, dueDate });
   };
+
+  const summary = [
+    ...(error ? [{ message: error }] : []),
+    ...(fieldErrors.title
+      ? [{ fieldId: "personal-task-title", message: fieldErrors.title }]
+      : []),
+    ...(fieldErrors.dueDate
+      ? [{ fieldId: "personal-task-due", message: fieldErrors.dueDate }]
+      : []),
+  ];
 
   return (
     <Modal
@@ -9637,12 +9653,6 @@ function PersonalTaskEditorModal({
       onClose={onClose}
     >
       <div className="form-stack">
-        {error ? (
-          <div className="modal-error" role="alert">
-            <strong>This task did not save</strong>
-            <span>{error}</span>
-          </div>
-        ) : null}
         <div className="advisory-note">
           <span aria-hidden="true">i</span>
           <p>
@@ -9650,10 +9660,9 @@ function PersonalTaskEditorModal({
             them before submission. They do not earn XP.
           </p>
         </div>
-        <form className="form-stack" onSubmit={handleSubmit}>
-          <label className="field">
-            <span>Task</span>
-            <input
+        <form className="form-stack" noValidate onSubmit={handleSubmit}>
+          <Field id="personal-task-title" label="Task" error={fieldErrors.title}>
+            <TextInput
               autoFocus
               name="title"
               defaultValue={task?.title ?? ""}
@@ -9661,42 +9670,37 @@ function PersonalTaskEditorModal({
               placeholder="e.g., Request transcript from provider"
               required
             />
-          </label>
-          <label className="field">
-            <span>
-              Due date <em>Optional</em>
-            </span>
-            <input
-              name="dueDate"
-              type="date"
-              defaultValue={task?.dueDate ?? ""}
-            />
-            <small>
-              Due dates appear in Today check-ins when reminders are on.
-            </small>
-          </label>
+          </Field>
+          <Field
+            id="personal-task-due"
+            label="Due date"
+            optional
+            hint="Due dates appear in Today check-ins when reminders are on."
+            error={fieldErrors.dueDate}
+          >
+            <DateInput name="dueDate" defaultValue={task?.dueDate ?? ""} />
+          </Field>
+          <ErrorSummary
+            title={error ? "This task did not save" : undefined}
+            errors={summary}
+          />
           <div className="form-actions">
-            <button
-              className="button button-ghost"
-              type="button"
-              onClick={onClose}
-              disabled={pending}
-            >
+            <Button variant="quiet" onClick={onClose}>
               Cancel
-            </button>
-            <button
-              className="button button-primary"
+            </Button>
+            <Button
               type="submit"
-              disabled={pending || !isOnline}
+              variant="primary"
+              pending={pending}
+              pendingLabel="Saving…"
+              disabled={!isOnline}
             >
-              {pending
-                ? "Saving…"
-                : !isOnline
-                  ? "Reconnect to save"
-                  : editing
-                    ? "Save changes"
-                    : "Add task"}
-            </button>
+              {!isOnline
+                ? "Reconnect to save"
+                : editing
+                  ? "Save changes"
+                  : "Add task"}
+            </Button>
           </div>
         </form>
         {task?.isPersonal && onArchive ? (
@@ -11257,31 +11261,6 @@ function EmptyPage({
         {action}
       </button>
     </section>
-  );
-}
-
-/*
- * A rejected save has to be readable from inside the sheet that caused it: the
- * page-level error banner sits under `.modal-backdrop` and is marked inert
- * while a modal is open, so it can never be seen or announced from there. Each
- * modal renders this immediately above its own submit row, and it pulls itself
- * into view because a phone sheet is usually already scrolled to that row.
- */
-function ModalError({ title, message }: { title: string; message: string }) {
-  const errorRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const node = errorRef.current;
-    if (!node) return;
-    node.scrollIntoView({ block: "center" });
-    node.focus({ preventScroll: true });
-  }, [message]);
-
-  return (
-    <div className="modal-error" role="alert" ref={errorRef} tabIndex={-1}>
-      <strong>{title}</strong>
-      <span>{message}</span>
-    </div>
   );
 }
 

@@ -1406,76 +1406,7 @@
   font-size: var(--text-xs);
 }
 
-/* ===== LEGACY FORM — deleted in Task 7 ===== */
-
-.form-stack {
-  display: grid;
-  gap: 17px;
-}
-
-.form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 13px;
-}
-
-.form-grid-three {
-  grid-template-columns: 0.7fr 0.8fr 1.25fr;
-}
-
-.field {
-  display: grid;
-  gap: 7px;
-}
-
-.field > span,
-.segmented-field legend {
-  color: var(--ink-label);
-  font-size: var(--text-sm);
-  font-weight: 800;
-}
-
-.field em {
-  color: var(--ink-muted);
-  font-size: var(--text-2xs);
-  font-style: normal;
-  font-weight: 600;
-  text-transform: uppercase;
-}
-
-.field input,
-.field select {
-  width: 100%;
-  min-height: 48px;
-  border: 1px solid var(--line-strong);
-  border-radius: 11px;
-  background: var(--white);
-  color: var(--ink-deep);
-  outline: none;
-  padding: 10px 12px;
-}
-
-.field input::placeholder {
-  color: var(--ink-placeholder);
-}
-
-.field input:focus,
-.field select:focus {
-  border-color: var(--edge-focus);
-  box-shadow: 0 0 0 3px var(--focus-glow);
-}
-
-.field small {
-  color: var(--ink-muted);
-  font-size: var(--text-xs);
-}
-
-.field small.field-warning {
-  color: var(--ink-coral);
-  font-weight: 750;
-  line-height: 1.45;
-}
-
+/* ===== LEGACY CHOICE ROWS — deleted in Wave 4. The label-wrapped field shape, the form stack/grid/actions rules and the modal error block moved to primitives.css FORM (Task 7); these rows wait for Wave 4 to adopt Checkbox and a segmented control. ===== */
 .field-inline-action {
   justify-self: start;
   min-height: 44px;
@@ -1621,77 +1552,9 @@
   outline-offset: 3px;
 }
 
-.form-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 4px;
-  border-top: 1px solid var(--line);
-  padding-top: 18px;
-}
-
-.modal-error {
-  display: grid;
-  gap: 3px;
-  border: 1px solid var(--edge-coral);
-  border-radius: 11px;
-  background: var(--wash-coral-deep);
-  color: var(--ink-coral-deep);
-  padding: 11px 13px;
-}
-
-.modal-error strong,
-.modal-error span {
-  display: block;
-}
-
-.modal-error strong {
-  font-size: var(--text-sm);
-}
-
-.modal-error span {
-  font-size: var(--text-xs);
-}
-
-/*
- * The message takes focus when it appears so a phone user whose sheet is
- * already scrolled to the submit row is put on it rather than left staring at
- * an unchanged form. It is not in the tab order, so Tab continues to Cancel.
- */
-.modal-error:focus {
-  outline: none;
-}
-
-.modal-error:focus-visible {
-  outline: 3px solid var(--focus-ring-danger);
-  outline-offset: 2px;
-}
-
-/* A rejected save has to be the last thing above the button that caused it. */
-.form-stack > .modal-error + .form-actions {
-  margin-top: 0;
-  border-top: 0;
-  padding-top: 10px;
-}
-
 @media (max-width: 540px) {
   .check-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .form-grid,
-  .form-grid-three {
-    grid-template-columns: 1fr;
-  }
-
-  .form-actions {
-    display: grid;
-    grid-template-columns: 0.75fr 1.25fr;
-  }
-
-  .form-actions .button {
-    width: 100%;
   }
 
   .segmented-field {
@@ -2087,6 +1950,41 @@
     border-color: Canvas;
     background: ButtonText;
     color: ButtonFace;
+  }
+
+  /*
+   * a11y-M-01 — the legacy choice rows (Task 7). Their checked state is a
+   * tinted fill plus a check glyph hidden with `color: transparent`, and a
+   * forced palette strips the fill and repaints the glyph, so unchecked and
+   * checked looked the same. Under forced colours the box is drawn in the
+   * Canvas/ButtonText pair, the glyph exists only when checked (display, not
+   * colour), and a checked row takes the Highlight pair. The Checkbox
+   * primitive needs none of this: a visible native input keeps its state.
+   */
+  .custom-check,
+  .requirement-check,
+  .segmented-field span,
+  .check-grid span,
+  .condition-options span {
+    forced-color-adjust: none;
+    border-color: ButtonText;
+    background: Canvas;
+    color: CanvasText;
+  }
+
+  .task-row:not(.completed) .custom-check svg,
+  .requirement-choice input:not(:checked) + .requirement-check svg {
+    display: none;
+  }
+
+  .task-row.completed .custom-check,
+  .requirement-choice input:checked + .requirement-check,
+  .segmented-field input:checked + span,
+  .check-grid input:checked + span,
+  .condition-options input:checked + span {
+    background: Highlight;
+    border-color: Highlight;
+    color: HighlightText;
   }
 }
 

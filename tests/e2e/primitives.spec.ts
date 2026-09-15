@@ -147,3 +147,149 @@ test("focus is trapped inside an open sheet: Tab wraps at both ends and never re
   await expect(sheet).toBeHidden();
   app.expectNoErrors();
 });
+
+// ---------------------------------------------------------------------------
+// Task 7 — Form primitives (a11y-05, a11y-06, a11y-09). The styleguide's
+// sample form proves the aria wiring of Field/TextInput/Select/ErrorSummary;
+// the Log activity sheet proves the boundary and the ring reach the LEGACY
+// label-wrapped fields too; the personal-task editor is the first real form
+// on the primitives. Nothing here saves: the editor's submit is stopped by
+// its own validation before any request is made.
+// ---------------------------------------------------------------------------
+
+test("the styleguide form wires aria-invalid, aria-describedby and a focused error summary (a11y-09)", async ({ page, app }) => {
+  await app.goto("/styleguide");
+  // No hydration placeholder on this route (Task 6 gotcha): the client-side
+  // title proves React is driving the page before the first click — a
+  // pre-hydration Save would submit the form natively and reload the page.
+  await expect(page).toHaveTitle("Styleguide · iTrack");
+  const form = page.getByRole("region", { name: "Form", exact: true });
+  const name = form.getByLabel("Name", { exact: true });
+  // The hint is described-by before any error exists.
+  await expect(name).toHaveAttribute("aria-describedby", /-hint$/);
+  await expect(name).not.toHaveAttribute("aria-invalid", "true");
+  await form.getByRole("button", { name: "Save", exact: true }).click();
+  const summary = form.getByRole("alert").filter({ hasText: "Check the form" });
+  await expect(summary).toBeVisible();
+  await expect(summary).toBeFocused();
+  await expect(name).toHaveAttribute("aria-invalid", "true");
+  const described = (await name.getAttribute("aria-describedby")) ?? "";
+  const errorId = described.split(" ").find((id) => id.endsWith("-error"));
+  expect(errorId).toBeTruthy();
+  // useId() values are not selector-safe; match the attribute, not a #id.
+  await expect(form.locator(`[id="${errorId}"]`)).toHaveText("Enter a name");
+  await summary.getByRole("link", { name: "Enter a name" }).click();
+  await expect(name).toBeFocused();
+  await name.fill("Alex Morgan");
+  await form.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(form.getByRole("alert")).toHaveCount(0);
+  await expect(name).not.toHaveAttribute("aria-invalid", "true");
+  app.expectNoErrors();
+});
+
+test("a select with twelve or more options gets a search that narrows it", async ({ page, app }) => {
+  await app.goto("/styleguide");
+  await expect(page).toHaveTitle("Styleguide · iTrack"); // hydrated (Task 6 gotcha)
+  const form = page.getByRole("region", { name: "Form", exact: true });
+  const select = form.getByRole("combobox", { name: "Profession", exact: true });
+  // Fourteen professions plus the placeholder option.
+  await expect(select.locator("option")).toHaveCount(15);
+  const search = form.getByRole("searchbox", { name: "Search options" });
+  await search.fill("therapy");
+  // Occupational, Physical and Respiratory therapy, plus the placeholder.
+  await expect(select.locator("option")).toHaveCount(4);
+  await expect(form.getByText("3 matches", { exact: true })).toBeVisible();
+  await search.press("Tab");
+  await expect(select).toBeFocused();
+  await search.fill("zzzz");
+  await expect(select.locator("option")).toHaveCount(1);
+  await expect(form.getByText("0 matches", { exact: true })).toBeVisible();
+  app.expectNoErrors();
+});
+
+test("every field wears the 3:1 boundary and the shared focus ring (a11y-05, a11y-06)", async ({ page, app }) => {
+  await app.goto("/");
+  const sheet = await app.openLog();
+  // A LEGACY label-wrapped field: primitives.css restyles `.field input`
+  // too, so the whole app moved at once.
+  const title = sheet.locator('input[name="title"]');
+  const styles = await title.evaluate((element) => {
+    const computed = getComputedStyle(element);
+    const root = getComputedStyle(document.documentElement);
+    const rgb = (value: string) =>
+      (value.match(/\d+(\.\d+)?/g) ?? []).slice(0, 3).map(Number);
+    const hex = (value: string) => {
+      const digits = value.trim().replace("#", "");
+      return [0, 2, 4].map((offset) => parseInt(digits.slice(offset, offset + 2), 16));
+    };
+    const luminance = ([r, g, b]: number[]) => {
+      const channel = (c: number) => {
+        const s = c / 255;
+        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+    };
+    const contrast = (a: number[], b: number[]) => {
+      const [high, low] = [luminance(a), luminance(b)].sort((p, q) => q - p);
+      return (high + 0.05) / (low + 0.05);
+    };
+    const border = rgb(computed.borderTopColor);
+    const background = rgb(computed.backgroundColor);
+    return {
+      border,
+      expectedBorder: hex(root.getPropertyValue("--line-strong")),
+      ratio: contrast(border, background),
+      outlineBeforeFocus: computed.outlineStyle,
+    };
+  });
+  expect(styles.border).toEqual(styles.expectedBorder);
+  expect(styles.ratio).toBeGreaterThanOrEqual(3);
+  expect(styles.outlineBeforeFocus).toBe("none");
+  // Programmatic focus alone is not :focus-visible in Chromium; a keyboard
+  // round trip (Tab away, Shift+Tab back) is.
+  await title.focus();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expect(title).toBeFocused();
+  const ring = await title.evaluate((element) => {
+    const computed = getComputedStyle(element);
+    return {
+      style: computed.outlineStyle,
+      width: parseFloat(computed.outlineWidth),
+      color: computed.outlineColor,
+    };
+  });
+  expect(ring.style).toBe("solid");
+  expect(ring.width).toBeGreaterThanOrEqual(3);
+  const focusRing = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue("--focus-ring").trim(),
+  );
+  const expectedRing = `rgb(${[0, 2, 4]
+    .map((offset) => parseInt(focusRing.slice(1 + offset, 3 + offset), 16))
+    .join(",")})`;
+  expect(ring.color.replace(/\s/g, "")).toBe(expectedRing);
+  app.expectNoErrors();
+});
+
+test("the personal-task editor validates inline instead of with native bubbles", async ({ page, app }) => {
+  await app.goto("/");
+  await page.getByRole("button", { name: "Add task", exact: true }).first().click();
+  const sheet = app.dialog("Add a personal task");
+  await expect(sheet).toBeVisible();
+  const title = sheet.locator('input[name="title"]');
+  await expect(title).toBeFocused();
+  await title.fill("");
+  await sheet.getByRole("button", { name: "Add task", exact: true }).click();
+  const summary = sheet.getByRole("alert").filter({ hasText: "Enter a task name" });
+  await expect(summary).toBeVisible();
+  await expect(summary).toBeFocused();
+  await expect(title).toHaveAttribute("aria-invalid", "true");
+  await expect(title).toHaveAttribute("aria-describedby", /-error$/);
+  await expect(sheet).toBeVisible();
+  await summary.getByRole("link", { name: "Enter a task name" }).click();
+  await expect(title).toBeFocused();
+  // Read-only against the demo workspace: the sheet is closed, never saved.
+  await page.keyboard.press("Escape");
+  await expect(sheet).toHaveCount(0);
+  app.expectNoErrors();
+});
