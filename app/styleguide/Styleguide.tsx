@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Button } from "../components/Button";
+import { useToast } from "../components/Toast";
 import { Icon } from "../components/Icon";
 import { Modal } from "../components/Modal";
 import {
@@ -44,6 +45,7 @@ export function Styleguide() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [secondOpen, setSecondOpen] = useState(false);
   const [formErrors, setFormErrors] = useState<{ name?: string }>({});
+  const toast = useToast();
   useEffect(() => {
     document.title = "Styleguide · iTrack";
   }, []);
@@ -157,6 +159,25 @@ export function Styleguide() {
               </Button>
             </div>
           </form>
+        </section>
+        <section aria-labelledby="sg-toast">
+          <h2 id="sg-toast">Toast</h2>
+          <Button onClick={() => toast.show({ message: "Sample notification" })}>
+            Show a toast
+          </Button>{" "}
+          <Button
+            onClick={() =>
+              toast.show({
+                message: "Sample action taken.",
+                action: {
+                  label: "Undo",
+                  onClick: () => toast.show({ message: "Sample action undone." }),
+                },
+              })
+            }
+          >
+            Show a toast with Undo
+          </Button>
         </section>
       </main>
     </div>

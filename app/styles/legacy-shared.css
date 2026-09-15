@@ -1861,59 +1861,6 @@
   }
 }
 
-/* ===== LEGACY TOAST — deleted in Task 8 ===== */
-
-.toast {
-  position: fixed;
-  right: calc(24px + env(safe-area-inset-right));
-  bottom: calc(24px + env(safe-area-inset-bottom));
-  z-index: 200;
-  display: flex;
-  align-items: center;
-  min-height: 50px;
-  max-width: min(430px, calc(100vw - 32px));
-  border: 1px solid rgb(var(--veil-rgb) / 0.15);
-  border-radius: 13px;
-  background: var(--ink-surface-deep);
-  color: var(--on-dark);
-  box-shadow: var(--shadow-lg);
-  gap: 15px;
-  padding: 10px 11px 10px 15px;
-}
-
-.toast > span {
-  font-size: var(--text-sm);
-  font-weight: 700;
-}
-
-.toast button {
-  min-height: var(--tap-min);
-  border: 0;
-  border-radius: 8px;
-  background: rgb(var(--veil-rgb) / 0.09);
-  color: var(--accent-bright);
-  cursor: pointer;
-  font-size: var(--text-sm);
-  font-weight: 800;
-  padding: 0 10px;
-}
-
-.toast .toast-close {
-  display: grid;
-  place-items: center;
-  width: var(--tap-min);
-  padding: 0;
-  color: var(--on-dark);
-}
-
-@media (max-width: 540px) {
-  .toast {
-    right: max(16px, env(safe-area-inset-right));
-    bottom: calc(81px + env(safe-area-inset-bottom));
-    left: max(16px, env(safe-area-inset-left));
-  }
-}
-
 /* ===== LEGACY FORCED COLOURS — rewritten in Tasks 9 and 11 ===== */
 
 /*

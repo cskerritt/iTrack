@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
 import { ClientErrorBeacon } from "./components/ClientErrorBeacon";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { ToastProvider } from "./components/Toast";
 import { FONT_PRELOADS } from "./lib/fonts";
 import "./globals.css";
 
@@ -122,7 +123,9 @@ export default function RootLayout({
       </head>
       <body>
         <ClientErrorBeacon />
-        <ErrorBoundary>{children}</ErrorBoundary>
+        <ErrorBoundary>
+          <ToastProvider>{children}</ToastProvider>
+        </ErrorBoundary>
       </body>
     </html>
   );

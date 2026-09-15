@@ -120,6 +120,7 @@ import {
   TextInput,
 } from "./components/Form";
 import { Button } from "./components/Button";
+import { useToast } from "./components/Toast";
 
 const DENTAL_LINKED_APPLICABILITY_CHILD_CATEGORY_IDS = new Set<string>(
   DENTAL_LINKED_APPLICABILITY_CATEGORY_GROUPS.flatMap((categoryIds) =>
@@ -385,11 +386,6 @@ type Reminder = {
   scheduledFor: string;
   eventDate: string;
   urgency: "overdue" | "today" | "soon";
-};
-
-type ToastState = {
-  message: string;
-  undo?: () => void;
 };
 
 // What the credential editor hands back. `issuer` and the custom-only keys
@@ -1617,7 +1613,7 @@ export function ITrackApp() {
   // surface behind an open sheet keeps working.
   const pending = pendingActionKeys.includes(FORM_ACTION_KEY);
   const [error, setError] = useState("");
-  const [toast, setToast] = useState<ToastState | null>(null);
+  const toast = useToast();
   const [activityDraft, setActivityDraft] = useState<ActivityDraft>(() => ({
     title: "",
     completionDate: todayLocal(deviceTimeZone()),
@@ -1857,7 +1853,7 @@ export function ITrackApp() {
   const closeActivityEntry = useCallback(() => {
     const draftPersisted = persistActivityDraftNow();
     if (!draftPersisted) {
-      setToast({
+      toast.show({
         message:
           "This browser couldn’t save your draft. Keep this form open or finish logging the activity before leaving.",
       });
@@ -1877,6 +1873,7 @@ export function ITrackApp() {
     persistActivityDraftNow,
     resetActivityEntry,
     restoreSelectionBeforeActivityEntry,
+    toast,
   ]);
 
   // A 401 from any fetch means the session lapsed. Drop the workspace so the
@@ -2221,7 +2218,7 @@ export function ITrackApp() {
           typeof result.target.reminderKey !== "string"
         ) {
           setHighlightedReminderKey("");
-          setToast({
+          toast.show({
             message:
               "That check-in is no longer available in this signed-in workspace.",
           });
@@ -2239,7 +2236,7 @@ export function ITrackApp() {
         );
         if (!credential) {
           setHighlightedReminderKey("");
-          setToast({
+          toast.show({
             message:
               "That check-in is no longer available in this signed-in workspace.",
           });
@@ -2249,7 +2246,7 @@ export function ITrackApp() {
         navigateToTab("home");
         setHighlightedReminderKey(reminder?.key ?? "");
         if (!reminder) {
-          setToast({
+          toast.show({
             message:
               "That check-in may already be complete. The related credential is open.",
           });
@@ -2258,14 +2255,20 @@ export function ITrackApp() {
         if (controller.signal.aborted) return;
         setPendingReminderLaunch(null);
         setHighlightedReminderKey("");
-        setToast({
+        toast.show({
           message:
             "That check-in could not be opened. Reconnect and try the alert again.",
         });
       }
     })();
     return () => controller.abort();
-  }, [handleSessionEnded, navigateToTab, pendingReminderLaunch, workspace]);
+  }, [
+    handleSessionEnded,
+    navigateToTab,
+    pendingReminderLaunch,
+    toast,
+    workspace,
+  ]);
 
   useEffect(() => {
     if (!highlightedReminderKey || view !== "home") return;
@@ -2347,12 +2350,6 @@ export function ITrackApp() {
     window.addEventListener("pagehide", flushActivityDraft);
     return () => window.removeEventListener("pagehide", flushActivityDraft);
   }, [activityOpen, persistActivityDraftNow]);
-
-  useEffect(() => {
-    if (!toast) return;
-    const timeout = window.setTimeout(() => setToast(null), 6000);
-    return () => window.clearTimeout(timeout);
-  }, [toast]);
 
   const selectedCredential = useMemo(() => {
     if (!workspace) return null;
@@ -2652,7 +2649,7 @@ export function ITrackApp() {
         throw new Error(result.error || "That update didn’t save.");
       }
       await loadWorkspace();
-      setToast({ message: successMessage });
+      toast.show({ message: successMessage });
       return result;
     } catch (actionError) {
       setError(
@@ -2722,7 +2719,7 @@ export function ITrackApp() {
     activityDraftPersistenceGeneration.current += 1;
     const cleared = clearSavedActivityDraft();
     resetActivityEntry();
-    setToast({
+    toast.show({
       message: cleared
         ? "The browser-saved course draft was cleared."
         : "The form was cleared, but this browser would not remove its saved draft. Clear iTrack site data to remove it.",
@@ -2739,7 +2736,7 @@ export function ITrackApp() {
     setActivityOpen(false);
     resetActivityEntry();
     if (!cleared) {
-      setToast({
+      toast.show({
         message:
           "Activity saved, but this browser would not clear its local draft. Clear iTrack site data to remove it.",
       });
@@ -2756,7 +2753,7 @@ export function ITrackApp() {
     setInstallPrompt(null);
     if (choice.outcome === "accepted") {
       setIsStandalone(true);
-      setToast({ message: "iTrack was added to this device." });
+      toast.show({ message: "iTrack was added to this device." });
     }
   }
 
@@ -2769,7 +2766,7 @@ export function ITrackApp() {
     }
     if (capability === "denied") {
       setPushDeviceState("denied");
-      setToast({
+      toast.show({
         message:
           "Alerts are blocked in this device’s notification settings. Change that setting, then return here.",
       });
@@ -2780,7 +2777,7 @@ export function ITrackApp() {
       !workspace.reminderPreferences.webPushConfigured ||
       !workspace.reminderPreferences.vapidPublicKey
     ) {
-      setToast({
+      toast.show({
         message:
           "Phone alerts are not available on this device yet. Calendar check-ins still work.",
       });
@@ -2836,7 +2833,7 @@ export function ITrackApp() {
       setCurrentPushSubscription(subscription);
       setPushDeviceState("subscribed");
       await loadWorkspace();
-      setToast({
+      toast.show({
         message:
           "Phone alerts are on for this device. Lock-screen previews stay private.",
       });
@@ -2880,7 +2877,7 @@ export function ITrackApp() {
       setCurrentPushSubscription(null);
       setPushDeviceState("available");
       await loadWorkspace();
-      setToast({
+      toast.show({
         message:
           workspace.reminderPreferences.activePushDeviceCount > 1
             ? "Phone alerts are off on this device. Other connected devices are unchanged."
@@ -2902,7 +2899,7 @@ export function ITrackApp() {
     const subscription = currentPushSubscription;
     if (!subscription) {
       await refreshPushDeviceState();
-      setToast({
+      toast.show({
         message: "Turn on phone alerts for this device before sending a test.",
       });
       return;
@@ -2913,7 +2910,7 @@ export function ITrackApp() {
       await postPushAction("sendTestPush", {
         endpoint: subscription.endpoint,
       });
-      setToast({
+      toast.show({
         message:
           "Test sent. Your device will show a private iTrack check-in.",
       });
@@ -2951,7 +2948,7 @@ export function ITrackApp() {
     try {
       const delivery = await offerCalendarInvite(events, fileName);
       if (delivery !== "cancelled") {
-        setToast({ message: successMessage });
+        toast.show({ message: successMessage });
       }
     } catch {
       setError(
@@ -2989,7 +2986,7 @@ export function ITrackApp() {
       preferredCalendarLeadDays(),
     );
     if (!events.length) {
-      setToast({ message: "There are no open check-ins to add yet." });
+      toast.show({ message: "There are no open check-ins to add yet." });
       return;
     }
     await deliverCalendarInvite(
@@ -3264,13 +3261,13 @@ export function ITrackApp() {
       if (!uploaded) {
         finishSavedActivityEntry();
         formElement.reset();
-        setToast({
+        toast.show({
           message:
             "Activity saved, but the proof file did not upload. You can add it from History.",
         });
         return;
       }
-      setToast({
+      toast.show({
         message:
           allocatedUnits === totalUnits
             ? `${compactNumber(totalUnits)} ${
@@ -3368,7 +3365,7 @@ export function ITrackApp() {
     const uploaded = await uploadEvidence(evidenceActivity.id, file);
     if (uploaded) {
       formElement.reset();
-      setToast({ message: "Proof saved securely." });
+      toast.show({ message: "Proof saved securely." });
     }
   }
 
@@ -3403,7 +3400,7 @@ export function ITrackApp() {
         current.filter((item) => item.id !== evidence.id),
       );
       await loadWorkspace();
-      setToast({ message: "Proof removed." });
+      toast.show({ message: "Proof removed." });
     } catch (deleteError) {
       setError(
         deleteError instanceof Error
@@ -3917,18 +3914,21 @@ export function ITrackApp() {
     );
     if (!result) return;
     setEditingActivity(null);
-    setToast({
+    toast.show({
       message: "Learning record archived. Its proof remains saved.",
-      undo: () => {
-        void runAction(
-          "restoreActivity",
-          {
-            activityId: activity.id,
-            expectedRevision: activity.revision + 1,
-          },
-          "Learning record restored.",
-          activityActionKey(activity.id),
-        );
+      action: {
+        label: "Undo",
+        onClick: () => {
+          void runAction(
+            "restoreActivity",
+            {
+              activityId: activity.id,
+              expectedRevision: activity.revision + 1,
+            },
+            "Learning record restored.",
+            activityActionKey(activity.id),
+          );
+        },
       },
     });
     window.setTimeout(
@@ -4019,19 +4019,22 @@ export function ITrackApp() {
     // credential, so the "deleted (or never existed)" effect above already
     // bounces a pushed detail to /credentials. Popping as well would queue a
     // second history move behind the one that effect asks for.
-    setToast({
+    toast.show({
       message:
         "Credential archived. Find it under History → Archived credentials.",
-      undo: () => {
-        void runAction(
-          "restoreCredential",
-          {
-            credentialId: credential.id,
-            expectedRevision: credential.revision + 1,
-          },
-          "Credential restored.",
-          credentialActionKey(credential.id),
-        );
+      action: {
+        label: "Undo",
+        onClick: () => {
+          void runAction(
+            "restoreCredential",
+            {
+              credentialId: credential.id,
+              expectedRevision: credential.revision + 1,
+            },
+            "Credential restored.",
+            credentialActionKey(credential.id),
+          );
+        },
       },
     });
   }
@@ -4109,18 +4112,21 @@ export function ITrackApp() {
     );
     if (!result) return;
     setTaskEditor(null);
-    setToast({
+    toast.show({
       message: "Personal task archived.",
-      undo: () => {
-        void runAction(
-          "restorePersonalTask",
-          {
-            taskId: task.id,
-            expectedRevision: task.revision + 1,
-          },
-          "Personal task restored.",
-          taskActionKey(task.id),
-        );
+      action: {
+        label: "Undo",
+        onClick: () => {
+          void runAction(
+            "restorePersonalTask",
+            {
+              taskId: task.id,
+              expectedRevision: task.revision + 1,
+            },
+            "Personal task restored.",
+            taskActionKey(task.id),
+          );
+        },
       },
     });
     window.setTimeout(
@@ -4161,19 +4167,22 @@ export function ITrackApp() {
       taskActionKey(task.id),
     );
     if (success) {
-      setToast({
+      toast.show({
         message: completed ? "Task checked off." : "Task reopened.",
-        undo: () => {
-          void runAction(
-            "toggleTask",
-            {
-              taskId: task.id,
-              completed: !completed,
-              expectedRevision: task.revision + 1,
-            },
-            "Change undone.",
-            taskActionKey(task.id),
-          );
+        action: {
+          label: "Undo",
+          onClick: () => {
+            void runAction(
+              "toggleTask",
+              {
+                taskId: task.id,
+                completed: !completed,
+                expectedRevision: task.revision + 1,
+              },
+              "Change undone.",
+              taskActionKey(task.id),
+            );
+          },
         },
       });
     }
@@ -6718,31 +6727,6 @@ export function ITrackApp() {
             </div>
           </div>
         </Modal>
-      ) : null}
-
-      {toast ? (
-        <div className="toast" role="status" aria-live="polite">
-          <span>{toast.message}</span>
-          {toast.undo ? (
-            <button
-              type="button"
-              onClick={() => {
-                toast.undo?.();
-                setToast(null);
-              }}
-            >
-              Undo
-            </button>
-          ) : null}
-          <button
-            className="toast-close"
-            type="button"
-            aria-label="Dismiss notification"
-            onClick={() => setToast(null)}
-          >
-            <Icon name="close" size={17} />
-          </button>
-        </div>
       ) : null}
     </div>
   );
