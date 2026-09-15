@@ -13,7 +13,7 @@
     --ink: #1d1d21; --ink-muted: #55555e; --paper: #f2f2f7; --card: #ffffff;
     --line: #e3e3e8; --accent: #007aff; --accent-deep: #0a63c9;
     --amber: #b97706; --amber-soft: #fff0d0; --coral: #e5484d; --coral-soft: #fde3e4;
-    --ok-soft: #ddf3e4; --ok-ink: #18794e;
+    --ok-soft: #ddf3e4; --ok-ink: #18794e; --on-accent: #ffffff; --coral-ink: #b3261e;
   }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Roboto, sans-serif;
@@ -30,7 +30,7 @@
     min-height: 44px; padding: 0 22px; border-radius: 12px; border: 0;
     font-size: 15px; font-weight: 600; cursor: pointer;
   }
-  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary { background: var(--accent); color: var(--on-accent); }
   .btn-primary:hover { background: var(--accent-deep); }
   .btn-quiet { background: transparent; color: var(--accent); }
   .card {
@@ -42,13 +42,13 @@
   label { display: block; font-size: 14px; font-weight: 600; margin: 14px 0 6px; }
   input {
     width: 100%; min-height: 44px; padding: 0 12px; font-size: 16px;
-    border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--ink);
   }
   input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
   form .btn { width: 100%; margin-top: 20px; }
   .note { font-size: 13px; color: var(--ink-muted); margin-top: 16px; text-align: center; }
   .flash { display: none; border-radius: 10px; padding: 10px 12px; font-size: 14px; margin-bottom: 8px; }
-  .flash.error { background: var(--coral-soft); color: #b3261e; }
+  .flash.error { background: var(--coral-soft); color: var(--coral-ink); }
   .flash.ok { background: var(--ok-soft); color: var(--ok-ink); }
 </style>
 </head>

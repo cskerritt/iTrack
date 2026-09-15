@@ -1,12 +1,16 @@
 # iTrack Design System
 
-The single source of truth is the two `:root` blocks at the top of `app/globals.css`:
-the light block defines every token; the `@media (prefers-color-scheme: dark)` block
-remaps the color tokens. **No color literal may appear anywhere else in the
-stylesheet or in components** — this invariant is enforced, not just asserted:
-`node tools/contrast-audit.mjs` fails on any hex, `rgb()`, or named color outside
-those two blocks. It is what makes dark mode a pure token remap with zero
-per-scheme component rules.
+The single source of truth is the two `:root` blocks at the top of the **token file** —
+`app/globals.css` today, `app/styles/tokens.css` after the Wave 3 split (a stylesheet is a
+token file iff its first rule, after any leading `@import`, is `:root {`; every public page
+is one too, because each inlines its own `:root`): the light block defines every token; the
+`@media (prefers-color-scheme: dark)` block remaps the color tokens. **No color literal may
+appear outside a token file's `:root`/dark blocks** — not in consumer stylesheets (the
+per-screen CSS after Wave 3), not in components, not in `deploy/railway/pages/*.html`. This
+is enforced, not just asserted: `node tools/contrast-audit.mjs` walks every stylesheet under
+`app/` and every page's `<style>` blocks with one rule set and fails on any hex, `rgb()`, or
+named color outside those blocks; `tests/contrast-audit.test.mjs` runs it under `npm test`.
+It is what makes dark mode a pure token remap with zero per-scheme component rules.
 
 ## Character
 
@@ -87,9 +91,9 @@ became `*-tint` (`--ink-tint`, `--mark-tint`, `--chip-tint`, `--track-tint`,
 Every muted-ink token, accent ink and solid mark documents, in a comment beside
 its value, its computed WCAG ratio on each surface it is approved for — **in both
 blocks**. Those comments are a contract, not a note: `tools/contrast-audit.mjs`
-re-derives all 92 of them from the token values in the file and fails if any has
-drifted by more than 0.05 or dropped below its floor. Run it before committing a
-token change.
+re-derives every documented claim (98 today) from the token values in the file and
+fails if any has drifted by more than 0.05 or dropped below its floor. Run it before
+committing a token change; `npm test` runs it too.
 
 The floors:
 
