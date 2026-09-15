@@ -1,4 +1,4 @@
-import { getD1 } from "@/db";
+import { getD1, getEvidenceBucket } from "@/db";
 import {
   DENTAL_ADDITIONAL_TOTAL_BINDINGS,
   DENTAL_AGGREGATE_PARENT_CATEGORY_IDS,
@@ -5376,6 +5376,146 @@ function validateActiveCategoryParents(categories: CredentialCategoryDraft[]) {
   }
 }
 
+// The template date and attestation rules that createCredential enforced at
+// creation, shared with updateCredential so a date edit can never become a
+// bypass of a fixed-deadline or full-cycle template (app-ux-03).
+function assertTemplateCycleDates(
+  rule: CatalogRule,
+  ruleSetId: string,
+  cycleStart: string,
+  deadline: string,
+  payload: JsonRecord,
+) {
+  let abveAnnualStartYear: number | null = null;
+  if (isNremtRuleSet(ruleSetId)) {
+    assertNremtCredentialDates(ruleSetId, deadline, payload);
+  }
+  if (ruleSetId.startsWith(FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX)) {
+    assertFloridaMentalHealthCredentialDates(
+      cycleStart,
+      deadline,
+      payload,
+    );
+  }
+  if (
+    ruleSetId.startsWith(CRCC_RULE_SET_PREFIX) ||
+    ruleSetId.startsWith(ABVE_RULE_SET_PREFIX)
+  ) {
+    abveAnnualStartYear = assertRehabilitationCertificationDates(
+      ruleSetId,
+      cycleStart,
+      deadline,
+      payload,
+    );
+  }
+  if (
+    isExpandedCertificationRuleSetId(ruleSetId) &&
+    payload.officialDatesAttested !== true
+  ) {
+    throw new RequestError(
+      "Confirm that the credential or license path, status, cycle start, and deadline match the official issuer or regulator record.",
+      409,
+      "expanded_certification_dates_attestation_required",
+    );
+  }
+  if (
+    isExpandedCertificationRuleSetId(ruleSetId) &&
+    payload.templateEligibilityAttested !== true
+  ) {
+    throw new RequestError(
+      "Confirm that this is the standard full-cycle credential or license maintenance path and that no initial, shortened, waiver, inactive, retired, reinstatement, synchronized or multi-credential, exam-alternative, or other adjusted variant applies.",
+      409,
+      "expanded_certification_template_eligibility_required",
+    );
+  }
+  if (
+    rule.profession === "Pharmacy" &&
+    payload.templateEligibilityAttested !== true
+  ) {
+    throw new RequestError(
+      "Confirm that the official record shows a standard full pharmacist renewal period and that no shortened, inactive, prorated, exempt, or other adjusted-status variant applies.",
+      409,
+      "pharmacist_template_eligibility_required",
+    );
+  }
+  if (
+    rule.profession === "Nursing" &&
+    payload.templateEligibilityAttested !== true
+  ) {
+    throw new RequestError(
+      ruleSetId === "tx-rn-2026-v1" ||
+        ruleSetId === "tx-lvn-2026-v1"
+        ? "Confirm that the official record matches a standard full Texas nursing renewal using the 20-hour CNE path—not the certification alternative—and that no initial, shortened, inactive, exempt, or other adjusted-status path applies."
+        : "Confirm that the official record matches this standard full nursing renewal or registration period and that no initial, shortened, inactive, prorated, exempt, or other adjusted-status path applies.",
+      409,
+      "nursing_template_eligibility_required",
+    );
+  }
+  if (
+    rule.profession === "Dental" &&
+    payload.templateEligibilityAttested !== true
+  ) {
+    throw new RequestError(
+      "Confirm that the official record matches this standard full dental renewal or registration period and that no initial, shortened, inactive, retired, prorated, exempt, or other adjusted-status path applies.",
+      409,
+      "dental_template_eligibility_required",
+    );
+  }
+  if (
+    rule.profession === "Pharmacy" &&
+    !matchesFullCycleWindow(
+      cycleStart,
+      deadline,
+      Number(rule.cycleMonths),
+    )
+  ) {
+    throw new RequestError(
+      `This pharmacist template requires a standard full ${rule.cycleMonths}-month period. Use the exact regulator dates or create a custom plan for a shortened or adjusted period.`,
+      409,
+      "pharmacist_standard_cycle_dates_required",
+    );
+  }
+  if (
+    rule.profession === "Nursing" &&
+    !matchesFullCycleWindow(
+      cycleStart,
+      deadline,
+      Number(rule.cycleMonths),
+    )
+  ) {
+    throw new RequestError(
+      `This nursing template requires a standard full ${rule.cycleMonths}-month period. Use the exact regulator dates or create a custom plan for an initial, shortened, or adjusted period.`,
+      409,
+      "nursing_standard_cycle_dates_required",
+    );
+  }
+  if (
+    rule.profession === "Dental" &&
+    !matchesFullCycleWindow(
+      cycleStart,
+      deadline,
+      Number(rule.cycleMonths),
+    )
+  ) {
+    throw new RequestError(
+      `This dental template requires a standard full ${rule.cycleMonths}-month period. Use the exact regulator dates or create a custom plan for an initial, shortened, or adjusted period.`,
+      409,
+      "dental_standard_cycle_dates_required",
+    );
+  }
+  if (
+    ruleSetId === CFP_PRE_2027_RULE_SET_ID &&
+    cycleStart >= CFP_2027_CYCLE_START
+  ) {
+    throw new RequestError(
+      "This 30-hour CFP template is only for certification periods beginning before April 1, 2027. Use the 40-hour CFP requirement for a later cycle, and record carryover only after CFP Board confirms the eligible general CE amount.",
+      409,
+      "rule_transition_outside_template",
+    );
+  }
+  return abveAnnualStartYear;
+}
+
 async function createCredential(
   database: D1Database,
   identity: RequestIdentity,
@@ -5425,132 +5565,13 @@ async function createCredential(
         "rule_set_not_found",
       );
     }
-    if (isNremtRuleSet(ruleSetId)) {
-      assertNremtCredentialDates(ruleSetId, deadline, payload);
-    }
-    if (ruleSetId.startsWith(FLORIDA_MENTAL_HEALTH_RULE_SET_PREFIX)) {
-      assertFloridaMentalHealthCredentialDates(
-        cycleStart,
-        deadline,
-        payload,
-      );
-    }
-    if (
-      ruleSetId.startsWith(CRCC_RULE_SET_PREFIX) ||
-      ruleSetId.startsWith(ABVE_RULE_SET_PREFIX)
-    ) {
-      abveAnnualStartYear = assertRehabilitationCertificationDates(
-        ruleSetId,
-        cycleStart,
-        deadline,
-        payload,
-      );
-    }
-    if (
-      isExpandedCertificationRuleSetId(ruleSetId) &&
-      payload.officialDatesAttested !== true
-    ) {
-      throw new RequestError(
-        "Confirm that the credential or license path, status, cycle start, and deadline match the official issuer or regulator record.",
-        409,
-        "expanded_certification_dates_attestation_required",
-      );
-    }
-    if (
-      isExpandedCertificationRuleSetId(ruleSetId) &&
-      payload.templateEligibilityAttested !== true
-    ) {
-      throw new RequestError(
-        "Confirm that this is the standard full-cycle credential or license maintenance path and that no initial, shortened, waiver, inactive, retired, reinstatement, synchronized or multi-credential, exam-alternative, or other adjusted variant applies.",
-        409,
-        "expanded_certification_template_eligibility_required",
-      );
-    }
-    if (
-      rule.profession === "Pharmacy" &&
-      payload.templateEligibilityAttested !== true
-    ) {
-      throw new RequestError(
-        "Confirm that the official record shows a standard full pharmacist renewal period and that no shortened, inactive, prorated, exempt, or other adjusted-status variant applies.",
-        409,
-        "pharmacist_template_eligibility_required",
-      );
-    }
-    if (
-      rule.profession === "Nursing" &&
-      payload.templateEligibilityAttested !== true
-    ) {
-      throw new RequestError(
-        ruleSetId === "tx-rn-2026-v1" ||
-          ruleSetId === "tx-lvn-2026-v1"
-          ? "Confirm that the official record matches a standard full Texas nursing renewal using the 20-hour CNE path—not the certification alternative—and that no initial, shortened, inactive, exempt, or other adjusted-status path applies."
-          : "Confirm that the official record matches this standard full nursing renewal or registration period and that no initial, shortened, inactive, prorated, exempt, or other adjusted-status path applies.",
-        409,
-        "nursing_template_eligibility_required",
-      );
-    }
-    if (
-      rule.profession === "Dental" &&
-      payload.templateEligibilityAttested !== true
-    ) {
-      throw new RequestError(
-        "Confirm that the official record matches this standard full dental renewal or registration period and that no initial, shortened, inactive, retired, prorated, exempt, or other adjusted-status path applies.",
-        409,
-        "dental_template_eligibility_required",
-      );
-    }
-    if (
-      rule.profession === "Pharmacy" &&
-      !matchesFullCycleWindow(
-        cycleStart,
-        deadline,
-        Number(rule.cycleMonths),
-      )
-    ) {
-      throw new RequestError(
-        `This pharmacist template requires a standard full ${rule.cycleMonths}-month period. Use the exact regulator dates or create a custom plan for a shortened or adjusted period.`,
-        409,
-        "pharmacist_standard_cycle_dates_required",
-      );
-    }
-    if (
-      rule.profession === "Nursing" &&
-      !matchesFullCycleWindow(
-        cycleStart,
-        deadline,
-        Number(rule.cycleMonths),
-      )
-    ) {
-      throw new RequestError(
-        `This nursing template requires a standard full ${rule.cycleMonths}-month period. Use the exact regulator dates or create a custom plan for an initial, shortened, or adjusted period.`,
-        409,
-        "nursing_standard_cycle_dates_required",
-      );
-    }
-    if (
-      rule.profession === "Dental" &&
-      !matchesFullCycleWindow(
-        cycleStart,
-        deadline,
-        Number(rule.cycleMonths),
-      )
-    ) {
-      throw new RequestError(
-        `This dental template requires a standard full ${rule.cycleMonths}-month period. Use the exact regulator dates or create a custom plan for an initial, shortened, or adjusted period.`,
-        409,
-        "dental_standard_cycle_dates_required",
-      );
-    }
-    if (
-      ruleSetId === CFP_PRE_2027_RULE_SET_ID &&
-      cycleStart >= CFP_2027_CYCLE_START
-    ) {
-      throw new RequestError(
-        "This 30-hour CFP template is only for certification periods beginning before April 1, 2027. Use the 40-hour CFP requirement for a later cycle, and record carryover only after CFP Board confirms the eligible general CE amount.",
-        409,
-        "rule_transition_outside_template",
-      );
-    }
+    abveAnnualStartYear = assertTemplateCycleDates(
+      rule,
+      ruleSetId,
+      cycleStart,
+      deadline,
+      payload,
+    );
     const ruleCategories = await query(
       database,
       `SELECT
@@ -6282,6 +6303,1110 @@ function assertActivityMutationState(
       "activity_not_archived",
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Credential mutations (app-ux-03). Same shape as the activity mutations
+// above: load the owned row, assert its revision and archive state, write
+// inside one batch, and diagnose a no-op batch into a precise 409.
+// ---------------------------------------------------------------------------
+
+type CredentialMutationRow = {
+  id: string;
+  ruleSetId: string | null;
+  credentialName: string;
+  profession: string;
+  jurisdiction: string;
+  issuer: string;
+  cycleStart: string;
+  deadline: string;
+  totalRequired: number;
+  unitLabel: string;
+  status: string;
+  revision: number;
+  archivedAt: string | null;
+  seriesId: string;
+  cycleMonths: number;
+};
+
+type CredentialRequirementRow = {
+  id: string;
+  ruleCategoryId: string | null;
+  name: string;
+  requiredUnits: number;
+  kind: RequirementKind;
+  relation: RequirementRelation;
+  parentRequirementId: string | null;
+  applicability: RequirementApplicability;
+  applicabilityStatus: ApplicabilityStatus;
+  conditionNote: string | null;
+  exclusiveGroup: string | null;
+  isActive: number;
+  sortOrder: number;
+};
+
+// Keys a submitted cycle refuses (its dates and requirements are frozen) and
+// keys a template-linked credential refuses (the template owns them).
+const CREDENTIAL_FROZEN_KEYS = [
+  "cycleStart",
+  "deadline",
+  "jurisdiction",
+  "profession",
+  "totalRequired",
+  "unitLabel",
+  "categories",
+] as const;
+const CREDENTIAL_TEMPLATE_LOCKED_KEYS = [
+  "jurisdiction",
+  "profession",
+  "issuer",
+  "totalRequired",
+  "unitLabel",
+  "categories",
+] as const;
+
+function sqlPlaceholders(values: readonly unknown[]) {
+  return values.map(() => "?").join(", ");
+}
+
+async function getCredentialForMutation(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+) {
+  return query(
+    database,
+    `SELECT
+      c.id,
+      c.rule_set_id AS ruleSetId,
+      c.credential_name AS credentialName,
+      c.profession,
+      c.jurisdiction,
+      c.issuer,
+      c.cycle_start AS cycleStart,
+      c.deadline,
+      c.total_required AS totalRequired,
+      c.unit_label AS unitLabel,
+      c.status,
+      c.revision,
+      c.archived_at AS archivedAt,
+      COALESCE(cycle.series_id, c.id) AS seriesId,
+      COALESCE(cycle.cycle_months, rs.cycle_months, 12) AS cycleMonths
+     FROM credentials c
+     LEFT JOIN credential_cycle_links cycle
+       ON cycle.credential_id = c.id AND cycle.user_id = c.user_id
+     LEFT JOIN rule_sets rs ON rs.id = c.rule_set_id
+     WHERE c.id = ? AND c.user_id = ?`,
+    [credentialId, identity.userId],
+  ).first<CredentialMutationRow>();
+}
+
+function assertCredentialMutationState(
+  credential: CredentialMutationRow | null,
+  expectedRevision: number,
+  archiveState: "active" | "archived" | "any",
+): asserts credential is CredentialMutationRow {
+  if (!credential) {
+    throw new RequestError(
+      "Credential not found.",
+      404,
+      "credential_not_found",
+    );
+  }
+  if (Number(credential.revision) !== expectedRevision) {
+    throw new RequestError(
+      "This credential changed in another session. Refresh and try again.",
+      409,
+      "credential_version_conflict",
+    );
+  }
+  if (archiveState === "active" && credential.archivedAt) {
+    throw new RequestError(
+      "This credential is archived. Restore it before making changes.",
+      409,
+      "credential_archived",
+    );
+  }
+  if (archiveState === "archived" && !credential.archivedAt) {
+    throw new RequestError(
+      "This credential is already active.",
+      409,
+      "credential_not_archived",
+    );
+  }
+}
+
+async function seriesCredentialIds(
+  database: D1Database,
+  identity: RequestIdentity,
+  seriesId: string,
+  fallbackId: string,
+) {
+  const linked = await query(
+    database,
+    `SELECT credential_id AS credentialId
+     FROM credential_cycle_links
+     WHERE user_id = ? AND series_id = ?
+     ORDER BY created_at, credential_id`,
+    [identity.userId, seriesId],
+  ).all<{ credentialId: string }>();
+  const ids = new Set(linked.results.map((row) => row.credentialId));
+  ids.add(fallbackId);
+  return [...ids];
+}
+
+async function diagnoseCredentialMutationFailure(
+  database: D1Database,
+  identity: RequestIdentity,
+  credentialId: string,
+  expectedRevision: number,
+  archiveState: "active" | "archived" | "any",
+): Promise<never> {
+  const credential = await getCredentialForMutation(
+    database,
+    identity,
+    credentialId,
+  );
+  assertCredentialMutationState(credential, expectedRevision, archiveState);
+  throw new RequestError(
+    "This credential changed while it was being saved. Refresh and try again.",
+    409,
+    "credential_state_changed",
+  );
+}
+
+// The custom-credential category parser from createCredential, keyed so a
+// replace-set can address existing requirements by id.
+function credentialCategoryDraftsFromPayload(
+  payload: JsonRecord,
+  totalRequired: number,
+): CredentialCategoryDraft[] {
+  const rawCategories = payload.categories;
+  if (!Array.isArray(rawCategories) || rawCategories.length > 30) {
+    throw new RequestError("categories must be an array of up to 30 items");
+  }
+  const categories: CredentialCategoryDraft[] = rawCategories.map(
+    (item, index) => {
+      if (!isRecord(item)) {
+        throw new RequestError(`categories[${index}] must be an object`);
+      }
+      const kind = enumField(item, "kind", REQUIREMENT_KINDS, "minimum");
+      const relation = enumField(
+        item,
+        "relation",
+        REQUIREMENT_RELATIONS,
+        "independent",
+      );
+      const applicability = enumField(
+        item,
+        "applicability",
+        REQUIREMENT_APPLICABILITIES,
+        "always",
+      );
+      const applicabilityStatus = normalizedApplicabilityStatus(
+        applicability,
+        item.applicabilityStatus,
+        `categories[${index}].applicabilityStatus`,
+      );
+      const conditionNote = textField(item, "conditionNote", { max: 500 });
+      const exclusiveGroup = textField(item, "exclusiveGroup", { max: 80 });
+      if (applicability === "conditional" && !conditionNote) {
+        throw new RequestError(
+          `categories[${index}].conditionNote is required for a conditional rule`,
+        );
+      }
+      const requiredUnits =
+        kind === "informational"
+          ? (nonNegativeNumber(item, "requiredUnits") ?? 0)
+          : positiveNumber(item, "requiredUnits", { required: true })!;
+      return {
+        key:
+          textField(item, "requirementId", { max: 160 }) ??
+          textField(item, "key", { max: 160 }) ??
+          `custom-category-${index}`,
+        ruleCategoryId: null,
+        name: textField(item, "name", { required: true, max: 100 })!,
+        requiredUnits,
+        kind,
+        relation,
+        parentKey: textField(item, "parentRequirementId", { max: 160 }),
+        applicability,
+        applicabilityStatus,
+        conditionNote,
+        exclusiveGroup,
+        isActive: applicabilityStatus === "applies",
+        sortOrder: index,
+      };
+    },
+  );
+  if (categories.length === 0) {
+    return [
+      {
+        key: "general",
+        ruleCategoryId: null,
+        name: "General",
+        requiredUnits: totalRequired,
+        kind: "minimum",
+        relation: "independent",
+        parentKey: null,
+        applicability: "always",
+        applicabilityStatus: "applies",
+        conditionNote: null,
+        exclusiveGroup: null,
+        isActive: true,
+        sortOrder: 0,
+      },
+    ];
+  }
+  if (
+    new Set(categories.map((category) => category.key)).size !==
+    categories.length
+  ) {
+    throw new RequestError("Custom category keys must be unique");
+  }
+  return categories;
+}
+
+function credentialCategoryDraftsFromRows(
+  rows: readonly CredentialRequirementRow[],
+): CredentialCategoryDraft[] {
+  return rows.map((row, index) => ({
+    key: row.id,
+    ruleCategoryId: row.ruleCategoryId,
+    name: row.name,
+    requiredUnits: Number(row.requiredUnits),
+    kind: row.kind,
+    relation: row.relation,
+    parentKey: row.parentRequirementId,
+    applicability: row.applicability,
+    applicabilityStatus: row.applicabilityStatus,
+    conditionNote: row.conditionNote,
+    exclusiveGroup: row.exclusiveGroup,
+    isActive: Number(row.isActive) === 1,
+    sortOrder: index,
+  }));
+}
+
+function assertCategoryTotalWithinCredential(
+  categories: readonly CredentialCategoryDraft[],
+  totalRequired: number,
+) {
+  const categoryTotal = categories.reduce(
+    (sum, category) =>
+      category.isActive &&
+      category.kind === "minimum" &&
+      category.relation === "independent" &&
+      !category.parentKey
+        ? sum + category.requiredUnits
+        : sum,
+    0,
+  );
+  if (categoryTotal > totalRequired + 0.001) {
+    throw new RequestError(
+      "Category requirements cannot exceed the credential total.",
+    );
+  }
+}
+
+async function updateCredential(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  const credentialId = textField(payload, "credentialId", {
+    required: true,
+    max: 160,
+  })!;
+  const expectedRevision = expectedRevisionField(payload);
+  const credential = await getCredentialForMutation(
+    database,
+    identity,
+    credentialId,
+  );
+  assertCredentialMutationState(credential, expectedRevision, "active");
+  const present = (key: string) => payload[key] !== undefined;
+  if (credential.status === "renewed") {
+    throw new RequestError(
+      "This renewal cycle is closed; its record is frozen.",
+      409,
+      "cycle_closed",
+    );
+  }
+  if (credential.status === "submitted" && CREDENTIAL_FROZEN_KEYS.some(present)) {
+    throw new RequestError(
+      "This cycle has a logged submission; its dates and requirements are frozen. Change the display name or issuer only.",
+      409,
+      "cycle_closed",
+    );
+  }
+  if (
+    credential.ruleSetId !== null &&
+    CREDENTIAL_TEMPLATE_LOCKED_KEYS.some(present)
+  ) {
+    throw new RequestError(
+      "Source-linked credentials take their requirements from the template. Change dates or the display name only, or create a custom plan.",
+      400,
+      "template_field_locked",
+    );
+  }
+
+  const credentialName = present("credentialName")
+    ? textField(payload, "credentialName", { required: true, max: 180 })!
+    : credential.credentialName;
+  const issuer = present("issuer")
+    ? (textField(payload, "issuer", { max: 180 }) ?? "Self-managed credential")
+    : credential.issuer;
+  const jurisdiction = present("jurisdiction")
+    ? textField(payload, "jurisdiction", { required: true, max: 120 })!
+    : credential.jurisdiction;
+  const profession = present("profession")
+    ? textField(payload, "profession", { required: true, max: 120 })!
+    : credential.profession;
+  const totalRequired = present("totalRequired")
+    ? positiveNumber(payload, "totalRequired", { required: true })!
+    : Number(credential.totalRequired);
+  const unitLabel = present("unitLabel")
+    ? textField(payload, "unitLabel", { required: true, max: 40 })!
+    : credential.unitLabel;
+  const cycleStart = present("cycleStart")
+    ? isoDateField(payload, "cycleStart")!
+    : credential.cycleStart;
+  const deadline = present("deadline")
+    ? isoDateField(payload, "deadline")!
+    : credential.deadline;
+  if (cycleStart > deadline) {
+    throw new RequestError("deadline must be on or after cycleStart");
+  }
+  const datesChanged =
+    cycleStart !== credential.cycleStart || deadline !== credential.deadline;
+  const deadlineChanged = deadline !== credential.deadline;
+
+  let abveAnnualStartYear: number | null = null;
+  if (datesChanged && credential.ruleSetId !== null) {
+    const rule = await query(
+      database,
+      `SELECT
+        id,
+        credential_name AS credentialName,
+        profession,
+        jurisdiction,
+        issuer,
+        total_units AS totalUnits,
+        unit_label AS unitLabel,
+        cycle_months AS cycleMonths
+      FROM rule_sets
+      WHERE id = ? AND is_current = 1`,
+      [credential.ruleSetId],
+    ).first<CatalogRule>();
+    if (!rule) {
+      throw new RequestError(
+        "The selected rule set was not found or is no longer current.",
+        404,
+        "rule_set_not_found",
+      );
+    }
+    abveAnnualStartYear = assertTemplateCycleDates(
+      rule,
+      credential.ruleSetId,
+      cycleStart,
+      deadline,
+      payload,
+    );
+  }
+
+  if (datesChanged) {
+    const allocated = await query(
+      database,
+      `SELECT
+        a.id,
+        a.title,
+        a.completion_date AS completionDate,
+        req.rule_category_id AS ruleCategoryId
+      FROM activities a
+      JOIN activity_allocations x ON x.activity_id = a.id
+      LEFT JOIN activity_requirement_matches m
+        ON m.allocation_id = x.id AND m.user_id = a.user_id
+      LEFT JOIN credential_requirements req ON req.id = m.requirement_id
+      WHERE x.credential_id = ?
+        AND a.user_id = ?
+        AND a.archived_at IS NULL
+      ORDER BY a.completion_date, a.id`,
+      [credentialId, identity.userId],
+    ).all<{
+      id: string;
+      title: string;
+      completionDate: string;
+      ruleCategoryId: string | null;
+    }>();
+    const byActivity = new Map<
+      string,
+      { title: string; completionDate: string; requirements: { ruleCategoryId: string | null }[] }
+    >();
+    for (const row of allocated.results) {
+      const entry = byActivity.get(row.id) ?? {
+        title: row.title,
+        completionDate: row.completionDate,
+        requirements: [],
+      };
+      if (row.ruleCategoryId !== null) {
+        entry.requirements.push({ ruleCategoryId: row.ruleCategoryId });
+      }
+      byActivity.set(row.id, entry);
+    }
+    const outside: string[] = [];
+    for (const activity of byActivity.values()) {
+      try {
+        assertActivityDateFitsCredential(
+          activity.completionDate,
+          { cycleStart, deadline },
+          activity.requirements,
+          "completion date",
+        );
+      } catch (error) {
+        if (!(error instanceof RequestError)) throw error;
+        outside.push(activity.title);
+      }
+    }
+    if (outside.length > 0) {
+      throw new RequestError(
+        `These learning records fall outside the new cycle dates: ${outside.join(", ")}. Change their dates or keep the cycle dates.`,
+        409,
+        "activities_outside_cycle",
+      );
+    }
+  }
+
+  const existingRequirements = await query(
+    database,
+    `SELECT
+      req.id,
+      req.rule_category_id AS ruleCategoryId,
+      req.name,
+      req.required_units AS requiredUnits,
+      req.kind,
+      req.relation,
+      req.parent_requirement_id AS parentRequirementId,
+      req.applicability,
+      req.applicability_status AS applicabilityStatus,
+      req.condition_note AS conditionNote,
+      req.exclusive_group AS exclusiveGroup,
+      req.is_active AS isActive,
+      req.sort_order AS sortOrder
+     FROM credential_requirements req
+     JOIN credentials c ON c.id = req.credential_id
+     WHERE req.credential_id = ? AND c.user_id = ?
+     ORDER BY req.sort_order, req.name`,
+    [credentialId, identity.userId],
+  ).all<CredentialRequirementRow>();
+  const categoriesChanged = present("categories");
+  const categories = categoriesChanged
+    ? credentialCategoryDraftsFromPayload(payload, totalRequired)
+    : credentialCategoryDraftsFromRows(existingRequirements.results);
+  let orderedCategories: CredentialCategoryDraft[] = [];
+  if (categoriesChanged || present("totalRequired")) {
+    orderedCategories = orderedCategoryDrafts(categories);
+    validateActiveCategoryParents(categories);
+    assertCategoryTotalWithinCredential(categories, totalRequired);
+  }
+
+  // Every guarded statement below tests the same pre-bump revision; the
+  // credential row's own UPDATE is the last statement, so a stale revision
+  // makes the whole batch a no-op instead of a partial write.
+  const guard = `EXISTS (
+    SELECT 1
+    FROM credentials g
+    WHERE g.id = ?
+      AND g.user_id = ?
+      AND g.revision = ?
+      AND g.archived_at IS NULL
+      AND g.status IN ('active', 'submitted')
+  )`;
+  const guardBindings = [credentialId, identity.userId, expectedRevision];
+  const statements: D1PreparedStatement[] = [];
+
+  if (categoriesChanged) {
+    const existingById = new Map(
+      existingRequirements.results.map((row) => [row.id, row]),
+    );
+    const requirementIdByKey = new Map(
+      orderedCategories.map((category) => [
+        category.key,
+        existingById.has(category.key) ? category.key : crypto.randomUUID(),
+      ]),
+    );
+    const removedIds = existingRequirements.results
+      .map((row) => row.id)
+      .filter((id) => !requirementIdByKey.has(id));
+    if (removedIds.length > 0) {
+      const inUse = await query(
+        database,
+        `SELECT name
+         FROM credential_requirements
+         WHERE credential_id = ?
+           AND id IN (${sqlPlaceholders(removedIds)})
+           AND (
+             EXISTS (
+               SELECT 1
+               FROM activity_requirement_matches m
+               WHERE m.requirement_id = credential_requirements.id
+             )
+             OR EXISTS (
+               SELECT 1
+               FROM activity_allocations x
+               WHERE x.requirement_id = credential_requirements.id
+             )
+           )
+         ORDER BY sort_order, name`,
+        [credentialId, ...removedIds],
+      ).all<{ name: string }>();
+      if (inUse.results.length > 0) {
+        throw new RequestError(
+          `These requirements have logged credits and can’t be removed: ${inUse.results.map((row) => row.name).join(", ")}.`,
+          409,
+          "requirement_in_use",
+        );
+      }
+    }
+    for (const id of removedIds) {
+      statements.push(
+        query(
+          database,
+          `DELETE FROM credential_requirements
+           WHERE id = ? AND credential_id = ? AND ${guard}`,
+          [id, credentialId, ...guardBindings],
+        ),
+      );
+    }
+    for (const category of orderedCategories) {
+      const id = requirementIdByKey.get(category.key)!;
+      const parentId = category.parentKey
+        ? (requirementIdByKey.get(category.parentKey) ?? null)
+        : null;
+      const values = [
+        category.name,
+        category.requiredUnits,
+        category.kind,
+        category.relation,
+        parentId,
+        category.applicability,
+        category.applicabilityStatus,
+        category.conditionNote,
+        category.exclusiveGroup,
+        category.isActive ? 1 : 0,
+        category.sortOrder,
+      ];
+      if (existingById.has(id)) {
+        statements.push(
+          query(
+            database,
+            `UPDATE credential_requirements
+             SET name = ?, required_units = ?, kind = ?, relation = ?,
+               parent_requirement_id = ?, applicability = ?,
+               applicability_status = ?, condition_note = ?,
+               exclusive_group = ?, is_active = ?, sort_order = ?
+             WHERE id = ? AND credential_id = ? AND ${guard}`,
+            [...values, id, credentialId, ...guardBindings],
+          ),
+        );
+      } else {
+        statements.push(
+          query(
+            database,
+            `INSERT INTO credential_requirements (
+              id, credential_id, rule_category_id, name, required_units, kind,
+              relation, parent_requirement_id, applicability,
+              applicability_status, condition_note, exclusive_group, is_active,
+              sort_order
+            )
+            SELECT ?, g.id, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            FROM credentials g
+            WHERE g.id = ?
+              AND g.user_id = ?
+              AND g.revision = ?
+              AND g.archived_at IS NULL
+              AND g.status IN ('active', 'submitted')`,
+            [id, ...values, ...guardBindings],
+          ),
+        );
+      }
+    }
+  }
+
+  if (datesChanged && credential.ruleSetId === null) {
+    statements.push(
+      query(
+        database,
+        `UPDATE credential_cycle_links
+         SET cycle_months = ?
+         WHERE credential_id = ? AND user_id = ? AND ${guard}`,
+        [
+          estimatedCycleMonths(cycleStart, deadline),
+          credentialId,
+          identity.userId,
+          ...guardBindings,
+        ],
+      ),
+    );
+  }
+  if (deadlineChanged) {
+    const taskSpecs = renewalTaskSpecs(credential.ruleSetId, deadline, undefined, {
+      abveAnnualStartYear: abveAnnualStartYear ?? undefined,
+    });
+    for (const task of taskSpecs) {
+      statements.push(
+        query(
+          database,
+          `UPDATE checklist_tasks
+           SET due_date = ?, revision = revision + 1, updated_at = CURRENT_TIMESTAMP
+           WHERE user_id = ?
+             AND credential_id = ?
+             AND is_personal = 0
+             AND status = 'pending'
+             AND archived_at IS NULL
+             AND kind = ?
+             AND title = ?
+             AND ${guard}`,
+          [
+            task.dueDate,
+            identity.userId,
+            credentialId,
+            task.kind,
+            task.title,
+            ...guardBindings,
+          ],
+        ),
+      );
+    }
+  }
+  const series = await seriesCredentialIds(
+    database,
+    identity,
+    credential.seriesId,
+    credentialId,
+  );
+  const siblings = series.filter((id) => id !== credentialId);
+  if (
+    siblings.length > 0 &&
+    (credentialName !== credential.credentialName ||
+      issuer !== credential.issuer)
+  ) {
+    statements.push(
+      query(
+        database,
+        `UPDATE credentials
+         SET credential_name = ?, issuer = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = ?
+           AND id IN (${sqlPlaceholders(siblings)})
+           AND ${guard}`,
+        [credentialName, issuer, identity.userId, ...siblings, ...guardBindings],
+      ),
+    );
+  }
+  statements.push(
+    query(
+      database,
+      `UPDATE credentials
+       SET
+         credential_name = ?,
+         issuer = ?,
+         cycle_start = ?,
+         deadline = ?,
+         jurisdiction = ?,
+         profession = ?,
+         total_required = ?,
+         unit_label = ?,
+         revision = revision + 1,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?
+         AND user_id = ?
+         AND revision = ?
+         AND archived_at IS NULL
+         AND status IN ('active', 'submitted')`,
+      [
+        credentialName,
+        issuer,
+        cycleStart,
+        deadline,
+        jurisdiction,
+        profession,
+        totalRequired,
+        unitLabel,
+        credentialId,
+        identity.userId,
+        expectedRevision,
+      ],
+    ),
+  );
+  const results = await database.batch(statements);
+  const credentialResult = results[results.length - 1];
+  if (Number(credentialResult?.meta?.changes ?? Number.NaN) !== 1) {
+    return diagnoseCredentialMutationFailure(
+      database,
+      identity,
+      credentialId,
+      expectedRevision,
+      "active",
+    );
+  }
+  return credentialId;
+}
+
+async function setCredentialArchivedState(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+  restore: boolean,
+) {
+  const credentialId = textField(payload, "credentialId", {
+    required: true,
+    max: 160,
+  })!;
+  const expectedRevision = expectedRevisionField(payload);
+  const expectedState = restore ? "archived" : "active";
+  const credential = await getCredentialForMutation(
+    database,
+    identity,
+    credentialId,
+  );
+  assertCredentialMutationState(credential, expectedRevision, expectedState);
+  const series = await seriesCredentialIds(
+    database,
+    identity,
+    credential.seriesId,
+    credentialId,
+  );
+  const siblings = series.filter((id) => id !== credentialId);
+  const archivedAtValue = restore ? "NULL" : "CURRENT_TIMESTAMP";
+  const fromState = restore ? "IS NOT NULL" : "IS NULL";
+  const toState = restore ? "IS NULL" : "IS NOT NULL";
+  // The target row moves first under its expected revision; the rest of the
+  // series follows only once the target is provably in the new state.
+  const statements: D1PreparedStatement[] = [
+    query(
+      database,
+      `UPDATE credentials
+       SET archived_at = ${archivedAtValue},
+         revision = revision + 1,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?
+         AND user_id = ?
+         AND revision = ?
+         AND archived_at ${fromState}`,
+      [credentialId, identity.userId, expectedRevision],
+    ),
+  ];
+  if (siblings.length > 0) {
+    statements.push(
+      query(
+        database,
+        `UPDATE credentials
+         SET archived_at = ${archivedAtValue},
+           revision = revision + 1,
+           updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = ?
+           AND archived_at ${fromState}
+           AND id IN (${sqlPlaceholders(siblings)})
+           AND EXISTS (
+             SELECT 1
+             FROM credentials t
+             WHERE t.id = ?
+               AND t.user_id = ?
+               AND t.revision = ?
+               AND t.archived_at ${toState}
+           )`,
+        [
+          identity.userId,
+          ...siblings,
+          credentialId,
+          identity.userId,
+          expectedRevision + 1,
+        ],
+      ),
+    );
+  }
+  const results = await database.batch(statements);
+  if (Number(results[0]?.meta?.changes ?? Number.NaN) !== 1) {
+    return diagnoseCredentialMutationFailure(
+      database,
+      identity,
+      credentialId,
+      expectedRevision,
+      expectedState,
+    );
+  }
+  return credentialId;
+}
+
+async function archiveCredential(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  return setCredentialArchivedState(database, identity, payload, false);
+}
+
+async function restoreCredential(
+  database: D1Database,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  return setCredentialArchivedState(database, identity, payload, true);
+}
+
+async function deleteCredential(
+  database: D1Database,
+  bucket: R2Bucket,
+  identity: RequestIdentity,
+  payload: JsonRecord,
+) {
+  const credentialId = textField(payload, "credentialId", {
+    required: true,
+    max: 160,
+  })!;
+  const expectedRevision = expectedRevisionField(payload);
+  const confirmName = textField(payload, "confirmName", {
+    required: true,
+    max: 180,
+  })!;
+  // Spec §4: proof linked only to this credential is deleted. Only the
+  // literal `false` (the confirm dialog's unticked checkbox) opts out.
+  const deleteOrphanedEvidence = payload.deleteOrphanedEvidence !== false;
+  const credential = await getCredentialForMutation(
+    database,
+    identity,
+    credentialId,
+  );
+  assertCredentialMutationState(credential, expectedRevision, "any");
+  if (confirmName !== credential.credentialName) {
+    throw new RequestError(
+      "Type the credential name exactly as shown to confirm deletion.",
+      400,
+      "credential_name_mismatch",
+    );
+  }
+  const series = await seriesCredentialIds(
+    database,
+    identity,
+    credential.seriesId,
+    credentialId,
+  );
+  const siblings = series.filter((id) => id !== credentialId);
+  const seriesList = sqlPlaceholders(series);
+
+  // Proof files belong to activities, which survive; only files whose
+  // activity is allocated to nothing outside this series are candidates, and
+  // none are when the caller opted out with deleteOrphanedEvidence: false.
+  const orphans = deleteOrphanedEvidence
+    ? (
+        await query(
+          database,
+          `SELECT e.id, e.object_key AS objectKey, e.activity_id AS activityId
+           FROM evidence_files e
+           JOIN activities a ON a.id = e.activity_id AND a.user_id = e.user_id
+           WHERE e.user_id = ?
+             AND e.status IN ('ready', 'deleting')
+             AND EXISTS (
+               SELECT 1
+               FROM activity_allocations x
+               WHERE x.activity_id = a.id
+                 AND x.credential_id IN (${seriesList})
+             )
+             AND NOT EXISTS (
+               SELECT 1
+               FROM activity_allocations y
+               WHERE y.activity_id = a.id
+                 AND y.credential_id NOT IN (${seriesList})
+             )
+           ORDER BY e.created_at, e.id`,
+          [identity.userId, ...series, ...series],
+        ).all<{ id: string; objectKey: string; activityId: string }>()
+      ).results
+    : [];
+  const orphanIds = orphans.map((orphan) => orphan.id);
+
+  // Statements before the target delete are guarded by "the target row still
+  // sits at the expected revision"; the target delete itself carries the
+  // revision; statements after it are guarded by "the target row is gone".
+  // Restrict foreign keys force acceptances and links out before any
+  // credential row; the credential rows then cascade their children, which
+  // passes the BEFORE DELETE guard triggers because SQLite runs foreign-key
+  // actions after the parent row has been removed.
+  const stillExpected = `EXISTS (
+    SELECT 1 FROM credentials t
+    WHERE t.id = ? AND t.user_id = ? AND t.revision = ?
+  )`;
+  const stillExpectedBindings = [credentialId, identity.userId, expectedRevision];
+  const gone = `NOT EXISTS (
+    SELECT 1 FROM credentials t WHERE t.id = ? AND t.user_id = ?
+  )`;
+  const goneBindings = [credentialId, identity.userId];
+  const statements: D1PreparedStatement[] = [
+    query(
+      database,
+      `DELETE FROM renewal_acceptances
+       WHERE user_id = ?
+         AND (credential_id IN (${seriesList}) OR next_credential_id IN (${seriesList}))
+         AND ${stillExpected}`,
+      [identity.userId, ...series, ...series, ...stillExpectedBindings],
+    ),
+    query(
+      database,
+      `DELETE FROM credential_cycle_links
+       WHERE user_id = ?
+         AND (credential_id IN (${seriesList}) OR previous_credential_id IN (${seriesList}))
+         AND ${stillExpected}`,
+      [identity.userId, ...series, ...series, ...stillExpectedBindings],
+    ),
+    query(
+      database,
+      `DELETE FROM renewal_submissions
+       WHERE user_id = ? AND credential_id IN (${seriesList}) AND ${stillExpected}`,
+      [identity.userId, ...series, ...stillExpectedBindings],
+    ),
+    ...siblings.map((id) =>
+      query(
+        database,
+        `DELETE FROM credentials WHERE user_id = ? AND id = ? AND ${stillExpected}`,
+        [identity.userId, id, ...stillExpectedBindings],
+      ),
+    ),
+    query(
+      database,
+      `DELETE FROM credentials WHERE id = ? AND user_id = ? AND revision = ?`,
+      [credentialId, identity.userId, expectedRevision],
+    ),
+  ];
+  const targetIndex = statements.length - 1;
+  if (orphanIds.length > 0) {
+    statements.push(
+      query(
+        database,
+        `UPDATE evidence_files
+         SET status = 'deleting', updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = ? AND id IN (${sqlPlaceholders(orphanIds)}) AND ${gone}`,
+        [identity.userId, ...orphanIds, ...goneBindings],
+      ),
+    );
+    // The activity recompute from app/api/evidence/[id]/route.ts, run while
+    // the rows are in 'deleting' exactly as that route does.
+    for (const activityId of new Set(orphans.map((orphan) => orphan.activityId))) {
+      statements.push(
+        query(
+          database,
+          `UPDATE activities
+           SET
+             evidence_status = CASE
+               WHEN evidence_status = 'not_required' THEN 'not_required'
+               WHEN EXISTS (
+                 SELECT 1
+                 FROM evidence_files stored
+                 WHERE stored.activity_id = activities.id
+                   AND stored.user_id = activities.user_id
+                   AND stored.status = 'ready'
+               ) THEN 'attached'
+               ELSE 'missing'
+             END,
+             evidence_reference = CASE
+               WHEN evidence_reference IS NULL
+                 OR (
+                   evidence_reference NOT LIKE 'CRCC pre-approved | %'
+                   AND evidence_reference NOT LIKE 'CRCC post-approved | %'
+                   AND EXISTS (
+                     SELECT 1
+                     FROM evidence_files derived
+                     WHERE derived.activity_id = activities.id
+                       AND derived.user_id = activities.user_id
+                       AND derived.original_filename =
+                         activities.evidence_reference
+                   )
+                 )
+               THEN (
+                 SELECT stored.original_filename
+                 FROM evidence_files stored
+                 WHERE stored.activity_id = activities.id
+                   AND stored.user_id = activities.user_id
+                   AND stored.status = 'ready'
+                 ORDER BY stored.created_at DESC, stored.id DESC
+                 LIMIT 1
+               )
+               ELSE evidence_reference
+             END,
+             revision = revision + 1,
+             updated_at = CURRENT_TIMESTAMP
+           WHERE id = ? AND user_id = ? AND ${gone}`,
+          [activityId, identity.userId, ...goneBindings],
+        ),
+      );
+    }
+  }
+  // Orphan sweeps: no-ops when the cascades ran (foreign keys are on in D1,
+  // miniflare and node:sqlite), correct if they ever did not.
+  statements.push(
+    query(
+      database,
+      `DELETE FROM activity_allocations
+       WHERE credential_id IN (${seriesList}) AND ${gone}`,
+      [...series, ...goneBindings],
+    ),
+    query(
+      database,
+      `DELETE FROM activity_requirement_matches
+       WHERE user_id = ?
+         AND allocation_id NOT IN (SELECT id FROM activity_allocations)
+         AND ${gone}`,
+      [identity.userId, ...goneBindings],
+    ),
+    query(
+      database,
+      `DELETE FROM dental_checkpoint_states
+       WHERE user_id = ? AND credential_id IN (${seriesList}) AND ${gone}`,
+      [identity.userId, ...series, ...goneBindings],
+    ),
+    query(
+      database,
+      `DELETE FROM checklist_tasks
+       WHERE user_id = ? AND credential_id IN (${seriesList}) AND ${gone}`,
+      [identity.userId, ...series, ...goneBindings],
+    ),
+    query(
+      database,
+      `DELETE FROM credential_requirements
+       WHERE credential_id IN (${seriesList}) AND ${gone}`,
+      [...series, ...goneBindings],
+    ),
+    query(
+      database,
+      `DELETE FROM reminder_states
+       WHERE user_id = ? AND credential_id IN (${seriesList}) AND ${gone}`,
+      [identity.userId, ...series, ...goneBindings],
+    ),
+  );
+  const results = await database.batch(statements);
+  if (Number(results[targetIndex]?.meta?.changes ?? Number.NaN) !== 1) {
+    return diagnoseCredentialMutationFailure(
+      database,
+      identity,
+      credentialId,
+      expectedRevision,
+      "any",
+    );
+  }
+
+  if (orphanIds.length > 0) {
+    try {
+      await bucket.delete(orphans.map((orphan) => orphan.objectKey));
+      await query(
+        database,
+        `DELETE FROM evidence_files
+         WHERE user_id = ? AND status = 'deleting' AND id IN (${sqlPlaceholders(orphanIds)})`,
+        [identity.userId, ...orphanIds],
+      ).run();
+    } catch (error) {
+      // The rows stay in 'deleting'; DELETE /api/evidence/:id retries them.
+      console.error("deleteCredential: evidence removal deferred", error);
+    }
+  }
+  return credentialId;
 }
 
 async function getActivityAllocationValidationRows(
@@ -12442,6 +13567,23 @@ export async function POST(request: Request) {
     switch (action) {
       case "createCredential":
         id = await createCredential(database, identity, body.payload);
+        break;
+      case "updateCredential":
+        id = await updateCredential(database, identity, body.payload);
+        break;
+      case "archiveCredential":
+        id = await archiveCredential(database, identity, body.payload);
+        break;
+      case "restoreCredential":
+        id = await restoreCredential(database, identity, body.payload);
+        break;
+      case "deleteCredential":
+        id = await deleteCredential(
+          database,
+          getEvidenceBucket(),
+          identity,
+          body.payload,
+        );
         break;
       case "addActivity":
         id = await addActivity(database, identity, body.payload);

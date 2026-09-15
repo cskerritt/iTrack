@@ -9,6 +9,10 @@
 // Adding an action therefore means adding it here AND adding its probe row.
 export const WORKSPACE_ACTIONS = [
   "createCredential",
+  "updateCredential",
+  "archiveCredential",
+  "restoreCredential",
+  "deleteCredential",
   "addActivity",
   "updateActivity",
   "archiveActivity",

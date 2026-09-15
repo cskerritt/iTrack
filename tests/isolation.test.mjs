@@ -501,6 +501,31 @@ const FOREIGN_ID_PROBES = [
     payload: (s) => ({ endpoint: s.subscription.endpoint }),
     expect: { status: 200, ok: true, id: "push-subscription" },
   },
+  {
+    action: "updateCredential",
+    payload: (seed) => ({ credentialId: seed.credentialId, expectedRevision: 1, credentialName: "hijack" }),
+    expect: { status: 404, code: "credential_not_found" },
+  },
+  {
+    action: "archiveCredential",
+    payload: (seed) => ({ credentialId: seed.credentialId, expectedRevision: 1 }),
+    expect: { status: 404, code: "credential_not_found" },
+  },
+  {
+    action: "restoreCredential",
+    payload: (seed) => ({ credentialId: seed.credentialId, expectedRevision: 1 }),
+    expect: { status: 404, code: "credential_not_found" },
+  },
+  {
+    action: "deleteCredential",
+    payload: (seed) => ({
+      credentialId: seed.credentialId,
+      expectedRevision: 1,
+      confirmName: "Alpha LCSW",
+      deleteOrphanedEvidence: true,
+    }),
+    expect: { status: 404, code: "credential_not_found" },
+  },
 ];
 
 // Actions whose payload names no stored id of another user: catalog ids,
@@ -529,7 +554,7 @@ test("two-identity isolation over the built worker (critic-08)", async (t) => {
     const named = [...FOREIGN_ID_PROBES.map((probe) => probe.action), ...NO_FOREIGN_ID_ACTIONS];
     assert.equal(new Set(named).size, named.length, "no action is listed twice");
     assert.deepEqual(new Set(named), new Set(WORKSPACE_ACTIONS));
-    assert.equal(WORKSPACE_ACTIONS.length, 23);
+    assert.equal(WORKSPACE_ACTIONS.length, 27);
   });
 
   await t.test("the build dispatches every listed action and nothing else", async () => {
@@ -553,6 +578,11 @@ test("two-identity isolation over the built worker (critic-08)", async (t) => {
       }
     });
   }
+
+  assert.ok(
+    [...bucket.objects.keys()].some((key) => key.endsWith(`/${seedA.evidenceId}`)),
+    "A's evidence object survives B's deleteCredential probe",
+  );
 
   await t.test("the two documented non-404s leave A's push rows untouched", () => {
     const row = db.raw
