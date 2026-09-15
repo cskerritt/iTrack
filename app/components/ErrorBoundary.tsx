@@ -2,6 +2,7 @@
 
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { describeError } from "../lib/clientError";
+import { Button } from "./Button";
 import { reportClientError } from "./ClientErrorBeacon";
 
 type ErrorBoundaryState = { error: unknown | null };
@@ -35,16 +36,16 @@ export function ErrorFallback({ error, onReset }: { error: unknown; onReset?: ()
       <h1>Something broke on our side</h1>
       <p>Your data is safe on the server. Reload to pick up where you left off.</p>
       <div className="error-fallback-actions">
-        <button className="button button-primary" type="button" onClick={() => window.location.reload()}>
+        <Button variant="primary" onClick={() => window.location.reload()}>
           Reload
-        </button>
-        <button className="button button-outline" type="button" onClick={copyDetails}>
+        </Button>
+        <Button variant="secondary" onClick={copyDetails}>
           Copy details
-        </button>
+        </Button>
         {onReset ? (
-          <button className="button button-outline" type="button" onClick={onReset}>
+          <Button variant="secondary" onClick={onReset}>
             Try again
-          </button>
+          </Button>
         ) : null}
       </div>
     </section>

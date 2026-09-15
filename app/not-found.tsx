@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { buttonClassName } from "./lib/buttonClass";
 
 export default function NotFound() {
   return (
@@ -7,7 +8,7 @@ export default function NotFound() {
         <h1>Page not found</h1>
         <p>That address doesn&rsquo;t match anything in iTrack.</p>
         <p>
-          <Link className="button button-primary" href="/">
+          <Link className={buttonClassName("primary")} href="/">
             Go to Home
           </Link>
         </p>

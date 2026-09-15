@@ -538,76 +538,83 @@
   }
 }
 
-/* ===== LEGACY BUTTONS — rewritten in Task 5 ===== */
-
+/* ===== LEGACY BUTTONS — the .button family ITrackApp.tsx still renders, restyled to the Button primitive (Task 5, same declarations as .btn in primitives.css); deleted in Wave 4 with the last screen ===== */
 .button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 46px;
+  min-height: var(--control-height);
+  padding: 0 16px;
   border: 1px solid transparent;
-  border-radius: 12px;
-  cursor: pointer;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font-family: var(--font-body);
   font-size: var(--text-sm);
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1;
-  padding: 0 18px;
   text-decoration: none;
+  cursor: pointer;
 }
 
-.button-primary {
-  background: var(--ink-surface);
-  color: var(--on-dark);
-  box-shadow: 0 8px 20px rgb(var(--shade-rgb) / 0.15);
-}
-
-.button-primary:hover:not(:disabled):not(.disabled) {
-  background: var(--ink-surface-hover);
-}
-
+.button-primary,
 .button-dark {
-  background: var(--ink-surface-deep);
-  color: var(--on-dark);
+  background: var(--accent);
+  color: var(--on-accent);
 }
 
+.button-primary:hover:not(:disabled):not(.disabled),
+.button-dark:hover:not(:disabled):not(.disabled) {
+  background: var(--accent-hover);
+}
+
+.button-outline,
 .button-light {
-  background: var(--white);
-  color: var(--ink-deep);
+  border-color: var(--line);
+  background: var(--card);
+  color: var(--ink);
 }
 
-.button-outline {
-  border-color: var(--line-strong);
-  background: var(--white);
-  color: var(--ink);
-  box-shadow: var(--shadow-sm);
+.button-outline:hover:not(:disabled):not(.disabled),
+.button-light:hover:not(:disabled):not(.disabled) {
+  background: var(--paper-deep);
 }
 
 .button-ghost {
-  border-color: transparent;
-  background: transparent;
-  color: var(--ink-muted);
+  color: var(--accent);
+}
+
+.button-ghost:hover:not(:disabled):not(.disabled) {
+  background: var(--accent-soft);
 }
 
 .button-danger {
-  background: var(--danger);
-  color: var(--on-dark);
-}
-
-.button-danger:hover:not(:disabled):not(.disabled) {
-  background: var(--danger-hover);
-}
-
-.button.disabled {
-  cursor: default;
-  opacity: 0.6;
-  pointer-events: none;
+  background: var(--state-overdue);
+  color: var(--on-accent);
 }
 
 .button-compact {
-  min-height: 44px;
-  padding: 7px 10px;
-  font-size: var(--text-sm);
+  min-height: var(--control-height-sm);
+  padding: 0 12px;
+  font-size: var(--text-xs);
+}
+
+.button:disabled,
+.button.disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* The class proxy on the Export CSV <a> (no native disabled on a link): keep it unclickable. */
+.button.disabled {
+  pointer-events: none;
+}
+
+@media (max-width: 820px), (pointer: coarse) {
+  .button {
+    min-height: var(--control-height-lg);
+  }
 }
 
 /* ===== LEGACY MARKS — the track family deleted in Task 11, the rest in Wave 4 ===== */

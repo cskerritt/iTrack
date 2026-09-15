@@ -7,6 +7,7 @@
 @import "./styles/log-activity.css";
 @import "./styles/history.css";
 @import "./styles/account.css";
+@import "./styles/primitives.css";
 
 /*
  * RESET — Tailwind v4.2.1's preflight (MIT, © Tailwind Labs, Inc.; the file
@@ -513,20 +514,6 @@ a {
   clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
-}
-
-/*
- * ICONS
- * Every icon is an inline SVG that inherits its colour from the control it
- * sits in, so contrast is decided once by the surrounding token. `block`
- * removes the inline baseline gap that would otherwise push a mark off centre
- * beside its label; the mark never shrinks, because a squashed icon in a
- * cramped row reads as a rendering fault. Icon size is set per site in JSX so
- * a mark matches the cap height of the text it stands next to.
- */
-.icon {
-  display: block;
-  flex: 0 0 auto;
 }
 
 /* Line-height alone left this a pixel under the floor once it is revealed. */
