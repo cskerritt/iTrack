@@ -2854,6 +2854,13 @@ a {
   margin: 0;
 }
 
+.manage-credential-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 12px;
+}
+
 .credential-packet-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

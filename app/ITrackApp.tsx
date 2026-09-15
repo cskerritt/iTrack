@@ -175,6 +175,10 @@ type Credential = {
   requirements: Requirement[];
   tasks: RenewalTask[];
   archivedTasks: RenewalTask[];
+  // Bumped by every credential write on the server; sent back as
+  // expectedRevision so a stale editor cannot overwrite a newer save.
+  revision: number;
+  archivedAt?: string | null;
 };
 
 type CatalogCategory = {
@@ -323,6 +327,7 @@ type Workspace = {
   progression: Progression;
   catalog: CatalogRule[];
   credentials: Credential[];
+  archivedCredentials: Credential[];
   activities: Activity[];
   archivedActivities: Activity[];
   reminderPreferences: {
@@ -353,6 +358,22 @@ type Reminder = {
 type ToastState = {
   message: string;
   undo?: () => void;
+};
+
+// What the credential editor hands back. `issuer` and the custom-only keys
+// are only forwarded for custom credentials; a source-linked credential takes
+// them from its template (the server answers 400 template_field_locked).
+type CredentialEditInput = {
+  credentialName: string;
+  issuer: string;
+  cycleStart: string;
+  deadline: string;
+  jurisdiction?: string;
+  profession?: string;
+  totalRequired?: number;
+  unitLabel?: string;
+  officialDatesAttested?: boolean;
+  templateEligibilityAttested?: boolean;
 };
 
 type ActivityDraft = {
@@ -1257,6 +1278,10 @@ function activityActionKey(activityId: string) {
   return `activity:${activityId}`;
 }
 
+function credentialActionKey(id: string) {
+  return `credential:${id}`;
+}
+
 function questActionKey(questKey: string) {
   return `quest:${questKey}`;
 }
@@ -1661,6 +1686,11 @@ export function ITrackApp() {
     null,
   );
   const [editingActivity, setEditingActivity] = useState<Activity | null>(null);
+  const [credentialEditor, setCredentialEditor] = useState<Credential | null>(
+    null,
+  );
+  const [credentialDeletion, setCredentialDeletion] =
+    useState<Credential | null>(null);
   const [taskEditor, setTaskEditor] = useState<{
     credential: Credential;
     task: RenewalTask | null;
@@ -1918,6 +1948,8 @@ export function ITrackApp() {
     setInstallHelpOpen(false);
     setClassificationRepair(null);
     setEvidenceActivity(null);
+    setCredentialEditor(null);
+    setCredentialDeletion(null);
     setError(SESSION_ENDED_MESSAGE);
   }, []);
 
@@ -2672,6 +2704,9 @@ export function ITrackApp() {
             "task_state_changed",
             "dental_checkpoint_state_changed",
             "cycle_closed",
+            "credential_version_conflict",
+            "credential_state_changed",
+            "credential_archived",
           ].includes(result.code ?? "")
         ) {
           const refreshed = await loadWorkspace();
@@ -2680,6 +2715,8 @@ export function ITrackApp() {
             setTaskEditor(null);
             setAllocationActivity(null);
             setClassificationRepair(null);
+            setCredentialEditor(null);
+            setCredentialDeletion(null);
           }
           throw new Error(
             refreshed
@@ -3956,6 +3993,125 @@ export function ITrackApp() {
     }
   }
 
+  async function saveCredentialEdit(input: CredentialEditInput) {
+    if (!credentialEditor) return;
+    // A source-linked credential accepts only its display name, its cycle
+    // dates and the attestations; the server refuses the template-owned keys
+    // (400 template_field_locked) rather than ignoring them, so they are only
+    // ever sent for a custom credential. The server also reads a frozen key's
+    // presence, not its value: a submitted cycle refuses cycleStart/deadline
+    // (and, for a custom plan, the requirement keys) even when they are
+    // unchanged (409 cycle_closed). Only what differs from the stored
+    // credential goes on the wire, so a rename alone is always a rename.
+    const stored = credentialEditor;
+    const custom = stored.ruleReviewStatus === "custom";
+    const changed = (key: string, value: unknown, current: unknown) =>
+      value !== current ? { [key]: value } : {};
+    const result = await runAction(
+      "updateCredential",
+      {
+        credentialId: stored.id,
+        expectedRevision: stored.revision,
+        credentialName: input.credentialName,
+        ...changed("cycleStart", input.cycleStart, stored.cycleStart),
+        ...changed("deadline", input.deadline, stored.deadline),
+        ...(custom
+          ? {
+              ...changed("issuer", input.issuer, stored.issuer ?? ""),
+              ...changed(
+                "jurisdiction",
+                input.jurisdiction,
+                stored.jurisdiction,
+              ),
+              ...changed("profession", input.profession, stored.profession),
+              ...changed(
+                "totalRequired",
+                input.totalRequired,
+                stored.totalRequired,
+              ),
+              ...changed("unitLabel", input.unitLabel, stored.unitLabel),
+            }
+          : {}),
+        ...(input.officialDatesAttested ? { officialDatesAttested: true } : {}),
+        ...(input.templateEligibilityAttested
+          ? { templateEligibilityAttested: true }
+          : {}),
+      },
+      "Credential updated.",
+    );
+    if (result) setCredentialEditor(null);
+  }
+
+  async function archiveCredentialRecord(credential: Credential) {
+    const result = await runAction(
+      "archiveCredential",
+      {
+        credentialId: credential.id,
+        expectedRevision: credential.revision,
+      },
+      "Credential archived.",
+      credentialActionKey(credential.id),
+    );
+    if (!result) return;
+    // No nav.pop() here: the refetched workspace no longer lists the
+    // credential, so the "deleted (or never existed)" effect above already
+    // bounces a pushed detail to /credentials. Popping as well would queue a
+    // second history move behind the one that effect asks for.
+    setToast({
+      message:
+        "Credential archived. Find it under History → Archived credentials.",
+      undo: () => {
+        void runAction(
+          "restoreCredential",
+          {
+            credentialId: credential.id,
+            expectedRevision: credential.revision + 1,
+          },
+          "Credential restored.",
+          credentialActionKey(credential.id),
+        );
+      },
+    });
+  }
+
+  async function restoreCredentialRecord(credential: Credential) {
+    await runAction(
+      "restoreCredential",
+      {
+        credentialId: credential.id,
+        expectedRevision: credential.revision,
+      },
+      "Credential restored.",
+      credentialActionKey(credential.id),
+    );
+  }
+
+  async function deleteCredentialRecord(
+    credential: Credential,
+    confirmName: string,
+    deleteOrphanedEvidence: boolean,
+  ) {
+    const result = await runAction(
+      "deleteCredential",
+      {
+        credentialId: credential.id,
+        expectedRevision: credential.revision,
+        confirmName,
+        deleteOrphanedEvidence,
+      },
+      "Credential deleted.",
+      credentialActionKey(credential.id),
+    );
+    if (!result) return;
+    setCredentialDeletion(null);
+    setSelectedCredentialId("");
+    // Deleting from the History tab's archived list has no pushed detail for
+    // the effect above to bounce, so land on the list explicitly; when a
+    // detail was pushed the two calls collapse into one move (setTab re-aims
+    // an unwind that is already in flight).
+    navigateToTab("credentials");
+  }
+
   async function savePersonalTask(input: {
     title: string;
     dueDate: string;
@@ -4268,12 +4424,20 @@ export function ITrackApp() {
                   activities={workspace.activities}
                   archivedActivities={workspace.archivedActivities}
                   credentials={workspace.credentials}
+                  archivedCredentials={workspace.archivedCredentials}
                   onAdd={openActivityEntry}
                   onEdit={(activity) => {
                     setError("");
                     setEditingActivity(activity);
                   }}
                   onRestore={(activity) => void restoreActivityRecord(activity)}
+                  onRestoreCredential={(credential) =>
+                    void restoreCredentialRecord(credential)
+                  }
+                  onDeleteCredential={(credential) => {
+                    setError("");
+                    setCredentialDeletion(credential);
+                  }}
                   actionsDisabled={!isOnline}
                   pendingActionKeys={pendingActionKeys}
                   onEvidence={(activity) => void openEvidence(activity)}
@@ -4333,6 +4497,15 @@ export function ITrackApp() {
               >
                 <CredentialDetailScreen
                   credential={stagedDetail}
+                  onEdit={() => {
+                    setError("");
+                    setCredentialEditor(stagedDetail);
+                  }}
+                  onArchive={() => void archiveCredentialRecord(stagedDetail)}
+                  onDelete={() => {
+                    setError("");
+                    setCredentialDeletion(stagedDetail);
+                  }}
                   activities={workspace?.activities ?? []}
                   isOnline={isOnline}
                   backLabel={TAB_LABELS[view]}
@@ -4883,6 +5056,48 @@ export function ITrackApp() {
           }}
           onSave={(input) => void updateActivityRecord(input)}
           onArchive={() => void archiveActivityRecord(editingActivity)}
+        />
+      ) : null}
+
+      {credentialEditor ? (
+        <CredentialEditorModal
+          key={`${credentialEditor.id}:${credentialEditor.revision}`}
+          credential={credentialEditor}
+          error={error}
+          pending={
+            pendingActionKeys.includes(FORM_ACTION_KEY) ||
+            pendingActionKeys.includes(credentialActionKey(credentialEditor.id))
+          }
+          onClose={() => {
+            setCredentialEditor(null);
+            setError("");
+          }}
+          onSave={(input) => void saveCredentialEdit(input)}
+        />
+      ) : null}
+
+      {credentialDeletion ? (
+        <ConfirmDeleteCredentialModal
+          key={credentialDeletion.id}
+          credential={credentialDeletion}
+          error={error}
+          pending={
+            pendingActionKeys.includes(FORM_ACTION_KEY) ||
+            pendingActionKeys.includes(
+              credentialActionKey(credentialDeletion.id),
+            )
+          }
+          onClose={() => {
+            setCredentialDeletion(null);
+            setError("");
+          }}
+          onConfirm={(confirmName, deleteOrphanedEvidence) =>
+            void deleteCredentialRecord(
+              credentialDeletion,
+              confirmName,
+              deleteOrphanedEvidence,
+            )
+          }
         />
       ) : null}
 
@@ -6566,6 +6781,12 @@ export function ITrackApp() {
  * outline (an earned badge, a completed quest). Everything else is outline.
  */
 const ICON_SHAPES = {
+  edit: (
+    <>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+    </>
+  ),
   home: (
     <>
       <path d="M3 10a2 2 0 0 1 .71-1.53l7-6a2 2 0 0 1 2.58 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
@@ -7987,6 +8208,9 @@ function CredentialDetailScreen({
   onAddToCalendar,
   onRequirementApplicability,
   onDentalCheckpoint,
+  onEdit,
+  onArchive,
+  onDelete,
   actionsDisabled,
   pendingActionKeys,
 }: {
@@ -8013,6 +8237,9 @@ function CredentialDetailScreen({
     completed: boolean,
     evidenceNote: string,
   ) => void;
+  onEdit: () => void;
+  onArchive: () => void;
+  onDelete: () => void;
   actionsDisabled: boolean;
   pendingActionKeys: readonly string[];
 }) {
@@ -8179,6 +8406,14 @@ function CredentialDetailScreen({
                 date to calendar
               </span>
             </button>
+            <button
+              className="reminder-setting-link"
+              type="button"
+              onClick={onEdit}
+            >
+              <Icon name="edit" size={15} />
+              <span>Edit credential</span>
+            </button>
           </div>
         ) : null}
         <div className="detail-stats">
@@ -8322,6 +8557,34 @@ function CredentialDetailScreen({
             </span>
           )}
         </div>
+        <div className="detail-section">
+          <span className="section-kicker">Manage credential</span>
+          <h3>Archive or delete</h3>
+          <p>
+            Archived credentials leave Home and Credentials but keep every
+            record; restore them any time. Deleting removes its cycles,
+            checklist and check-ins permanently — learning records stay in
+            your activity log.
+          </p>
+          <div className="manage-credential-actions">
+            <button
+              className="button button-outline"
+              type="button"
+              disabled={actionsDisabled}
+              onClick={onArchive}
+            >
+              Archive credential
+            </button>
+            <button
+              className="button button-danger"
+              type="button"
+              disabled={actionsDisabled}
+              onClick={onDelete}
+            >
+              Delete credential…
+            </button>
+          </div>
+        </div>
         {credential.status === "active" ? (
           <div className="detail-footer">
             <div>
@@ -8408,9 +8671,12 @@ function RecordsView({
   activities,
   archivedActivities,
   credentials,
+  archivedCredentials,
   onAdd,
   onEdit,
   onRestore,
+  onRestoreCredential,
+  onDeleteCredential,
   actionsDisabled,
   pendingActionKeys,
   onEvidence,
@@ -8420,9 +8686,12 @@ function RecordsView({
   activities: Activity[];
   archivedActivities: Activity[];
   credentials: Credential[];
+  archivedCredentials: Credential[];
   onAdd: () => void;
   onEdit: (activity: Activity) => void;
   onRestore: (activity: Activity) => void;
+  onRestoreCredential: (credential: Credential) => void;
+  onDeleteCredential: (credential: Credential) => void;
   actionsDisabled: boolean;
   pendingActionKeys: readonly string[];
   onEvidence: (activity: Activity) => void;
@@ -8748,6 +9017,66 @@ function RecordsView({
           </div>
         </details>
       ) : null}
+      {archivedCredentials.length ? (
+        <details className="archived-items archived-records">
+          <summary id="archived-credentials-summary">
+            <span>
+              Archived credentials
+              <small>
+                {archivedCredentials.length}{" "}
+                {archivedCredentials.length === 1 ? "credential" : "credentials"}
+              </small>
+            </span>
+            <span className="disclosure-chevron">
+              <Icon name="chevronDown" size={16} />
+            </span>
+          </summary>
+          <div className="archived-item-list">
+            {archivedCredentials.map((credential) => {
+              const busy = pendingActionKeys.includes(
+                credentialActionKey(credential.id),
+              );
+              return (
+                <article className="archived-item" key={credential.id}>
+                  <div>
+                    <strong>{credential.credentialName}</strong>
+                    <small>
+                      {credential.jurisdiction} · Renew by{" "}
+                      {formatDate(credential.deadline)}
+                    </small>
+                  </div>
+                  <div className="archived-item-actions">
+                    <button
+                      type="button"
+                      aria-label={`Restore ${credential.credentialName}`}
+                      disabled={actionsDisabled || busy}
+                      aria-busy={busy}
+                      onClick={() => onRestoreCredential(credential)}
+                    >
+                      {busy ? (
+                        <>
+                          <ActionSpinner />
+                          Restoring…
+                        </>
+                      ) : (
+                        "Restore"
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Delete ${credential.credentialName}`}
+                      disabled={actionsDisabled || busy}
+                      onClick={() => onDeleteCredential(credential)}
+                    >
+                      Delete…
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </details>
+      ) : null}
     </div>
   );
 }
@@ -9023,6 +9352,341 @@ function ActivityEditorModal({
           )}
         </section>
       </div>
+    </Modal>
+  );
+}
+
+function CredentialEditorModal({
+  credential,
+  error,
+  pending,
+  onClose,
+  onSave,
+}: {
+  credential: Credential;
+  error: string;
+  pending: boolean;
+  onClose: () => void;
+  onSave: (input: CredentialEditInput) => void;
+}) {
+  const custom = credential.ruleReviewStatus === "custom";
+  const [cycleStart, setCycleStart] = useState(credential.cycleStart);
+  const [deadline, setDeadline] = useState(credential.deadline);
+  const datesChanged =
+    cycleStart !== credential.cycleStart || deadline !== credential.deadline;
+  // The setup sheet's attestations, asked the same way and only once a
+  // source-linked credential's dates actually change — the server re-runs the
+  // template date rules only then.
+  const asksOfficialDates =
+    !custom &&
+    datesChanged &&
+    (isNremtCredential(credential) ||
+      isFloridaMentalHealthPhaseCredential(credential) ||
+      isCrcCredential(credential) ||
+      isAbveCredential(credential) ||
+      isExpandedCertificationCredential(credential));
+  const asksTemplateEligibility =
+    !custom &&
+    datesChanged &&
+    (isManagedPharmacistCredential(credential) ||
+      isManagedNursingCredential(credential) ||
+      isManagedDentalCredential(credential) ||
+      isExpandedCertificationCredential(credential));
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const text = (key: string) => String(form.get(key) ?? "").trim();
+    onSave({
+      credentialName: text("credentialName"),
+      // A disabled input is absent from FormData; carry the stored issuer so
+      // the shape stays whole (saveCredentialEdit drops it for templates).
+      issuer: custom ? text("issuer") : (credential.issuer ?? ""),
+      cycleStart: text("cycleStart"),
+      deadline: text("deadline"),
+      ...(custom
+        ? {
+            jurisdiction: text("jurisdiction"),
+            profession: text("profession"),
+            totalRequired: Number(form.get("totalRequired")),
+            unitLabel: text("unitLabel"),
+          }
+        : {}),
+      officialDatesAttested:
+        form.get("officialDatesAttested") === "on" ? true : undefined,
+      templateEligibilityAttested:
+        form.get("templateEligibilityAttested") === "on" ? true : undefined,
+    });
+  };
+
+  return (
+    <Modal eyebrow="Credential" title="Edit credential" onClose={onClose}>
+      <form className="form-stack" onSubmit={handleSubmit}>
+        {error ? (
+          <div className="modal-error" role="alert">
+            <span>{error}</span>
+          </div>
+        ) : null}
+        <label className="field">
+          <span>License or professional certification</span>
+          <input
+            autoFocus
+            name="credentialName"
+            defaultValue={credential.credentialName}
+            maxLength={180}
+            required
+          />
+        </label>
+        <label className="field">
+          <span>Issuing organization</span>
+          <input
+            name="issuer"
+            defaultValue={credential.issuer ?? ""}
+            maxLength={180}
+            disabled={!custom}
+          />
+          {!custom ? (
+            <small>
+              Source-linked credentials take their issuer from the template.
+            </small>
+          ) : null}
+        </label>
+        {custom ? (
+          <>
+            <div className="form-grid">
+              <label className="field">
+                <span>Profession</span>
+                <input
+                  name="profession"
+                  defaultValue={credential.profession}
+                  maxLength={120}
+                  required
+                />
+              </label>
+              <label className="field">
+                <span>State or jurisdiction</span>
+                <input
+                  name="jurisdiction"
+                  defaultValue={credential.jurisdiction}
+                  maxLength={120}
+                  required
+                />
+              </label>
+            </div>
+            <div className="form-grid">
+              <label className="field">
+                <span>Total required</span>
+                <input
+                  name="totalRequired"
+                  type="number"
+                  min="0.25"
+                  step="0.25"
+                  defaultValue={credential.totalRequired}
+                  required
+                />
+              </label>
+              <label className="field">
+                <span>Unit label</span>
+                <input
+                  name="unitLabel"
+                  defaultValue={credential.unitLabel}
+                  maxLength={40}
+                  required
+                />
+              </label>
+            </div>
+          </>
+        ) : null}
+        {asksTemplateEligibility ? (
+          <label className="switch-row">
+            <span>
+              <strong>
+                I confirmed this is a standard full-cycle{" "}
+                {isExpandedCertificationCredential(credential)
+                  ? "credential or license maintenance path"
+                  : isManagedNursingCredential(credential) ||
+                      isManagedDentalCredential(credential)
+                    ? "renewal or registration"
+                    : "renewal"}
+              </strong>
+              <small>
+                {isExpandedCertificationCredential(credential)
+                  ? "The official issuer or regulator record matches this exact credential, status, maintenance path, and the dates below. No initial, shortened, waiver, inactive, retired, reinstatement, synchronized or multi-credential, exam-alternative, or other adjusted variant applies."
+                  : credential.ruleSetId === "tx-rn-2026-v1" ||
+                      credential.ruleSetId === "tx-lvn-2026-v1"
+                    ? "The regulator record matches the dates below, I am using the 20-hour CNE path rather than the certification alternative, and no initial, shortened, inactive, exempt, or other adjusted-status variant applies."
+                    : isManagedDentalCredential(credential)
+                      ? "The regulator record matches the dates below, and no initial, shortened, inactive, retired, prorated, exempt, or other adjusted-status variant applies."
+                      : "The official issuer or regulator record matches the dates below, and no initial, shortened, inactive, prorated, exempt, or other adjusted-status variant applies."}
+              </small>
+            </span>
+            <input
+              name="templateEligibilityAttested"
+              type="checkbox"
+              required
+            />
+          </label>
+        ) : null}
+        <div className="form-grid">
+          <label className="field">
+            <span>Cycle started</span>
+            <input
+              name="cycleStart"
+              type="date"
+              value={cycleStart}
+              onChange={(event) => setCycleStart(event.currentTarget.value)}
+              required
+            />
+          </label>
+          <label className="field">
+            <span>Renewal deadline</span>
+            <input
+              name="deadline"
+              type="date"
+              value={deadline}
+              onChange={(event) => setDeadline(event.currentTarget.value)}
+              required
+            />
+          </label>
+        </div>
+        {asksOfficialDates ? (
+          <label className="switch-row">
+            <span>
+              <strong>
+                {isNremtCredential(credential)
+                  ? "I checked my National Registry dashboard"
+                  : isFloridaMentalHealthPhaseCredential(credential)
+                    ? "I checked my CE Broker period and phase"
+                    : isAbveCredential(credential)
+                      ? "I checked my ABVE member record"
+                      : isCrcCredential(credential)
+                        ? "I checked CRCCCONNECT"
+                        : "I checked the official credential record"}
+              </strong>
+              <small>
+                {isNremtCredential(credential)
+                  ? "It assigns this 2025 NCCP level template, and the cycle start and fixed expiration entered above match the dashboard exactly."
+                  : isFloridaMentalHealthPhaseCredential(credential)
+                    ? "CE Broker shows this Ethics and Boundaries or Telehealth phase, beginning April 1 of an odd year and ending March 31 two years later."
+                    : isAbveCredential(credential)
+                      ? "It shows the selected Fellow or Diplomate credential, the year first held in this cycle, and the fixed January 1, 2025 through December 31, 2027 recertification cycle."
+                      : isCrcCredential(credential)
+                        ? "It shows the CRC certification-period start and valid-through date entered above."
+                        : "The issuer, regulator, or official account shows this exact credential or license path, current status, cycle start, and deadline."}
+              </small>
+            </span>
+            <input name="officialDatesAttested" type="checkbox" required />
+          </label>
+        ) : null}
+        <div className="form-actions">
+          <button
+            type="button"
+            className="button button-outline"
+            onClick={onClose}
+            disabled={pending}
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            className="button button-primary"
+            disabled={pending}
+          >
+            {pending ? "Saving…" : "Save changes"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function ConfirmDeleteCredentialModal({
+  credential,
+  error,
+  pending,
+  onClose,
+  onConfirm,
+}: {
+  credential: Credential;
+  error: string;
+  pending: boolean;
+  onClose: () => void;
+  onConfirm: (confirmName: string, deleteOrphanedEvidence: boolean) => void;
+}) {
+  const [value, setValue] = useState("");
+  // Checked by default (spec §4: proof linked only to this credential is
+  // deleted); unticking sends deleteOrphanedEvidence: false, the opt-out.
+  const [orphans, setOrphans] = useState(true);
+  const matches = value.trim() === credential.credentialName;
+
+  return (
+    <Modal
+      eyebrow="Delete credential"
+      title={`Delete ${credential.credentialName}?`}
+      onClose={onClose}
+    >
+      <form
+        className="form-stack"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!matches || pending) return;
+          onConfirm(value.trim(), orphans);
+        }}
+      >
+        {error ? (
+          <div className="modal-error" role="alert">
+            <span>{error}</span>
+          </div>
+        ) : null}
+        <ul>
+          <li>
+            Removes this credential, every past cycle, its checklist and
+            check-ins.
+          </li>
+          <li>Keeps your learning records in the activity log.</li>
+        </ul>
+        <label className="field">
+          <span>Type the credential name to confirm</span>
+          <input
+            name="confirmName"
+            autoComplete="off"
+            autoFocus
+            value={value}
+            onChange={(event) => setValue(event.currentTarget.value)}
+          />
+        </label>
+        <label className="switch-row">
+          <span>
+            <strong>
+              Also delete proof files that were only used for this credential
+            </strong>
+          </span>
+          <input
+            type="checkbox"
+            name="deleteOrphanedEvidence"
+            checked={orphans}
+            onChange={(event) => setOrphans(event.currentTarget.checked)}
+          />
+        </label>
+        <div className="form-actions">
+          <button
+            type="button"
+            className="button button-outline"
+            onClick={onClose}
+            disabled={pending}
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            className="button button-danger"
+            aria-busy={pending}
+            disabled={!matches || pending}
+          >
+            Delete permanently
+          </button>
+        </div>
+      </form>
     </Modal>
   );
 }
