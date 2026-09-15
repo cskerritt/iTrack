@@ -89,6 +89,55 @@ test("Add renewal date to calendar hands off an .ics file", async ({ page, app }
   app.expectNoErrors();
 });
 
+test("switching tabs from a pushed detail unwinds it, so Back then leaves the app instead of landing on the detail", async ({ page, app }) => {
+  const name = uniqueName("E2E unwind");
+  await app.seedCredential({ credentialName: name });
+  await app.goto("/credentials");
+  await page
+    .getByRole("region", { name: "Your credentials" })
+    .getByRole("button", { name })
+    .click();
+  await expect(page).toHaveURL(/\/credentials\/[^/]+$/);
+  await expect(page.locator("h1.push-title")).toHaveText(name);
+  // The tab is shown at once; the URL follows when the pushed entry has
+  // been unwound and the tab root written in its place.
+  await app.tab("Home").click();
+  await expect(page).toHaveURL(/^https?:\/\/[^/]+\/$/);
+  await expect(page).toHaveTitle("Home · iTrack");
+  await expect(app.tab("Home")).toHaveAttribute("aria-current", "page");
+  await expect(page.locator("h1.push-title")).toHaveCount(0);
+  // Nothing of the app's is left underneath the tab root — not the list the
+  // detail was pushed from, and not the detail — so Back leaves the app.
+  await page.goBack();
+  await expect(page).toHaveURL("about:blank");
+  app.expectNoErrors();
+});
+
+test("re-tapping the current tab pops the pushed detail back to the list", async ({ page, app }) => {
+  const name = uniqueName("E2E re-tap");
+  await app.seedCredential({ credentialName: name });
+  await app.goto("/credentials");
+  await page
+    .getByRole("region", { name: "Your credentials" })
+    .getByRole("button", { name })
+    .click();
+  await expect(page).toHaveURL(/\/credentials\/[^/]+$/);
+  await expect(page.locator("h1.push-title")).toHaveText(name);
+  await expect(app.tab("Credentials")).toHaveAttribute("aria-current", "page");
+  await app.tab("Credentials").click();
+  await expect(page).toHaveURL(/\/credentials$/);
+  await expect(page).toHaveTitle("Credentials · iTrack");
+  await expect(page.locator("h1.push-title")).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Every renewal, one clear place." }),
+  ).toBeVisible();
+  // The pop is a real history.back(), so the list root is again the only
+  // entry of the app's: Back leaves it.
+  await page.goBack();
+  await expect(page).toHaveURL("about:blank");
+  app.expectNoErrors();
+});
+
 test("Log submission opens the submission sheet", async ({ page, app }) => {
   const name = uniqueName("E2E submission");
   await app.seedCredential({ credentialName: name });

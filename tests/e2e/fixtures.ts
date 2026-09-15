@@ -35,7 +35,13 @@ export type Workspace = {
     [k: string]: unknown;
   }>;
   archivedCredentials?: Array<{ id: string; credentialName: string }>;
-  activities: Array<{ id: string; title: string; revision: number }>;
+  activities: Array<{
+    id: string;
+    title: string;
+    revision: number;
+    evidenceStatus?: "missing" | "attached" | "not_required";
+    evidenceCount?: number;
+  }>;
   reminderPreferences: {
     timeZone: string;
     pushHourLocal: number;
