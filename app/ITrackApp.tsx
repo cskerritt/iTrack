@@ -1635,30 +1635,6 @@ function useSheetDragDismiss(
   }, [cardRef, isSheet]);
 }
 
-/*
- * The phone's own answer to a tap. Haptics are the shell's to provide — the
- * Capacitor plugin injects itself into the page at runtime — so this looks the
- * plugin up on every call and does nothing when it is not there. That is the
- * whole error path: on the web, and in any shell built before the plugin
- * landed, a missing rumble is not a failure worth reporting.
- */
-type HapticsPlugin = {
-  impact?: (options: { style: string }) => Promise<void> | void;
-};
-
-function hapticTap(style: "light" | "medium" = "light") {
-  if (typeof window === "undefined") return;
-  const haptics = (
-    window as unknown as {
-      Capacitor?: { Plugins?: { Haptics?: HapticsPlugin } };
-    }
-  ).Capacitor?.Plugins?.Haptics;
-  const impact = haptics?.impact?.({
-    style: style === "light" ? "LIGHT" : "MEDIUM",
-  });
-  void Promise.resolve(impact).catch(() => {});
-}
-
 export function ITrackApp() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const nav = useNavigation();
@@ -1812,7 +1788,6 @@ export function ITrackApp() {
 
   const openActivityEntryFor = useCallback(
     (preselectCredentialId: string) => {
-      hapticTap();
       // A stale message from an earlier attempt must not greet a fresh sheet.
       setError("");
       activityDraftPersistenceGeneration.current += 1;
@@ -3322,9 +3297,6 @@ export function ITrackApp() {
             allocatedUnits,
           )} applied to this credential.`,
     );
-    // The record is saved at this point whatever happens to the proof file
-    // below, and this is the confirmation the hand gets for it.
-    if (result) hapticTap("medium");
     if (result?.id && hasEvidenceFile && evidenceFile) {
       const uploaded = await uploadEvidence(result.id, evidenceFile);
       if (!uploaded) {
@@ -3670,9 +3642,6 @@ export function ITrackApp() {
           : "Renewal accepted. Your next cycle is ready.",
     );
     if (result) {
-      // The end of a renewal cycle is the one moment in this app worth
-      // feeling, so it gets the firmer of the two taps.
-      hapticTap("medium");
       setAcceptanceOpen(false);
       if (result.id) {
         setSelectedCredentialId(result.id);
@@ -4126,7 +4095,6 @@ export function ITrackApp() {
    * and the reduced-motion block can still take it away.
    */
   function selectTab(tab: TabName) {
-    hapticTap();
     if (tab !== view) {
       nav.setTab(tab);
       return;
