@@ -273,6 +273,15 @@
     background: var(--paper-deep);
   }
 
+  /*
+   * The title shares its row with the brand at the right (mockup
+   * home-phone.html): a zero flex basis lets a long title wrap inside the
+   * text block instead of filling the row and pushing the brand under it.
+   */
+  .page-header-text {
+    flex: 1 1 0;
+  }
+
   .page-title {
     font-size: var(--text-2xl);
   }
@@ -295,6 +304,12 @@
     display: none;
   }
 
+  /*
+   * 10px + the 56px Log-button row (52px + its 4px margin) + 10px + the 1px
+   * hairline = 77px above the safe-area inset. --bottom-nav-height
+   * (tokens.css) mirrors this bar — the bar is authoritative — and
+   * shell.spec.ts checks the two agree.
+   */
   .bottom-nav {
     position: fixed;
     inset: auto 0 0 0;

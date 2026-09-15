@@ -1,3 +1,4 @@
+import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 
 // The shell on ordinary routing (spec §5.1 Layout, §5.2 PageHeader / Rail /
@@ -6,8 +7,10 @@ import { expect, test } from "./fixtures";
 // changes the URL and the title and lands focus on the new screen's heading
 // (a11y-03, a11y-M-02) while first paint keeps the browser's own focus so the
 // skip link stays the first Tab stop; a modified click on a tab is left to
-// the browser; the not-found route keeps the page frame. Read-only against
-// the demo workspace, in all four projects.
+// the browser; a new screen opens at its top and Back restores the offset it
+// left (decision 7); the phone bar and the token that clears it agree; the
+// not-found route keeps the page frame. Read-only against the demo
+// workspace, in all four projects.
 
 const TABS = [
   ["Home", "/"],
@@ -17,6 +20,29 @@ const TABS = [
 ] as const;
 
 const isPhone = () => test.info().project.name.startsWith("phone");
+
+// The offset once nothing is moving it any more: two reads ten frames apart
+// agree. A single read right after a navigation would pass a restore that a
+// later effect undoes — a screen-level scroll-to-top firing after the layout
+// effect, animated across those frames by the stylesheet's smooth scroll.
+async function settledScrollY(page: Page): Promise<number> {
+  const afterTenFrames = () =>
+    page.evaluate(
+      () =>
+        new Promise<number>((resolve) => {
+          let frames = 0;
+          const step = () => (frames++ >= 10 ? resolve(window.scrollY) : requestAnimationFrame(step));
+          requestAnimationFrame(step);
+        }),
+    );
+  let previous = await page.evaluate(() => window.scrollY);
+  for (let i = 0; i < 20; i += 1) {
+    const current = await afterTenFrames();
+    if (current === previous) return current;
+    previous = current;
+  }
+  return previous;
+}
 
 test("the rail is the desktop navigation and the bottom nav the phone's; tabs are links with the right href and one aria-current", async ({ page, context, app }) => {
   await app.goto("/credentials");
@@ -32,6 +58,27 @@ test("the rail is the desktop navigation and the bottom nav the phone's; tabs ar
   // The phone's third link shows "Activity" but is named "Activity log".
   if (phone) await expect(app.tab("Activity log")).toHaveText("Activity");
   await expect(page.getByRole("button", { name: "Log activity" }).first()).toBeVisible();
+  if (phone) {
+    // Decision (3) / home-phone.html: the brand sits at the RIGHT of the title
+    // even when the title wraps — "Every renewal, one clear place." is two
+    // lines at 390px — because the text block takes a zero flex basis and
+    // shares the row instead of filling it and pushing the brand underneath.
+    const text = await page.locator("header.page-header .page-header-text").boundingBox();
+    const brand = await page.locator("header.page-header .page-header-brand").boundingBox();
+    if (!text || !brand) throw new Error("the page header did not render its text block and brand");
+    expect(brand.x, "the brand is to the right of the title block").toBeGreaterThanOrEqual(text.x + text.width);
+    expect(brand.y, "the brand shares the title's row rather than a row under it").toBeLessThan(text.y + text.height);
+    // --bottom-nav-height (tokens.css) mirrors the bar it exists to clear:
+    // 10 + the 56px Log-button row + 10 + the 1px hairline. .app-main and the
+    // toast region add their own slack on top, so a drift here shows nowhere
+    // else.
+    const bar = await page.locator("nav.bottom-nav").boundingBox();
+    if (!bar) throw new Error("the bottom nav did not render");
+    const token = await page.evaluate(() =>
+      parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--bottom-nav-height")),
+    );
+    expect(bar.height, "nav.bottom-nav renders at exactly --bottom-nav-height").toBeCloseTo(token, 1);
+  }
   if (!phone) {
     // spec §5.1 / home-desktop.html: the content column is 1120px at 1440×900
     // — the CONTENT box of main (shell.css: box-sizing content-box, the
@@ -77,6 +124,38 @@ test("a tab click changes the URL and the title and moves focus to the heading; 
   await expect(page).toHaveURL(/\/history$/);
   await expect(page).toHaveTitle("Activity log · iTrack");
   await expect(page.getByRole("main").getByRole("heading", { level: 1 })).toBeFocused();
+  app.expectNoErrors();
+});
+
+test("Back restores the scroll offset of the screen it returns to; a new navigation opens at the top", async ({ page, app }) => {
+  await app.goto("/");
+  // Home is the longest demo screen at both viewports. The document decides
+  // how far it can scroll, so the offset that took is what is expected back.
+  const savedHome = await page.evaluate(() => {
+    window.scrollTo({ top: 400, left: 0, behavior: "instant" });
+    return window.scrollY;
+  });
+  expect(savedHome, "Home scrolls at this viewport").toBeGreaterThan(0);
+  await app.tab("Activity log").click();
+  await expect(page).toHaveTitle("Activity log · iTrack");
+  // Decision (7): every new navigation opens its screen at the top.
+  expect(await settledScrollY(page), "a new screen opens at its top").toBe(0);
+  const savedLog = await page.evaluate(() => {
+    window.scrollTo({ top: 250, left: 0, behavior: "instant" });
+    return window.scrollY;
+  });
+  await page.goBack();
+  await expect(page).toHaveTitle("Home · iTrack");
+  // history.scrollRestoration is manual, so this is useNavigation's own
+  // per-path memory landing in its layout effect — and nothing after it (no
+  // screen-level scroll-to-top on a tab change) may move it again.
+  expect(await settledScrollY(page), "Back lands where Home was left").toBe(savedHome);
+  await expect(page.getByRole("main").getByRole("heading", { level: 1 })).toBeFocused();
+  // Forward is a popstate too: the log returns where it was left (0 where the
+  // demo log is too short to scroll at this viewport).
+  await page.goForward();
+  await expect(page).toHaveTitle("Activity log · iTrack");
+  expect(await settledScrollY(page), "Forward lands where the log was left").toBe(savedLog);
   app.expectNoErrors();
 });
 

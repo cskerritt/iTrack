@@ -22,7 +22,11 @@ export type Navigation = {
 };
 
 // Scroll offsets by pathname, restored on popstate: the document scroller is
-// shared by every screen, so this is the only place that memory can live.
+// shared by every screen, so this is the only place that memory can live. It
+// is written on every departure — a client navigation and a popstate alike, so
+// Forward restores the way Back does — and nothing else may scroll on a route
+// change: a screen-level scroll-to-top effect keyed on the tab would fire after
+// the layout effect below and wipe the offset it had just restored.
 const scrollMemory = new Map<string, number>();
 
 /**
@@ -59,6 +63,11 @@ export function useNavigation(): Navigation {
     const onPop = () => {
       const pathname = window.location.pathname;
       if (pathname === lastPathname.current) return;
+      // scrollRestoration is manual, so when popstate fires the offset on
+      // screen is still the outgoing screen's: remember it for Forward.
+      if (lastPathname.current !== null) {
+        scrollMemory.set(lastPathname.current, window.scrollY);
+      }
       lastPathname.current = pathname;
       restore.current = scrollMemory.get(pathname) ?? 0;
       apply(parseRoute(pathname));
@@ -69,12 +78,14 @@ export function useNavigation(): Navigation {
   }, [apply]);
 
   // Runs after the screen for `route` is in the DOM, before paint — the one
-  // moment a restored offset can land on the right document height.
+  // moment a restored offset can land on the right document height. "instant",
+  // not "auto": the stylesheet's `scroll-behavior: smooth` would otherwise turn
+  // a Back into a scroll animation across the returning screen.
   useLayoutEffect(() => {
     const top = restore.current;
     if (top === null) return;
     restore.current = null;
-    window.scrollTo({ top, left: 0, behavior: "auto" });
+    window.scrollTo({ top, left: 0, behavior: "instant" });
   }, [route]);
 
   const navigate = useCallback(
@@ -90,7 +101,9 @@ export function useNavigation(): Navigation {
       lastPathname.current = path;
       apply(next);
       setNavigations((count) => count + 1);
-      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      // A new screen opens at its top the way a page load does — "instant", so
+      // the smooth stylesheet scroll cannot animate the new screen upward.
+      window.scrollTo({ top: 0, left: 0, behavior: "instant" });
     },
     [apply],
   );

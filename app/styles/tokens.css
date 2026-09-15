@@ -174,7 +174,13 @@
   --rail-width: 232px;
   --content-max: 1120px;
   --ledger-aside-width: 380px;
-  --bottom-nav-height: 76px;
+  /*
+   * The phone bar's rendered height above the safe-area inset (shell.css
+   * .bottom-nav: 10px + a 56px Log-button row + 10px + a 1px hairline). The
+   * bar is authoritative and this mirrors it so .app-main and the toast
+   * region clear it; shell.spec.ts checks the two agree.
+   */
+  --bottom-nav-height: 77px;
 
   /*
    * MOTION — three moments (spec §5.1); everything else is instant.

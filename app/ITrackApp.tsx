@@ -1816,10 +1816,6 @@ export function ITrackApp() {
   }, [loadWorkspace]);
 
   useEffect(() => {
-    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-  }, [view]);
-
-  useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
       void loadWorkspace();
