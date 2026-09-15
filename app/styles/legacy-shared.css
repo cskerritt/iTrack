@@ -1,0 +1,2283 @@
+/* Cross-screen legacy rules — neither one screen's nor a Wave 3 primitive. Every section is
+ * deleted or rewritten by the task named in its banner; nothing new may be added here.
+ * Moved verbatim from app/globals.css (main @4bc32b5) in Wave 3 Task 2 (architecture-11); these rules are restyled or extracted in Wave 4. */
+
+/* ===== LEGACY SHELL — deleted in Task 9 ===== */
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.desktop-sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 30;
+  width: var(--sidebar-width);
+  display: flex;
+  flex-direction: column;
+  padding:
+    calc(28px + env(safe-area-inset-top))
+    18px
+    calc(22px + env(safe-area-inset-bottom))
+    calc(18px + env(safe-area-inset-left));
+  background: var(--ink-surface-deep);
+  color: var(--on-dark-muted);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 11px;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px 11px 11px 4px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-family: var(--font-ui);
+  font-size: 23px;
+  font-weight: 700;
+}
+
+.desktop-sidebar .brand {
+  margin: 2px 9px 42px;
+  color: var(--on-dark);
+}
+
+.desktop-sidebar nav {
+  display: grid;
+  gap: 7px;
+}
+
+.nav-button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-height: 48px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  padding: 9px 13px;
+  text-align: left;
+}
+
+.desktop-sidebar .nav-button:hover {
+  background: rgb(var(--veil-rgb) / 0.06);
+  color: var(--on-dark);
+}
+
+.desktop-sidebar .nav-button.active {
+  background: rgb(var(--accent-rgb) / 0.13);
+  color: var(--on-dark);
+}
+
+.desktop-sidebar .nav-button.active::before {
+  position: absolute;
+  left: -18px;
+  width: 3px;
+  height: 24px;
+  border-radius: 0 4px 4px 0;
+  background: var(--accent);
+  content: "";
+}
+
+.nav-symbol {
+  display: grid;
+  place-items: center;
+  width: 23px;
+  height: 23px;
+}
+
+.sidebar-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 48px;
+  margin: 28px 4px 0;
+  border: 0;
+  border-radius: 13px;
+  background: var(--accent-control);
+  color: var(--on-accent);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 800;
+  box-shadow: 0 10px 28px rgb(var(--shade-rgb) / 0.18);
+}
+
+.sidebar-add:hover {
+  background: var(--accent-control-hover);
+}
+
+.sidebar-coach {
+  margin-top: auto;
+  border: 1px solid rgb(var(--veil-rgb) / 0.1);
+  border-radius: 14px;
+  padding: 14px;
+  background: rgb(var(--veil-rgb) / 0.04);
+}
+
+.sidebar-coach > span {
+  color: var(--accent-bright);
+  font-size: var(--text-2xs);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.sidebar-coach strong {
+  display: block;
+  margin-top: 7px;
+  color: var(--on-dark);
+  font-family: var(--font-ui);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.sidebar-coach p {
+  margin: 5px 0 0;
+  color: var(--on-dark-faint);
+  font-size: var(--text-xs);
+}
+
+.app-stage {
+  min-height: 100vh;
+  margin-left: var(--sidebar-width);
+}
+
+.main-content {
+  width: min(1230px, 100%);
+  margin: 0 auto;
+  padding:
+    calc(46px + env(safe-area-inset-top))
+    calc(46px + env(safe-area-inset-right))
+    calc(70px + env(safe-area-inset-bottom))
+    calc(46px + env(safe-area-inset-left));
+}
+
+.mobile-header,
+.mobile-nav {
+  display: none;
+}
+
+.view-stack {
+  display: grid;
+  gap: 22px;
+}
+
+.page-greeting {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  min-height: 84px;
+  gap: 28px;
+}
+
+.page-greeting > div {
+  min-width: 0;
+}
+
+.page-eyebrow,
+.section-kicker {
+  display: block;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.page-greeting h1 {
+  margin: 4px 0 1px;
+  color: var(--ink-deep);
+  font-family: var(--font-ui);
+  font-size: clamp(32px, 3vw, 45px);
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 1.08;
+}
+
+.page-greeting p {
+  margin: 4px 0 0;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+
+@media (max-width: 1040px) {
+  .main-content {
+    padding:
+      calc(38px + env(safe-area-inset-top))
+      calc(28px + env(safe-area-inset-right))
+      calc(64px + env(safe-area-inset-bottom))
+      calc(28px + env(safe-area-inset-left));
+  }
+
+  .desktop-sidebar {
+    padding-inline: 14px;
+  }
+}
+
+@media (max-width: 820px) {
+  body {
+    padding-bottom: calc(74px + env(safe-area-inset-bottom));
+  }
+
+  .desktop-sidebar {
+    display: none;
+  }
+
+  .app-stage {
+    margin-left: 0;
+  }
+
+  .mobile-header {
+    position: sticky;
+    top: 0;
+    z-index: 25;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: calc(63px + env(safe-area-inset-top));
+    border-bottom: 1px solid rgb(var(--line-rgb) / 0.8);
+    background: rgb(var(--paper-rgb) / 0.9);
+    padding:
+      calc(10px + env(safe-area-inset-top))
+      max(18px, env(safe-area-inset-right))
+      10px
+      max(18px, env(safe-area-inset-left));
+    backdrop-filter: blur(14px);
+  }
+
+  .mobile-header .brand {
+    font-size: 16px;
+  }
+
+  .mobile-header .brand-mark {
+    width: 31px;
+    height: 31px;
+    border-radius: 10px 10px 10px 4px;
+    font-size: 21px;
+  }
+
+  .avatar-button {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border: 1px solid var(--line-strong);
+    border-radius: 13px;
+    background: var(--white);
+    cursor: pointer;
+    font-family: var(--font-ui);
+    font-size: 17px;
+    font-weight: 700;
+  }
+
+  .main-content {
+    width: 100%;
+    padding:
+      25px
+      max(18px, env(safe-area-inset-right))
+      34px
+      max(18px, env(safe-area-inset-left));
+  }
+
+  .mobile-nav {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 50;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    align-items: end;
+    min-height: calc(65px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line);
+    background: rgb(var(--card-rgb) / 0.96);
+    padding:
+      7px
+      max(7px, env(safe-area-inset-right))
+      calc(6px + env(safe-area-inset-bottom))
+      max(7px, env(safe-area-inset-left));
+    box-shadow: 0 -10px 30px rgb(var(--shade-rgb) / 0.08);
+    backdrop-filter: blur(16px);
+  }
+
+  .mobile-nav .nav-button {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 48px;
+    gap: 2px;
+    padding: 3px;
+    color: var(--ink-quiet);
+    font-size: 10px;
+  }
+
+  .mobile-nav .nav-button.active {
+    color: var(--ink);
+  }
+
+  .mobile-nav .nav-symbol {
+    width: 22px;
+    height: 22px;
+  }
+
+  .mobile-add {
+    display: grid;
+    align-self: start;
+    justify-self: center;
+    place-items: center;
+    width: 53px;
+    height: 53px;
+    margin-top: -22px;
+    border: 5px solid var(--card);
+    border-radius: 17px 17px 17px 7px;
+    background: var(--ink-surface);
+    color: var(--on-dark);
+    cursor: pointer;
+    box-shadow: 0 9px 24px rgb(var(--shade-rgb) / 0.23);
+  }
+
+  .page-greeting {
+    align-items: flex-start;
+    min-height: 0;
+  }
+
+  .page-greeting h1 {
+    font-size: 34px;
+  }
+
+  .page-greeting > .button {
+    flex: 0 0 auto;
+  }
+
+  .desktop-only {
+    display: none !important;
+  }
+}
+
+@media (max-width: 540px) {
+  .main-content {
+    padding-right: max(14px, env(safe-area-inset-right));
+    padding-left: max(14px, env(safe-area-inset-left));
+  }
+
+  .view-stack {
+    gap: 16px;
+  }
+
+  .page-greeting {
+    gap: 14px;
+  }
+
+  .page-greeting h1 {
+    font-size: 30px;
+  }
+
+  .page-greeting p {
+    font-size: var(--text-xs);
+  }
+
+  .page-greeting > .button {
+    min-width: 46px;
+    padding-inline: 12px;
+  }
+}
+
+@media (max-width: 340px) {
+  .main-content {
+    padding-right: max(10px, env(safe-area-inset-right));
+    padding-left: max(10px, env(safe-area-inset-left));
+  }
+
+  .mobile-header {
+    padding-right: max(13px, env(safe-area-inset-right));
+    padding-left: max(13px, env(safe-area-inset-left));
+  }
+}
+
+/* ===== SCREEN STACK — deleted in Task 9 ===== */
+
+/*
+ * SCREEN STACK — the push and the pop. Both screens are laid into the same
+ * grid cell so the arriving one travels across the one it covers, and the
+ * pushed screen paints the page's own ground — --page-backdrop, haze and all,
+ * not flat paper — so nothing shows through it on the way and nothing shows a
+ * seam where it ends.
+ *
+ * Neither screen leaves the flow. A credential detail runs several viewports
+ * tall and the document is the only scroller on this page, so a pushed screen
+ * taken out of flow would be clamped to the height of the list behind it and
+ * its bottom would be unreachable. That is also why only the horizontal axis
+ * is clipped — it is the only axis anything travels on.
+ *
+ * The bleed is what makes the clip usable. The stack reaches --screen-bleed
+ * into the page gutter on each side and the pushed screen reaches exactly as
+ * far, so the two boxes coincide: everything the stack can paint, the screen
+ * on top covers. Without it the parked screen shows as a strip of stray text
+ * down the gutter, and the back control's chevron — which hangs past the
+ * column to sit on its label's optical edge — gets shaved off by the clip.
+ *
+ * The screen underneath does not sit still while this happens. It parks a
+ * third of the way out, which is what tells the eye the two are stacked rather
+ * than swapped, and it is clamped to a viewport while parked so a long list
+ * cannot leave dead scroll below a short detail screen.
+ */
+.screen-stack {
+  display: grid;
+  margin-inline: calc(var(--screen-bleed) * -1);
+  padding-inline: var(--screen-bleed);
+  overflow-x: clip;
+  overflow-y: visible;
+}
+
+.screen-stack > .screen {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.screen-root {
+  transition:
+    transform var(--screen-push) var(--screen-ease),
+    opacity var(--screen-push) var(--screen-ease);
+}
+
+.screen-root.screen-under {
+  max-height: 100dvh;
+  overflow: hidden;
+  opacity: 0.92;
+  transform: translateX(calc(-28% + var(--screen-drag, 0px) * 0.28));
+}
+
+/*
+ * --screen-drag is the back gesture's offset, published on the stack so both
+ * screens read the same finger: the pushed one follows it outright, the one
+ * underneath at the same 28% ratio it was parked by. Unset — which is every
+ * moment no finger is down — the fallback leaves both at rest.
+ */
+.screen-pushed {
+  margin-inline: calc(var(--screen-bleed) * -1);
+  padding-inline: var(--screen-bleed);
+  /* Opaque, and the same ground the page is on — see --page-backdrop. */
+  background: var(--page-backdrop);
+  transform: translateX(var(--screen-drag, 0px));
+  transition: transform var(--screen-pop) var(--screen-ease);
+  animation: screen-in var(--screen-push) var(--screen-ease);
+  will-change: transform;
+}
+
+/*
+ * A screen on its way out stops answering. The pop has already happened as far
+ * as the URL and the app are concerned; a tap in those last few frames belongs
+ * to what is arriving, not to what is leaving.
+ */
+.screen-pushed.screen-exiting {
+  animation: screen-out var(--screen-pop) var(--screen-ease) forwards;
+  pointer-events: none;
+}
+
+/* A dragged screen is placed by the finger, not by a curve. */
+.screen-stack.screen-dragging .screen-root,
+.screen-stack.screen-dragging .screen-pushed {
+  transition: none;
+}
+
+@keyframes screen-in {
+  from {
+    transform: translateX(100%);
+  }
+
+  to {
+    transform: translateX(0);
+  }
+}
+
+/*
+ * The exit starts wherever the drag left the screen rather than at zero, so
+ * releasing the gesture past its threshold carries straight on instead of
+ * snapping back first and then leaving.
+ */
+@keyframes screen-out {
+  from {
+    transform: translateX(var(--screen-drag, 0px));
+  }
+
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/*
+ * The global reduced-motion block near the end of this file collapses every
+ * duration declared here, so there is no slide left to soften — what is left
+ * is the parked offset, which would otherwise show as a sideways jump in the
+ * frame before the swap.
+ *
+ * The pushed screen keeps its offset because that one is not choreography: it
+ * is the back gesture, and a screen that refuses to come with the finger reads
+ * as broken rather than as calm. It is zero whenever no finger is down.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .screen-root,
+  .screen-root.screen-under {
+    transform: none;
+  }
+}
+
+/* ===== LEGACY BUTTONS — rewritten in Task 5 ===== */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 46px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 800;
+  line-height: 1;
+  padding: 0 18px;
+  text-decoration: none;
+}
+
+.button-primary {
+  background: var(--ink-surface);
+  color: var(--on-dark);
+  box-shadow: 0 8px 20px rgb(var(--shade-rgb) / 0.15);
+}
+
+.button-primary:hover:not(:disabled):not(.disabled) {
+  background: var(--ink-surface-hover);
+}
+
+.button-dark {
+  background: var(--ink-surface-deep);
+  color: var(--on-dark);
+}
+
+.button-light {
+  background: var(--white);
+  color: var(--ink-deep);
+}
+
+.button-outline {
+  border-color: var(--line-strong);
+  background: var(--white);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
+}
+
+.button-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-muted);
+}
+
+.button-danger {
+  background: var(--danger);
+  color: var(--on-dark);
+}
+
+.button-danger:hover:not(:disabled):not(.disabled) {
+  background: var(--danger-hover);
+}
+
+.button.disabled {
+  cursor: default;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.button-compact {
+  min-height: 44px;
+  padding: 7px 10px;
+  font-size: var(--text-sm);
+}
+
+/* ===== LEGACY MARKS — the track family deleted in Task 11, the rest in Wave 4 ===== */
+
+.progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--track);
+}
+
+.progress-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--amber);
+  transition: width 420ms ease;
+}
+
+.progress-track.met > span {
+  background: var(--mark-progress);
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgb(var(--card-rgb) / 0.82);
+  box-shadow: var(--shadow-sm);
+}
+
+.card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.card-heading h2,
+.card-heading h3 {
+  margin: 3px 0 0;
+  color: var(--ink-deep);
+  font-family: var(--font-ui);
+  font-size: 23px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.card-heading h3 {
+  font-size: 20px;
+}
+
+.progress-row {
+  display: grid;
+  gap: 8px;
+}
+
+.progress-row.nested {
+  margin-left: 16px;
+  border-left: 2px solid var(--track-tint);
+  padding-left: 12px;
+}
+
+.progress-row.maximum .progress-track {
+  background: var(--track-quiet);
+}
+
+.progress-row.maximum .progress-track > span {
+  background: var(--mark-progress-quiet);
+}
+
+.progress-row.over-limit .progress-track > span {
+  background: var(--mark-progress-over);
+}
+
+.limit-label {
+  border-radius: 99px;
+  background: var(--chip-coral);
+  color: var(--ink-coral-quiet);
+  font-size: var(--text-2xs);
+  font-weight: 800;
+  padding: 3px 6px;
+  text-transform: uppercase;
+}
+
+.limit-note {
+  margin: -2px 0 0;
+  color: var(--ink-coral-quiet);
+  font-size: var(--text-xs);
+}
+
+.total-excess-note {
+  margin: -3px 0 0;
+  border-radius: 9px;
+  background: var(--wash-coral-deep);
+  color: var(--ink-coral-quiet);
+  font-size: var(--text-xs);
+  padding: 8px 10px;
+}
+
+/*
+ * Answering a conditional rule is the highest-stakes interaction in the
+ * product, so every control that does it clears the 44px tap floor and
+ * carries a label at the control type size. The negative inline margin keeps
+ * the text optically aligned with the requirement above it while the hit
+ * area grows outward.
+ */
+.condition-change {
+  width: max-content;
+  min-height: var(--tap-min);
+  margin-left: -10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 800;
+  padding: 8px 10px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.condition-change:hover {
+  color: var(--ink);
+}
+
+.requirement-condition {
+  border: 1px solid var(--edge-quiet);
+  border-radius: 11px;
+  background: var(--wash);
+  padding: 11px 12px;
+}
+
+.requirement-condition > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.requirement-condition > div:first-child > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.requirement-condition strong,
+.requirement-condition small {
+  display: block;
+}
+
+.requirement-condition strong {
+  font-size: var(--text-sm);
+}
+
+.requirement-condition small,
+.requirement-condition p {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.requirement-condition p {
+  margin: 0;
+}
+
+.requirement-condition-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.requirement-condition-actions button {
+  min-height: var(--tap-min);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  background: var(--white);
+  color: var(--ink-tint-quiet);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 800;
+  padding: 8px 13px;
+}
+
+.dental-checkpoint {
+  gap: 10px;
+}
+
+.dental-checkpoint.completed {
+  border-color: var(--edge-accent-pale);
+  background: var(--wash-tint);
+}
+
+.dental-checkpoint-form {
+  display: grid;
+  gap: 8px;
+}
+
+.dental-checkpoint-form label {
+  display: grid;
+  gap: 5px;
+}
+
+.dental-checkpoint-form label > span,
+.checkpoint-date {
+  color: var(--ink-label);
+  font-size: var(--text-sm);
+  font-weight: 800;
+}
+
+.dental-checkpoint-form input {
+  width: 100%;
+  min-height: var(--tap-comfortable);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--white);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-control);
+  padding: 8px 10px;
+}
+
+.dental-checkpoint-form input:focus {
+  border-color: var(--edge-focus);
+  outline: 2px solid var(--focus-glow-strong);
+  outline-offset: 1px;
+}
+
+.dental-checkpoint-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dental-checkpoint-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--tap-min);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--white);
+  color: var(--ink-tint-quiet);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 800;
+  padding: 6px 9px;
+}
+
+.dental-checkpoint-actions button:first-child {
+  border-color: var(--mark-tint-deep);
+  background: var(--mark-tint-deep);
+  color: var(--on-mark);
+}
+
+.requirement-condition .checkpoint-reference {
+  color: var(--ink-tint-deep);
+  font-weight: 700;
+}
+
+.progress-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.progress-label > span:first-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.progress-label strong {
+  color: var(--ink);
+  font-size: var(--text-sm);
+}
+
+.met-label {
+  border-radius: 99px;
+  background: var(--tint-bright);
+  color: var(--ink-tint);
+  font-size: var(--text-2xs);
+  font-weight: 800;
+  padding: 3px 6px;
+  text-transform: uppercase;
+}
+
+.level-track,
+.quest-track {
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--track);
+}
+
+.level-track {
+  height: 7px;
+}
+
+.level-track > span,
+.quest-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--level-from), var(--level-to));
+  transition: width 180ms ease;
+}
+
+/*
+ * IN-FLIGHT FEEDBACK
+ * A write takes two round trips (save, then re-read), so the control that
+ * started it says so instead of the whole page going grey. The ring is
+ * decorative: the adjacent word ("Saving…", "Claiming…") is what assistive
+ * technology reads, and the sitewide reduced-motion rule freezes the spin
+ * while leaving the mark and its label in place.
+ */
+.action-spinner {
+  display: inline-block;
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  border-top-color: transparent;
+  opacity: 0.75;
+  vertical-align: -2px;
+  animation: lantern-spin 0.7s linear infinite;
+}
+
+.row-saving {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--tap-min);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  font-weight: 800;
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
+.task-row.saving,
+.requirement-condition.saving {
+  background: var(--wash-deep);
+}
+
+@keyframes lantern-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.evidence-mark {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  border-radius: 8px;
+}
+
+.evidence-mark.attached {
+  background: var(--tint-bright);
+  color: var(--ink-tint);
+}
+
+.evidence-mark.missing {
+  background: var(--amber-soft);
+  color: var(--ink-amber);
+}
+
+.evidence-mark.not_required {
+  background: var(--chip);
+  color: var(--ink-muted);
+}
+
+.verified-chip,
+.demo-label {
+  display: inline-flex;
+  align-items: center;
+  min-height: 25px;
+  border-radius: 99px;
+  background: var(--tint-bright);
+  color: var(--ink-tint);
+  font-size: var(--text-2xs);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 5px 8px;
+  text-transform: uppercase;
+}
+
+.verified-chip.conditional {
+  background: var(--amber-soft);
+  color: var(--ink-amber);
+}
+
+.verified-chip.transition {
+  background: var(--chip-blue);
+  color: var(--ink-blue);
+}
+
+.verified-chip.needs-review {
+  background: var(--chip-coral);
+  color: var(--ink-coral);
+}
+
+.archived-items {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgb(var(--card-rgb) / 0.78);
+  box-shadow: var(--shadow-sm);
+}
+
+.archived-items > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 52px;
+  cursor: pointer;
+  gap: 14px;
+  padding: 10px 16px;
+  list-style: none;
+}
+
+.archived-items > summary::-webkit-details-marker {
+  display: none;
+}
+
+/*
+ * The disclosure spans the full width of a card that clips its overflow, so
+ * an outset ring would be cut off on three sides. This one is drawn inside
+ * the summary's own box instead.
+ */
+.archived-items > summary:focus-visible {
+  outline-offset: -3px;
+}
+
+/*
+ * The disclosure is a full-width row, so it answers a press with a tint
+ * rather than the scale used on buttons — a row that shrinks under a thumb
+ * reads as the card itself moving.
+ */
+.archived-items > summary:active {
+  background: var(--wash-deep);
+}
+
+.archived-items > summary > span:first-child,
+.archived-items > summary strong,
+.archived-items > summary small {
+  display: block;
+}
+
+.archived-items > summary > span:first-child {
+  color: var(--ink);
+  font-size: var(--text-sm);
+  font-weight: 800;
+}
+
+.archived-items > summary small {
+  margin-top: 1px;
+  color: var(--ink-quiet);
+  font-size: var(--text-xs);
+  font-weight: 650;
+}
+
+.disclosure-chevron {
+  display: flex;
+  flex: 0 0 auto;
+  color: var(--ink-quiet);
+  transition: transform 160ms ease;
+}
+
+.archived-items[open] > summary .disclosure-chevron {
+  transform: rotate(180deg);
+}
+
+.archived-item-list {
+  display: grid;
+  border-top: 1px solid var(--line);
+}
+
+.archived-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 66px;
+  border-bottom: 1px solid var(--line-soft);
+  gap: 14px;
+  padding: 10px 16px;
+}
+
+.archived-item:last-child {
+  border-bottom: 0;
+}
+
+.archived-item strong,
+.archived-item small {
+  display: block;
+}
+
+.archived-item strong {
+  color: var(--ink);
+  font-size: var(--text-sm);
+}
+
+.archived-item > div:first-child {
+  min-width: 0;
+}
+
+.archived-item strong,
+.archived-item small {
+  overflow-wrap: anywhere;
+}
+
+.archived-item small {
+  margin-top: 2px;
+  color: var(--ink-quiet);
+  font-size: var(--text-xs);
+}
+
+.archived-item button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  border: 1px solid var(--edge);
+  border-radius: 9px;
+  background: var(--white);
+  color: var(--ink-tint-link);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 800;
+  padding: 7px 11px;
+}
+
+.archived-item-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.archived-item-state {
+  color: var(--ink-quiet);
+  font-size: var(--text-xs);
+  font-weight: 800;
+}
+
+.install-help {
+  display: grid;
+  gap: 18px;
+  color: var(--ink-quiet);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+.install-help > p,
+.install-help ol {
+  margin: 0;
+}
+
+.install-help ol {
+  display: grid;
+  gap: 12px;
+  padding-left: 24px;
+}
+
+.install-help li {
+  padding-left: 5px;
+}
+
+/*
+ * Natives that a styled mark stands in for are hidden with opacity rather than
+ * moved off-screen, so the dim above would paint the raw OS control back over
+ * its own replacement. The mark carries the disabled reading instead.
+ */
+.task-toggle input:disabled,
+.requirement-choice input:disabled,
+.condition-options input:disabled,
+.capture-button input:disabled,
+.segmented-field input:disabled,
+.check-grid input:disabled {
+  opacity: 0;
+}
+
+/*
+ * A label wrapping a disabled control is never :disabled itself, so without
+ * this it would keep answering a press the control discards, and the segment
+ * would read as available. Declared after PRESS so the equal-specificity
+ * press rule loses on source order.
+ */
+.segmented-field input:disabled + span,
+.check-grid input:disabled + span,
+.condition-options input:disabled + span {
+  cursor: default;
+  opacity: 0.6;
+  transform: none;
+}
+
+/*
+ * TABULAR FIGURES
+ * Counters, fractions, percentages and countdowns are read by watching one
+ * number change, so their digits keep a fixed advance width and the value
+ * cannot slide sideways going 9 → 10. Prose keeps proportional figures.
+ */
+.card-summary,
+.progress-label strong,
+.deadline-number strong,
+.deadline-chip strong,
+.readiness-ring strong,
+.detail-stats strong,
+.record-summary > div strong,
+.record-title small,
+.allocation-stack small,
+.record-credit,
+.credit-value,
+.picker-progress,
+.xp-chip,
+.level-copy strong,
+.level-copy small,
+.account-level strong,
+.quest-heading > span,
+.quest-count,
+.allocation-tally-figure,
+.connected-device-count {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 540px) {
+  .archived-item {
+    grid-template-columns: 1fr;
+  }
+
+  .archived-item button,
+  .archived-item-actions {
+    width: 100%;
+  }
+
+  .archived-item-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 340px) {
+  .progress-label {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+}
+
+/* ===== POINTER LIST — deleted in Wave 4 with the last label-wrapped control ===== */
+
+/*
+ * Label-wrapped controls, where the input is visually hidden and the label is
+ * what a finger hits. Named individually rather than as a bare `label`
+ * because `cursor` inherits, and a text field inside a labelled row has to
+ * keep its caret.
+ */
+.task-toggle,
+.requirement-choice,
+.weekly-goal-option,
+.capture-button,
+.segmented-field label,
+.check-grid label,
+.condition-options label {
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+/* ===== LEGACY EMPTY STATES — deleted in Task 12 ===== */
+
+.empty-inline {
+  display: grid;
+  grid-template-columns: 33px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin-top: 28px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+  padding: 13px;
+}
+
+.empty-inline > span {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--tint-bright);
+}
+
+.empty-inline strong {
+  display: block;
+  font-size: var(--text-sm);
+}
+
+.empty-inline p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.empty-inline button {
+  min-height: var(--tap-min);
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 800;
+}
+
+.empty-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 390px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: rgb(var(--card-rgb) / 0.6);
+  padding: 38px;
+  text-align: center;
+}
+
+.empty-page-mark {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 19px;
+  border-radius: 20px 20px 20px 7px;
+  background: var(--tint-bright);
+  color: var(--ink-tint);
+  font-family: var(--font-ui);
+  font-size: 31px;
+  font-weight: 600;
+}
+
+.empty-page h2 {
+  margin: 5px 0 7px;
+  font-family: var(--font-ui);
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.empty-page p {
+  max-width: 520px;
+  margin: 0 0 20px;
+  color: var(--ink-muted);
+  font-size: var(--text-md);
+}
+
+.empty-modal {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 28px 10px 15px;
+  text-align: center;
+}
+
+.empty-modal > span {
+  display: grid;
+  place-items: center;
+  width: 55px;
+  height: 55px;
+  border-radius: 18px;
+  background: var(--tint-bright);
+}
+
+.empty-modal h3 {
+  margin: 16px 0 5px;
+  font-family: var(--font-ui);
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.empty-modal p {
+  max-width: 380px;
+  margin: 0 0 18px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+/* ===== LEGACY MODAL — deleted in Task 6 ===== */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  align-items: center;
+  justify-items: center;
+  overflow-y: auto;
+  background: var(--scrim);
+  padding:
+    calc(24px + env(safe-area-inset-top))
+    calc(24px + env(safe-area-inset-right))
+    calc(24px + env(safe-area-inset-bottom))
+    calc(24px + env(safe-area-inset-left));
+  animation: sheet-scrim var(--screen-pop) var(--screen-ease);
+  backdrop-filter: blur(5px);
+}
+
+@keyframes sheet-scrim {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+.modal-card {
+  width: min(620px, 100%);
+  max-height: min(880px, calc(100vh - 48px));
+  max-height: min(
+    880px,
+    calc(
+      100dvh - 48px - env(safe-area-inset-top) -
+        env(safe-area-inset-bottom)
+    )
+  );
+  overflow-y: auto;
+  border: 1px solid rgb(var(--lift-rgb) / 0.3);
+  border-radius: 22px;
+  background: var(--card);
+  box-shadow: var(--shadow-lg);
+}
+
+/*
+ * SHEET — below 540px every modal is anchored to the bottom edge (see the
+ * phone block near the end of this file), which on this platform is a sheet,
+ * and a sheet owes the reader two things a centred dialog does not.
+ *
+ * The grabber is the first: a sheet that can be pushed away says so, and the
+ * bar is the only thing that says it. It is decorative — the close button and
+ * the gesture are the actual controls — so it is hidden from the reader that
+ * cannot see it, and it hangs off the sticky header rather than sitting in the
+ * flow, so scrolling the sheet's content cannot scroll the handle away from
+ * the edge it belongs to.
+ *
+ * The drag is the second: --sheet-drag is published on the card by the
+ * dismiss gesture, in the same shape the back gesture uses on the screen stack
+ * (see SCREEN STACK). Unset — every moment no finger is down — the fallback
+ * leaves the sheet where it belongs; while a finger is down the card is placed
+ * by the finger and not by a curve, which is what .sheet-dragging turns off.
+ */
+.sheet-grabber {
+  display: none;
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+
+  to {
+    transform: translateY(0);
+  }
+}
+
+.modal-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  background: rgb(var(--card-rgb) / 0.96);
+  gap: 20px;
+  padding: 22px 25px 18px;
+  backdrop-filter: blur(12px);
+}
+
+.modal-header h2 {
+  margin: 3px 0 0;
+  font-family: var(--font-ui);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.modal-close {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--white);
+  cursor: pointer;
+}
+
+.modal-body {
+  padding: 24px 25px 26px;
+}
+
+@media (max-width: 540px) {
+  .modal-backdrop {
+    align-items: end;
+    padding:
+      env(safe-area-inset-top)
+      env(safe-area-inset-right)
+      0
+      env(safe-area-inset-left);
+  }
+
+  .modal-card {
+    width: 100%;
+    max-height: calc(94vh - env(safe-area-inset-top));
+    max-height: calc(94dvh - env(safe-area-inset-top));
+    border-radius: 24px 24px 0 0;
+    transform: translateY(var(--sheet-drag, 0px));
+    transition: transform var(--screen-pop) var(--screen-ease);
+    animation: sheet-up var(--screen-push) var(--screen-ease);
+    will-change: transform;
+  }
+
+  .modal-card.sheet-dragging {
+    transition: none;
+  }
+
+  .sheet-grabber {
+    position: absolute;
+    top: 7px;
+    left: 50%;
+    display: block;
+    width: 36px;
+    height: 5px;
+    margin-left: -18px;
+    border-radius: 3px;
+    background: var(--line-strong);
+  }
+
+  .modal-header {
+    padding:
+      22px
+      max(18px, env(safe-area-inset-right))
+      15px
+      max(18px, env(safe-area-inset-left));
+  }
+
+  .modal-header h2 {
+    font-size: 25px;
+  }
+
+  .modal-body {
+    padding:
+      21px
+      max(18px, env(safe-area-inset-right))
+      calc(24px + env(safe-area-inset-bottom))
+      max(18px, env(safe-area-inset-left));
+  }
+}
+
+/* ===== LEGACY FORM — deleted in Task 7 ===== */
+
+.form-stack {
+  display: grid;
+  gap: 17px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 13px;
+}
+
+.form-grid-three {
+  grid-template-columns: 0.7fr 0.8fr 1.25fr;
+}
+
+.field {
+  display: grid;
+  gap: 7px;
+}
+
+.field > span,
+.segmented-field legend {
+  color: var(--ink-label);
+  font-size: var(--text-sm);
+  font-weight: 800;
+}
+
+.field em {
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+  font-style: normal;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.field input,
+.field select {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  background: var(--white);
+  color: var(--ink-deep);
+  outline: none;
+  padding: 10px 12px;
+}
+
+.field input::placeholder {
+  color: var(--ink-placeholder);
+}
+
+.field input:focus,
+.field select:focus {
+  border-color: var(--edge-focus);
+  box-shadow: 0 0 0 3px var(--focus-glow);
+}
+
+.field small {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.field small.field-warning {
+  color: var(--ink-coral);
+  font-weight: 750;
+  line-height: 1.45;
+}
+
+.field-inline-action {
+  justify-self: start;
+  min-height: 44px;
+  margin-top: -10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink-tint);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 800;
+  padding: 8px 4px;
+}
+
+.field-inline-action:hover {
+  text-decoration: underline;
+}
+
+.segmented-field {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+  gap: 8px;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.segmented-field legend {
+  margin-bottom: 7px;
+}
+
+.segmented-field label {
+  position: relative;
+  cursor: pointer;
+}
+
+.segmented-field input {
+  position: absolute;
+  opacity: 0;
+}
+
+.segmented-field span {
+  display: grid;
+  place-items: center;
+  min-height: 45px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  font-weight: 800;
+  text-align: center;
+}
+
+.segmented-field input:checked + span {
+  border-color: var(--edge-accent);
+  background: var(--tint-bright);
+  color: var(--ink-tint-link);
+}
+
+.segmented-field input:focus-visible + span {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--wash);
+  padding: 13px 14px;
+}
+
+.switch-row strong,
+.switch-row small {
+  display: block;
+}
+
+.switch-row strong {
+  font-size: var(--text-sm);
+}
+
+.switch-row small {
+  margin-top: 2px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+.switch-row input {
+  width: 22px;
+  height: 22px;
+  accent-color: var(--accent-control);
+}
+
+.check-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.check-grid legend {
+  margin-bottom: 8px;
+  color: var(--ink-label);
+  font-size: var(--text-sm);
+  font-weight: 800;
+}
+
+.check-grid label {
+  position: relative;
+}
+
+.check-grid input {
+  position: absolute;
+  opacity: 0;
+}
+
+.check-grid span {
+  display: grid;
+  place-items: center;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink-muted);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 800;
+}
+
+.check-grid input:checked + span {
+  border-color: var(--edge-accent);
+  background: var(--tint-bright);
+  color: var(--ink-tint-link);
+}
+
+.check-grid input:focus-visible + span {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
+.form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+}
+
+.modal-error {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--edge-coral);
+  border-radius: 11px;
+  background: var(--wash-coral-deep);
+  color: var(--ink-coral-deep);
+  padding: 11px 13px;
+}
+
+.modal-error strong,
+.modal-error span {
+  display: block;
+}
+
+.modal-error strong {
+  font-size: var(--text-sm);
+}
+
+.modal-error span {
+  font-size: var(--text-xs);
+}
+
+/*
+ * The message takes focus when it appears so a phone user whose sheet is
+ * already scrolled to the submit row is put on it rather than left staring at
+ * an unchanged form. It is not in the tab order, so Tab continues to Cancel.
+ */
+.modal-error:focus {
+  outline: none;
+}
+
+.modal-error:focus-visible {
+  outline: 3px solid var(--focus-ring-danger);
+  outline-offset: 2px;
+}
+
+/* A rejected save has to be the last thing above the button that caused it. */
+.form-stack > .modal-error + .form-actions {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 10px;
+}
+
+@media (max-width: 540px) {
+  .check-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .form-grid,
+  .form-grid-three {
+    grid-template-columns: 1fr;
+  }
+
+  .form-actions {
+    display: grid;
+    grid-template-columns: 0.75fr 1.25fr;
+  }
+
+  .form-actions .button {
+    width: 100%;
+  }
+
+  .segmented-field {
+    grid-template-columns: 1fr;
+  }
+
+  .segmented-field span {
+    min-height: var(--tap-min);
+  }
+}
+
+/* ===== LEGACY BANNERS AND LOAD STATES — restyled in Task 9 ===== */
+
+.offline-banner,
+.error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+  border: 1px solid var(--edge-coral);
+  border-radius: 13px;
+  background: var(--coral-soft);
+  color: var(--ink-coral-deep);
+  padding: 12px 14px;
+}
+
+.offline-banner {
+  border-color: var(--edge);
+  background: var(--wash-tint);
+  color: var(--ink-tint-deep);
+}
+
+.offline-banner > span {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: var(--chip-tint);
+}
+
+.offline-banner strong,
+.offline-banner small {
+  display: block;
+}
+
+.offline-banner strong {
+  font-size: var(--text-sm);
+}
+
+.offline-banner small {
+  margin-top: 2px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.error-banner strong,
+.error-banner span {
+  display: block;
+}
+
+.error-banner strong {
+  font-size: var(--text-sm);
+}
+
+.error-banner span {
+  font-size: var(--text-xs);
+}
+
+.error-banner button {
+  min-height: var(--tap-min);
+  border: 1px solid var(--edge-coral-warm);
+  border-radius: 9px;
+  background: var(--white);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 800;
+  padding: 0 12px;
+}
+
+/* The one-tap time-zone offer (critic-01): the offline banner's shape and
+   tokens, plus its Use and Not-now buttons. */
+.zone-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+  border: 1px solid var(--edge);
+  border-radius: 13px;
+  background: var(--wash-tint);
+  color: var(--ink-tint-deep);
+  padding: 12px 14px;
+}
+
+.zone-banner > div {
+  flex: 1 1 auto;
+}
+
+.zone-banner strong,
+.zone-banner small {
+  display: block;
+}
+
+.zone-banner strong {
+  font-size: var(--text-sm);
+}
+
+.zone-banner small {
+  margin-top: 2px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.zone-banner button {
+  min-height: var(--tap-min);
+  border: 1px solid var(--edge);
+  border-radius: 9px;
+  background: var(--white);
+  color: var(--ink-tint-deep);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 800;
+  padding: 0 12px;
+}
+
+.zone-banner button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.zone-banner .link-button {
+  border: 0;
+  background: transparent;
+  color: var(--ink-tint);
+  padding: 0 4px;
+}
+
+.zone-banner .link-button:hover {
+  text-decoration: underline;
+}
+
+.offline-workspace {
+  display: flex;
+  min-height: 420px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(circle at 50% 0, rgb(var(--accent-rgb) / 0.22), transparent 44%),
+    var(--card);
+  box-shadow: var(--shadow-sm);
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 42px;
+  text-align: center;
+}
+
+.offline-workspace-mark {
+  display: grid;
+  place-items: center;
+  width: 62px;
+  height: 62px;
+  margin-bottom: 18px;
+  border-radius: 20px 20px 20px 7px;
+  background: var(--tint-bright);
+  color: var(--ink-tint);
+}
+
+.offline-workspace h1 {
+  max-width: 560px;
+  margin: 8px 0;
+  font-family: var(--font-ui);
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+.offline-workspace p {
+  max-width: 580px;
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+
+.workspace-load-failure .button {
+  margin-top: 22px;
+}
+
+.loading-heading {
+  display: grid;
+  gap: 8px;
+  padding: 12px 0;
+}
+
+.loading-heading span,
+.loading-heading strong,
+.loading-heading small,
+.loading-hero span,
+.loading-grid span {
+  display: block;
+  border-radius: 8px;
+  background: linear-gradient(
+    90deg,
+    var(--shimmer-base),
+    var(--shimmer-peak),
+    var(--shimmer-base)
+  );
+  background-size: 220% 100%;
+  animation: shimmer 1.8s infinite linear;
+}
+
+.loading-heading span {
+  width: 120px;
+  height: 10px;
+}
+
+.loading-heading strong {
+  width: min(420px, 75%);
+  height: 39px;
+}
+
+.loading-heading small {
+  width: min(520px, 84%);
+  height: 13px;
+}
+
+.loading-hero {
+  display: grid;
+  grid-template-columns: 1fr 0.34fr;
+  grid-template-rows: 1fr 1fr;
+  height: 260px;
+  gap: 13px;
+}
+
+.loading-hero span:first-child {
+  grid-row: 1 / -1;
+  border-radius: var(--radius-lg);
+}
+
+.loading-hero span {
+  border-radius: var(--radius-md);
+}
+
+.loading-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.loading-grid span {
+  height: 260px;
+  border-radius: var(--radius-md);
+}
+
+@keyframes shimmer {
+  to {
+    background-position: -220% 0;
+  }
+}
+
+@media (max-width: 540px) {
+  .offline-banner,
+  .zone-banner {
+    align-items: flex-start;
+  }
+
+  .zone-banner {
+    flex-wrap: wrap;
+  }
+
+  .zone-banner > div {
+    flex-basis: 100%;
+  }
+
+  .offline-workspace {
+    min-height: 360px;
+    padding: 34px 22px;
+  }
+
+  .offline-workspace h1 {
+    font-size: 29px;
+  }
+
+  .loading-hero {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 0.4fr;
+    height: 310px;
+  }
+
+  .loading-hero span:first-child {
+    grid-row: auto;
+  }
+
+  .loading-hero span:last-child {
+    display: none;
+  }
+
+  .loading-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ===== LEGACY TOAST — deleted in Task 8 ===== */
+
+.toast {
+  position: fixed;
+  right: calc(24px + env(safe-area-inset-right));
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  min-height: 50px;
+  max-width: min(430px, calc(100vw - 32px));
+  border: 1px solid rgb(var(--veil-rgb) / 0.15);
+  border-radius: 13px;
+  background: var(--ink-surface-deep);
+  color: var(--on-dark);
+  box-shadow: var(--shadow-lg);
+  gap: 15px;
+  padding: 10px 11px 10px 15px;
+}
+
+.toast > span {
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+
+.toast button {
+  min-height: var(--tap-min);
+  border: 0;
+  border-radius: 8px;
+  background: rgb(var(--veil-rgb) / 0.09);
+  color: var(--accent-bright);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 800;
+  padding: 0 10px;
+}
+
+.toast .toast-close {
+  display: grid;
+  place-items: center;
+  width: var(--tap-min);
+  padding: 0;
+  color: var(--on-dark);
+}
+
+@media (max-width: 540px) {
+  .toast {
+    right: max(16px, env(safe-area-inset-right));
+    bottom: calc(81px + env(safe-area-inset-bottom));
+    left: max(16px, env(safe-area-inset-left));
+  }
+}
+
+/* ===== LEGACY FORCED COLOURS — rewritten in Tasks 9 and 11 ===== */
+
+/*
+ * Three marks carry meaning in their fill alone — how much of a bar is done,
+ * how far round a ring has gone — so they keep their own colours when the OS
+ * forces its palette on everything else. A forced dark theme also reports
+ * `prefers-color-scheme: dark`, so what these three opt back into is the dark
+ * palette above, and every one of them is a pair that holds against the forced
+ * black canvas: --amber over it at 14.9:1, --accent-bright over the ring's
+ * unfilled tenth-white at 7.3:1, and --on-accent on --accent at 3.6:1 — the
+ * last of those the brand mark's 23px bold letter, which is large text under
+ * WCAG and so held to the same 3:1 floor the other two are.
+ *
+ * These three ratios are outside the two :root blocks and so outside what
+ * tools/contrast-audit.mjs re-derives; they are recomputed by hand whenever
+ * --amber, --accent or --accent-bright moves.
+ *
+ * The add button used to opt out with them and it was the one that did not
+ * hold: on a forced dark theme its --ink-surface fill is 2.2:1 on the black
+ * canvas and its 5px --card cut-out ring 1.5:1, so the primary action all but
+ * disappeared. It takes the forced palette instead, inverted — a ButtonText
+ * fill with a ButtonFace glyph, which is a contrasting pair in every
+ * high-contrast theme by construction — and keeps the cut-out in Canvas so it
+ * still reads as lifted out of the bar rather than sitting in it.
+ */
+@media (forced-colors: active) {
+  .progress-track > span,
+  .readiness-ring,
+  .brand-mark {
+    forced-color-adjust: none;
+  }
+
+  .mobile-add {
+    border-color: Canvas;
+    background: ButtonText;
+    color: ButtonFace;
+  }
+}
+
+/* ===== LEGACY ERROR FALLBACK — replaced in Task 12 ===== */
+
+/* Error fallback (ErrorBoundary, app/error.tsx, app/not-found.tsx). */
+.error-fallback {
+  max-width: 520px;
+  margin: 15vh auto 0;
+  padding: 0 20px;
+  text-align: center;
+}
+.error-fallback h1 {
+  font-size: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+.error-fallback p {
+  color: var(--ink-muted);
+  margin-bottom: 1rem;
+}
+.error-fallback-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}

@@ -1,0 +1,382 @@
+/* History / Activity log — RecordsView: record summary, records table, proof cells,
+ * record management (app/ITrackApp.tsx).
+ * Moved verbatim from app/globals.css (main @4bc32b5) in Wave 3 Task 2 (architecture-11); these rules are restyled or extracted in Wave 4. */
+
+.record-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
+
+.record-summary > div {
+  min-height: 105px;
+  border-right: 1px solid var(--line);
+  padding: 20px 23px;
+}
+
+.record-summary > div span,
+.record-summary > div strong,
+.record-summary > div small {
+  display: block;
+}
+
+.record-summary > div span {
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.record-summary > div strong {
+  margin-top: 2px;
+  font-family: var(--font-ui);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.record-summary > div small {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.record-summary > .button {
+  margin: 0 22px;
+}
+
+.records-card {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Fixed columns are sized for the readable type scale, not the old 8-10px. */
+.records-table {
+  display: grid;
+  grid-template-columns:
+    minmax(210px, 1.45fr)
+    minmax(130px, 1fr)
+    112px
+    64px
+    108px;
+  align-items: center;
+  min-height: 78px;
+  border-bottom: 1px solid var(--line-soft);
+  column-gap: 18px;
+  padding: 12px 22px;
+}
+
+.records-table:last-child {
+  border-bottom: 0;
+}
+
+.records-table-head {
+  min-height: 43px;
+  background: var(--wash-deep);
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.record-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+}
+
+.record-title > span:last-child {
+  min-width: 0;
+}
+
+.record-title strong,
+.record-title small,
+.records-table > span small {
+  display: block;
+}
+
+/*
+ * The course title is what the eye scans for, so it wraps to two lines and
+ * clamps there instead of losing most of a real title to a single-line
+ * ellipsis on a phone-width column.
+ */
+.record-title strong {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: var(--text-sm);
+  line-height: 1.35;
+  overflow-wrap: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.record-title small,
+.records-table > span small {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.records-table > span {
+  font-size: var(--text-xs);
+}
+
+.proof-label {
+  justify-self: start;
+  border-radius: 99px;
+  font-size: var(--text-2xs);
+  font-weight: 800;
+  padding: 5px 8px;
+}
+
+.proof-label.attached {
+  background: var(--tint-bright);
+  color: var(--ink-tint);
+}
+
+.proof-label.missing {
+  background: var(--amber-soft);
+  color: var(--ink-amber);
+}
+
+.proof-label.not_required {
+  background: var(--chip);
+  color: var(--ink-muted);
+}
+
+.proof-cell {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  justify-self: start;
+  gap: 1px;
+}
+
+.proof-action {
+  min-width: 44px;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-tint-link);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.proof-action:hover {
+  color: var(--ink);
+}
+
+.frozen-proof-note {
+  max-width: 118px;
+  margin-top: 3px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: 1.35;
+}
+
+.frozen-proof-advisory {
+  border: 1px solid var(--edge-quiet);
+}
+
+.allocation-stack {
+  display: grid;
+  gap: 5px;
+}
+
+.allocation-stack > span {
+  display: block;
+}
+
+.allocation-action {
+  display: block;
+  margin-top: 4px;
+  padding: 0;
+}
+
+/* Only "use for another" leads with an icon; the rule stays on the words. */
+.allocation-action.with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  text-decoration: none;
+}
+
+.allocation-action.with-icon > span {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.record-credit {
+  justify-self: end;
+  color: var(--ink-tint);
+  font-size: var(--text-sm);
+}
+
+.record-manage {
+  justify-self: end;
+}
+
+.record-manage button {
+  min-height: 44px;
+  border: 1px solid var(--edge);
+  border-radius: 9px;
+  background: var(--white);
+  color: var(--ink-tint-link);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 800;
+  padding: 7px 10px;
+}
+
+.record-manage > span {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  font-weight: 750;
+  text-align: right;
+}
+
+.records-table.frozen {
+  background: var(--wash);
+}
+
+/*
+ * A touch screen holds :hover on the last thing it tapped, so a row tint
+ * would stay lit after the finger left. Hover is a pointer affordance; touch
+ * already has the press above. Static panels are deliberately absent: a card
+ * that reacts to the pointer promises a click it does not accept.
+ */
+@media (hover: hover) and (pointer: fine) {
+  .records-table:not(.records-table-head):hover,
+  .archived-item:hover {
+    background: var(--wash);
+  }
+
+  .archived-items > summary:hover {
+    background: var(--wash);
+  }
+}
+
+@media (max-width: 1040px) {
+  .records-table {
+    grid-template-columns:
+      minmax(180px, 1.4fr)
+      minmax(100px, 1fr)
+      98px
+      58px
+      100px;
+    column-gap: 12px;
+    padding-inline: 12px;
+  }
+}
+
+@media (max-width: 820px) {
+  .record-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .record-summary > div:nth-child(3) {
+    border-right: 0;
+  }
+
+  .record-summary > .button {
+    grid-column: 1 / -1;
+    margin: 13px 18px 17px;
+  }
+
+  .records-table-head {
+    display: none;
+  }
+
+  .records-table {
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 10px;
+    padding-inline: 16px;
+    padding-block: 16px;
+  }
+
+  .records-table > span:not(.proof-label):not(.proof-cell) {
+    grid-column: 1;
+    padding-left: 37px;
+  }
+
+  .records-table .proof-cell {
+    grid-column: 1;
+    justify-self: start;
+    margin-left: 37px;
+  }
+
+  /*
+   * The column head above the list is hidden at this width, so every row
+   * carries its own field names and no value is left to be read as a bare
+   * number or an unexplained chip.
+   */
+  .records-table .record-field-label {
+    position: static;
+    display: block;
+    width: auto;
+    height: auto;
+    margin: 0 0 3px;
+    overflow: visible;
+    clip: auto;
+    color: var(--ink-faint);
+    font-size: var(--text-2xs);
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    white-space: normal;
+    text-transform: uppercase;
+  }
+
+  .record-credit {
+    grid-column: 2;
+    grid-row: 1;
+    text-align: right;
+  }
+
+  .record-manage {
+    grid-column: 2;
+    grid-row: 2 / span 2;
+    align-self: start;
+  }
+}
+
+@media (max-width: 540px) {
+  .record-summary {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .record-summary > div {
+    min-height: 92px;
+    padding: 17px;
+  }
+
+  .record-summary > div:nth-child(2) {
+    border-right: 0;
+  }
+
+  .record-summary > div:nth-child(3) {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--line);
+  }
+
+  .record-manage {
+    grid-column: 1 / -1;
+    grid-row: auto;
+    justify-self: stretch;
+    margin-left: 37px;
+  }
+
+  .record-manage button {
+    width: 100%;
+  }
+}
