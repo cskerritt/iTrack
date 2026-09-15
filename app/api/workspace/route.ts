@@ -7276,7 +7276,6 @@ async function deleteCredential(
       [credentialId, identity.userId, expectedRevision],
     ),
   ];
-  const targetIndex = statements.length - 1;
   if (orphanIds.length > 0) {
     statements.push(
       query(
@@ -7381,8 +7380,20 @@ async function deleteCredential(
       [identity.userId, ...series, ...goneBindings],
     ),
   );
-  const results = await database.batch(statements);
-  if (Number(results[targetIndex]?.meta?.changes ?? Number.NaN) !== 1) {
+  await database.batch(statements);
+  // The target DELETE cascades the credential's child rows, and D1 reports a
+  // statement's `changes` as a total_changes() delta that counts cascaded
+  // rows too (miniflare's database.worker.js; node:sqlite's shim counts the
+  // one direct row), so that count is not the success test it is for the
+  // single-row UPDATE batches above. The row's absence is: the delete
+  // carried the expected revision, so a stale one leaves the row in place
+  // for the diagnosis below to explain.
+  const remaining = await query(
+    database,
+    `SELECT 1 AS present FROM credentials WHERE id = ? AND user_id = ?`,
+    [credentialId, identity.userId],
+  ).first<{ present: number }>();
+  if (remaining) {
     return diagnoseCredentialMutationFailure(
       database,
       identity,
