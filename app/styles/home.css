@@ -54,7 +54,7 @@
 .renewal-identity h2 {
   margin: 12px 0 2px;
   font-family: var(--font-ui);
-  font-size: 31px;
+  font-size: var(--text-2xl);
   font-weight: 600;
   letter-spacing: -0.03em;
 }
@@ -95,7 +95,7 @@
 .deadline-number strong {
   display: block;
   font-family: var(--font-ui);
-  font-size: 65px;
+  font-size: var(--text-4xl);
   font-weight: 600;
   letter-spacing: -0.05em;
   line-height: 0.86;
@@ -122,7 +122,7 @@
 }
 
 .deadline-number.deadline-number-closed strong {
-  font-size: 30px;
+  font-size: var(--text-2xl);
   letter-spacing: -0.02em;
   line-height: 1.05;
 }
@@ -201,7 +201,7 @@
 
 .readiness-ring strong {
   font-family: var(--font-ui);
-  font-size: 30px;
+  font-size: var(--text-2xl);
   font-weight: 600;
   letter-spacing: -0.04em;
 }
@@ -249,7 +249,7 @@
 .next-action-card h2 {
   margin: 2px 0 0;
   font-family: var(--font-ui);
-  font-size: 21px;
+  font-size: var(--text-xl);
   font-weight: 600;
   letter-spacing: -0.02em;
 }
@@ -340,7 +340,7 @@
   background: linear-gradient(145deg, var(--orb-from), var(--orb-to));
   color: var(--ink-tint);
   font-family: var(--font-ui);
-  font-size: 21px;
+  font-size: var(--text-xl);
   font-weight: 700;
 }
 
@@ -724,7 +724,7 @@
 .reminder-inbox-heading h2 {
   margin: 3px 0 0;
   font-family: var(--font-ui);
-  font-size: 21px;
+  font-size: var(--text-xl);
   font-weight: 600;
   letter-spacing: -0.02em;
 }
@@ -915,7 +915,7 @@
   max-width: 550px;
   margin: 11px 0 15px;
   font-family: var(--font-ui);
-  font-size: clamp(38px, 4.2vw, 58px);
+  font-size: var(--text-4xl);
   font-weight: 600;
   letter-spacing: -0.045em;
   line-height: 1.02;
@@ -958,7 +958,7 @@
   background: rgb(var(--accent-rgb) / 0.16);
   color: var(--accent-bright);
   font-family: var(--font-ui);
-  font-size: 18px;
+  font-size: var(--text-lg);
   font-weight: 600;
 }
 
@@ -1099,7 +1099,7 @@
   }
 
   .readiness-ring strong {
-    font-size: 20px;
+    font-size: var(--text-xl);
   }
 
   .readiness-panel p {
@@ -1187,7 +1187,7 @@
   }
 
   .renewal-identity h2 {
-    font-size: 27px;
+    font-size: var(--text-2xl);
   }
 
   .deadline-row {
@@ -1196,7 +1196,7 @@
   }
 
   .deadline-number strong {
-    font-size: 53px;
+    font-size: var(--text-4xl);
   }
 
   .next-action-card {
@@ -1205,7 +1205,7 @@
   }
 
   .next-action-card h2 {
-    font-size: 18px;
+    font-size: var(--text-lg);
     line-height: 1.15;
   }
 
@@ -1245,7 +1245,7 @@
   }
 
   .onboarding-copy h2 {
-    font-size: 40px;
+    font-size: var(--text-3xl);
   }
 
   .onboarding-steps {
@@ -1264,6 +1264,6 @@
   }
 
   .deadline-number strong {
-    font-size: 46px;
+    font-size: var(--text-4xl);
   }
 }

@@ -34,7 +34,7 @@
 .record-summary > div strong {
   margin-top: 2px;
   font-family: var(--font-ui);
-  font-size: 28px;
+  font-size: var(--text-2xl);
   font-weight: 600;
   letter-spacing: -0.02em;
 }

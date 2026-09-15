@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
-import { readClientSources } from "./helpers/clientSources.mjs";
+import { readClientSources, readStylesheets } from "./helpers/clientSources.mjs";
 import { WORKSPACE_ACTIONS } from "./helpers/workspaceActions.mjs";
 
 // Returns the text of every `setX((current) => …)` updater body, found by
@@ -199,4 +199,37 @@ test("the open-cycle test is spelled out only in app/lib/cycles.ts (app-ux-04, a
     );
   }
   assert.ok(scanned > 0, "scanned the client sources");
+});
+
+// a11y-14 / spec §5.1: the type scale is rem so a browser font-size
+// preference scales the UI. The one px allowed is --text-control (16px), the
+// iOS zoom floor for editable values, declared once in app/styles/tokens.css
+// and consumed only through max(var(--text-control), 1em). Comments are
+// blanked (newlines kept) so a claim comment cannot trip the regexes.
+test("no font-size in px under app/**/*.css except the documented --text-control floor (a11y-14)", () => {
+  const blank = (text) => text.replace(/[^\n]/g, " ");
+  let scanned = 0;
+  let controls = 0;
+  for (const { file, source } of readStylesheets()) {
+    scanned += 1;
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, blank);
+    for (const match of code.matchAll(/^\s*font-size\s*:\s*([^;{}]+);/gm)) {
+      assert.doesNotMatch(
+        match[1],
+        /\b\d*\.?\d+px\b/,
+        `${file}: \`${match[0].trim()}\` — use a --text-* token or rem`,
+      );
+    }
+    for (const match of code.matchAll(/^\s*(--text-[a-z0-9-]+)\s*:\s*([^;]+);/gm)) {
+      if (match[1] === "--text-control") {
+        controls += 1;
+        assert.equal(file, "styles/tokens.css", "--text-control is declared in tokens.css only");
+        assert.equal(match[2].trim(), "16px", "--text-control is the 16px iOS zoom floor");
+        continue;
+      }
+      assert.match(match[2], /^\s*\d*\.?\d+rem\s*$/, `${file}: ${match[1]} must be declared in rem`);
+    }
+  }
+  assert.ok(scanned >= 9, "walked app/globals.css and app/styles/*.css");
+  assert.equal(controls, 1, "--text-control is declared exactly once");
 });

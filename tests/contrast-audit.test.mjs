@@ -30,8 +30,6 @@ const LEGACY_STYLESHEETS = new Set([
   "app/styles/log-activity.css",
   "app/styles/history.css",
   "app/styles/account.css",
-  // Task 2 removes this entry once globals.css is down to imports + resets.
-  "app/globals.css",
 ]);
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 

@@ -28,7 +28,7 @@
   display: inline-flex;
   align-items: center;
   gap: 11px;
-  font-size: 18px;
+  font-size: var(--text-lg);
   font-weight: 800;
   letter-spacing: -0.03em;
 }
@@ -42,7 +42,7 @@
   background: var(--accent);
   color: var(--on-accent);
   font-family: var(--font-ui);
-  font-size: 23px;
+  font-size: var(--text-xl);
   font-weight: 700;
 }
 
@@ -142,7 +142,7 @@
   margin-top: 7px;
   color: var(--on-dark);
   font-family: var(--font-ui);
-  font-size: 17px;
+  font-size: var(--text-lg);
   font-weight: 600;
   line-height: 1.2;
 }
@@ -204,7 +204,7 @@
   margin: 4px 0 1px;
   color: var(--ink-deep);
   font-family: var(--font-ui);
-  font-size: clamp(32px, 3vw, 45px);
+  font-size: var(--text-3xl);
   font-weight: 600;
   letter-spacing: -0.035em;
   line-height: 1.08;
@@ -262,14 +262,14 @@
   }
 
   .mobile-header .brand {
-    font-size: 16px;
+    font-size: var(--text-md);
   }
 
   .mobile-header .brand-mark {
     width: 31px;
     height: 31px;
     border-radius: 10px 10px 10px 4px;
-    font-size: 21px;
+    font-size: var(--text-xl);
   }
 
   .avatar-button {
@@ -282,7 +282,7 @@
     background: var(--white);
     cursor: pointer;
     font-family: var(--font-ui);
-    font-size: 17px;
+    font-size: var(--text-lg);
     font-weight: 700;
   }
 
@@ -324,7 +324,7 @@
     gap: 2px;
     padding: 3px;
     color: var(--ink-quiet);
-    font-size: 10px;
+    font-size: var(--text-2xs);
   }
 
   .mobile-nav .nav-button.active {
@@ -358,7 +358,7 @@
   }
 
   .page-greeting h1 {
-    font-size: 34px;
+    font-size: var(--text-3xl);
   }
 
   .page-greeting > .button {
@@ -385,7 +385,7 @@
   }
 
   .page-greeting h1 {
-    font-size: 30px;
+    font-size: var(--text-2xl);
   }
 
   .page-greeting p {
@@ -650,13 +650,13 @@
   margin: 3px 0 0;
   color: var(--ink-deep);
   font-family: var(--font-ui);
-  font-size: 23px;
+  font-size: var(--text-xl);
   font-weight: 600;
   letter-spacing: -0.02em;
 }
 
 .card-heading h3 {
-  font-size: 20px;
+  font-size: var(--text-xl);
 }
 
 .progress-row {
@@ -1348,14 +1348,14 @@
   background: var(--tint-bright);
   color: var(--ink-tint);
   font-family: var(--font-ui);
-  font-size: 31px;
+  font-size: var(--text-2xl);
   font-weight: 600;
 }
 
 .empty-page h2 {
   margin: 5px 0 7px;
   font-family: var(--font-ui);
-  font-size: 30px;
+  font-size: var(--text-2xl);
   font-weight: 600;
   letter-spacing: -0.03em;
 }
@@ -1387,7 +1387,7 @@
 .empty-modal h3 {
   margin: 16px 0 5px;
   font-family: var(--font-ui);
-  font-size: 24px;
+  font-size: var(--text-xl);
   font-weight: 600;
   letter-spacing: -0.02em;
 }
@@ -1495,7 +1495,7 @@
 .modal-header h2 {
   margin: 3px 0 0;
   font-family: var(--font-ui);
-  font-size: 28px;
+  font-size: var(--text-2xl);
   font-weight: 600;
   letter-spacing: -0.03em;
 }
@@ -1562,7 +1562,7 @@
   }
 
   .modal-header h2 {
-    font-size: 25px;
+    font-size: var(--text-2xl);
   }
 
   .modal-body {
@@ -2035,7 +2035,7 @@
   max-width: 560px;
   margin: 8px 0;
   font-family: var(--font-ui);
-  font-size: 34px;
+  font-size: var(--text-3xl);
   font-weight: 600;
   letter-spacing: -0.025em;
 }
@@ -2144,7 +2144,7 @@
   }
 
   .offline-workspace h1 {
-    font-size: 29px;
+    font-size: var(--text-2xl);
   }
 
   .loading-hero {
@@ -2268,7 +2268,7 @@
   text-align: center;
 }
 .error-fallback h1 {
-  font-size: 1.5rem;
+  font-size: var(--text-xl);
   margin-bottom: 0.5rem;
 }
 .error-fallback p {

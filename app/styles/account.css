@@ -26,14 +26,14 @@
   background: var(--ink-surface);
   color: var(--on-dark);
   font-family: var(--font-ui);
-  font-size: 30px;
+  font-size: var(--text-2xl);
   font-weight: 600;
 }
 
 .account-profile h2 {
   margin: 3px 0 1px;
   font-family: var(--font-ui);
-  font-size: 24px;
+  font-size: var(--text-xl);
   font-weight: 600;
   letter-spacing: -0.02em;
 }
@@ -65,7 +65,7 @@
 .weekly-rhythm-card h2 {
   margin: 4px 0 6px;
   font-family: var(--font-ui);
-  font-size: 27px;
+  font-size: var(--text-2xl);
   font-weight: 600;
   letter-spacing: -0.02em;
 }
