@@ -1,12 +1,9 @@
 "use client";
 
 import {
-  AnimationEvent,
   ChangeEvent,
   FormEvent,
   Fragment,
-  ReactNode,
-  RefObject,
   useCallback,
   useEffect,
   useMemo,
@@ -66,16 +63,7 @@ import {
   oppositeFloridaMentalHealthRuleSetId,
 } from "./lib/floridaMentalHealth";
 import { isExpandedCertificationRuleSetId } from "./lib/expandedCertifications";
-import {
-  buildPath,
-  parseRoute,
-  readNavEntry,
-  routeAt,
-  withNavEntry,
-  type DetailRoute,
-  type Route,
-  type TabName,
-} from "./lib/navigation";
+import { parseRoute, type TabName } from "./lib/navigation";
 import {
   SESSION_ENDED_MESSAGE,
   UNEXPECTED_RESPONSE_MESSAGE,
@@ -91,7 +79,6 @@ import {
   effectiveDateZone,
   todayLocal,
 } from "./lib/dates";
-import { routeTitle } from "./lib/routeTitle";
 import {
   nextRequirementSelection,
   requirementIncompatibilityMessage,
@@ -109,7 +96,12 @@ import {
   type PushDeviceState,
   type ReminderLaunchTarget,
 } from "./lib/webPush";
-import { Icon, type IconName } from "./components/Icon";
+import { Icon } from "./components/Icon";
+import { AppShell } from "./components/AppShell";
+import { isPlainLeftClick } from "./components/NavItem";
+import { PageHeader } from "./components/PageHeader";
+import { RouteAnnouncementContext } from "./components/RouteAnnouncement";
+import { useNavigation } from "./lib/useNavigation";
 import { Modal } from "./components/Modal";
 import {
   DateInput,
@@ -1306,260 +1298,6 @@ function questActionKey(questKey: string) {
 
 const WEEKLY_GOAL_ACTION_KEY = "weeklyGoal";
 
-const HOME_ROUTE: Route = { tab: "home", detail: null };
-
-// What each tab is called, in one place: the two nav bars label their buttons
-// from it and a pushed screen names the screen it returns to from it.
-const TAB_LABELS: Record<TabName, string> = {
-  home: "Home",
-  credentials: "Credentials",
-  history: "History",
-  profile: "Profile",
-};
-
-/**
- * The app's navigation stack, backed by real browser history.
- *
- * Tabs are roots and switching between them *replaces* the entry, so the
- * hardware/edge-swipe back gesture never walks backwards through a trail of
- * tab taps — it leaves the app, which is what iOS does. Detail screens push,
- * so back pops them. Depth tracks only the entries this app created: without
- * it `pop()` on a cold deep link would call `history.back()` into whatever
- * page the user was on before iTrack.
- *
- * A tab switch taken *from* a pushed screen therefore has two jobs, not one:
- * it shows the new tab, and it unwinds the entries the app pushed. Skipping
- * the unwind is what would leave an orphan behind — the entry the push was
- * made from, still sitting under the tab root the switch wrote — and back
- * would then return to the tab the user just left instead of leaving the app.
- * The unwind is a `history.go`, so it lands a beat later; the tab is shown
- * immediately and `pendingTab` finishes the job when the entry arrives.
- */
-function useNavigation() {
-  // Deliberately *not* seeded from `window.location` — the server renders this
-  // component with no window, so it always emits the home root. Seeding the
-  // client differently would make a deep link like /credentials disagree with
-  // the server HTML and throw the hydrated tree away; the mount effect below
-  // adopts the real URL one render later instead.
-  const [route, setRoute] = useState<Route>(HOME_ROUTE);
-  // The same route, readable during an event rather than a render, so nothing
-  // here has to reach for it through a state updater — a `pushState` inside
-  // one would fire twice under StrictMode's double invocation.
-  const routeRef = useRef<Route>(HOME_ROUTE);
-  const depthRef = useRef(0);
-  const pendingTabRef = useRef<TabName | null>(null);
-
-  const applyRoute = useCallback((next: Route) => {
-    routeRef.current = next;
-    setRoute(next);
-  }, []);
-
-  const commitTab = useCallback(
-    (tab: TabName) => {
-      const next: Route = { tab, detail: null };
-      depthRef.current = 0;
-      window.history.replaceState(
-        withNavEntry(window.history.state, { depth: 0, tab }),
-        "",
-        buildPath(next),
-      );
-      applyRoute(next);
-    },
-    [applyRoute],
-  );
-
-  useEffect(() => {
-    const adopt = (state: unknown) => {
-      const entry = readNavEntry(state);
-      depthRef.current = entry?.depth ?? 0;
-      applyRoute(routeAt(window.location.pathname, entry));
-    };
-    adopt(window.history.state);
-    const onPop = (event: PopStateEvent) => {
-      const pending = pendingTabRef.current;
-      if (pending !== null) {
-        pendingTabRef.current = null;
-        commitTab(pending);
-        return;
-      }
-      adopt(event.state);
-    };
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
-  }, [applyRoute, commitTab]);
-
-  const setTab = useCallback(
-    (tab: TabName) => {
-      if (pendingTabRef.current !== null) {
-        // An unwind is already on its way back; a second `go` would travel
-        // past the tab root and out of the app. Re-aim the one in flight.
-        pendingTabRef.current = tab;
-        applyRoute({ tab, detail: null });
-        return;
-      }
-      if (depthRef.current > 0) {
-        pendingTabRef.current = tab;
-        // The tab is shown now and the history is squared away on the popstate
-        // this asks for; until then the URL still names the screen being left.
-        applyRoute({ tab, detail: null });
-        window.history.go(-depthRef.current);
-        return;
-      }
-      commitTab(tab);
-    },
-    [applyRoute, commitTab],
-  );
-
-  const push = useCallback(
-    (detail: DetailRoute) => {
-      const tab = routeRef.current.tab;
-      const depth = depthRef.current + 1;
-      depthRef.current = depth;
-      window.history.pushState(
-        withNavEntry(null, { depth, tab }),
-        "",
-        buildPath({ tab, detail }),
-      );
-      applyRoute({ tab, detail });
-    },
-    [applyRoute],
-  );
-
-  // The screen stays where it is in the stack and swaps which credential it is
-  // showing — what an accepted renewal does, having just replaced the cycle
-  // the screen was opened on with its successor.
-  const replaceDetail = useCallback(
-    (detail: DetailRoute) => {
-      const { tab, detail: current } = routeRef.current;
-      if (!current) return;
-      window.history.replaceState(
-        withNavEntry(window.history.state, {
-          depth: depthRef.current,
-          tab,
-        }),
-        "",
-        buildPath({ tab, detail }),
-      );
-      applyRoute({ tab, detail });
-    },
-    [applyRoute],
-  );
-
-  const pop = useCallback(() => {
-    if (depthRef.current > 0) {
-      window.history.back();
-      return;
-    }
-    // Nothing of ours underneath — a cold deep link. Drop to the tab root
-    // rather than calling `back()` out of the app entirely.
-    commitTab(routeRef.current.tab);
-  }, [commitTab]);
-  const popToRoot = pop; // single-level stack today; alias kept for tab re-tap
-  return { route, setTab, push, replaceDetail, pop, popToRoot };
-}
-
-// The left-hand band the back gesture may start in, how far it then has to
-// travel before letting go means "go back" rather than "never mind", and the
-// vertical travel past which the finger is plainly scrolling instead.
-const EDGE_SWIPE_ZONE = 24;
-const EDGE_SWIPE_COMMIT = 80;
-const EDGE_SWIPE_ABANDON = 40;
-
-/**
- * The platform back gesture: drag from the left edge and the pushed screen
- * comes with the finger; let go past the threshold and it leaves.
- *
- * The listeners sit on the document rather than on the stack because the edge
- * band overlaps the page gutter, and a touch that lands in the gutter never
- * reaches the stack to bubble out of it. The drag is published as a custom
- * property on the stack instead of as React state — see SCREEN STACK in
- * globals.css, where both screens read it — because this runs on every frame
- * of a drag and a re-render per frame is a dropped one.
- */
-function useEdgeSwipeBack(
-  stackRef: RefObject<HTMLDivElement | null>,
-  enabled: boolean,
-  onBack: () => void,
-) {
-  useEffect(() => {
-    const stack = stackRef.current;
-    if (!enabled || !stack) return;
-    let startX = 0;
-    let startY = 0;
-    let tracking = false;
-    const release = () => {
-      tracking = false;
-      stack.classList.remove("screen-dragging");
-    };
-    const rest = () => {
-      release();
-      stack.style.removeProperty("--screen-drag");
-    };
-    const onStart = (event: TouchEvent) => {
-      const touch = event.touches[0];
-      if (!touch) return;
-      // Whatever is on top owns the finger. A sheet covers the whole viewport,
-      // so an edge drag over one belongs to it — without this, pushing a sheet
-      // away would also pop the screen it is sitting on.
-      const target = event.target;
-      if (
-        target instanceof Element &&
-        target.closest(".modal-backdrop") !== null
-      ) {
-        return;
-      }
-      tracking = touch.clientX <= EDGE_SWIPE_ZONE;
-      startX = touch.clientX;
-      startY = touch.clientY;
-      if (tracking) stack.classList.add("screen-dragging");
-    };
-    const onMove = (event: TouchEvent) => {
-      if (!tracking) return;
-      const touch = event.touches[0];
-      if (!touch) return;
-      const dx = touch.clientX - startX;
-      const dy = Math.abs(touch.clientY - startY);
-      if (dy > EDGE_SWIPE_ABANDON && dy > Math.abs(dx)) {
-        rest();
-        return;
-      }
-      // Only forwards: dragging back past the edge would peel the screen off
-      // its own left side, which is not a thing this stack can show.
-      stack.style.setProperty("--screen-drag", `${Math.max(0, dx)}px`);
-    };
-    const onEnd = (event: TouchEvent) => {
-      if (!tracking) return;
-      const dx = event.changedTouches[0]
-        ? event.changedTouches[0].clientX - startX
-        : 0;
-      if (dx > EDGE_SWIPE_COMMIT) {
-        // The offset deliberately stays where the finger left it: the exit
-        // animation reads it as its starting point, so the screen carries on
-        // from the release instead of snapping back and then leaving.
-        release();
-        onBack();
-        return;
-      }
-      rest();
-    };
-    document.addEventListener("touchstart", onStart, { passive: true });
-    document.addEventListener("touchmove", onMove, { passive: true });
-    document.addEventListener("touchend", onEnd);
-    document.addEventListener("touchcancel", onEnd);
-    return () => {
-      document.removeEventListener("touchstart", onStart);
-      document.removeEventListener("touchmove", onMove);
-      document.removeEventListener("touchend", onEnd);
-      document.removeEventListener("touchcancel", onEnd);
-      // The class goes, the offset stays: this teardown runs on the pop that a
-      // committed drag just asked for, and the exit animation about to start
-      // is the one thing still reading that offset. Whatever it leaves behind
-      // is cleared when the animation ends.
-      release();
-    };
-  }, [enabled, onBack, stackRef]);
-}
-
 export function ITrackApp() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const nav = useNavigation();
@@ -1568,6 +1306,7 @@ export function ITrackApp() {
   // no-dependency useCallback) while `nav` itself is a fresh object every
   // render — effects can depend on this without re-running constantly.
   const navigateToTab = nav.setTab;
+  const scrubQuery = nav.scrubQuery;
   const [selectedCredentialId, setSelectedCredentialId] = useState("");
   const [activityOpen, setActivityOpen] = useState(false);
   const [credentialOpen, setCredentialOpen] = useState(false);
@@ -2183,13 +1922,8 @@ export function ITrackApp() {
     if (!workspace || !pendingReminderLaunch) return;
     const controller = new AbortController();
     // Scrub the one-time `?delivery=` token out of the address bar so a
-    // refresh cannot replay it. The path itself belongs to the router now, so
-    // keep whatever route we are on rather than pinning back to "/".
-    window.history.replaceState(
-      window.history.state,
-      "",
-      window.location.pathname,
-    );
+    // refresh cannot replay it; the route itself is not touched.
+    scrubQuery();
     void (async () => {
       try {
         const response = await fetch(
@@ -2266,6 +2000,7 @@ export function ITrackApp() {
     handleSessionEnded,
     navigateToTab,
     pendingReminderLaunch,
+    scrubQuery,
     toast,
     workspace,
   ]);
@@ -2377,95 +2112,11 @@ export function ITrackApp() {
     );
   }, [detailCredentialId, workspace]);
 
-  // app-ux-17 / a11y-03: every route names itself in the tab and hands focus
-  // to its heading, so screen readers hear the move and keyboard users start
-  // at the top. The first paint keeps the browser's own focus (skip link).
-  const announcedRouteRef = useRef<string | null>(null);
-  useEffect(() => {
-    document.title = routeTitle(nav.route, detailCredential?.credentialName ?? null);
-    const key = buildPath(nav.route);
-    if (announcedRouteRef.current === null) {
-      announcedRouteRef.current = key;
-      return;
-    }
-    if (announcedRouteRef.current === key) return;
-    announcedRouteRef.current = key;
-    const heading = document.querySelector<HTMLElement>(
-      nav.route.detail ? ".screen-pushed h1" : ".screen-root h1",
-    );
-    if (!heading) return;
-    if (!heading.hasAttribute("tabindex")) heading.setAttribute("tabindex", "-1");
-    heading.focus({ preventScroll: true });
-  }, [nav.route, detailCredential]);
-
-  // A pop is a navigation, so the route drops the detail the instant it
-  // happens — but the screen still has to leave the stage. Hold the departing
-  // credential for as long as its exit animation is playing.
-  //
-  // Worked out during render rather than in an effect on purpose: an effect
-  // would unmount the screen for a frame and put it straight back, so the exit
-  // would play on a freshly mounted element, which is a flash rather than a
-  // transition. This shape also means *every* pop animates — the back control,
-  // the edge gesture, the browser's own back button — because it watches the
-  // route rather than the thing that moved it.
-  const [lastDetailCredential, setLastDetailCredential] =
-    useState<Credential | null>(null);
-  const [exitingDetail, setExitingDetail] = useState<Credential | null>(null);
-  if (detailCredential !== lastDetailCredential) {
-    setLastDetailCredential(detailCredential);
-    setExitingDetail(detailCredential ? null : lastDetailCredential);
-  }
-  const stagedDetail = detailCredential ?? exitingDetail;
-  const screenStackRef = useRef<HTMLDivElement | null>(null);
-  useEdgeSwipeBack(screenStackRef, Boolean(detailCredential), nav.pop);
-
-  const finishScreenExit = useCallback(
-    (event: AnimationEvent<HTMLDivElement>) => {
-      // Both screen animations end on this element and plenty of others end
-      // inside it; only the screen's own are this handler's business.
-      if (event.target !== event.currentTarget) return;
-      screenStackRef.current?.style.removeProperty("--screen-drag");
-      setExitingDetail(null);
-    },
-    [],
-  );
-
-  // Backstop. An exit that never reports its end — a browser that skips the
-  // animation outright, a tab hidden mid-pop — would otherwise leave the
-  // departing screen parked on top of the app for good.
-  useEffect(() => {
-    if (!exitingDetail) return;
-    const timeout = window.setTimeout(() => setExitingDetail(null), 700);
-    return () => window.clearTimeout(timeout);
-  }, [exitingDetail]);
-
-  // A pushed screen opens at its own top the way a native one does, and the
-  // screen it covered comes back to where it was left. Both share the document
-  // scroller, so this is the only place that memory can live.
-  //
-  // The offset is remembered with the tab it was taken from, because leaving a
-  // pushed screen is not always a pop: a tab tap also clears the detail, and
-  // dropping the History tab 800px down the Credentials list it never showed
-  // is worse than any scroll restoration is worth.
-  const parkedScrollRef = useRef<{ tab: TabName; y: number } | null>(null);
-  useEffect(() => {
-    if (detailCredentialId) {
-      parkedScrollRef.current = { tab: view, y: window.scrollY };
-      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-      return;
-    }
-    const parked = parkedScrollRef.current;
-    parkedScrollRef.current = null;
-    if (parked && parked.tab === view && parked.y) {
-      window.scrollTo({ top: parked.y, left: 0, behavior: "auto" });
-    }
-  }, [detailCredentialId, view]);
-
   // Tapping a credential sets the selection and then pushes, but the URL is an
-  // external system that also moves on its own: a cold deep link, the browser
-  // back button and the iOS back gesture all change which credential is open
+  // external system that also moves on its own: a cold deep link and the browser's
+  // Back and Forward all change which credential is open
   // without any tap. Mirror those into the app-wide selection — "Log
-  // submission" and "Record acceptance" on the pushed screen act on
+  // submission" and "Record acceptance" on the detail screen act on
   // `selectedCredential` — by subscribing to the same events the router reads,
   // so the write lands in an event callback instead of a render-driven effect.
   useEffect(() => {
@@ -2481,10 +2132,11 @@ export function ITrackApp() {
   // A link naming a credential that was deleted (or never existed) falls back
   // to the list root instead of stranding the user on an empty screen. The
   // workspace guard matters: without it a cold /credentials/<id> load would
-  // bounce off before the credential it names had arrived.
+  // bounce off before the credential it names had arrived. It REPLACES the
+  // entry: the dead URL must not stay in history for Back to land on.
   useEffect(() => {
     if (!workspace || !detailCredentialId || detailCredential) return;
-    navigateToTab("credentials");
+    navigateToTab("credentials", { replace: true });
   }, [detailCredential, detailCredentialId, navigateToTab, workspace]);
 
   const selectedNremtNextRule = useMemo(
@@ -3605,11 +3257,11 @@ export function ITrackApp() {
       if (result.id) {
         setSelectedCredentialId(result.id);
         // Accepting a renewal ends the cycle the screen was opened on and
-        // starts its successor. A pushed detail screen is addressed by URL, so
-        // it has to be re-pointed at the new cycle or it would sit there
-        // showing the finished one while everything else had moved on.
+        // starts its successor. The detail screen is addressed by URL, so it
+        // is re-pointed at the new cycle — replacing the entry, so Back does
+        // not return to the finished one.
         if (nav.route.detail) {
-          nav.replaceDetail({ kind: "credential", id: result.id });
+          nav.openCredential(result.id, { replace: true });
         }
       }
     }
@@ -4015,10 +3667,9 @@ export function ITrackApp() {
       credentialActionKey(credential.id),
     );
     if (!result) return;
-    // No nav.pop() here: the refetched workspace no longer lists the
+    // No navigation here: the refetched workspace no longer lists the
     // credential, so the "deleted (or never existed)" effect above already
-    // bounces a pushed detail to /credentials. Popping as well would queue a
-    // second history move behind the one that effect asks for.
+    // replaces a routed detail with /credentials.
     toast.show({
       message:
         "Credential archived. Find it under History → Archived credentials.",
@@ -4070,11 +3721,12 @@ export function ITrackApp() {
     if (!result) return;
     setCredentialDeletion(null);
     setSelectedCredentialId("");
-    // Deleting from the History tab's archived list has no pushed detail for
-    // the effect above to bounce, so land on the list explicitly; when a
-    // detail was pushed the two calls collapse into one move (setTab re-aims
-    // an unwind that is already in flight).
-    navigateToTab("credentials");
+    // Deleting from the Activity log's archived list has no routed detail for
+    // the effect above to replace, so land on the list explicitly — pushed,
+    // so Back still returns to the log. From a detail the URL no longer
+    // resolves: replace it (usually the effect already has, and this is the
+    // same-URL no-op).
+    navigateToTab("credentials", { replace: Boolean(nav.route.detail) });
   }
 
   async function savePersonalTask(input: {
@@ -4212,30 +3864,18 @@ export function ITrackApp() {
     );
   }
 
-  const userName = workspace?.user.displayName ?? "Professional";
-
   /*
-   * Tapping the tab you are already on is not a navigation. On this platform
-   * it means "take me back to the start of this tab": it pops whatever is
-   * stacked on it, and with nothing stacked it returns the tab to its own top.
-   * The scroll is left at `auto` so the stylesheet's smooth behaviour applies
-   * and the reduced-motion block can still take it away.
+   * A tab is a link to its root URL. useNavigation applies the one rule of
+   * its own: the same URL is not a navigation (it scrolls the tab to its
+   * top); from a detail, the tab's root is pushed like any other screen.
    */
   function selectTab(tab: TabName) {
-    if (tab !== view) {
-      nav.setTab(tab);
-      return;
-    }
-    if (nav.route.detail) {
-      nav.popToRoot();
-      return;
-    }
-    window.scrollTo({ top: 0 });
+    nav.setTab(tab);
   }
 
   /*
    * The two shortcuts Home's cards take. Both re-point the app at the
-   * credential, because the pushed screen, the log sheet and the submission
+   * credential, because the detail screen, the log sheet and the submission
    * actions all read that one selection; the log sheet additionally remembers
    * what the selection was and puts it back if the sheet closes without
    * saving, so a shortcut taken and abandoned leaves no trace.
@@ -4251,38 +3891,33 @@ export function ITrackApp() {
       (credential) => credential.id === id,
     );
     if (target && isOpenCycle(target)) setSelectedCredentialId(id);
-    nav.push({ kind: "credential", id });
+    nav.openCredential(id);
   }
 
   function logCreditsFor(id: string) {
     openActivityEntryFor(id);
   }
 
+  // What every PageHeader reads: the route it names the document after, the
+  // credential a detail is showing, and how many navigations have happened
+  // since mount (0 on first paint, so the skip link keeps the first Tab stop).
+  const announcement = useMemo(
+    () => ({
+      route: nav.route,
+      credentialName: detailCredential?.credentialName ?? null,
+      navigations: nav.navigations,
+    }),
+    [nav.route, nav.navigations, detailCredential],
+  );
+
   return (
-    <div className="app-shell" data-app-root>
-      <a className="skip-link" href="#main-content">
-        Skip to content
-      </a>
-      <DesktopSidebar
-        view={view}
-        onView={selectTab}
-        onAdd={openActivityEntry}
-      />
-
-      <div className="app-stage">
-        <header className="mobile-header">
-          <Brand />
-          <button
-            className="avatar-button"
-            type="button"
-            aria-label="Open account"
-            onClick={() => nav.setTab("profile")}
-          >
-            {firstName(userName).slice(0, 1).toUpperCase()}
-          </button>
-        </header>
-
-        <main id="main-content" className="main-content">
+    <div className="app-root" data-app-root>
+      <RouteAnnouncementContext value={announcement}>
+        <AppShell
+          activeTab={view}
+          onNavigate={selectTab}
+          onLogActivity={openActivityEntry}
+        >
           {!isOnline ? (
             <div className="offline-banner" role="status">
               <span>
@@ -4337,229 +3972,206 @@ export function ITrackApp() {
             </div>
           ) : null}
 
-          <div className="screen-stack" ref={screenStackRef}>
-            <div
-              className={`screen screen-root${
-                detailCredential ? " screen-under" : ""
-              }`}
-              inert={Boolean(detailCredential)}
-              aria-hidden={detailCredential ? "true" : undefined}
-            >
-              {!workspace ? (
-                !isOnline ? (
-                  <OfflineWorkspace />
-                ) : workspaceLoadFailed ? (
-                  <WorkspaceLoadFailure
-                    status={workspaceLoadFailureStatus}
-                    message={error}
-                    onRetry={() => void loadWorkspace()}
-                  />
-                ) : (
-                  <LoadingDashboard />
-                )
-              ) : view === "home" ? (
-                <TodayView
-                  workspace={workspace}
-                  credential={selectedCredential}
-                  isOnline={isOnline}
-                  highlightedReminderKey={highlightedReminderKey}
-                  onAddActivity={openActivityEntry}
-                  onAddCredential={openCredentialSetup}
-                  onViewRecords={() => nav.setTab("history")}
-                  onOpenCredential={openCredentialDetail}
-                  onLogCreditsFor={logCreditsFor}
-                  onSubmit={openSubmission}
-                  onAccept={openAcceptance}
-                  onReminders={() => {
-                    setError("");
-                    setRemindersOpen(true);
-                  }}
-                  onReminderState={(reminder, status) =>
-                    void setReminderState(reminder, status)
-                  }
-                  onAddReminderToCalendar={(reminder) =>
-                    void addReminderToCalendar(reminder)
-                  }
-                  onToggleTask={toggleTask}
-                  onAddPersonalTask={(credential) => {
-                    setError("");
-                    setTaskEditor({ credential, task: null });
-                  }}
-                  onEditPersonalTask={(credential, task) => {
-                    setError("");
-                    setTaskEditor({ credential, task });
-                  }}
-                  onRestorePersonalTask={(task) =>
-                    void restorePersonalTask(task)
-                  }
-                  taskActionsDisabled={!isOnline}
-                  pendingActionKeys={pendingActionKeys}
-                  onClaimQuest={(quest) => void claimWeeklyQuest(quest)}
-                  onRequirementApplicability={(requirement, status) =>
-                    selectedCredential
-                      ? void setRequirementApplicability(
-                          selectedCredential.id,
-                          requirement,
-                          status,
-                        )
-                      : undefined
-                  }
-                  onDentalCheckpoint={(requirement, completed, evidenceNote) =>
-                    selectedCredential
-                      ? void saveDentalCheckpoint(
-                          selectedCredential.id,
-                          requirement,
-                          completed,
-                          evidenceNote,
-                        )
-                      : undefined
-                  }
-                />
-              ) : view === "credentials" ? (
-                <CredentialsView
-                  credentials={workspace.credentials}
-                  selectedId={selectedCredential?.id ?? ""}
-                  onSelect={openCredentialDetail}
-                  onAdd={openCredentialSetup}
-                />
-              ) : view === "history" ? (
-                <RecordsView
-                  activities={workspace.activities}
-                  archivedActivities={workspace.archivedActivities}
-                  credentials={workspace.credentials}
-                  archivedCredentials={workspace.archivedCredentials}
-                  onAdd={openActivityEntry}
-                  onEdit={(activity) => {
-                    setError("");
-                    setEditingActivity(activity);
-                  }}
-                  onRestore={(activity) => void restoreActivityRecord(activity)}
-                  onRestoreCredential={(credential) =>
-                    void restoreCredentialRecord(credential)
-                  }
-                  onDeleteCredential={(credential) => {
-                    setError("");
-                    setCredentialDeletion(credential);
-                  }}
-                  actionsDisabled={!isOnline}
-                  pendingActionKeys={pendingActionKeys}
-                  onEvidence={(activity) => void openEvidence(activity)}
-                  onAllocate={(activity) => {
-                    setError("");
-                    const existingIds = new Set(
-                      allocationsFor(activity).map(
-                        (allocation) => allocation.credentialId,
-                      ),
-                    );
-                    const firstEligible = workspace.credentials.find(
-                      (credential) =>
-                        isOpenCycle(credential) &&
-                        !existingIds.has(credential.id),
-                    );
-                    setAllocationCredentialId(firstEligible?.id ?? "");
-                    setAllocationActivity(activity);
-                  }}
-                  onClassify={(activity, allocation) => {
-                    setError("");
-                    setClassificationRepair({ activity, allocation });
-                  }}
-                />
-              ) : (
-                <AccountView
-                  workspace={workspace}
-                  onReminders={() => {
-                    setError("");
-                    setRemindersOpen(true);
-                  }}
-                  onWeeklyGoal={(weeklyGoal) =>
-                    void updateWeeklyGoal(weeklyGoal)
-                  }
-                  weeklyGoalPending={pendingActionKeys.includes(
-                    WEEKLY_GOAL_ACTION_KEY,
-                  )}
-                  isStandalone={isStandalone}
-                  installAvailable={Boolean(installPrompt)}
-                  onInstall={() => void handleInstallApp()}
-                  onAddAllCheckIns={() => void addAllCheckInsToCalendar()}
-                  pushDeviceState={pushDeviceState}
-                  pushPending={pushPending}
-                  isOnline={isOnline}
-                  onEnablePhoneAlerts={() => void handleEnablePhoneAlerts()}
-                  onDisablePhoneAlerts={() => void handleDisablePhoneAlerts()}
-                  onTestPhoneAlert={() => void handleTestPhoneAlert()}
-                  onRefreshPhoneAlerts={() => void refreshPushDeviceState()}
-                />
-              )}
-            </div>
-            {stagedDetail ? (
-              <div
-                className={`screen screen-pushed${
-                  detailCredential ? "" : " screen-exiting"
-                }`}
-                onAnimationEnd={finishScreenExit}
-              >
-                <CredentialDetailScreen
-                  credential={stagedDetail}
-                  onEdit={() => {
-                    setError("");
-                    setCredentialEditor(stagedDetail);
-                  }}
-                  onArchive={() => void archiveCredentialRecord(stagedDetail)}
-                  onDelete={() => {
-                    setError("");
-                    setCredentialDeletion(stagedDetail);
-                  }}
-                  activities={workspace?.activities ?? []}
-                  isOnline={isOnline}
-                  backLabel={TAB_LABELS[view]}
-                  onBack={nav.pop}
-                  onSubmit={openSubmission}
-                  onAccept={openAcceptance}
-                  onReminders={() => {
-                    setError("");
-                    setRemindersOpen(true);
-                  }}
-                  onAddToCalendar={(credential) =>
-                    void addCredentialToCalendar(credential)
-                  }
-                  onRequirementApplicability={(
+          {!workspace ? (
+            !isOnline ? (
+              <OfflineWorkspace />
+            ) : workspaceLoadFailed ? (
+              <WorkspaceLoadFailure
+                status={workspaceLoadFailureStatus}
+                message={error}
+                onRetry={() => void loadWorkspace()}
+              />
+            ) : (
+              <LoadingDashboard />
+            )
+          ) : nav.route.detail ? (
+            detailCredential ? (
+              <CredentialDetailScreen
+                credential={detailCredential}
+                onEdit={() => {
+                  setError("");
+                  setCredentialEditor(detailCredential);
+                }}
+                onArchive={() => void archiveCredentialRecord(detailCredential)}
+                onDelete={() => {
+                  setError("");
+                  setCredentialDeletion(detailCredential);
+                }}
+                activities={workspace.activities}
+                isOnline={isOnline}
+                onBreadcrumb={() => nav.setTab("credentials")}
+                onSubmit={openSubmission}
+                onAccept={openAcceptance}
+                onReminders={() => {
+                  setError("");
+                  setRemindersOpen(true);
+                }}
+                onAddToCalendar={(credential) =>
+                  void addCredentialToCalendar(credential)
+                }
+                onRequirementApplicability={(
+                  credentialId,
+                  requirement,
+                  status,
+                ) =>
+                  void setRequirementApplicability(
                     credentialId,
                     requirement,
                     status,
-                  ) =>
-                    void setRequirementApplicability(
-                      credentialId,
-                      requirement,
-                      status,
-                    )
-                  }
-                  onDentalCheckpoint={(
+                  )
+                }
+                onDentalCheckpoint={(
+                  credentialId,
+                  requirement,
+                  completed,
+                  evidenceNote,
+                ) =>
+                  void saveDentalCheckpoint(
                     credentialId,
                     requirement,
                     completed,
                     evidenceNote,
-                  ) =>
-                    void saveDentalCheckpoint(
-                      credentialId,
+                  )
+                }
+                actionsDisabled={!isOnline}
+                pendingActionKeys={pendingActionKeys}
+              />
+            ) : null
+          ) : view === "home" ? (
+            <TodayView
+              workspace={workspace}
+              credential={selectedCredential}
+              isOnline={isOnline}
+              highlightedReminderKey={highlightedReminderKey}
+              onAddActivity={openActivityEntry}
+              onAddCredential={openCredentialSetup}
+              onViewRecords={() => nav.setTab("history")}
+              onOpenCredential={openCredentialDetail}
+              onLogCreditsFor={logCreditsFor}
+              onSubmit={openSubmission}
+              onAccept={openAcceptance}
+              onReminders={() => {
+                setError("");
+                setRemindersOpen(true);
+              }}
+              onReminderState={(reminder, status) =>
+                void setReminderState(reminder, status)
+              }
+              onAddReminderToCalendar={(reminder) =>
+                void addReminderToCalendar(reminder)
+              }
+              onToggleTask={toggleTask}
+              onAddPersonalTask={(credential) => {
+                setError("");
+                setTaskEditor({ credential, task: null });
+              }}
+              onEditPersonalTask={(credential, task) => {
+                setError("");
+                setTaskEditor({ credential, task });
+              }}
+              onRestorePersonalTask={(task) =>
+                void restorePersonalTask(task)
+              }
+              taskActionsDisabled={!isOnline}
+              pendingActionKeys={pendingActionKeys}
+              onClaimQuest={(quest) => void claimWeeklyQuest(quest)}
+              onRequirementApplicability={(requirement, status) =>
+                selectedCredential
+                  ? void setRequirementApplicability(
+                      selectedCredential.id,
+                      requirement,
+                      status,
+                    )
+                  : undefined
+              }
+              onDentalCheckpoint={(requirement, completed, evidenceNote) =>
+                selectedCredential
+                  ? void saveDentalCheckpoint(
+                      selectedCredential.id,
                       requirement,
                       completed,
                       evidenceNote,
                     )
-                  }
-                  actionsDisabled={!isOnline}
-                  pendingActionKeys={pendingActionKeys}
-                />
-              </div>
-            ) : null}
-          </div>
-        </main>
-      </div>
-
-      <MobileNavigation
-        view={view}
-        onView={selectTab}
-        onAdd={openActivityEntry}
-      />
+                  : undefined
+              }
+            />
+          ) : view === "credentials" ? (
+            <CredentialsView
+              credentials={workspace.credentials}
+              selectedId={selectedCredential?.id ?? ""}
+              onSelect={openCredentialDetail}
+              onAdd={openCredentialSetup}
+            />
+          ) : view === "history" ? (
+            <RecordsView
+              activities={workspace.activities}
+              archivedActivities={workspace.archivedActivities}
+              credentials={workspace.credentials}
+              archivedCredentials={workspace.archivedCredentials}
+              onAdd={openActivityEntry}
+              onEdit={(activity) => {
+                setError("");
+                setEditingActivity(activity);
+              }}
+              onRestore={(activity) => void restoreActivityRecord(activity)}
+              onRestoreCredential={(credential) =>
+                void restoreCredentialRecord(credential)
+              }
+              onDeleteCredential={(credential) => {
+                setError("");
+                setCredentialDeletion(credential);
+              }}
+              actionsDisabled={!isOnline}
+              pendingActionKeys={pendingActionKeys}
+              onEvidence={(activity) => void openEvidence(activity)}
+              onAllocate={(activity) => {
+                setError("");
+                const existingIds = new Set(
+                  allocationsFor(activity).map(
+                    (allocation) => allocation.credentialId,
+                  ),
+                );
+                const firstEligible = workspace.credentials.find(
+                  (credential) =>
+                    isOpenCycle(credential) &&
+                    !existingIds.has(credential.id),
+                );
+                setAllocationCredentialId(firstEligible?.id ?? "");
+                setAllocationActivity(activity);
+              }}
+              onClassify={(activity, allocation) => {
+                setError("");
+                setClassificationRepair({ activity, allocation });
+              }}
+            />
+          ) : (
+            <AccountView
+              workspace={workspace}
+              onReminders={() => {
+                setError("");
+                setRemindersOpen(true);
+              }}
+              onWeeklyGoal={(weeklyGoal) =>
+                void updateWeeklyGoal(weeklyGoal)
+              }
+              weeklyGoalPending={pendingActionKeys.includes(
+                WEEKLY_GOAL_ACTION_KEY,
+              )}
+              isStandalone={isStandalone}
+              installAvailable={Boolean(installPrompt)}
+              onInstall={() => void handleInstallApp()}
+              onAddAllCheckIns={() => void addAllCheckInsToCalendar()}
+              pushDeviceState={pushDeviceState}
+              pushPending={pushPending}
+              isOnline={isOnline}
+              onEnablePhoneAlerts={() => void handleEnablePhoneAlerts()}
+              onDisablePhoneAlerts={() => void handleDisablePhoneAlerts()}
+              onTestPhoneAlert={() => void handleTestPhoneAlert()}
+              onRefreshPhoneAlerts={() => void refreshPushDeviceState()}
+            />
+          )}
+        </AppShell>
+      </RouteAnnouncementContext>
 
       {activityOpen && workspace ? (
         <Modal
@@ -6732,151 +6344,6 @@ export function ITrackApp() {
   );
 }
 
-function Brand() {
-  return (
-    <div className="brand" aria-label="iTrack">
-      <span className="brand-mark" aria-hidden="true">
-        i
-      </span>
-      <span>iTrack</span>
-    </div>
-  );
-}
-
-function DesktopSidebar({
-  view,
-  onView,
-  onAdd,
-}: {
-  view: TabName;
-  onView: (view: TabName) => void;
-  onAdd: () => void;
-}) {
-  return (
-    <aside className="desktop-sidebar">
-      <Brand />
-      <nav aria-label="Primary navigation">
-        <NavButton
-          active={view === "home"}
-          label={TAB_LABELS.home}
-          icon="home"
-          onClick={() => onView("home")}
-        />
-        <NavButton
-          active={view === "credentials"}
-          label={TAB_LABELS.credentials}
-          icon="layoutGrid"
-          onClick={() => onView("credentials")}
-        />
-        <NavButton
-          active={view === "history"}
-          label={TAB_LABELS.history}
-          icon="listRows"
-          onClick={() => onView("history")}
-        />
-        <NavButton
-          active={view === "profile"}
-          label={TAB_LABELS.profile}
-          icon="userCircle"
-          onClick={() => onView("profile")}
-        />
-      </nav>
-      {/*
-       * Never inert. Before a first credential exists the sheet opens on its
-       * own empty state, which explains why credits need a cycle and routes to
-       * credential setup; a dead button explains nothing.
-       */}
-      <button className="sidebar-add" type="button" onClick={onAdd}>
-        <Icon name="plus" size={18} />
-        Log activity
-      </button>
-      <div className="sidebar-coach">
-        <span>Weekly rhythm</span>
-        <strong>Small updates. Calm renewals.</strong>
-        <p>Log proof while it’s easy to find.</p>
-      </div>
-    </aside>
-  );
-}
-
-function MobileNavigation({
-  view,
-  onView,
-  onAdd,
-}: {
-  view: TabName;
-  onView: (view: TabName) => void;
-  onAdd: () => void;
-}) {
-  return (
-    <nav className="mobile-nav" aria-label="Primary navigation">
-      <NavButton
-        active={view === "home"}
-        label={TAB_LABELS.home}
-        icon="home"
-        onClick={() => onView("home")}
-      />
-      <NavButton
-        active={view === "credentials"}
-        label={TAB_LABELS.credentials}
-        icon="layoutGrid"
-        onClick={() => onView("credentials")}
-      />
-      {/*
-       * Never inert: with no credential yet the sheet opens on its own empty
-       * state, which explains the gap and routes to credential setup. A dead
-       * primary button explains nothing.
-       */}
-      <button
-        className="mobile-add"
-        type="button"
-        aria-label="Log completed learning"
-        onClick={onAdd}
-      >
-        <Icon name="plus" size={24} />
-      </button>
-      <NavButton
-        active={view === "history"}
-        label={TAB_LABELS.history}
-        icon="listRows"
-        onClick={() => onView("history")}
-      />
-      <NavButton
-        active={view === "profile"}
-        label={TAB_LABELS.profile}
-        icon="userCircle"
-        onClick={() => onView("profile")}
-      />
-    </nav>
-  );
-}
-
-function NavButton({
-  active,
-  label,
-  icon,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  icon: IconName;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      className={`nav-button ${active ? "active" : ""}`}
-      type="button"
-      aria-current={active ? "page" : undefined}
-      onClick={onClick}
-    >
-      <span className="nav-symbol">
-        <Icon name={icon} size={20} />
-      </span>
-      <span>{label}</span>
-    </button>
-  );
-}
-
 function TodayView({
   workspace,
   credential,
@@ -6946,10 +6413,10 @@ function TodayView({
   if (!credential) {
     return (
       <div className="view-stack">
-        <PageGreeting
+        <PageHeader
           eyebrow="Your renewal companion"
           title={`Welcome, ${firstName(workspace.user.displayName)}.`}
-          body="Let’s turn your license or certification requirements into a clear, manageable plan."
+          lede="Let’s turn your license or certification requirements into a clear, manageable plan."
         />
         <section className="onboarding-hero">
           <div className="onboarding-copy">
@@ -7075,15 +6542,15 @@ function TodayView({
 
   return (
     <div className="view-stack">
-      <PageGreeting
+      <PageHeader
         eyebrow={
           workspace.user.isDemo
             ? "Private preview workspace"
             : "Your credential companion"
         }
         title={`Good ${dayPart()}, ${firstName(workspace.user.displayName)}.`}
-        body="Here’s the clearest next step toward a calm deadline."
-        action={
+        lede="Here’s the clearest next step toward a calm deadline."
+        actions={
           <button
             className="button button-primary desktop-only"
             type="button"
@@ -7976,11 +7443,11 @@ function CredentialsView({
     "";
   return (
     <div className="view-stack">
-      <PageGreeting
+      <PageHeader
         eyebrow="Credentials"
         title="Every renewal, one clear place."
-        body="Requirements, sources, cycles, and submission status stay connected."
-        action={
+        lede="Requirements, sources, cycles, and submission status stay connected."
+        actions={
           <button className="button button-primary" type="button" onClick={onAdd}>
             <Icon name="plus" size={16} />
             Add credential
@@ -8071,18 +7538,16 @@ function CredentialsView({
 }
 
 /*
- * The credential detail is a *pushed* screen, not a pane: it owns a history
- * entry, so the iOS back gesture, the browser back button and a refresh all
- * behave the way the platform promises. Its header carries the iOS pairing of
- * a back control labelled with the screen it returns to and this screen's own
- * title.
+ * The credential detail is a routed screen: /credentials/:id is an ordinary
+ * history entry, so the browser's Back and Forward and a refresh all land
+ * here on their own. Its header is a PageHeader whose eyebrow is a breadcrumb
+ * naming the URL parent — Credentials, whichever screen opened it.
  */
 function CredentialDetailScreen({
   credential,
   activities,
   isOnline,
-  backLabel,
-  onBack,
+  onBreadcrumb,
   onSubmit,
   onAccept,
   onReminders,
@@ -8098,11 +7563,9 @@ function CredentialDetailScreen({
   credential: Credential;
   activities: Activity[];
   isOnline: boolean;
-  // The tab this screen was pushed from, which is not always the Credentials
-  // list: Home opens credentials too, and the control has to name the screen
-  // the user will actually land back on.
-  backLabel: string;
-  onBack: () => void;
+  // The breadcrumb's client-side navigation to /credentials. A plain left
+  // click is intercepted; anything else is the browser's (it is a real link).
+  onBreadcrumb: () => void;
   onSubmit: () => void;
   onAccept: () => void;
   onReminders: () => void;
@@ -8160,13 +7623,25 @@ function CredentialDetailScreen({
     openTaskCount;
   return (
     <div className="view-stack">
-      <header className="push-header">
-        <button type="button" className="push-back" onClick={onBack}>
-          <Icon name="chevronLeft" size={22} />
-          <span>{backLabel}</span>
-        </button>
-        <h1 className="push-title">{credential.credentialName}</h1>
-      </header>
+      <PageHeader
+        eyebrow={
+          // The breadcrumb is a real link the client router intercepts
+          // (isPlainLeftClick → useNavigation), exactly like NavItem's tabs;
+          // next/link would put a second router beside the one history writer.
+          // eslint-disable-next-line @next/next/no-html-link-for-pages -- client-side navigation is already provided by useNavigation
+          <a
+            href="/credentials"
+            onClick={(event) => {
+              if (!isPlainLeftClick(event)) return;
+              event.preventDefault();
+              onBreadcrumb();
+            }}
+          >
+            Credentials
+          </a>
+        }
+        title={credential.credentialName}
+      />
       <section className="credential-detail">
         <div className="credential-detail-header">
           <div>
@@ -8614,11 +8089,11 @@ function RecordsView({
   ).length;
   return (
     <div className="view-stack">
-      <PageGreeting
+      <PageHeader
         eyebrow="Activity record"
         title="Your learning, organized as you go."
-        body="Credits earned and proof status stay visible before renewal season."
-        action={
+        lede="Credits earned and proof status stay visible before renewal season."
+        actions={
           <button className="button button-primary" type="button" onClick={onAdd}>
             <Icon name="plus" size={16} />
             Log activity
@@ -9837,10 +9312,10 @@ function AccountView({
 
   return (
     <div className="view-stack">
-      <PageGreeting
+      <PageHeader
         eyebrow="Profile"
         title="A renewal system that stays yours."
-        body="Your identity, momentum, and product safeguards in one place."
+        lede="Your identity, momentum, and product safeguards in one place."
       />
       <div className="account-grid">
         <section className="card account-profile">
@@ -11169,29 +10644,6 @@ function RequirementPicker({
           : ""}
       </small>
     </fieldset>
-  );
-}
-
-function PageGreeting({
-  eyebrow,
-  title,
-  body,
-  action,
-}: {
-  eyebrow: string;
-  title: string;
-  body: string;
-  action?: ReactNode;
-}) {
-  return (
-    <header className="page-greeting">
-      <div>
-        <span className="page-eyebrow">{eyebrow}</span>
-        <h1>{title}</h1>
-        <p>{body}</p>
-      </div>
-      {action}
-    </header>
   );
 }
 

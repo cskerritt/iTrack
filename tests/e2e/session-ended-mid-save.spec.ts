@@ -40,7 +40,7 @@ async function expectSessionEndedState(page: Page, sheet: Locator) {
   await expect(
     page.getByRole("heading", { name: "Your sign-in needs to be refreshed." }),
   ).toBeVisible();
-  const stage = page.locator(".screen-stack");
+  const stage = page.locator("#main-content");
   await expect(stage).not.toHaveAttribute("aria-hidden", "true");
   expect(await stage.evaluate((element) => (element as HTMLElement).inert)).toBe(false);
   // The page-level banner belongs to a loaded workspace; nothing else is

@@ -3,8 +3,8 @@ import { expect, freshIdentity, test } from "./fixtures";
 
 test("Profile names the signed-in person, and the weekly target is a labelled radio group of finger-sized rows", async ({ page, app }) => {
   await app.goto("/profile");
-  await expect(page).toHaveTitle("Profile · iTrack");
-  await expect(app.tab("Profile")).toHaveAttribute("aria-current", "page");
+  await expect(page).toHaveTitle("Account · iTrack");
+  await expect(app.tab("Account")).toHaveAttribute("aria-current", "page");
   await expect(page.getByText("Signed in as")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Alex Morgan", exact: true })).toBeVisible();
   const target = page.getByRole("group", { name: "Weekly action target" });

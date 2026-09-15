@@ -640,22 +640,26 @@ test("iTrack product contract", async (t) => {
       );
     }
 
-    assert.match(html, /aria-label="iTrack"/i);
+    // The brand is visible text, not an aria-label on a div (a11y-12).
+    assert.match(html, /<span class="brand[^"]*"><span class="brand-i"[^>]*>i<\/span>Track<\/span>/i);
     assert.match(html, /Skip to content/i);
     assert.match(html, /aria-label="Primary navigation"/i);
+    // Both navs are server-rendered (CSS hides one per viewport): the rail's
+    // four labels and the bottom nav's short third label.
     assert.match(html, />Home<\/span>/i);
     assert.match(html, />Credentials<\/span>/i);
-    assert.match(html, />History<\/span>/i);
-    assert.match(html, />Profile<\/span>/i);
+    assert.match(html, />Activity log<\/span>/i);
+    assert.match(html, />Account<\/span>/i);
+    assert.match(html, />Activity<\/span>/i, "the bottom nav is server-rendered with its short label");
     assert.match(html, /aria-label="Loading iTrack"/i);
     assert.match(html, /Loading your renewal workspace/i);
   });
 
   await t.test("serves the app shell at every routed tab path", async () => {
-    // The nav stack writes real URLs (app/lib/navigation.ts), so a refresh or
-    // a deep link can land on any of these. Each has to return the same shell
-    // rather than a 404, and each has to hydrate against the home root — the
-    // server has no window, so the tab is only adopted client-side.
+    // Every screen is a URL (app/lib/navigation.ts), so a refresh or a deep
+    // link can land on any of these. Each has to return the same shell rather
+    // than a 404, and each has to hydrate against the home root — the server
+    // has no window, so the route is adopted client-side one render later.
     for (const path of [
       "/",
       "/credentials",

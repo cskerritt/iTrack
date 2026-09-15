@@ -20,35 +20,18 @@ export const ICON_SHAPES = {
       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
     </>
   ),
-  home: (
+  home: <path d="M4 11.5 12 5l8 6.5V19a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z" />,
+  credentials: (
     <>
-      <path d="M3 10a2 2 0 0 1 .71-1.53l7-6a2 2 0 0 1 2.58 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-      <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
+      <rect x="4" y="5" width="16" height="14" rx="2" />
+      <path d="M8 10h8M8 14h5" />
     </>
   ),
-  layoutGrid: (
+  activityLog: <path d="M5 6h14M5 12h14M5 18h9" />,
+  account: (
     <>
-      <rect x="3" y="3" width="7" height="7" rx="1.4" />
-      <rect x="14" y="3" width="7" height="7" rx="1.4" />
-      <rect x="3" y="14" width="7" height="7" rx="1.4" />
-      <rect x="14" y="14" width="7" height="7" rx="1.4" />
-    </>
-  ),
-  listRows: (
-    <>
-      <path d="M8 5h13" />
-      <path d="M8 12h13" />
-      <path d="M8 19h13" />
-      <path d="M3 5h.01" />
-      <path d="M3 12h.01" />
-      <path d="M3 19h.01" />
-    </>
-  ),
-  userCircle: (
-    <>
-      <circle cx="12" cy="12" r="9.4" />
-      <circle cx="12" cy="10" r="3" />
-      <path d="M6.6 19.9V19a2 2 0 0 1 2-2h6.8a2 2 0 0 1 2 2v.9" />
+      <circle cx="12" cy="9" r="3.5" />
+      <path d="M5 20a7 7 0 0 1 14 0" />
     </>
   ),
   plus: (
@@ -84,7 +67,6 @@ export const ICON_SHAPES = {
     </>
   ),
   chevronDown: <path d="m6 9 6 6 6-6" />,
-  chevronLeft: <path d="M15 18l-6-6 6-6" />,
   chevronRight: <path d="m9 18 6-6-6-6" />,
   refresh: (
     <>

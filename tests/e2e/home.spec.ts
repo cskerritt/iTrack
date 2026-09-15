@@ -23,19 +23,22 @@ test("Home is the current tab, names the credential, and scores it", async ({ pa
   app.expectNoErrors();
 });
 
-test("View plan pushes the credential and the browser back button returns Home", async ({ page, app }) => {
+test("View plan opens the credential and the browser back button returns Home with focus on its heading", async ({ page, app }) => {
   await app.goto("/");
   await page.getByRole("button", { name: "View plan" }).click();
   await expect(page).toHaveURL(/\/credentials\/[^/]+$/);
-  await expect(page.locator("h1.push-title")).toHaveText("Licensed Clinical Social Worker");
+  const detailHeading = page
+    .getByRole("main")
+    .getByRole("heading", { level: 1, name: "Licensed Clinical Social Worker", exact: true });
+  await expect(detailHeading).toBeVisible();
+  // a11y-03 / a11y-M-02: every navigation lands focus on the new heading.
+  await expect(detailHeading).toBeFocused();
   await expect(page).toHaveTitle("Licensed Clinical Social Worker · iTrack");
   await page.goBack();
   await expect(page).toHaveURL(/^https?:\/\/[^/]+\/$/);
   await expect(page).toHaveTitle("Home · iTrack");
-  // The pushed screen stays mounted while it slides out (screen-exiting,
-  // unmounted on animationend), and it names the credential twice; the
-  // Home heading is unique only once it has left.
-  await expect(page.locator("h1.push-title")).toHaveCount(0);
+  await expect(page.getByRole("main").getByRole("heading", { level: 1 })).toBeFocused();
+  // One screen is mounted at a time, so the hero heading is unique at once.
   await expect(
     page.getByRole("heading", { name: "Licensed Clinical Social Worker", exact: true }),
   ).toBeVisible();

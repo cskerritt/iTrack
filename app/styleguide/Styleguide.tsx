@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Button } from "../components/Button";
 import { useToast } from "../components/Toast";
 import { Icon } from "../components/Icon";
 import { Modal } from "../components/Modal";
+import { PageHeader } from "../components/PageHeader";
 import {
   Checkbox,
   DateInput,
@@ -46,14 +47,11 @@ export function Styleguide() {
   const [secondOpen, setSecondOpen] = useState(false);
   const [formErrors, setFormErrors] = useState<{ name?: string }>({});
   const toast = useToast();
-  useEffect(() => {
-    document.title = "Styleguide · iTrack";
-  }, []);
 
   return (
     <div className="app-root" data-app-root>
       <main id="main-content" className="styleguide">
-        <h1>Styleguide</h1>
+        <PageHeader title="Styleguide" documentTitle="Styleguide · iTrack" />
         <section aria-labelledby="sg-buttons">
           <h2 id="sg-buttons">Buttons</h2>
           <Button variant="primary">Primary</Button>

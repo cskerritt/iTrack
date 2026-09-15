@@ -19,13 +19,13 @@ test("a credential is renamed, archived, restored from History and deleted by ty
   await editor.locator('input[name="credentialName"]').fill("Renamed credential");
   await editor.getByRole("button", { name: "Save changes" }).click();
   await expect(editor).toHaveCount(0);
-  await expect(page.locator("h1.push-title")).toHaveText("Renamed credential");
+  await expect(page.getByRole("main").getByRole("heading", { level: 1, name: "Renamed credential", exact: true })).toBeVisible();
 
-  // Archive → the pushed detail bounces to /credentials, which is empty for
+  // Archive → the routed detail no longer resolves and is replaced by /credentials, which is empty for
   // this identity, and Home no longer names the credential either.
   await page.getByRole("button", { name: "Archive credential" }).click();
   await expect(page).toHaveURL(/\/credentials$/);
-  await expect(page.locator("h1.push-title")).toHaveCount(0);
+  await expect(page.getByRole("main").getByRole("heading", { level: 1, name: "Renamed credential", exact: true })).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Your credentials" })).toHaveCount(0);
   await expect(page.getByText("Add your first credential")).toBeVisible();
   await app.tab("Home").click();

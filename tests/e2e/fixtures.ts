@@ -79,7 +79,7 @@ export type AppFixture = {
   expectNoErrors(): void;
   openLog(): Promise<Locator>;
   dialog(name: string): Locator;
-  tab(name: "Home" | "Credentials" | "History" | "Profile"): Locator;
+  tab(name: "Home" | "Credentials" | "Activity log" | "Account"): Locator;
   workspace(): Promise<Workspace>;
   act<T = { ok: boolean; id: string }>(
     action: string,
@@ -177,10 +177,10 @@ function buildApp(page: Page, context: BrowserContext): AppFixture {
       expect(errors, errors.join("\n")).toEqual([]);
     },
     async openLog() {
-      // ≥ 821px: the sidebar's "Log activity" (Home's desktop-only
-      // "Log completed learning" call to action also matches, hence
-      // .first()); ≤ 820px: the mobile bar's button labelled
-      // "Log completed learning". getByRole skips whichever is display:none.
+      // ≥ 821px: the rail's "Log activity" (Home's desktop-only "Log completed
+      // learning" call to action also matches, hence .first()); ≤ 820px: the
+      // bottom nav's button labelled "Log activity". getByRole skips whichever
+      // is display:none. The regex is unchanged: both labels still exist.
       await page
         .getByRole("button", {
           name: /^(Log activity|Log completed learning)$/,
@@ -197,12 +197,14 @@ function buildApp(page: Page, context: BrowserContext): AppFixture {
       return page.getByRole("dialog", { name });
     },
     tab(name) {
-      // Both the sidebar and the mobile bar are labelled "Primary
-      // navigation"; only the one that is not display:none at the current
-      // viewport is matched.
+      // Both the rail and the bottom nav are labelled "Primary navigation";
+      // only the one that is not display:none at the current viewport is
+      // matched. Tabs are links (spec §5.1). The phone's third link shows
+      // "Activity" but is named "Activity log" (aria-label), so one name
+      // serves both viewports.
       return page
         .getByRole("navigation", { name: "Primary navigation" })
-        .getByRole("button", { name, exact: true });
+        .getByRole("link", { name, exact: true });
     },
     async workspace() {
       const response = await context.request.get("/api/workspace", {

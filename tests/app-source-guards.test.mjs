@@ -106,13 +106,42 @@ test("sign out is a POST form to /auth/logout, not a link (app-ux-02)", () => {
   );
 });
 
-test("the parked screen is inert while a credential is pushed, and routes set document.title (app-ux-09, a11y-01, app-ux-17, a11y-03)", () => {
+test("routes set document.title from routeTitle() (app-ux-17, a11y-03)", () => {
   const sources = readClientSources();
-  assert.ok(
-    sources.some(({ source }) => /screen screen-root[\s\S]{0,200}?inert=\{Boolean\(detailCredential\)\}/.test(source)),
-    "screen-root carries inert={Boolean(detailCredential)}",
-  );
   assert.ok(sources.some(({ source }) => /document\.title = routeTitle\(/.test(source)), "document.title is set from routeTitle()");
+});
+
+// spec §5.1: navigation is ordinary page routing. Nothing is parked, pushed,
+// staged or swiped any more, and no screen or hook may bring the stack back
+// under its old names (a11y-01, a11y-13, app-ux-16).
+test("the screen stack is gone: no parked screen, no pushed screen, no edge swipe (a11y-01, a11y-13, app-ux-16)", () => {
+  let scanned = 0;
+  for (const { file, source } of readClientSources()) {
+    scanned += 1;
+    assert.doesNotMatch(
+      source,
+      /screen-(?:pushed|root|under|exiting)|push-title|push-header|useEdgeSwipeBack|useSheetDragDismiss|sheet-grabber|mobile-nav|desktop-sidebar/,
+      `${file}: the push stack is gone; screens are routed inside AppShell`,
+    );
+  }
+  assert.ok(scanned > 0, "scanned the client sources");
+});
+
+// One history writer. Every pushState/replaceState/back/go lives in
+// app/lib/useNavigation.ts, so the same-URL rule, the scroll memory, the
+// navigation counter and the fragment-jump guard cannot be bypassed.
+test("history is written only by useNavigation", () => {
+  let scanned = 0;
+  for (const { file, source } of readClientSources()) {
+    if (file.startsWith("api/") || file === "lib/useNavigation.ts") continue;
+    scanned += 1;
+    assert.doesNotMatch(
+      source,
+      /\b(?:pushState|replaceState|history\.back|history\.go)\b/,
+      `${file}: writes history directly — go through useNavigation()`,
+    );
+  }
+  assert.ok(scanned > 0, "scanned the client sources");
 });
 
 // tests/isolation.test.mjs probes every workspace action by name from
@@ -135,14 +164,17 @@ test("every workspace dispatch label is in WORKSPACE_ACTIONS (critic-08)", () =>
 // every refactor without catching a regression (architecture-03), and Wave 2
 // retired all 196 of them. Every tests/*.test.mjs is walked except the two
 // generic walkers (this file and tests/protected-identifiers.test.mjs), so
-// the pattern cannot come back in a new file either.
+// the pattern cannot come back in a new file either. From Wave 3 that covers
+// app/styles/ and app/components/ too; tests/contrast-audit.test.mjs is exempt
+// because it imports tools/contrast-audit.mjs, which walks app/**/*.css itself.
 test("no test file reads client source text (architecture-03)", () => {
   let scanned = 0;
   for (const name of readdirSync(new URL("./", import.meta.url))) {
     if (
       !/\.test\.mjs$/.test(name) ||
       name === "app-source-guards.test.mjs" ||
-      name === "protected-identifiers.test.mjs"
+      name === "protected-identifiers.test.mjs" ||
+      name === "contrast-audit.test.mjs"
     ) {
       continue;
     }
@@ -150,7 +182,7 @@ test("no test file reads client source text (architecture-03)", () => {
     const suite = readFileSync(new URL(`./${name}`, import.meta.url), "utf8");
     assert.doesNotMatch(
       suite,
-      /\.\.\/app\/(ITrackApp\.tsx|globals\.css|layout\.tsx)/,
+      /\.\.\/app\/(ITrackApp\.tsx|globals\.css|layout\.tsx|styles\/|components\/)/,
       `${name}: a readFile of a client source file is back — prove the behaviour in tests/e2e/ or a unit test instead`,
     );
     assert.doesNotMatch(
