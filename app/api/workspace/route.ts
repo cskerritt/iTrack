@@ -38,6 +38,7 @@ import {
   validatePushEndpoint as validateBrowserPushEndpoint,
 } from "../../lib/rfc8291Push";
 import { loadReminderData } from "../../lib/reminders";
+import { activeCycleId, groupCycles, seriesKey } from "../../lib/cycles";
 import {
   findRequirementIncompatibility,
   REQUIREMENT_INCOMPATIBILITIES,
@@ -5161,6 +5162,18 @@ export async function getWorkspace(
     createDraftStorageNamespace(identity.userId),
   ]);
 
+  // The active cycle is derived over live rows only — an archived credential
+  // (Task 8) is neither Home's target nor a member of a visible series — in
+  // the user's stored reminder zone, the same "today" the scheduler uses.
+  const liveRows = credentialResult.results.filter(
+    (credential) => !credential.archivedAt,
+  );
+  const today = todayLocal(reminderData.reminderPreferences.timeZone);
+  const activeId = activeCycleId(liveRows, today);
+  const seriesByKey = new Map(
+    groupCycles(liveRows, today).map((series) => [series.seriesId, series]),
+  );
+
   const mappedCredentials = credentialResult.results.map((credential) => {
     const totalRequired = Number(credential.totalRequired);
     const totalLoggedUnits = Number(credential.totalEarned);
@@ -5204,6 +5217,14 @@ export async function getWorkspace(
       tasks: tasksByCredential.get(credential.id) ?? [],
       archivedTasks:
         archivedTasksByCredential.get(credential.id) ?? [],
+      isCurrentCycle:
+        seriesByKey.get(seriesKey(credential))?.current?.id ===
+        credential.id,
+      previousCycleIds: (
+        seriesByKey.get(seriesKey(credential))?.previous ?? []
+      )
+        .filter((previous) => previous.id !== credential.id)
+        .map((previous) => previous.id),
     };
   });
 
@@ -5230,6 +5251,7 @@ export async function getWorkspace(
     },
     progression,
     catalog,
+    activeCycleId: activeId,
     // Archived credentials leave Home and Credentials; History shows them
     // (Task 10). Both lists keep the same shape, so the packet route and
     // Task 9's actions address either by id. `archivedCredentials` must stay

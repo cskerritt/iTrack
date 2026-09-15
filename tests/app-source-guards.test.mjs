@@ -181,3 +181,22 @@ test("no file under app/ computes today in UTC (critic-01)", () => {
     );
   }
 });
+
+// One spelling of "open cycle" (app-ux-04, app-ux-18). The client used to
+// hand-roll `status !== "renewed"` at fourteen sites while the Home hero and
+// the detail stat, which had no such guard, counted down renewed cycles.
+// `isOpenCycle` / `isClosedCycle` in app/lib/cycles.ts are now the only place
+// the status vocabulary is compared, so a new screen cannot grow a fifteenth.
+test("the open-cycle test is spelled out only in app/lib/cycles.ts (app-ux-04, app-ux-18)", () => {
+  let scanned = 0;
+  for (const { file, source } of readClientSources()) {
+    if (file === "lib/cycles.ts") continue;
+    scanned += 1;
+    assert.doesNotMatch(
+      source,
+      /!==\s*["']renewed["']/,
+      `${file}: compare through isOpenCycle() from app/lib/cycles.ts, not against "renewed"`,
+    );
+  }
+  assert.ok(scanned > 0, "scanned the client sources");
+});

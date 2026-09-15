@@ -4,6 +4,7 @@ import {
   AnimationEvent,
   ChangeEvent,
   FormEvent,
+  Fragment,
   ReactNode,
   RefObject,
   useCallback,
@@ -54,6 +55,13 @@ import {
   requirementKind,
   requirementStatus,
 } from "./lib/readiness";
+import {
+  cycleCountdown,
+  groupCycles,
+  isClosedCycle,
+  isOpenCycle,
+  selectDefaultCredentialId,
+} from "./lib/cycles";
 import {
   oppositeFloridaMentalHealthRuleSetId,
 } from "./lib/floridaMentalHealth";
@@ -164,6 +172,8 @@ type Credential = {
   acceptedAt?: string | null;
   acceptanceReference?: string | null;
   nextCredentialId?: string | null;
+  isCurrentCycle?: boolean;
+  previousCycleIds?: string[];
   sourceUrl?: string | null;
   sourceTitle?: string | null;
   ruleReviewStatus?: string | null;
@@ -336,6 +346,7 @@ type Workspace = {
   progression: Progression;
   catalog: CatalogRule[];
   credentials: Credential[];
+  activeCycleId?: string | null;
   archivedCredentials: Credential[];
   activities: Activity[];
   archivedActivities: Activity[];
@@ -455,6 +466,12 @@ function formatFileSize(bytes: number) {
 
 function daysUntil(value: string) {
   return daysUntilDate(value, Date.now());
+}
+
+// Like daysUntil: the clock read lives here, in a plain function outside any
+// component body, so react-hooks/purity does not see Date.now() in render.
+function credentialCountdown(credential: Credential) {
+  return cycleCountdown(credential, Date.now());
 }
 
 // Default cycle window for a new credential, anchored on the caller's local
@@ -1872,7 +1889,7 @@ export function ITrackApp() {
         workspace?.credentials.find(
           (candidate) =>
             candidate.id === preselectCredentialId &&
-            candidate.status !== "renewed",
+            isOpenCycle(candidate),
         ) ?? null;
       if (preselected) setSelectedCredentialId(preselected.id);
       let restored = false;
@@ -1883,7 +1900,7 @@ export function ITrackApp() {
           const credential = workspace.credentials.find(
             (candidate) =>
               candidate.id === saved?.credentialId &&
-              candidate.status !== "renewed",
+              isOpenCycle(candidate),
           );
           if (saved) {
             setActivityDraft({
@@ -2021,18 +2038,13 @@ export function ITrackApp() {
       setWorkspaceLoadFailed(false);
       setWorkspaceLoadFailureStatus(null);
       setError("");
-      setSelectedCredentialId((current) => {
-        if (
-          current &&
-          data.credentials.some((credential) => credential.id === current)
-        ) {
-          return current;
-        }
-        return [...data.credentials].sort(
-          (a, b) =>
-            new Date(a.deadline).getTime() - new Date(b.deadline).getTime(),
-        )[0]?.id ?? "";
-      });
+      setSelectedCredentialId((current) =>
+        selectDefaultCredentialId(
+          data.credentials,
+          current,
+          data.activeCycleId ?? null,
+        ),
+      );
       return true;
     } catch (loadError) {
       if (superseded()) return false;
@@ -2324,7 +2336,7 @@ export function ITrackApp() {
         const credential = workspace.credentials.find(
           (candidate) =>
             candidate.id === result.target?.credentialId &&
-            candidate.status !== "renewed",
+            isOpenCycle(candidate),
         );
         const reminder = workspace.reminders.find(
           (candidate) =>
@@ -2472,7 +2484,9 @@ export function ITrackApp() {
       workspace.credentials.find(
         (credential) => credential.id === selectedCredentialId,
       ) ??
-      workspace.credentials[0] ??
+      workspace.credentials.find(
+        (credential) => credential.id === workspace.activeCycleId,
+      ) ??
       null
     );
   }, [selectedCredentialId, workspace]);
@@ -2660,7 +2674,7 @@ export function ITrackApp() {
     );
     return workspace.credentials.filter(
       (credential) =>
-        credential.status !== "renewed" &&
+        isOpenCycle(credential) &&
         !existingIds.has(credential.id) &&
         activityDateFitsCredential(
           allocationActivity.completionDate,
@@ -2683,7 +2697,7 @@ export function ITrackApp() {
 
   const activityCredentials =
     workspace?.credentials.filter(
-      (credential) => credential.status !== "renewed",
+      (credential) => isOpenCycle(credential),
     ) ?? [];
   const activityCredential =
     activityCredentials.find(
@@ -4346,7 +4360,12 @@ export function ITrackApp() {
    * later write would otherwise land on top of this one.
    */
   function openCredentialDetail(id: string) {
-    setSelectedCredentialId(id);
+    // A renewed cycle is viewed by URL without re-pointing the app-wide
+    // selection, so Home still shows the current cycle after Back.
+    const target = workspace?.credentials.find(
+      (credential) => credential.id === id,
+    );
+    if (target && isOpenCycle(target)) setSelectedCredentialId(id);
     nav.push({ kind: "credential", id });
   }
 
@@ -4549,7 +4568,7 @@ export function ITrackApp() {
                     );
                     const firstEligible = workspace.credentials.find(
                       (credential) =>
-                        credential.status !== "renewed" &&
+                        isOpenCycle(credential) &&
                         !existingIds.has(credential.id),
                     );
                     setAllocationCredentialId(firstEligible?.id ?? "");
@@ -7336,7 +7355,7 @@ function TodayView({
       ) &&
       activity.evidenceStatus === "missing",
   ).length;
-  const deadlineDays = daysUntil(credential.deadline);
+  const countdown = credentialCountdown(credential);
   const highlightedReminder = workspace.reminders.find(
     (reminder) => reminder.key === highlightedReminderKey,
   );
@@ -7442,19 +7461,40 @@ function TodayView({
             </button>
           </div>
 
-          <div className="deadline-row">
-            <div className="deadline-number">
-              <strong>{Math.abs(deadlineDays)}</strong>
-              <span>
-                {deadlineDays < 0
-                  ? "days overdue"
-                  : isCompliancePeriodCredential(credential)
-                    ? "days to compliance"
-                    : "days to renewal"}
-              </span>
-            </div>
+          <div
+            className={
+              countdown.kind === "closed"
+                ? "deadline-row deadline-row-closed"
+                : "deadline-row"
+            }
+          >
+            {countdown.kind === "closed" ? (
+              <div className="deadline-number deadline-number-closed">
+                <strong>
+                  {isCompliancePeriodCredential(credential)
+                    ? "Completed"
+                    : "Renewed"}
+                </strong>
+                <span>{formatDate(countdown.acceptedAt)}</span>
+              </div>
+            ) : (
+              <div className="deadline-number">
+                <strong>{Math.abs(countdown.days)}</strong>
+                <span>
+                  {countdown.kind === "overdue"
+                    ? "days overdue"
+                    : isCompliancePeriodCredential(credential)
+                      ? "days to compliance"
+                      : "days to renewal"}
+                </span>
+              </div>
+            )}
             <div className="deadline-detail">
-              <span>Due {formatDate(credential.deadline)}</span>
+              <span>
+                {countdown.kind === "closed"
+                  ? `Cycle ended ${formatDate(credential.deadline)}`
+                  : `Due ${formatDate(credential.deadline)}`}
+              </span>
               {credential.totalRequired > 0 ? (
                 <>
                   <div className="progress-track progress-track-light">
@@ -7688,7 +7728,7 @@ function TodayView({
                 unit={credential.unitLabel}
                 requirement={requirement}
                 onApplicability={
-                  credential.status !== "renewed"
+                  isOpenCycle(credential)
                     ? (status) =>
                         onRequirementApplicability(requirement, status)
                     : undefined
@@ -7946,7 +7986,7 @@ function TodayView({
                   Reconnect for packet
                 </button>
               )}
-              {credential.status !== "renewed" ? (
+              {isOpenCycle(credential) ? (
                 <button
                   className="task-add-button"
                   type="button"
@@ -8028,7 +8068,7 @@ function TodayView({
                       Saving…
                     </span>
                   ) : task.isPersonal &&
-                    credential.status !== "renewed" ? (
+                    isOpenCycle(credential) ? (
                     <button
                       className="task-edit-button"
                       type="button"
@@ -8206,6 +8246,33 @@ function TodayView({
   );
 }
 
+function cycleStatusLabel(credential: Credential) {
+  if (isClosedCycle(credential)) return "history";
+  if (
+    credential.status === "submitted" &&
+    isIsc2AutomaticRenewalCredential(credential)
+  ) {
+    return "awaiting ISC2 renewal";
+  }
+  if (
+    credential.status === "submitted" &&
+    isCompliancePeriodCredential(credential)
+  ) {
+    return "compliance recorded";
+  }
+  return credential.status;
+}
+
+function cycleCountdownLabel(credential: Credential) {
+  const countdown = credentialCountdown(credential);
+  if (countdown.kind === "closed") {
+    return `Renewed ${formatDate(countdown.acceptedAt)}`;
+  }
+  return `${Math.abs(countdown.days)} days ${
+    countdown.kind === "overdue" ? "overdue" : "left"
+  }`;
+}
+
 function CredentialsView({
   credentials,
   selectedId,
@@ -8217,12 +8284,25 @@ function CredentialsView({
   onSelect: (id: string) => void;
   onAdd: () => void;
 }) {
+  // One row per credential: its current cycle (or, for a credential whose
+  // every cycle is renewed, the newest of them) with the renewed cycles folded
+  // underneath. Grouping is by series; which member is current comes from the
+  // server's `isCurrentCycle` when the payload carries it, so the list agrees
+  // with Home even when the device and stored zones straddle midnight.
+  const series = groupCycles(credentials, todayLocal(deviceTimeZone())).map(
+    (entry) => ({
+      ...entry,
+      current:
+        entry.members.find((member) => member.isCurrentCycle) ??
+        entry.current,
+    }),
+  );
   // The highlight marks the credential the rest of the app is pointed at —
   // Today's card, the log sheet's default — not a detail pane beside the list,
   // which now lives on its own pushed screen.
   const activeId =
     credentials.find((credential) => credential.id === selectedId)?.id ??
-    credentials[0]?.id ??
+    series[0]?.current?.id ??
     "";
   return (
     <div className="view-stack">
@@ -8242,35 +8322,67 @@ function CredentialsView({
           className="credential-picker credential-list"
           aria-label="Your credentials"
         >
-          {credentials.map((credential) => (
-            <button
-              key={credential.id}
-              className={credential.id === activeId ? "active" : ""}
-              type="button"
-              onClick={() => onSelect(credential.id)}
-            >
-              <span>
-                <strong>{credential.credentialName}</strong>
-                <small>
-                  {credential.jurisdiction} ·{" "}
-                  {credential.status === "renewed"
-                    ? "history"
-                    : credential.status === "submitted" &&
-                        isIsc2AutomaticRenewalCredential(credential)
-                      ? "awaiting ISC2 renewal"
-                      : credential.status === "submitted" &&
-                          isCompliancePeriodCredential(credential)
-                        ? "compliance recorded"
-                        : credential.status}
-                </small>
-              </span>
-              <span className="picker-progress">
-                {credential.totalRequired > 0
-                  ? `${credentialProgress(credential)}%`
-                  : `${readinessScore(credential)}% ready`}
-              </span>
-            </button>
-          ))}
+          {series.map((entry) => {
+            const lead = entry.current ?? entry.previous[0];
+            if (!lead) return null;
+            const pastCycles = entry.previous.filter(
+              (previous) => previous.id !== lead.id,
+            );
+            return (
+              <Fragment key={entry.seriesId}>
+                <button
+                  className={lead.id === activeId ? "active" : ""}
+                  type="button"
+                  onClick={() => onSelect(lead.id)}
+                >
+                  <span>
+                    <strong>{lead.credentialName}</strong>
+                    <small>
+                      {lead.jurisdiction} · {cycleStatusLabel(lead)}
+                      {isOpenCycle(lead)
+                        ? ` · Due ${formatDate(lead.deadline)} · ${cycleCountdownLabel(lead)}`
+                        : ` · ${cycleCountdownLabel(lead)}`}
+                    </small>
+                  </span>
+                  <span className="picker-progress">
+                    {lead.totalRequired > 0
+                      ? `${credentialProgress(lead)}%`
+                      : `${readinessScore(lead)}% ready`}
+                  </span>
+                </button>
+                {pastCycles.length ? (
+                  <details className="archived-items previous-cycles">
+                    <summary>
+                      <span>
+                        {pastCycles.length} previous{" "}
+                        {pastCycles.length === 1 ? "cycle" : "cycles"}
+                      </span>
+                      <span className="disclosure-chevron">
+                        <Icon name="chevronDown" size={16} />
+                      </span>
+                    </summary>
+                    <div className="archived-item-list">
+                      {pastCycles.map((previous) => (
+                        <button
+                          className="archived-item"
+                          type="button"
+                          key={previous.id}
+                          onClick={() => onSelect(previous.id)}
+                        >
+                          <strong>Renewed {formatDate(previous.acceptedAt)}</strong>
+                          <small>
+                            {formatDate(previous.cycleStart)} –{" "}
+                            {formatDate(previous.deadline)} ·{" "}
+                            {credentialProgress(previous)}%
+                          </small>
+                        </button>
+                      ))}
+                    </div>
+                  </details>
+                ) : null}
+              </Fragment>
+            );
+          })}
           <button className="add-picker" type="button" onClick={onAdd}>
             <Icon name="plus" size={15} />
             Add another credential
@@ -8342,6 +8454,7 @@ function CredentialDetailScreen({
   actionsDisabled: boolean;
   pendingActionKeys: readonly string[];
 }) {
+  const detailCountdown = credentialCountdown(credential);
   const credentialActivities = activities.filter((activity) =>
     allocationsFor(activity).some(
       (allocation) => allocation.credentialId === credential.id,
@@ -8475,7 +8588,7 @@ function CredentialDetailScreen({
             </button>
           )}
         </section>
-        {credential.status !== "renewed" ? (
+        {isOpenCycle(credential) ? (
           <div className="credential-utility-actions">
             <button
               className="reminder-setting-link"
@@ -8536,19 +8649,30 @@ function CredentialDetailScreen({
             <strong>{readinessScore(credential)}%</strong>
             <small>credits + checklist</small>
           </div>
-          <div>
-            <span>
-              {daysUntil(credential.deadline) < 0
-                ? "Past deadline"
-                : "Time left"}
-            </span>
-            <strong>{Math.abs(daysUntil(credential.deadline))}</strong>
-            <small>
-              {daysUntil(credential.deadline) < 0
-                ? "days overdue"
-                : "days"}
-            </small>
-          </div>
+          {detailCountdown.kind === "closed" ? (
+            <div>
+              <span>Cycle ended</span>
+              <strong>{formatDate(credential.deadline)}</strong>
+              <small>
+                {isCompliancePeriodCredential(credential)
+                  ? "Completed"
+                  : "Renewed"}{" "}
+                {formatDate(detailCountdown.acceptedAt)}
+              </small>
+            </div>
+          ) : (
+            <div>
+              <span>
+                {detailCountdown.kind === "overdue"
+                  ? "Past deadline"
+                  : "Time left"}
+              </span>
+              <strong>{Math.abs(detailCountdown.days)}</strong>
+              <small>
+                {detailCountdown.kind === "overdue" ? "days overdue" : "days"}
+              </small>
+            </div>
+          )}
         </div>
         <div className="detail-section">
           <div className="card-heading">
@@ -8595,7 +8719,7 @@ function CredentialDetailScreen({
               unit={credential.unitLabel}
               requirement={requirement}
               onApplicability={
-                credential.status !== "renewed"
+                isOpenCycle(credential)
                   ? (status) =>
                       onRequirementApplicability(
                         credential.id,
@@ -8800,8 +8924,8 @@ function RecordsView({
     allocation: ActivityAllocation,
   ) => void;
 }) {
-  const credentialStatusById = new Map(
-    credentials.map((credential) => [credential.id, credential.status]),
+  const openCredentialIds = new Set(
+    credentials.filter(isOpenCycle).map((credential) => credential.id),
   );
   const recordIsMutable = (activity: Activity) =>
     activityIsMutable(activity, credentials);
@@ -8919,9 +9043,7 @@ function RecordsView({
                                 } classification`}
                               {" · excluded from progress"}
                             </small>
-                            {credentialStatusById.get(
-                              allocation.credentialId,
-                            ) !== "renewed" ? (
+                            {openCredentialIds.has(allocation.credentialId) ? (
                               <button
                                 className="proof-action allocation-action"
                                 type="button"
@@ -8938,7 +9060,7 @@ function RecordsView({
                         ) : credentials.some(
                             (credential) =>
                               credential.id === allocation.credentialId &&
-                              credential.status !== "renewed",
+                              isOpenCycle(credential),
                           ) ? (
                           <button
                             className="proof-action allocation-action"
@@ -8956,7 +9078,7 @@ function RecordsView({
                 )}
                 {credentials.some(
                   (credential) =>
-                    credential.status !== "renewed" &&
+                    isOpenCycle(credential) &&
                     !allocationsFor(activity).some(
                       (allocation) =>
                         allocation.credentialId === credential.id,
