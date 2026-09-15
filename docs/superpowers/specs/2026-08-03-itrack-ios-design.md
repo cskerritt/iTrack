@@ -2,6 +2,8 @@
 
 **Date:** 2026-08-03 · **Status:** Approved by Chris · **Tracking:** TC-002-08-03-26-ios-appstore-app
 
+> Retired 2026-09-10 — the iOS shell is withdrawn; superseded by docs/superpowers/specs/2026-09-10-itrack-web-redesign-design.md.
+
 ## Goal
 
 A private iOS app for Chris (single user) distributed via TestFlight that delivers

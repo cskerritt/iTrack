@@ -4,6 +4,8 @@
 
 **Goal:** Make the iTrack web app (served into the Capacitor iPhone shell) navigate and look like a native iOS app: history-backed nav stack with push/pop transitions and edge-swipe back, restructured tabs (Home / Credentials / **Log** / History / Profile), and a full re-theme from forest green to iOS-native neutral + blue.
 
+> Retired 2026-09-10 — the iOS shell is withdrawn; superseded by docs/superpowers/specs/2026-09-10-itrack-web-redesign-design.md.
+
 **Architecture:** All UI lives in `app/ITrackApp.tsx` (~10.2k lines) + `app/globals.css` (~6.2k lines, two-tier token system). We add a small pure routing module (`app/lib/navigation.ts`) + a `useNavigation` hook wired to `history.pushState`/`popstate`, render pushed screens in a stack container with CSS transforms, and remap token *values* (not names, two exceptions) in both `:root` blocks.
 
 **Tech Stack:** Next 16 via vinext/vite on Cloudflare worker, React 19, plain CSS tokens (no Tailwind in app CSS), `node --test` against the built worker (`npm test` = build + test), Playwright available via webapp-testing skill.

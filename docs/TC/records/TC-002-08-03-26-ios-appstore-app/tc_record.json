@@ -2,10 +2,10 @@
   "tc_id": "TC-002-08-03-26-ios-appstore-app",
   "parent_tc": null,
   "title": "Private iOS app (TestFlight): shell + push + widgets + doc scanner",
-  "status": "implemented",
+  "status": "retired",
   "priority": "high",
   "created": "2026-08-03T21:38:34+00:00",
-  "updated": "2026-08-04T03:59:49+00:00",
+  "updated": "2026-09-15T01:34:03+00:00",
   "created_by": "Claude",
   "project": "iTrack",
   "description": {
@@ -172,6 +172,21 @@
           "reason": null
         }
       ]
+    },
+    {
+      "revision_id": "R7",
+      "timestamp": "2026-09-15T01:34:03+00:00",
+      "author": "Claude",
+      "summary": "status: implemented -> retired (iOS shell withdrawn 2026-09-10; superseded by the web redesign spec)",
+      "field_changes": [
+        {
+          "field": "status",
+          "action": "set",
+          "old_value": "implemented",
+          "new_value": "retired",
+          "reason": "web-only pivot"
+        }
+      ]
     }
   ],
   "sub_tcs": [],
@@ -220,7 +235,7 @@
     "project": "iTrack",
     "created_by": "Claude",
     "last_modified_by": "Claude",
-    "last_modified": "2026-08-04T03:59:49+00:00",
+    "last_modified": "2026-09-15T01:34:03+00:00",
     "estimated_effort": null
   }
 }

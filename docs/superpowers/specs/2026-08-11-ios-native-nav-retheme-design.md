@@ -3,6 +3,8 @@
 **Date:** 2026-08-11
 **Status:** Approved by Chris (approach + design outline approved in session)
 
+> Retired 2026-09-10 — the iOS shell is withdrawn; superseded by docs/superpowers/specs/2026-09-10-itrack-web-redesign-design.md.
+
 ## Problem
 
 The iPhone app (Capacitor shell over this web app) feels like a website, not an app.
