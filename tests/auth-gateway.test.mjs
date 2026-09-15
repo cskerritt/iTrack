@@ -173,6 +173,9 @@ test("gateway routes by path and Accept, never by User-Agent", async (t) => {
       "/robots.txt", "/sitemap.xml", "/favicon.ico", "/manifest.webmanifest", "/icons/x.png",
       "/og.png", "/offline.html", "/offline", "/sw.js", "/assets/app.js", "/_next/static/chunk.js", "/ocr/worker.min.js",
       "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png",
+      // Self-hosted type (spec §5.1): a font fetch carries no session and
+      // sends Accept: */*, which the HTML branch would answer with a 303.
+      "/fonts/bricolage-grotesque-700-00000000.woff2",
     ]) {
       const response = await get(base, pathname);
       assert.equal(response.status, 200, pathname);

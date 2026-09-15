@@ -2281,3 +2281,29 @@
   justify-content: center;
   flex-wrap: wrap;
 }
+
+/* ===== LEGACY DISPLAY FACE — deleted in Wave 4 ===== */
+/*
+ * The un-extracted screens keep their own type rules until Wave 4 rewrites
+ * them; this one rule puts the display face on their titles, numerals and
+ * the brand so the Wave 3 screenshots carry the identity (spec §5.1 Type,
+ * mockup: display 700/800 with -0.02em tracking). The `body` prefix is what
+ * makes it win: each of these selectors restates `font-family: var(--font-ui)`
+ * in a screen file imported after this one, which at equal specificity would
+ * take the last word. The brand is the one element on every first paint at
+ * weight 800 — it is what keeps the preloaded 800 face in use
+ * (app/lib/fonts.ts FONT_PRELOADS).
+ */
+body .page-greeting h1,
+body .push-title,
+body .credential-detail-header h2,
+body .modal-header h2,
+body .deadline-number strong,
+body .readiness-ring strong,
+body .onboarding-copy h2,
+body .offline-workspace h1,
+body .error-fallback h1,
+body .brand {
+  font-family: var(--font-display);
+  letter-spacing: var(--tracking-display);
+}

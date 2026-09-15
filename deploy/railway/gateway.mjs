@@ -36,7 +36,7 @@ const PUBLIC_EXACT = new Set([
   "/icon-512.png",
   "/apple-touch-icon.png",
 ]);
-const PUBLIC_PREFIXES = ["/icons/", "/assets/", "/_next/static/", "/ocr/"];
+const PUBLIC_PREFIXES = ["/icons/", "/assets/", "/_next/static/", "/ocr/", "/fonts/"];
 const PUBLIC_CACHE_CONTROL = "public, max-age=300";
 // Query keys the service worker's notificationclick opens `/` with. A bare
 // `/` is the landing page; `/` carrying one of these is an app deep link and

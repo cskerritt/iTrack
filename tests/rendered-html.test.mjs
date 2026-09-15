@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, stat } from "node:fs/promises";
 import { register } from "node:module";
 import test from "node:test";
+import { FONT_PRELOADS } from "../.test-build/fonts.js";
 
 const testCloudflareEnv = {};
 globalThis.__LICENSE_LANTERN_TEST_ENV__ = testCloudflareEnv;
@@ -623,6 +624,21 @@ test("iTrack product contract", async (t) => {
       /<meta name="theme-color" content="#0f0e0b" media="\(prefers-color-scheme: dark\)"\/>/i,
     );
     assert.match(html, /<meta name="color-scheme" content="light dark"\/>/i);
+    // The four first-paint faces are preloaded from RootLayout
+    // (app/lib/fonts.ts FONT_PRELOADS). React 19 hoists <link rel="preload">
+    // and may reorder attributes, so each attribute is matched on its own;
+    // `crossorigin` is what lets the CORS-mode font fetch reuse the preload.
+    for (const href of FONT_PRELOADS) {
+      const escaped = href.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+      assert.match(
+        html,
+        new RegExp(
+          `<link(?=[^>]*\\brel="preload")(?=[^>]*\\bhref="${escaped}")(?=[^>]*\\bas="font")(?=[^>]*\\btype="font/woff2")(?=[^>]*\\bcrossorigin)[^>]*>`,
+          "i",
+        ),
+        `${href} is preloaded`,
+      );
+    }
 
     assert.match(html, /aria-label="iTrack"/i);
     assert.match(html, /Skip to content/i);
