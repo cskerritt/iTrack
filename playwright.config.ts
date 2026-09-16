@@ -4,8 +4,8 @@ import { defineConfig, devices } from "@playwright/test";
 // localhost; fresh identities via tests/e2e/fixtures.ts). Not part of
 // `npm test`: run `npm run test:e2e` with the dev server up (it is started
 // for you if the port is free). Four projects cover the whole spec §9 matrix
-// (both colour schemes at 1440×900 and at 390×844); only the axe gate
-// arrives with Wave 3.
+// (both colour schemes at 1440×900 and at 390×844); tests/e2e/axe.spec.ts
+// runs axe in every one of them.
 //
 // One env var drives everything: E2E_BASE_URL (default http://localhost:3000)
 // is the browser's baseURL, the readiness URL the runner polls, and the port

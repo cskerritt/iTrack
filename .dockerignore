@@ -7,3 +7,6 @@ dist
 .vinext
 .fonts-venv
 .fonts-build
+docs
+test-results
+playwright-report
