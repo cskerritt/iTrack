@@ -250,6 +250,13 @@ export function Styleguide() {
               state="on-track"
               label="Sample bar: complete"
             />
+            <CreditBar
+              counted={48}
+              required={40}
+              minimum={20}
+              state="on-track"
+              label="Sample bar: over-earned"
+            />
           </div>
           <div
             style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}

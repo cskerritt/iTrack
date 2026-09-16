@@ -114,6 +114,7 @@
   background: var(--state-ink);
 }
 
+/* Over the cap: only a capped (maximum) bar emits data-overflow — an uncapped bar past required reads complete and keeps its state ink. */
 .credit-bar[data-overflow="true"] .credit-bar-fill {
   background: var(--state-overdue);
 }

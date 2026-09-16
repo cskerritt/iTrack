@@ -16,9 +16,12 @@ export type CreditBarProps = {
 
 /*
  * A bar with no cap turns "complete" on its own once counted reaches
- * required (the hero bar, every minimum row); a maximum row keeps the state
- * its caller passes — reaching a cap is not completion — and an overflow is
- * painted in the overdue ink whatever the state.
+ * required (the hero bar, every minimum row) and stays complete however far
+ * past required it runs — earning more than a minimum is the good outcome,
+ * never a warning. A maximum row keeps the state its caller passes —
+ * reaching a cap is not completion — and only a cap can overflow:
+ * `data-overflow` marks counted past the cap, which instruments.css paints
+ * in the overdue ink.
  */
 export function CreditBar({
   counted,
@@ -40,7 +43,7 @@ export function CreditBar({
         .filter(Boolean)
         .join(" ")}
       data-state={shownState}
-      data-overflow={layout.overflow ? "true" : undefined}
+      data-overflow={cap !== undefined && layout.overflow ? "true" : undefined}
       data-reduced-motion={reducedMotion ? "true" : undefined}
       role="progressbar"
       aria-label={label}

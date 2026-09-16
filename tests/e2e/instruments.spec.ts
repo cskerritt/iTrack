@@ -18,28 +18,51 @@ const isoDaysFromToday = (days: number) =>
 test.describe("complete ring and overdue check-in", () => {
   test.use({ identity: freshIdentity() });
 
-  test("a fully counted credential shows a complete ring with its check, and a past deadline a text-bearing Overdue dot (a11y-11)", async ({ page, app }) => {
+  test("an over-counted credential shows a complete ring with its check and complete (never overflow) bars, and a past deadline a text-bearing Overdue pill (a11y-11)", async ({ page, app }) => {
     // A deadline three days ago: an active cycle whose deadline has passed still
     // activates its check-in (app/lib/reminders.ts reminderActivationDate) with
     // urgency "overdue". The activity date must sit inside the cycle window
-    // (route.ts rejects one outside it), hence 30 days back.
+    // (route.ts rejects one outside it), hence 30 days back. 12 hours against
+    // a 10-hour total: the credential is over-earned, the good outcome for the
+    // hero bar and every minimum row (plan decision 9).
     const { id } = await app.seedCredential({
       credentialName: "E2E instruments",
       cycleStart: isoDaysFromToday(-400),
       deadline: isoDaysFromToday(-3),
     });
     await app.seedActivity(id, {
-      totalUnits: 10,
-      allocatedUnits: 10,
+      totalUnits: 12,
+      allocatedUnits: 12,
       completionDate: isoDaysFromToday(-30),
     });
     await app.goto("/");
     const ring = page.getByRole("progressbar", {
-      name: "E2E instruments: 10 of 10 hours counted",
+      name: "E2E instruments: 12 of 10 hours counted",
     });
     await expect(ring).toHaveAttribute("data-state", "complete");
     await expect(ring).toHaveAttribute("aria-valuenow", "100");
     await expect(ring.locator(".cycle-ring-check")).toHaveCount(1);
+    // Only a capped (maximum) bar overflows into the overdue ink. An uncapped
+    // bar past required is complete and paints in the same complete ink as
+    // the ring's arc — the hero credits bar and the Overall row alike, while
+    // aria-valuenow stays clamped at the total.
+    const arcInk = await ring
+      .locator(".cycle-ring-arc")
+      .evaluate((node) => getComputedStyle(node).stroke);
+    for (const name of [
+      "E2E instruments: 12 of 10 hours",
+      "Overall: 12 of 10 hours",
+    ]) {
+      const bar = page.getByRole("progressbar", { name, exact: true });
+      await expect(bar).toHaveAttribute("data-state", "complete");
+      await expect(bar).not.toHaveAttribute("data-overflow", "true");
+      await expect(bar).toHaveAttribute("aria-valuenow", "10");
+      expect(
+        await bar
+          .locator(".credit-bar-fill")
+          .evaluate((node) => getComputedStyle(node).backgroundColor),
+      ).toBe(arcInk);
+    }
     await expect(page.getByText("Needs attention")).toBeVisible();
     const pill = page.locator(".reminder-list article.overdue .status-pill").first();
     await expect(pill).toHaveText("Overdue");
@@ -105,6 +128,17 @@ test("the styleguide renders every ring state with a numeric value", async ({ pa
     await expect(ring).toHaveAttribute("aria-valuenow", /^\d+$/);
   }
   await expect(page.locator('.cycle-ring[data-state="complete"] .cycle-ring-check')).toHaveCount(1);
+  // The over-the-cap sample is the only overflow bar on the page; the
+  // over-earned sample (48 of 40, no cap) turns complete on its own and
+  // never overflows — the count would read 2 if an uncapped bar did.
   await expect(page.locator('.credit-bar[data-overflow="true"]')).toHaveCount(1);
+  await expect(
+    page.getByRole("progressbar", { name: "Sample bar: over the cap" }),
+  ).toHaveAttribute("data-overflow", "true");
+  const overEarned = page.getByRole("progressbar", {
+    name: "Sample bar: over-earned",
+  });
+  await expect(overEarned).toHaveAttribute("data-state", "complete");
+  await expect(overEarned).not.toHaveAttribute("data-overflow", "true");
   app.expectNoErrors();
 });
