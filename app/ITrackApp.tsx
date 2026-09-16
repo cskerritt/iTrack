@@ -6724,7 +6724,22 @@ function TodayView({
               ? "Compliance readiness"
               : "Renewal readiness"}
           </span>
+          {/*
+           * Keyed on the credential: the ring's completion moment (decision 5)
+           * compares one instance's successive fractions, so a hero that
+           * switched credential in place would read an incomplete → complete
+           * hop as a requirement just met and replay the check. A new
+           * credential is a new mount instead.
+           *
+           * The value text is the CYCLE's word, not the ring's: ringStateOf
+           * turns "complete" on credits alone, while STATE_LABELS.complete
+           * ("Renewed") is the cycle-based pill word — a fully counted
+           * credential on an overdue or open cycle must say "100%, overdue" /
+           * "100%, due soon", never "100%, renewed" (the Task 10 amendment in
+           * app/lib/instruments.ts; WCAG 4.1.2). data-state stays the ring's.
+           */}
           <CycleRing
+            key={credential.id}
             size={72}
             fraction={ringValue.fraction}
             percent={ringValue.percent}
@@ -6739,7 +6754,7 @@ function TodayView({
                 : `${credential.credentialName}: ${ringValue.percent}% ready`
             }
             valueText={`${ringValue.percent}%, ${STATE_LABELS[
-              ringState
+              cycleState
             ].toLowerCase()}`}
           />
           <p>

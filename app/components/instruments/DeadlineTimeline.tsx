@@ -30,6 +30,21 @@ const PLOT_WIDTH = 340;
 const PLOT_HEIGHT = 92;
 const pct = (x: number) => `${((x / PLOT_WIDTH) * 100).toFixed(3)}%`;
 
+// Text baselines (px). A marker's name and mono date stack above the axis;
+// the "today" flag takes the band below the dates and above the marker
+// circles. At 12px the mono em box is 15px tall (ascent 12, descent 3) and
+// the body face's 14px (11 / 3), so the three rows occupy y 3–17, 14–29 and
+// 30–45: the flag never shares a band with a marker's labels. The artboard
+// draws the name and date two pixels lower and centres "today" at the
+// dates' own baseline — where any deadline within a few weeks of today (an
+// overdue one pins at the axis start, and today sits in the first third for
+// half of every month) had the two labels overprint each other.
+const MARKER_NAME_Y = 14;
+const MARKER_DATE_Y = 26;
+const TODAY_LABEL_Y = 42;
+// The flag starts this many px right of the dashed line.
+const TODAY_LABEL_GAP = 6;
+
 // Which side a marker's tooltip and labels hang from. In the middle third of
 // the axis they are centred on the marker (the artboard's text-anchor
 // middle); in the outer thirds they are anchored to the marker's own side, so
@@ -126,11 +141,18 @@ export function DeadlineTimeline({
             x2={pct(layout.todayX)}
             y2={70}
           />
+          {/*
+           * Start-anchored beside the top of the dashed line. Today always
+           * falls inside the first ~9% of the axis (the window starts on the
+           * first of its month), so a flag hanging to the right never leaves
+           * the plot, and its band (TODAY_LABEL_Y) is its own.
+           */}
           <text
             className="deadline-timeline-today-label"
             x={pct(layout.todayX)}
-            y={28}
-            textAnchor="middle"
+            dx={TODAY_LABEL_GAP}
+            y={TODAY_LABEL_Y}
+            textAnchor="start"
           >
             today
           </text>
@@ -139,7 +161,7 @@ export function DeadlineTimeline({
               <text
                 className="deadline-timeline-marker-name"
                 x={pct(marker.x)}
-                y={16}
+                y={MARKER_NAME_Y}
                 textAnchor={marker.edge ?? "middle"}
               >
                 {marker.label}
@@ -147,7 +169,7 @@ export function DeadlineTimeline({
               <text
                 className="deadline-timeline-marker-date"
                 x={pct(marker.x)}
-                y={28}
+                y={MARKER_DATE_Y}
                 textAnchor={marker.edge ?? "middle"}
               >
                 {formatShortDate(marker.date)}

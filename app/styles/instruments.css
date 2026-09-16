@@ -201,6 +201,7 @@
   stroke-dasharray: 3 3;
 }
 
+/* The "today" flag: start-anchored beside the dashed line's top, in its own band below the marker dates (DeadlineTimeline.tsx TODAY_LABEL_Y). */
 .deadline-timeline-today-label {
   fill: var(--ink);
   font-family: var(--font-mono);
@@ -342,10 +343,14 @@
 
 /*
  * MOTION — the two instrument moments (spec §5.1): a bar filling to its new
- * value, and a ring segment completing followed by the check drawing. The
- * check keyframes carry their own start value: the global reduced-motion
- * freeze clamps every animation to 0.01ms, and `animation: none` must leave
- * the check fully visible.
+ * value, and a ring segment completing followed by the check drawing. Under
+ * reduced motion the moments are switched off, not frozen: the two blocks at
+ * the end repeat each animated selector at its own specificity (a bare
+ * `.cycle-ring-check` at (0,1,0) loses to
+ * `.cycle-ring[data-motion="complete"] .cycle-ring-check` at (0,3,0) and
+ * would leave the keyframes running for the 0.01ms of globals.css's freeze),
+ * and `animation: none` leaves the check fully drawn because the keyframes
+ * carry their own start value — the path has no dash offset of its own.
  */
 .credit-bar-fill {
   transition: width var(--duration-fill) var(--ease-out);
@@ -374,18 +379,24 @@
   }
 }
 
+/*
+ * Reduced motion, by preference or by the reducedMotion prop. Each selector
+ * matches (or beats) the specificity of the rule it silences, and this block
+ * follows them, so the arc's transition and the check's animation are `none`
+ * — not a frozen keyframe over a duration token already at 0ms.
+ */
 @media (prefers-reduced-motion: reduce) {
   .credit-bar-fill,
-  .cycle-ring-arc,
-  .cycle-ring-check {
+  .cycle-ring[data-state="complete"] .cycle-ring-arc,
+  .cycle-ring[data-motion="complete"] .cycle-ring-check {
     transition: none;
     animation: none;
   }
 }
 
 .instrument[data-reduced-motion="true"] .credit-bar-fill,
-.instrument[data-reduced-motion="true"] .cycle-ring-arc,
-.instrument[data-reduced-motion="true"] .cycle-ring-check {
+.cycle-ring[data-reduced-motion="true"][data-state="complete"] .cycle-ring-arc,
+.cycle-ring[data-reduced-motion="true"][data-motion="complete"] .cycle-ring-check {
   transition: none;
   animation: none;
 }

@@ -1,3 +1,4 @@
+import type { Locator } from "@playwright/test";
 import { expect, freshIdentity, test } from "./fixtures";
 
 // spec §5.1 instruments, a11y-11: the hero ring counts credits and draws its
@@ -14,6 +15,23 @@ test.use({ identity: freshIdentity() });
 
 const isoDaysFromToday = (days: number) =>
   new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+
+type Box = { x: number; y: number; width: number; height: number };
+const boxOf = async (locator: Locator): Promise<Box> => {
+  const box = await locator.boundingBox();
+  expect(box, "the element must be laid out").not.toBeNull();
+  return box as Box;
+};
+const intersects = (a: Box, b: Box) =>
+  a.x < b.x + b.width &&
+  b.x < a.x + a.width &&
+  a.y < b.y + b.height &&
+  b.y < a.y + a.height;
+const contains = (outer: Box, inner: Box) =>
+  inner.x >= outer.x &&
+  inner.y >= outer.y &&
+  inner.x + inner.width <= outer.x + outer.width &&
+  inner.y + inner.height <= outer.y + outer.height;
 
 test.describe("complete ring and overdue check-in", () => {
   test.use({ identity: freshIdentity() });
@@ -42,6 +60,13 @@ test.describe("complete ring and overdue check-in", () => {
     await expect(ring).toHaveAttribute("data-state", "complete");
     await expect(ring).toHaveAttribute("aria-valuenow", "100");
     await expect(ring.locator(".cycle-ring-check")).toHaveCount(1);
+    // The value text speaks for the CYCLE, not the ring: the credits are
+    // complete (full arc, check), the renewal is three days overdue, and
+    // "100%, renewed" — STATE_LABELS.complete is the cycle-based pill word —
+    // would tell a screen-reader user the licence is renewed while the same
+    // hero shows an overdue pill and a "days overdue" countdown
+    // (app/lib/instruments.ts ringStateOf, the Task 10 amendment; WCAG 4.1.2).
+    await expect(ring).toHaveAttribute("aria-valuetext", "100%, overdue");
     // Only a capped (maximum) bar overflows into the overdue ink. An uncapped
     // bar past required is complete and paints in the same complete ink as
     // the ring's arc — the hero credits bar and the Overall row alike, while
@@ -70,6 +95,80 @@ test.describe("complete ring and overdue check-in", () => {
     // (a11y-11, WCAG 1.4.1); the compact dot is a styleguide sample only.
     await expect(pill).toBeVisible();
     await expect(pill).not.toHaveAttribute("data-compact", "true");
+    // The timeline's decorative "today" flag has a band of its own — beside
+    // the top of the dashed line, below the marker dates — so a deadline near
+    // today (three days back here: the ordinary state of any overdue
+    // credential in the first half of a month, at every viewport) never
+    // overprints the marker's name or date, and the flag itself stays inside
+    // the plot.
+    const plot = await boxOf(page.locator(".deadline-timeline-plot svg"));
+    const todayLabel = await boxOf(
+      page.locator(".deadline-timeline-today-label"),
+    );
+    expect(contains(plot, todayLabel)).toBe(true);
+    const markerLabels = page.locator(
+      ".deadline-timeline-marker-name, .deadline-timeline-marker-date",
+    );
+    await expect(markerLabels).toHaveCount(2);
+    for (const label of await markerLabels.all()) {
+      const box = await boxOf(label);
+      expect(contains(plot, box)).toBe(true);
+      expect(intersects(todayLabel, box)).toBe(false);
+    }
+    app.expectNoErrors();
+  });
+});
+
+test.describe("hero ring across a credential switch", () => {
+  test.use({ identity: freshIdentity() });
+
+  test("switching the hero to a credits-complete credential mounts its ring fresh: the check does not replay as a completion", async ({ page, app }) => {
+    // The hero is the soonest live deadline (app/lib/cycles.ts activeCycleId):
+    // an empty credential 60 days out. Behind it waits a fully counted one,
+    // 200 days out — an open, on-track cycle whose ring is complete by credits.
+    const { id: completeId } = await app.seedCredential({
+      credentialName: "E2E switch complete",
+      cycleStart: isoDaysFromToday(-165),
+      deadline: isoDaysFromToday(200),
+    });
+    await app.seedActivity(completeId, {
+      totalUnits: 10,
+      allocatedUnits: 10,
+      completionDate: isoDaysFromToday(-30),
+    });
+    await app.seedCredential({
+      credentialName: "E2E switch incomplete",
+      cycleStart: isoDaysFromToday(-30),
+      deadline: isoDaysFromToday(60),
+    });
+    await app.goto("/");
+    const ring = page.locator(".readiness-panel .cycle-ring");
+    await expect(ring).toHaveAttribute(
+      "aria-label",
+      "E2E switch incomplete: 0 of 10 hours counted",
+    );
+    await expect(ring).toHaveAttribute("data-state", "due-soon");
+    await expect(ring).toHaveAttribute("aria-valuetext", "0%, due soon");
+    // The Log sheet's "Apply to credential" re-points the app-wide selection
+    // while Home stays mounted beneath the sheet — the one place the hero
+    // changes credential without Home unmounting.
+    const sheet = await app.openLog();
+    await sheet.locator('select[name="credentialId"]').selectOption(completeId);
+    await expect(ring).toHaveAttribute(
+      "aria-label",
+      "E2E switch complete: 10 of 10 hours counted",
+    );
+    await expect(ring).toHaveAttribute("data-state", "complete");
+    await expect(ring.locator(".cycle-ring-check")).toHaveCount(1);
+    // A credits-complete ring on an open cycle reads the cycle's word.
+    await expect(ring).toHaveAttribute("aria-valuetext", "100%, on track");
+    // Decision 5: the check draws only when a value crosses complete after
+    // mount. A different credential is a fresh mount (the hero ring is keyed
+    // on the credential id), so the switch is no completion moment — its
+    // check is simply there, never replayed as though a requirement had just
+    // been met. The layout effect runs in the same commit as the new label,
+    // so once the label has changed the attribute's absence is final.
+    expect(await ring.getAttribute("data-motion")).toBeNull();
     app.expectNoErrors();
   });
 });
@@ -89,6 +188,12 @@ test.describe("timeline marker and due-soon check-in", () => {
     await expect(
       page.locator(".reminder-list article.soon .status-pill").first(),
     ).toHaveText("Due soon");
+    // Nothing counted, 60 days out: the ring's numeral and its cycle agree.
+    await expect(
+      page.getByRole("progressbar", {
+        name: "E2E timeline: 0 of 10 hours counted",
+      }),
+    ).toHaveAttribute("aria-valuetext", "0%, due soon");
     const marker = page
       .getByRole("list", { name: "Deadlines in the next twelve months" })
       .getByRole("button", { name: /E2E timeline/ });
@@ -221,5 +326,39 @@ test("the styleguide renders every ring state with a numeric value", async ({ pa
   await expect(items.filter({ has: page.getByRole("button", { name: /^LCSW/ }) })).toHaveAttribute("data-edge", "start");
   await expect(page.locator('.deadline-timeline-list > li:not([data-edge])')).toHaveCount(1);
   await expect(page.locator('.deadline-timeline-list > li[data-edge="end"]')).toHaveCount(0);
+  app.expectNoErrors();
+});
+
+test("the completion moment is real motion or none: under prefers-reduced-motion the check's animation and the arc's transition are none, not a frozen keyframe", async ({ page, app }) => {
+  // The styleguide's 40px ring mounts complete, so it carries no data-motion
+  // (decision 5: the check draws only when a value crosses 1 after mount) —
+  // setting the attribute here is the completion moment without a workspace.
+  await app.goto("/styleguide");
+  const ring = page.locator('.cycle-ring[data-state="complete"]');
+  await expect(ring).toHaveCount(1);
+  expect(await ring.getAttribute("data-motion")).toBeNull();
+  const check = ring.locator(".cycle-ring-check");
+  const arc = ring.locator(".cycle-ring-arc");
+  const animationName = () =>
+    check.evaluate((node) => getComputedStyle(node).animationName);
+  const transitionProperty = () =>
+    arc.evaluate((node) => getComputedStyle(node).transitionProperty);
+  expect(await animationName()).toBe("none");
+  await ring.evaluate((node) => node.setAttribute("data-motion", "complete"));
+  expect(await animationName()).toBe("cycle-ring-check-draw");
+  expect(await transitionProperty()).toBe("stroke-dasharray");
+  // Reduced motion: the moment is switched OFF, not frozen. A rule that
+  // merely lost to `.cycle-ring[data-motion="complete"] .cycle-ring-check`
+  // on specificity left the keyframes running for the global freeze's
+  // 0.01ms; `animation: none` leaves the check fully drawn (no dash offset).
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  expect(await animationName()).toBe("none");
+  expect(await transitionProperty()).toBe("none");
+  expect(
+    await check.evaluate((node) => getComputedStyle(node).strokeDashoffset),
+  ).toBe("0px");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  expect(await animationName()).toBe("cycle-ring-check-draw");
+  expect(await transitionProperty()).toBe("stroke-dasharray");
   app.expectNoErrors();
 });

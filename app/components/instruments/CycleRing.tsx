@@ -41,7 +41,10 @@ export function CycleRing({
   const previous = useRef<number | null>(null);
   // The check draws only when a value crosses complete after mount; a ring
   // that mounts complete renders instantly. Written as a DOM attribute from
-  // a layout effect — no state, no ref read during render.
+  // a layout effect — no state, no ref read during render. The comparison
+  // is per instance, so a mount that can change credential in place (the
+  // Home hero, a Wave 4 ledger row) carries key={credential.id}: a different
+  // credential is a fresh mount, never a completion.
   useLayoutEffect(() => {
     const node = root.current;
     if (
