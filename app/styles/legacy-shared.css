@@ -104,25 +104,6 @@
   }
 }
 
-.progress-track {
-  height: 7px;
-  overflow: hidden;
-  border-radius: 99px;
-  background: var(--track);
-}
-
-.progress-track > span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--amber);
-  transition: width 420ms ease;
-}
-
-.progress-track.met > span {
-  background: var(--mark-progress);
-}
-
 .card {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -160,18 +141,6 @@
   margin-left: 16px;
   border-left: 2px solid var(--track-tint);
   padding-left: 12px;
-}
-
-.progress-row.maximum .progress-track {
-  background: var(--track-quiet);
-}
-
-.progress-row.maximum .progress-track > span {
-  background: var(--mark-progress-quiet);
-}
-
-.progress-row.over-limit .progress-track > span {
-  background: var(--mark-progress-over);
 }
 
 .limit-label {
@@ -712,7 +681,6 @@
 .progress-label strong,
 .deadline-number strong,
 .deadline-chip strong,
-.readiness-ring strong,
 .detail-stats strong,
 .record-summary > div strong,
 .record-title small,
@@ -1349,29 +1317,14 @@
 /* ===== LEGACY FORCED COLOURS — rewritten in Tasks 9 and 11 ===== */
 
 /*
- * Two marks carry meaning in their fill alone — how much of a bar is done,
- * how far round a ring has gone — so they keep their own colours when the OS
- * forces its palette on everything else. A forced dark theme also reports
- * `prefers-color-scheme: dark`, so what these two opt back into is the dark
- * palette above, and each is a pair that holds against the forced black
- * canvas: --amber over it at 14.9:1, --accent-bright over the ring's unfilled
- * tenth-white at 7.3:1.
- *
- * These two ratios are outside the two :root blocks and so outside what
- * tools/contrast-audit.mjs re-derives; they are recomputed by hand whenever
- * --amber or --accent-bright moves. Task 11 deletes the track family with the
- * instruments that replace it.
- *
- * The brand mark and the phone add button once opted out here too; both left
- * with the legacy shell (Task 9). The shell's own forced-colours rules — the
- * bottom nav's Log button and the active tab — live in shell.css.
+ * The legacy progress track and readiness ring once opted out of the forced
+ * palette here (each carried its value in a fill alone); both left with the
+ * instruments that replaced them (Task 11), whose own forced-colours rules
+ * live in instruments.css. The brand mark and the phone add button left with
+ * the legacy shell (Task 9); the shell's own rules — the bottom nav's Log
+ * button and the active tab — live in shell.css.
  */
 @media (forced-colors: active) {
-  .progress-track > span,
-  .readiness-ring {
-    forced-color-adjust: none;
-  }
-
   /*
    * a11y-M-01 — the legacy choice rows (Task 7). Their checked state is a
    * tinted fill plus a check glyph hidden with `color: transparent`, and a
@@ -1446,7 +1399,6 @@
  */
 body .credential-detail-header h2,
 body .deadline-number strong,
-body .readiness-ring strong,
 body .onboarding-copy h2,
 body .offline-workspace h1,
 body .error-fallback h1,

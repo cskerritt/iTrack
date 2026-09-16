@@ -60,6 +60,15 @@ import {
   selectDefaultCredentialId,
 } from "./lib/cycles";
 import {
+  STATE_LABELS,
+  reminderState,
+  ringStateOf,
+  ringValueOf,
+  stateOf,
+  type InstrumentState,
+  type TimelineDeadline,
+} from "./lib/instruments";
+import {
   oppositeFloridaMentalHealthRuleSetId,
 } from "./lib/floridaMentalHealth";
 import { isExpandedCertificationRuleSetId } from "./lib/expandedCertifications";
@@ -113,6 +122,10 @@ import {
 } from "./components/Form";
 import { Button } from "./components/Button";
 import { useToast } from "./components/Toast";
+import { CreditBar } from "./components/instruments/CreditBar";
+import { CycleRing } from "./components/instruments/CycleRing";
+import { DeadlineTimeline } from "./components/instruments/DeadlineTimeline";
+import { StatusPill } from "./components/instruments/StatusPill";
 
 const DENTAL_LINKED_APPLICABILITY_CHILD_CATEGORY_IDS = new Set<string>(
   DENTAL_LINKED_APPLICABILITY_CATEGORY_GROUPS.flatMap((categoryIds) =>
@@ -472,6 +485,17 @@ function daysUntil(value: string) {
 // component body, so react-hooks/purity does not see Date.now() in render.
 function credentialCountdown(credential: Credential) {
   return cycleCountdown(credential, Date.now());
+}
+
+// The instrument state a pill or bar colours by (overdue / due soon / on
+// track / submitted / renewed) and the ring state (credits complete wins)
+// read the clock the same way, outside any component body.
+function credentialInstrumentState(credential: Credential): InstrumentState {
+  return stateOf(credential, Date.now());
+}
+
+function credentialRingState(credential: Credential): InstrumentState {
+  return ringStateOf(credential, Date.now());
 }
 
 // Default cycle window for a new credential, anchored on the caller's local
@@ -4037,6 +4061,7 @@ export function ITrackApp() {
             <TodayView
               workspace={workspace}
               credential={selectedCredential}
+              today={today()}
               isOnline={isOnline}
               highlightedReminderKey={highlightedReminderKey}
               onAddActivity={openActivityEntry}
@@ -4748,7 +4773,11 @@ export function ITrackApp() {
           }}
         >
           <form className="form-stack" onSubmit={handleCredentialSubmit}>
-            <div className="mode-switch" aria-label="Credential setup mode">
+            <div
+              className="mode-switch"
+              role="group"
+              aria-label="Credential setup mode"
+            >
               <button
                 className={!customCredential ? "active" : ""}
                 type="button"
@@ -6343,6 +6372,7 @@ export function ITrackApp() {
 function TodayView({
   workspace,
   credential,
+  today,
   isOnline,
   highlightedReminderKey,
   onAddActivity,
@@ -6367,6 +6397,7 @@ function TodayView({
 }: {
   workspace: Workspace;
   credential: Credential | null;
+  today: string;
   isOnline: boolean;
   highlightedReminderKey: string;
   onAddActivity: () => void;
@@ -6481,6 +6512,12 @@ function TodayView({
 
   const progress = credentialProgress(credential);
   const readiness = readinessScore(credential);
+  // spec §5.1: the ring counts credits vs required (the Credentials list's
+  // rule — readiness only for a credential with no numeric total); the ring
+  // turns complete on credits, the pills on the cycle's own state.
+  const ringValue = ringValueOf(credential);
+  const ringState = credentialRingState(credential);
+  const cycleState = credentialInstrumentState(credential);
   const missingEvidence = workspace.activities.filter(
     (activity) =>
       allocationsFor(activity).some(
@@ -6489,6 +6526,21 @@ function TodayView({
       activity.evidenceStatus === "missing",
   ).length;
   const countdown = credentialCountdown(credential);
+  const timelineDeadlines: TimelineDeadline[] = groupCycles(
+    workspace.credentials,
+    today,
+  ).flatMap((series) =>
+    series.current
+      ? [
+          {
+            id: series.current.id,
+            label: series.current.credentialName,
+            date: series.current.deadline,
+            state: credentialInstrumentState(series.current),
+          },
+        ]
+      : [],
+  );
   const highlightedReminder = workspace.reminders.find(
     (reminder) => reminder.key === highlightedReminderKey,
   );
@@ -6562,8 +6614,7 @@ function TodayView({
         <div className="renewal-hero-main">
           <div className="renewal-identity">
             <div>
-              <span className="status-pill">
-                <span aria-hidden="true" />
+              <StatusPill state={cycleState}>
                 {credential.status === "active"
                   ? isCompliancePeriodCredential(credential)
                     ? "Active compliance period"
@@ -6577,7 +6628,7 @@ function TodayView({
                     : isCompliancePeriodCredential(credential)
                       ? "Completed"
                       : "Renewed"}
-              </span>
+              </StatusPill>
               <h2 id="renewal-heading">{credential.credentialName}</h2>
               <p>
                 {credential.jurisdiction}
@@ -6630,9 +6681,24 @@ function TodayView({
               </span>
               {credential.totalRequired > 0 ? (
                 <>
-                  <div className="progress-track progress-track-light">
-                    <span style={{ width: `${progress}%` }} />
-                  </div>
+                  <CreditBar
+                    counted={credential.totalEarned}
+                    required={credential.totalRequired}
+                    minimum={
+                      Math.max(
+                        0,
+                        ...activeMinimums(credential).map(
+                          (item) => item.requiredUnits,
+                        ),
+                      ) || undefined
+                    }
+                    state={ringState}
+                    label={`${credential.credentialName}: ${compactNumber(
+                      credential.totalEarned,
+                    )} of ${compactNumber(credential.totalRequired)} ${
+                      credential.unitLabel
+                    }`}
+                  />
                   <p>
                     <strong>
                       {compactNumber(credential.totalEarned)} of{" "}
@@ -6658,30 +6724,53 @@ function TodayView({
               ? "Compliance readiness"
               : "Renewal readiness"}
           </span>
-          <div
-            className="readiness-ring"
-            style={{ "--score": readiness } as React.CSSProperties}
-            role="progressbar"
-            aria-label={`${readiness}% ${
-              isCompliancePeriodCredential(credential)
-                ? "compliance"
-                : "renewal"
-            } readiness`}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={readiness}
-          >
-            <span>
-              <strong>{readiness}%</strong>
-              <small>ready</small>
-            </span>
-          </div>
+          <CycleRing
+            size={72}
+            fraction={ringValue.fraction}
+            percent={ringValue.percent}
+            state={ringState}
+            label={
+              ringValue.basis === "credits"
+                ? `${credential.credentialName}: ${compactNumber(
+                    credential.totalEarned,
+                  )} of ${compactNumber(credential.totalRequired)} ${
+                    credential.unitLabel
+                  } counted`
+                : `${credential.credentialName}: ${ringValue.percent}% ready`
+            }
+            valueText={`${ringValue.percent}%, ${STATE_LABELS[
+              ringState
+            ].toLowerCase()}`}
+          />
           <p>
             {credential.totalRequired > 0
               ? "Based on countable units, active minimums, required checkpoints, and checklist steps."
               : "Based on applicable training conditions and checklist steps."}
           </p>
         </div>
+      </section>
+
+      <section
+        className="card deadline-timeline-card"
+        aria-labelledby="timeline-eyebrow"
+      >
+        <div className="card-heading">
+          <div>
+            <span className="section-kicker" id="timeline-eyebrow">
+              Next twelve months
+            </span>
+          </div>
+        </div>
+        <DeadlineTimeline
+          today={today}
+          deadlines={timelineDeadlines}
+          formatDate={(iso) => formatDate(iso)}
+          formatShortDate={(iso) => formatDate(iso, { year: undefined })}
+          formatMonth={(iso) =>
+            formatDate(iso, { day: undefined, month: "short", year: "numeric" })
+          }
+          onSelect={onOpenCredential}
+        />
       </section>
 
       {visibleReminders.length ? (
@@ -6714,7 +6803,13 @@ function TodayView({
                   reminder.key === highlightedReminderKey ? -1 : undefined
                 }
               >
-                <span className="reminder-dot" aria-hidden="true" />
+                <StatusPill state={reminderState(reminder)}>
+                  {reminder.urgency === "overdue"
+                    ? "Overdue"
+                    : reminder.urgency === "today"
+                      ? "Due today"
+                      : STATE_LABELS[reminderState(reminder)]}
+                </StatusPill>
                 <button
                   className="reminder-open"
                   type="button"
@@ -6826,6 +6921,7 @@ function TodayView({
             {credential.totalRequired > 0 ? (
               <ProgressRow
                 name="Overall"
+                state={credentialInstrumentState(credential)}
                 earned={credential.totalEarned}
                 required={credential.totalRequired}
                 unit={credential.unitLabel}
@@ -6856,6 +6952,7 @@ function TodayView({
               <ProgressRow
                 key={requirement.id}
                 name={requirement.name}
+                state={credentialInstrumentState(credential)}
                 earned={requirementEarned(requirement)}
                 required={requirement.requiredUnits}
                 unit={credential.unitLabel}
@@ -7641,7 +7738,7 @@ function CredentialDetailScreen({
       <section className="credential-detail">
         <div className="credential-detail-header">
           <div>
-            <span className="status-pill status-pill-dark">
+            <StatusPill state={credentialInstrumentState(credential)}>
               {isIsc2AutomaticRenewalCredential(credential)
                 ? credential.status === "active"
                   ? "active renewal cycle"
@@ -7655,7 +7752,7 @@ function CredentialDetailScreen({
                       ? "compliance recorded"
                       : "completed"
                   : credential.status}
-            </span>
+            </StatusPill>
             <h2>{credential.credentialName}</h2>
             <p>
               {credential.jurisdiction}
@@ -7698,6 +7795,7 @@ function CredentialDetailScreen({
             </p>
             <div
               className="credential-packet-gaps"
+              role="group"
               aria-label={`${trackedGapCount} tracked packet gaps`}
             >
               <span>{requirementGapCount} requirement gaps</span>
@@ -7825,6 +7923,7 @@ function CredentialDetailScreen({
           {credential.totalRequired > 0 ? (
             <ProgressRow
               name="Overall"
+              state={credentialInstrumentState(credential)}
               earned={credential.totalEarned}
               required={credential.totalRequired}
               unit={credential.unitLabel}
@@ -7855,6 +7954,7 @@ function CredentialDetailScreen({
             <ProgressRow
               key={requirement.id}
               name={requirement.name}
+              state={credentialInstrumentState(credential)}
               earned={requirementEarned(requirement)}
               required={requirement.requiredUnits}
               unit={credential.unitLabel}
@@ -8627,7 +8727,11 @@ function ActivityEditorModal({
               />
             </label>
           ) : null}
-          <div className="read-only-status" aria-label="Current proof status">
+          <div
+            className="read-only-status"
+            role="group"
+            aria-label="Current proof status"
+          >
             <span
               className={`proof-label ${activity.evidenceStatus}`}
               aria-hidden="true"
@@ -9684,6 +9788,7 @@ function ProgressRow({
   earned,
   required,
   unit,
+  state = "on-track",
   requirement,
   onApplicability,
   onDentalCheckpoint,
@@ -9694,6 +9799,7 @@ function ProgressRow({
   earned: number;
   required: number;
   unit: string;
+  state?: InstrumentState;
   requirement?: Requirement;
   onApplicability?: (
     status: "applies" | "not_applicable",
@@ -9899,12 +10005,6 @@ function ProgressRow({
     );
   }
 
-  const progress =
-    required <= 0
-      ? kind === "maximum"
-        ? 0
-        : 100
-      : clampPercent((rawEarned / required) * 100);
   const met = kind === "maximum" ? excess === 0 : earned >= required;
   const statusLabel =
     kind === "maximum"
@@ -9938,20 +10038,15 @@ function ProgressRow({
           {unit}
         </span>
       </div>
-      <div
-        className={`progress-track ${met ? "met" : ""} ${
-          excess > 0 ? "over-limit" : ""
-        }`}
-        role="progressbar"
-        aria-label={`${name}: ${compactNumber(rawEarned)} of ${compactNumber(
+      <CreditBar
+        counted={rawEarned}
+        required={required}
+        cap={kind === "maximum" ? required : undefined}
+        state={kind === "maximum" ? "none" : state}
+        label={`${name}: ${compactNumber(rawEarned)} of ${compactNumber(
           required,
         )} ${unit}${kind === "maximum" ? " maximum" : ""}`}
-        aria-valuemin={0}
-        aria-valuemax={required}
-        aria-valuenow={Math.min(rawEarned, required)}
-      >
-        <span style={{ width: `${progress}%` }} />
-      </div>
+      />
       {kind === "maximum" && excess > 0 ? (
         <p className="limit-note">
           {compactNumber(earned)} {unit} count toward this limit;{" "}
@@ -10723,7 +10818,12 @@ function EmptyModalState({
 
 function LoadingDashboard() {
   return (
-    <div className="view-stack" aria-busy="true" aria-label="Loading iTrack">
+    <div
+      className="view-stack"
+      role="status"
+      aria-busy="true"
+      aria-label="Loading iTrack"
+    >
       <div className="loading-heading">
         <span />
         <strong />
@@ -10740,7 +10840,7 @@ function LoadingDashboard() {
         <span />
         <span />
       </div>
-      <p className="sr-only" role="status">
+      <p className="sr-only">
         Loading your renewal workspace
       </p>
     </div>

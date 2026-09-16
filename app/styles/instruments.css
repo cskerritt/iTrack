@@ -1,0 +1,374 @@
+/*
+ * Instruments (spec §5.1): CycleRing, CreditBar, StatusPill, DeadlineTimeline.
+ * One state map, three motion moments (two here, the card fold is Wave 4).
+ * A consumer stylesheet: first-class tokens only — no literal, no legacy alias.
+ */
+
+/* STATE MAP — every instrument reads --state-ink / --state-soft from here */
+.instrument {
+  --state-ink: var(--state-neutral);
+  --state-soft: var(--state-neutral-soft);
+}
+
+.instrument[data-state="overdue"] {
+  --state-ink: var(--state-overdue);
+  --state-soft: var(--state-overdue-soft);
+}
+
+.instrument[data-state="due-soon"] {
+  --state-ink: var(--state-due-soon);
+  --state-soft: var(--state-due-soon-soft);
+}
+
+.instrument[data-state="on-track"] {
+  --state-ink: var(--accent);
+  --state-soft: var(--accent-soft);
+}
+
+.instrument[data-state="submitted"],
+.instrument[data-state="complete"] {
+  --state-ink: var(--state-complete);
+  --state-soft: var(--state-complete-soft);
+}
+
+/*
+ * CYCLE RING — mockup: 72 / 56 / 40 px, stroke 7 / 6 / 5, the track is the
+ * paper-deep trough (--track), the arc the state ink, the numeral in the
+ * display face. Sized in rem so it follows the root font size; the geometry
+ * lives in the SVG viewBox (app/lib/instruments.ts RING_SIZES).
+ */
+.cycle-ring {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+}
+
+.cycle-ring[data-size="72"] {
+  width: 4.5rem;
+  height: 4.5rem;
+}
+
+.cycle-ring[data-size="56"] {
+  width: 3.5rem;
+  height: 3.5rem;
+}
+
+.cycle-ring[data-size="40"] {
+  width: 2.5rem;
+  height: 2.5rem;
+}
+
+.cycle-ring svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.cycle-ring-track {
+  fill: none;
+  stroke: var(--track);
+}
+
+/* Complete: the trough takes the state's soft colour under a full arc (desktop artboard). */
+.cycle-ring[data-state="complete"] .cycle-ring-track {
+  stroke: var(--state-soft);
+}
+
+.cycle-ring-arc {
+  fill: none;
+  stroke: var(--state-ink);
+  stroke-linecap: round;
+}
+
+.cycle-ring-label {
+  fill: var(--ink);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-display);
+}
+
+.cycle-ring-check {
+  fill: none;
+  stroke: var(--state-ink);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* CREDIT BAR — mockup: a 6px trough, the fill in the state ink, a 1px minimum marker */
+.credit-bar {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--track);
+}
+
+.credit-bar[data-state="complete"] {
+  background: var(--state-soft);
+}
+
+.credit-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--state-ink);
+}
+
+.credit-bar[data-overflow="true"] .credit-bar-fill {
+  background: var(--state-overdue);
+}
+
+.credit-bar-mark {
+  position: absolute;
+  top: -3px;
+  width: 1px;
+  height: 12px;
+  background: var(--marker);
+}
+
+/*
+ * STATUS PILL — mockup .pill: soft fill + state ink, 3px 9px, pill radius,
+ * 0.75rem bold (the artboard's 11px rounds up to the scale floor). The
+ * compact form is an 8px dot with its text visually hidden — a styleguide
+ * sample only this wave: every mounted pill, the check-in rows included,
+ * shows its state word, so the state is never colour alone for anyone
+ * (a11y-11; WCAG 1.4.1 — a dot's fill is colour alone for a sighted reader).
+ */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--state-soft);
+  color: var(--state-ink);
+  font-family: var(--font-body);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  line-height: 1.25;
+  padding: 3px 9px;
+  white-space: nowrap;
+}
+
+.status-pill[data-compact="true"] {
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--state-ink);
+}
+
+/*
+ * DEADLINE TIMELINE — mockup: a 340×92 plot, a 2px axis with quarter ticks,
+ * a dashed "today" line, one circle per deadline (r 8 due soon / overdue,
+ * r 6 otherwise) with its name and mono date above. The circles are 44px
+ * buttons in an HTML list laid over the decorative SVG. The SVG is 92px tall
+ * and spans its card; every x is a percentage of that width (no viewBox), so
+ * labels and strokes stay 1:1 whatever the card measures.
+ */
+.deadline-timeline {
+  margin: 0;
+}
+
+.deadline-timeline-plot {
+  position: relative;
+}
+
+.deadline-timeline-plot svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.deadline-timeline-axis,
+.deadline-timeline-tick {
+  stroke: var(--line);
+}
+
+.deadline-timeline-axis {
+  stroke-width: 2;
+}
+
+.deadline-timeline-tick-label {
+  fill: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+
+.deadline-timeline-today {
+  stroke: var(--ink);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
+}
+
+.deadline-timeline-today-label {
+  fill: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+
+.deadline-timeline-marker-name {
+  fill: var(--ink);
+  font-family: var(--font-body);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+}
+
+.deadline-timeline-marker-date {
+  fill: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+
+.deadline-timeline-list {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Each item sits on the axis (y 52 of 92); its `left` is inline, x / 340. */
+.deadline-timeline-list > li {
+  position: absolute;
+  top: calc(52 / 92 * 100%);
+  width: 0;
+}
+
+/* The 44px hit area, centred on the axis; the visible circle is its ::before. */
+.deadline-timeline-hit {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--tap-min);
+  height: var(--tap-min);
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  transform: translate(-50%, -50%);
+}
+
+.deadline-timeline-hit::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--state-ink);
+  border-radius: 50%;
+  background: var(--state-soft);
+  transform: translate(-50%, -50%);
+}
+
+.deadline-timeline-list > li[data-r="6"] .deadline-timeline-hit::before {
+  width: 12px;
+  height: 12px;
+}
+
+.deadline-timeline-tip {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: var(--ink);
+  font-size: var(--text-2xs);
+  padding: 6px 8px;
+  transform: translateX(-50%);
+  visibility: hidden;
+  white-space: nowrap;
+}
+
+.deadline-timeline-hit:hover + .deadline-timeline-tip,
+.deadline-timeline-hit:focus-visible + .deadline-timeline-tip {
+  visibility: visible;
+}
+
+.deadline-timeline figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.deadline-timeline-range {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * MOTION — the two instrument moments (spec §5.1): a bar filling to its new
+ * value, and a ring segment completing followed by the check drawing. The
+ * check keyframes carry their own start value: the global reduced-motion
+ * freeze clamps every animation to 0.01ms, and `animation: none` must leave
+ * the check fully visible.
+ */
+.credit-bar-fill {
+  transition: width var(--duration-fill) var(--ease-out);
+}
+
+.cycle-ring[data-state="complete"] .cycle-ring-arc {
+  transition: stroke-dasharray var(--duration-fill) var(--ease-out);
+}
+
+/* The check draws over --duration-complete (320ms) once the arc's
+   --duration-fill has elapsed; no duration literal here — the reduced-motion
+   token block zeroes both. */
+.cycle-ring[data-motion="complete"] .cycle-ring-check {
+  animation: cycle-ring-check-draw var(--duration-complete) var(--ease-out) var(--duration-fill) both;
+}
+
+@keyframes cycle-ring-check-draw {
+  from {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+  }
+
+  to {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .credit-bar-fill,
+  .cycle-ring-arc,
+  .cycle-ring-check {
+    transition: none;
+    animation: none;
+  }
+}
+
+.instrument[data-reduced-motion="true"] .credit-bar-fill,
+.instrument[data-reduced-motion="true"] .cycle-ring-arc,
+.instrument[data-reduced-motion="true"] .cycle-ring-check {
+  transition: none;
+  animation: none;
+}
+
+/* Forced colours: a value carried by a fill alone must survive Windows high contrast. */
+@media (forced-colors: active) {
+  .cycle-ring-arc,
+  .credit-bar-fill {
+    forced-color-adjust: none;
+    stroke: Highlight;
+    background: Highlight;
+  }
+
+  .cycle-ring-track,
+  .credit-bar {
+    forced-color-adjust: none;
+    stroke: ButtonFace;
+    background: ButtonFace;
+  }
+
+  .status-pill[data-compact="true"] {
+    background: Highlight;
+  }
+}

@@ -3,6 +3,10 @@
 import { useState } from "react";
 import { Button } from "../components/Button";
 import { useToast } from "../components/Toast";
+import { CreditBar } from "../components/instruments/CreditBar";
+import { CycleRing } from "../components/instruments/CycleRing";
+import { DeadlineTimeline } from "../components/instruments/DeadlineTimeline";
+import { StatusPill } from "../components/instruments/StatusPill";
 import { Icon } from "../components/Icon";
 import { Modal } from "../components/Modal";
 import { PageHeader } from "../components/PageHeader";
@@ -176,6 +180,101 @@ export function Styleguide() {
           >
             Show a toast with Undo
           </Button>
+        </section>
+        <section aria-labelledby="sg-instruments">
+          <h2 id="sg-instruments">Instruments</h2>
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "center",
+              gap: 24,
+            }}
+          >
+            <CycleRing
+              size={72}
+              fraction={0.125}
+              percent={13}
+              state="due-soon"
+              label="Sample: 5 of 40 credits"
+            />
+            <CycleRing
+              size={56}
+              fraction={0.62}
+              percent={62}
+              state="on-track"
+              label="Sample: 62 of 100 credits"
+            />
+            <CycleRing
+              size={40}
+              fraction={1}
+              percent={100}
+              state="complete"
+              label="Sample: complete"
+              showNumeral={false}
+            />
+            <CycleRing
+              size={72}
+              fraction={0}
+              percent={0}
+              state="overdue"
+              label="Sample: overdue, nothing counted"
+            />
+          </div>
+          <div style={{ display: "grid", gap: 20, width: 240 }}>
+            <CreditBar
+              counted={5}
+              required={40}
+              minimum={20}
+              state="due-soon"
+              label="Sample bar: 5 of 40"
+            />
+            <CreditBar
+              counted={45}
+              required={40}
+              cap={40}
+              state="none"
+              label="Sample bar: over the cap"
+            />
+            <CreditBar
+              counted={12}
+              required={40}
+              cap={10}
+              state="on-track"
+              label="Sample bar: 12 of 40 with a 10 cap"
+            />
+            <CreditBar
+              counted={40}
+              required={40}
+              minimum={20}
+              state="on-track"
+              label="Sample bar: complete"
+            />
+          </div>
+          <div
+            style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}
+          >
+            <StatusPill state="overdue" />
+            <StatusPill state="due-soon" />
+            <StatusPill state="on-track" />
+            <StatusPill state="submitted" />
+            <StatusPill state="complete" />
+            <StatusPill state="none" />
+            <StatusPill compact state="overdue" />
+          </div>
+          <div style={{ width: 340 }}>
+            <DeadlineTimeline
+              today="2026-09-15"
+              deadlines={[
+                { id: "a", label: "LCSW", date: "2026-11-30", state: "due-soon" },
+                { id: "b", label: "CRC", date: "2027-02-01", state: "on-track" },
+                { id: "c", label: "CLCP", date: "2028-03-31", state: "submitted" },
+              ]}
+              formatDate={(iso) => iso}
+              formatShortDate={(iso) => iso.slice(5)}
+              formatMonth={(iso) => iso.slice(0, 7)}
+            />
+          </div>
         </section>
       </main>
     </div>

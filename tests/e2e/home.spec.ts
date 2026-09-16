@@ -20,6 +20,16 @@ test("Home is the current tab, names the credential, and scores it", async ({ pa
   for (const bar of await bars.all()) {
     await expect(bar).toHaveAttribute("aria-valuenow", /^\d+(\.\d+)?$/);
   }
+  // The hero ring counts credits (spec §5.1), the timeline lists the demo
+  // deadline as a real button, and both are named for assistive technology.
+  await expect(
+    page.getByRole("progressbar", { name: "Licensed Clinical Social Worker: 5 of 40 credits counted" }),
+  ).toHaveAttribute("aria-valuenow", "13");
+  await expect(
+    page
+      .getByRole("list", { name: "Deadlines in the next twelve months" })
+      .getByRole("button", { name: /Licensed Clinical Social Worker, Nov 30, 2026/ }),
+  ).toBeVisible();
   app.expectNoErrors();
 });
 
