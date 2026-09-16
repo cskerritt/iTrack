@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { Button } from "../components/Button";
+import { EmptyState } from "../components/EmptyState";
+import { ErrorBoundary, ErrorFallback } from "../components/ErrorBoundary";
 import { useToast } from "../components/Toast";
 import { CreditBar } from "../components/instruments/CreditBar";
 import { CycleRing } from "../components/instruments/CycleRing";
@@ -45,6 +47,55 @@ const PROFESSIONS: SelectOption[] = [
   { value: "speech-language-pathology", label: "Speech-language pathology" },
   { value: "vocational-evaluation", label: "Vocational evaluation" },
 ];
+
+// A static error captured once at module load: the sample fallback renders
+// it on every visit, so the disclosure's contents are stable for e2e and axe.
+const SAMPLE_ERROR = new Error("Styleguide sample error");
+
+function SampleScreen({ crashed }: { crashed: boolean }) {
+  if (crashed) throw new Error("Styleguide sample crash");
+  return <p>Sample screen rendered.</p>;
+}
+
+// The ErrorBoundary contract the shell relies on, on demand: a render error
+// shows the fallback; a resetKey change (the shell passes the current path)
+// clears it; the `fallback` render prop's reset() clears it from Try again.
+function BoundarySample() {
+  const [crashed, setCrashed] = useState(false);
+  const [resetKey, setResetKey] = useState(0);
+  return (
+    <div className="styleguide-boundary">
+      <p>
+        <Button variant="secondary" onClick={() => setCrashed(true)}>
+          Throw a sample error
+        </Button>{" "}
+        <Button
+          variant="secondary"
+          onClick={() => {
+            setCrashed(false);
+            setResetKey((key) => key + 1);
+          }}
+        >
+          Change the reset key
+        </Button>
+      </p>
+      <ErrorBoundary
+        resetKey={String(resetKey)}
+        fallback={(error, reset) => (
+          <ErrorFallback
+            error={error}
+            onReset={() => {
+              setCrashed(false);
+              reset();
+            }}
+          />
+        )}
+      >
+        <SampleScreen crashed={crashed} />
+      </ErrorBoundary>
+    </div>
+  );
+}
 
 export function Styleguide() {
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -282,6 +333,23 @@ export function Styleguide() {
               formatMonth={(iso) => iso.slice(0, 7)}
             />
           </div>
+        </section>
+        <section aria-labelledby="sg-empty">
+          <h2 id="sg-empty">Empty states and errors</h2>
+          <EmptyState
+            title="Add your first credential"
+            body="Sample empty page."
+            action={{ label: "Set up credential", onClick: () => undefined }}
+          />
+          <EmptyState
+            compact
+            title="No learning logged yet"
+            body="Sample inline empty state."
+            action={{ label: "Add one", onClick: () => undefined }}
+            icon={<Icon name="plus" size={16} />}
+          />
+          <ErrorFallback error={SAMPLE_ERROR} />
+          <BoundarySample />
         </section>
       </main>
     </div>

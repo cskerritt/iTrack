@@ -72,7 +72,7 @@ import {
   oppositeFloridaMentalHealthRuleSetId,
 } from "./lib/floridaMentalHealth";
 import { isExpandedCertificationRuleSetId } from "./lib/expandedCertifications";
-import { parseRoute, type TabName } from "./lib/navigation";
+import { buildPath, parseRoute, type TabName } from "./lib/navigation";
 import {
   SESSION_ENDED_MESSAGE,
   UNEXPECTED_RESPONSE_MESSAGE,
@@ -121,6 +121,8 @@ import {
   TextInput,
 } from "./components/Form";
 import { Button } from "./components/Button";
+import { EmptyState } from "./components/EmptyState";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useToast } from "./components/Toast";
 import { CreditBar } from "./components/instruments/CreditBar";
 import { CycleRing } from "./components/instruments/CycleRing";
@@ -3992,205 +3994,207 @@ export function ITrackApp() {
             </div>
           ) : null}
 
-          {!workspace ? (
-            !isOnline ? (
-              <OfflineWorkspace />
-            ) : workspaceLoadFailed ? (
-              <WorkspaceLoadFailure
-                status={workspaceLoadFailureStatus}
-                message={error}
-                onRetry={() => void loadWorkspace()}
-              />
-            ) : (
-              <LoadingDashboard />
-            )
-          ) : nav.route.detail ? (
-            detailCredential ? (
-              <CredentialDetailScreen
-                credential={detailCredential}
-                onEdit={() => {
-                  setError("");
-                  setCredentialEditor(detailCredential);
-                }}
-                onArchive={() => void archiveCredentialRecord(detailCredential)}
-                onDelete={() => {
-                  setError("");
-                  setCredentialDeletion(detailCredential);
-                }}
-                activities={workspace.activities}
+          <ErrorBoundary resetKey={buildPath(nav.route)}>
+            {!workspace ? (
+              !isOnline ? (
+                <OfflineWorkspace />
+              ) : workspaceLoadFailed ? (
+                <WorkspaceLoadFailure
+                  status={workspaceLoadFailureStatus}
+                  message={error}
+                  onRetry={() => void loadWorkspace()}
+                />
+              ) : (
+                <LoadingDashboard />
+              )
+            ) : nav.route.detail ? (
+              detailCredential ? (
+                <CredentialDetailScreen
+                  credential={detailCredential}
+                  onEdit={() => {
+                    setError("");
+                    setCredentialEditor(detailCredential);
+                  }}
+                  onArchive={() => void archiveCredentialRecord(detailCredential)}
+                  onDelete={() => {
+                    setError("");
+                    setCredentialDeletion(detailCredential);
+                  }}
+                  activities={workspace.activities}
+                  isOnline={isOnline}
+                  onBreadcrumb={() => nav.setTab("credentials")}
+                  onSubmit={openSubmission}
+                  onAccept={openAcceptance}
+                  onReminders={() => {
+                    setError("");
+                    setRemindersOpen(true);
+                  }}
+                  onAddToCalendar={(credential) =>
+                    void addCredentialToCalendar(credential)
+                  }
+                  onRequirementApplicability={(
+                    credentialId,
+                    requirement,
+                    status,
+                  ) =>
+                    void setRequirementApplicability(
+                      credentialId,
+                      requirement,
+                      status,
+                    )
+                  }
+                  onDentalCheckpoint={(
+                    credentialId,
+                    requirement,
+                    completed,
+                    evidenceNote,
+                  ) =>
+                    void saveDentalCheckpoint(
+                      credentialId,
+                      requirement,
+                      completed,
+                      evidenceNote,
+                    )
+                  }
+                  actionsDisabled={!isOnline}
+                  pendingActionKeys={pendingActionKeys}
+                />
+              ) : null
+            ) : view === "home" ? (
+              <TodayView
+                workspace={workspace}
+                credential={selectedCredential}
+                today={today()}
                 isOnline={isOnline}
-                onBreadcrumb={() => nav.setTab("credentials")}
+                highlightedReminderKey={highlightedReminderKey}
+                onAddActivity={openActivityEntry}
+                onAddCredential={openCredentialSetup}
+                onViewRecords={() => nav.setTab("history")}
+                onOpenCredential={openCredentialDetail}
+                onLogCreditsFor={logCreditsFor}
                 onSubmit={openSubmission}
                 onAccept={openAcceptance}
                 onReminders={() => {
                   setError("");
                   setRemindersOpen(true);
                 }}
-                onAddToCalendar={(credential) =>
-                  void addCredentialToCalendar(credential)
+                onReminderState={(reminder, status) =>
+                  void setReminderState(reminder, status)
                 }
-                onRequirementApplicability={(
-                  credentialId,
-                  requirement,
-                  status,
-                ) =>
-                  void setRequirementApplicability(
-                    credentialId,
-                    requirement,
-                    status,
-                  )
+                onAddReminderToCalendar={(reminder) =>
+                  void addReminderToCalendar(reminder)
                 }
-                onDentalCheckpoint={(
-                  credentialId,
-                  requirement,
-                  completed,
-                  evidenceNote,
-                ) =>
-                  void saveDentalCheckpoint(
-                    credentialId,
-                    requirement,
-                    completed,
-                    evidenceNote,
-                  )
+                onToggleTask={toggleTask}
+                onAddPersonalTask={(credential) => {
+                  setError("");
+                  setTaskEditor({ credential, task: null });
+                }}
+                onEditPersonalTask={(credential, task) => {
+                  setError("");
+                  setTaskEditor({ credential, task });
+                }}
+                onRestorePersonalTask={(task) =>
+                  void restorePersonalTask(task)
                 }
+                taskActionsDisabled={!isOnline}
+                pendingActionKeys={pendingActionKeys}
+                onClaimQuest={(quest) => void claimWeeklyQuest(quest)}
+                onRequirementApplicability={(requirement, status) =>
+                  selectedCredential
+                    ? void setRequirementApplicability(
+                        selectedCredential.id,
+                        requirement,
+                        status,
+                      )
+                    : undefined
+                }
+                onDentalCheckpoint={(requirement, completed, evidenceNote) =>
+                  selectedCredential
+                    ? void saveDentalCheckpoint(
+                        selectedCredential.id,
+                        requirement,
+                        completed,
+                        evidenceNote,
+                      )
+                    : undefined
+                }
+              />
+            ) : view === "credentials" ? (
+              <CredentialsView
+                credentials={workspace.credentials}
+                selectedId={selectedCredential?.id ?? ""}
+                onSelect={openCredentialDetail}
+                onAdd={openCredentialSetup}
+              />
+            ) : view === "history" ? (
+              <RecordsView
+                activities={workspace.activities}
+                archivedActivities={workspace.archivedActivities}
+                credentials={workspace.credentials}
+                archivedCredentials={workspace.archivedCredentials}
+                onAdd={openActivityEntry}
+                onEdit={(activity) => {
+                  setError("");
+                  setEditingActivity(activity);
+                }}
+                onRestore={(activity) => void restoreActivityRecord(activity)}
+                onRestoreCredential={(credential) =>
+                  void restoreCredentialRecord(credential)
+                }
+                onDeleteCredential={(credential) => {
+                  setError("");
+                  setCredentialDeletion(credential);
+                }}
                 actionsDisabled={!isOnline}
                 pendingActionKeys={pendingActionKeys}
+                onEvidence={(activity) => void openEvidence(activity)}
+                onAllocate={(activity) => {
+                  setError("");
+                  const existingIds = new Set(
+                    allocationsFor(activity).map(
+                      (allocation) => allocation.credentialId,
+                    ),
+                  );
+                  const firstEligible = workspace.credentials.find(
+                    (credential) =>
+                      isOpenCycle(credential) &&
+                      !existingIds.has(credential.id),
+                  );
+                  setAllocationCredentialId(firstEligible?.id ?? "");
+                  setAllocationActivity(activity);
+                }}
+                onClassify={(activity, allocation) => {
+                  setError("");
+                  setClassificationRepair({ activity, allocation });
+                }}
               />
-            ) : null
-          ) : view === "home" ? (
-            <TodayView
-              workspace={workspace}
-              credential={selectedCredential}
-              today={today()}
-              isOnline={isOnline}
-              highlightedReminderKey={highlightedReminderKey}
-              onAddActivity={openActivityEntry}
-              onAddCredential={openCredentialSetup}
-              onViewRecords={() => nav.setTab("history")}
-              onOpenCredential={openCredentialDetail}
-              onLogCreditsFor={logCreditsFor}
-              onSubmit={openSubmission}
-              onAccept={openAcceptance}
-              onReminders={() => {
-                setError("");
-                setRemindersOpen(true);
-              }}
-              onReminderState={(reminder, status) =>
-                void setReminderState(reminder, status)
-              }
-              onAddReminderToCalendar={(reminder) =>
-                void addReminderToCalendar(reminder)
-              }
-              onToggleTask={toggleTask}
-              onAddPersonalTask={(credential) => {
-                setError("");
-                setTaskEditor({ credential, task: null });
-              }}
-              onEditPersonalTask={(credential, task) => {
-                setError("");
-                setTaskEditor({ credential, task });
-              }}
-              onRestorePersonalTask={(task) =>
-                void restorePersonalTask(task)
-              }
-              taskActionsDisabled={!isOnline}
-              pendingActionKeys={pendingActionKeys}
-              onClaimQuest={(quest) => void claimWeeklyQuest(quest)}
-              onRequirementApplicability={(requirement, status) =>
-                selectedCredential
-                  ? void setRequirementApplicability(
-                      selectedCredential.id,
-                      requirement,
-                      status,
-                    )
-                  : undefined
-              }
-              onDentalCheckpoint={(requirement, completed, evidenceNote) =>
-                selectedCredential
-                  ? void saveDentalCheckpoint(
-                      selectedCredential.id,
-                      requirement,
-                      completed,
-                      evidenceNote,
-                    )
-                  : undefined
-              }
-            />
-          ) : view === "credentials" ? (
-            <CredentialsView
-              credentials={workspace.credentials}
-              selectedId={selectedCredential?.id ?? ""}
-              onSelect={openCredentialDetail}
-              onAdd={openCredentialSetup}
-            />
-          ) : view === "history" ? (
-            <RecordsView
-              activities={workspace.activities}
-              archivedActivities={workspace.archivedActivities}
-              credentials={workspace.credentials}
-              archivedCredentials={workspace.archivedCredentials}
-              onAdd={openActivityEntry}
-              onEdit={(activity) => {
-                setError("");
-                setEditingActivity(activity);
-              }}
-              onRestore={(activity) => void restoreActivityRecord(activity)}
-              onRestoreCredential={(credential) =>
-                void restoreCredentialRecord(credential)
-              }
-              onDeleteCredential={(credential) => {
-                setError("");
-                setCredentialDeletion(credential);
-              }}
-              actionsDisabled={!isOnline}
-              pendingActionKeys={pendingActionKeys}
-              onEvidence={(activity) => void openEvidence(activity)}
-              onAllocate={(activity) => {
-                setError("");
-                const existingIds = new Set(
-                  allocationsFor(activity).map(
-                    (allocation) => allocation.credentialId,
-                  ),
-                );
-                const firstEligible = workspace.credentials.find(
-                  (credential) =>
-                    isOpenCycle(credential) &&
-                    !existingIds.has(credential.id),
-                );
-                setAllocationCredentialId(firstEligible?.id ?? "");
-                setAllocationActivity(activity);
-              }}
-              onClassify={(activity, allocation) => {
-                setError("");
-                setClassificationRepair({ activity, allocation });
-              }}
-            />
-          ) : (
-            <AccountView
-              workspace={workspace}
-              onReminders={() => {
-                setError("");
-                setRemindersOpen(true);
-              }}
-              onWeeklyGoal={(weeklyGoal) =>
-                void updateWeeklyGoal(weeklyGoal)
-              }
-              weeklyGoalPending={pendingActionKeys.includes(
-                WEEKLY_GOAL_ACTION_KEY,
-              )}
-              isStandalone={isStandalone}
-              installAvailable={Boolean(installPrompt)}
-              onInstall={() => void handleInstallApp()}
-              onAddAllCheckIns={() => void addAllCheckInsToCalendar()}
-              pushDeviceState={pushDeviceState}
-              pushPending={pushPending}
-              isOnline={isOnline}
-              onEnablePhoneAlerts={() => void handleEnablePhoneAlerts()}
-              onDisablePhoneAlerts={() => void handleDisablePhoneAlerts()}
-              onTestPhoneAlert={() => void handleTestPhoneAlert()}
-              onRefreshPhoneAlerts={() => void refreshPushDeviceState()}
-            />
-          )}
+            ) : (
+              <AccountView
+                workspace={workspace}
+                onReminders={() => {
+                  setError("");
+                  setRemindersOpen(true);
+                }}
+                onWeeklyGoal={(weeklyGoal) =>
+                  void updateWeeklyGoal(weeklyGoal)
+                }
+                weeklyGoalPending={pendingActionKeys.includes(
+                  WEEKLY_GOAL_ACTION_KEY,
+                )}
+                isStandalone={isStandalone}
+                installAvailable={Boolean(installPrompt)}
+                onInstall={() => void handleInstallApp()}
+                onAddAllCheckIns={() => void addAllCheckInsToCalendar()}
+                pushDeviceState={pushDeviceState}
+                pushPending={pushPending}
+                isOnline={isOnline}
+                onEnablePhoneAlerts={() => void handleEnablePhoneAlerts()}
+                onDisablePhoneAlerts={() => void handleDisablePhoneAlerts()}
+                onTestPhoneAlert={() => void handleTestPhoneAlert()}
+                onRefreshPhoneAlerts={() => void refreshPushDeviceState()}
+              />
+            )}
+          </ErrorBoundary>
         </AppShell>
       </RouteAnnouncementContext>
 
@@ -4201,14 +4205,18 @@ export function ITrackApp() {
           onClose={closeActivityEntry}
         >
           {activityCredentials.length === 0 ? (
-            <EmptyModalState
+            <EmptyState
+              compact
               title="Add an active credential first"
               body="Credits need an open renewal cycle so iTrack knows where to count them."
-              action="Set up credential"
-              onAction={() => {
-                closeActivityEntry();
-                openCredentialSetup();
+              action={{
+                label: "Set up credential",
+                onClick: () => {
+                  closeActivityEntry();
+                  openCredentialSetup();
+                },
               }}
+              icon={<Icon name="plus" size={22} />}
             />
           ) : (
             <form className="form-stack" onSubmit={handleActivitySubmit}>
@@ -6088,11 +6096,12 @@ export function ITrackApp() {
               </div>
             </form>
           ) : (
-            <EmptyModalState
+            <EmptyState
+              compact
               title="No other eligible credential"
               body="Add another active credential, or this activity is already applied everywhere it can be."
-              action="Close"
-              onAction={() => setAllocationActivity(null)}
+              action={{ label: "Close", onClick: () => setAllocationActivity(null) }}
+              icon={<Icon name="plus" size={22} />}
             />
           )}
         </Modal>
@@ -6254,11 +6263,12 @@ export function ITrackApp() {
               </div>
             </form>
           ) : (
-            <EmptyModalState
+            <EmptyState
+              compact
               title="Credential unavailable"
               body="This activity’s credential could not be opened for classification."
-              action="Close"
-              onAction={() => setClassificationRepair(null)}
+              action={{ label: "Close", onClick: () => setClassificationRepair(null) }}
+              icon={<Icon name="plus" size={22} />}
             />
           )}
         </Modal>
@@ -7478,11 +7488,12 @@ function TodayView({
               ))}
             </div>
           ) : (
-            <EmptyInline
+            <EmptyState
+              compact
               title="No learning logged yet"
               body="Your first record will appear here."
-              action="Add one"
-              onAction={onAddActivity}
+              action={{ label: "Add one", onClick: onAddActivity }}
+              icon={<Icon name="plus" size={16} />}
             />
           )}
         </section>
@@ -7634,11 +7645,10 @@ function CredentialsView({
           </button>
         </section>
       ) : (
-        <EmptyPage
+        <EmptyState
           title="Add your first credential"
           body="Choose a source-linked rule template or make a custom plan from your credential information."
-          action="Set up credential"
-          onAction={onAdd}
+          action={{ label: "Set up credential", onClick: onAdd }}
         />
       )}
     </div>
@@ -8410,11 +8420,10 @@ function RecordsView({
           ))}
         </section>
       ) : (
-        <EmptyPage
+        <EmptyState
           title="Your learning record starts here"
           body="Log a course, conference, webinar, or other completed activity in under a minute."
-          action="Log first activity"
-          onAction={onAdd}
+          action={{ label: "Log first activity", onClick: onAdd }}
         />
       )}
       {archivedActivities.length ? (
@@ -10750,84 +10759,6 @@ function RequirementPicker({
           : ""}
       </small>
     </fieldset>
-  );
-}
-
-function EmptyInline({
-  title,
-  body,
-  action,
-  onAction,
-}: {
-  title: string;
-  body: string;
-  action: string;
-  onAction: () => void;
-}) {
-  return (
-    <div className="empty-inline">
-      <span>
-        <Icon name="plus" size={16} />
-      </span>
-      <div>
-        <strong>{title}</strong>
-        <p>{body}</p>
-      </div>
-      <button type="button" onClick={onAction}>
-        {action}
-      </button>
-    </div>
-  );
-}
-
-function EmptyPage({
-  title,
-  body,
-  action,
-  onAction,
-}: {
-  title: string;
-  body: string;
-  action: string;
-  onAction: () => void;
-}) {
-  return (
-    <section className="empty-page">
-      <span className="empty-page-mark" aria-hidden="true">
-        L
-      </span>
-      <span className="section-kicker">Ready when you are</span>
-      <h2>{title}</h2>
-      <p>{body}</p>
-      <button className="button button-primary" type="button" onClick={onAction}>
-        {action}
-      </button>
-    </section>
-  );
-}
-
-function EmptyModalState({
-  title,
-  body,
-  action,
-  onAction,
-}: {
-  title: string;
-  body: string;
-  action: string;
-  onAction: () => void;
-}) {
-  return (
-    <div className="empty-modal">
-      <span>
-        <Icon name="plus" size={24} />
-      </span>
-      <h3>{title}</h3>
-      <p>{body}</p>
-      <button className="button button-primary" type="button" onClick={onAction}>
-        {action}
-      </button>
-    </div>
   );
 }
 

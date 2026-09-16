@@ -289,14 +289,14 @@
   letter-spacing: var(--tracking-display);
 }
 
-.styleguide section {
+.styleguide > section {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
 }
 
-.styleguide h2 {
+.styleguide > section > h2 {
   flex-basis: 100%;
   margin: 0;
   font-family: var(--font-display);
@@ -608,5 +608,92 @@
     right: max(16px, env(safe-area-inset-right));
     bottom: calc(var(--bottom-nav-height) + 12px + env(safe-area-inset-bottom));
     width: auto;
+  }
+}
+
+/* ===== EMPTY STATE (spec §5.2) — one family for the page, inline and in-sheet forms ===== */
+.empty-state {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 6px;
+  min-height: 320px;
+  padding: 40px 24px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  text-align: center;
+}
+
+.empty-state-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 6px;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.empty-state-text {
+  min-width: 0;
+}
+
+.empty-state h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: var(--tracking-display);
+  color: var(--ink);
+}
+
+.empty-state p {
+  max-width: 46ch;
+  margin: 0 0 10px;
+  color: var(--ink-muted);
+  font-size: var(--text-md);
+}
+
+/* Inline and in-sheet: one row — mark, text, quiet action — stacked on phones. */
+.empty-state-compact {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 0;
+  padding: 14px 16px;
+  text-align: left;
+}
+
+.empty-state-compact .empty-state-mark {
+  width: 36px;
+  height: 36px;
+  margin-bottom: 0;
+  border-radius: var(--radius-sm);
+}
+
+.empty-state-compact .empty-state-text {
+  flex: 1 1 auto;
+}
+
+.empty-state-compact h2 {
+  font-family: inherit;
+  font-size: var(--text-md);
+  line-height: 1.3;
+  letter-spacing: normal;
+}
+
+.empty-state-compact p {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+@media (max-width: 540px) {
+  .empty-state-compact {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }

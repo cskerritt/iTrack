@@ -396,7 +396,7 @@
   border-top-color: transparent;
   opacity: 0.75;
   vertical-align: -2px;
-  animation: lantern-spin 0.7s linear infinite;
+  animation: spin 0.7s linear infinite;
 }
 
 .row-saving {
@@ -415,12 +415,6 @@
 .task-row.saving,
 .requirement-condition.saving {
   background: var(--wash-deep);
-}
-
-@keyframes lantern-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .evidence-mark {
@@ -740,123 +734,6 @@
 .condition-options label {
   cursor: pointer;
   touch-action: manipulation;
-}
-
-/* ===== LEGACY EMPTY STATES — deleted in Task 12 ===== */
-
-.empty-inline {
-  display: grid;
-  grid-template-columns: 33px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  margin-top: 28px;
-  border: 1px dashed var(--line-strong);
-  border-radius: 12px;
-  padding: 13px;
-}
-
-.empty-inline > span {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  background: var(--tint-bright);
-}
-
-.empty-inline strong {
-  display: block;
-  font-size: var(--text-sm);
-}
-
-.empty-inline p {
-  margin: 0;
-  color: var(--ink-muted);
-  font-size: var(--text-xs);
-}
-
-.empty-inline button {
-  min-height: var(--tap-min);
-  border: 0;
-  background: transparent;
-  color: var(--ink-soft);
-  cursor: pointer;
-  font-size: var(--text-sm);
-  font-weight: 800;
-}
-
-.empty-page {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  min-height: 390px;
-  border: 1px dashed var(--line-strong);
-  border-radius: var(--radius-lg);
-  background: rgb(var(--card-rgb) / 0.6);
-  padding: 38px;
-  text-align: center;
-}
-
-.empty-page-mark {
-  display: grid;
-  place-items: center;
-  width: 64px;
-  height: 64px;
-  margin-bottom: 19px;
-  border-radius: 20px 20px 20px 7px;
-  background: var(--tint-bright);
-  color: var(--ink-tint);
-  font-family: var(--font-ui);
-  font-size: var(--text-2xl);
-  font-weight: 600;
-}
-
-.empty-page h2 {
-  margin: 5px 0 7px;
-  font-family: var(--font-ui);
-  font-size: var(--text-2xl);
-  font-weight: 600;
-  letter-spacing: -0.03em;
-}
-
-.empty-page p {
-  max-width: 520px;
-  margin: 0 0 20px;
-  color: var(--ink-muted);
-  font-size: var(--text-md);
-}
-
-.empty-modal {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 28px 10px 15px;
-  text-align: center;
-}
-
-.empty-modal > span {
-  display: grid;
-  place-items: center;
-  width: 55px;
-  height: 55px;
-  border-radius: 18px;
-  background: var(--tint-bright);
-}
-
-.empty-modal h3 {
-  margin: 16px 0 5px;
-  font-family: var(--font-ui);
-  font-size: var(--text-xl);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-
-.empty-modal p {
-  max-width: 380px;
-  margin: 0 0 18px;
-  color: var(--ink-muted);
-  font-size: var(--text-xs);
 }
 
 /* ===== LEGACY CHOICE ROWS — deleted in Wave 4. The label-wrapped field shape, the form stack/grid/actions rules and the modal error block moved to primitives.css FORM (Task 7); these rows wait for Wave 4 to adopt Checkbox and a segmented control. ===== */
@@ -1361,30 +1238,6 @@
   }
 }
 
-/* ===== LEGACY ERROR FALLBACK — replaced in Task 12 ===== */
-
-/* Error fallback (ErrorBoundary, app/error.tsx, app/not-found.tsx). */
-.error-fallback {
-  max-width: 520px;
-  margin: 15vh auto 0;
-  padding: 0 20px;
-  text-align: center;
-}
-.error-fallback h1 {
-  font-size: var(--text-xl);
-  margin-bottom: 0.5rem;
-}
-.error-fallback p {
-  color: var(--ink-muted);
-  margin-bottom: 1rem;
-}
-.error-fallback-actions {
-  display: flex;
-  gap: 12px;
-  justify-content: center;
-  flex-wrap: wrap;
-}
-
 /* ===== LEGACY DISPLAY FACE — deleted in Wave 4 ===== */
 /*
  * The un-extracted screens keep their own type rules until Wave 4 rewrites
@@ -1401,7 +1254,6 @@ body .credential-detail-header h2,
 body .deadline-number strong,
 body .onboarding-copy h2,
 body .offline-workspace h1,
-body .error-fallback h1,
 body .brand {
   font-family: var(--font-display);
   letter-spacing: var(--tracking-display);

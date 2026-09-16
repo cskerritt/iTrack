@@ -383,3 +383,57 @@
     outline-offset: -2px;
   }
 }
+
+/* ===== ERROR FALLBACK (ErrorBoundary, app/error.tsx) ===== */
+.error-fallback {
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  max-width: 520px;
+  margin: 15vh auto 0;
+  padding: 0 20px;
+  text-align: center;
+}
+
+.app-main .error-fallback {
+  margin-top: 48px;
+}
+
+.error-fallback p {
+  margin: 0;
+  color: var(--ink-muted);
+}
+
+.error-fallback-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.error-fallback-details {
+  width: 100%;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+}
+
+.error-fallback-details summary {
+  min-height: var(--tap-min);
+  padding: 12px 0;
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.error-fallback-details pre {
+  margin: 8px 0 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  white-space: pre-wrap;
+}
