@@ -268,19 +268,56 @@
   height: 12px;
 }
 
+/*
+ * The tooltip hangs centred over its marker in the middle third of the axis
+ * and from the marker's own side in the outer thirds (the li's data-edge,
+ * decided in DeadlineTimeline.tsx), so it never runs past the plot: a hidden
+ * tooltip still counts toward the page's scrollable overflow, and a tip
+ * centred on a marker at 92% gave Home a sideways scrollbar with nothing
+ * hovered. `width: max-content` keeps a wrapping tip from collapsing to one
+ * word per line inside its zero-width item; the cap — 18rem, or half the
+ * viewport — is what keeps every anchoring inside the plot down to 320px.
+ * The pointer never lands on the tip itself, so revealing it cannot unhover
+ * the marker beneath.
+ */
 .deadline-timeline-tip {
   position: absolute;
   bottom: calc(100% + 4px);
   left: 50%;
+  width: max-content;
+  max-width: min(18rem, 50vw);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--card);
   color: var(--ink);
   font-size: var(--text-2xs);
   padding: 6px 8px;
+  overflow-wrap: anywhere;
+  pointer-events: none;
   transform: translateX(-50%);
   visibility: hidden;
+}
+
+/* A wrapping tip breaks between its parts, never inside a date or a state word. */
+.deadline-timeline-tip-part {
   white-space: nowrap;
+}
+
+.deadline-timeline-list > li[data-edge="start"] .deadline-timeline-tip {
+  left: 0;
+  transform: none;
+}
+
+.deadline-timeline-list > li[data-edge="end"] .deadline-timeline-tip {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+/* The revealed tip paints over neighbouring markers, not under them. */
+.deadline-timeline-list > li:hover,
+.deadline-timeline-list > li:focus-within {
+  z-index: 1;
 }
 
 .deadline-timeline-hit:hover + .deadline-timeline-tip,

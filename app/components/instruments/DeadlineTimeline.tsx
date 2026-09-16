@@ -30,6 +30,23 @@ const PLOT_WIDTH = 340;
 const PLOT_HEIGHT = 92;
 const pct = (x: number) => `${((x / PLOT_WIDTH) * 100).toFixed(3)}%`;
 
+// Which side a marker's tooltip and labels hang from. In the middle third of
+// the axis they are centred on the marker (the artboard's text-anchor
+// middle); in the outer thirds they are anchored to the marker's own side, so
+// neither the SVG (which clips) nor the page (whose scrollable overflow a
+// hidden tooltip still counts toward) sees a label run past the plot. The
+// `<li>` carries the answer as data-edge for instruments.css.
+type TimelineEdge = "start" | "end" | undefined;
+const edgeOf = (
+  x: number,
+  axis: { x1: number; x2: number },
+): TimelineEdge => {
+  const third = (axis.x2 - axis.x1) / 3;
+  if (x < axis.x1 + third) return "start";
+  if (x > axis.x2 - third) return "end";
+  return undefined;
+};
+
 /*
  * The SVG is decorative (axis, ticks, the dashed today line, one name and
  * short date per deadline). The list laid over it is the real content: one
@@ -56,6 +73,10 @@ export function DeadlineTimeline({
   const tipBase = useId();
   const lastMonth = addMonthsIso(layout.start, months - 1);
   const { axis } = layout;
+  const markers = layout.markers.map((marker) => ({
+    ...marker,
+    edge: edgeOf(marker.x, axis),
+  }));
   return (
     <figure
       className={["instrument", "deadline-timeline", className]
@@ -113,13 +134,13 @@ export function DeadlineTimeline({
           >
             today
           </text>
-          {layout.markers.map((marker) => (
+          {markers.map((marker) => (
             <g key={marker.id}>
               <text
                 className="deadline-timeline-marker-name"
                 x={pct(marker.x)}
                 y={16}
-                textAnchor="middle"
+                textAnchor={marker.edge ?? "middle"}
               >
                 {marker.label}
               </text>
@@ -127,7 +148,7 @@ export function DeadlineTimeline({
                 className="deadline-timeline-marker-date"
                 x={pct(marker.x)}
                 y={28}
-                textAnchor="middle"
+                textAnchor={marker.edge ?? "middle"}
               >
                 {formatShortDate(marker.date)}
               </text>
@@ -138,7 +159,7 @@ export function DeadlineTimeline({
           className="deadline-timeline-list"
           aria-label="Deadlines in the next twelve months"
         >
-          {layout.markers.map((marker) => {
+          {markers.map((marker) => {
             const tipId = `${tipBase}-${marker.id}`;
             return (
               <li
@@ -146,6 +167,7 @@ export function DeadlineTimeline({
                 className="instrument"
                 data-state={marker.state}
                 data-r={marker.r}
+                data-edge={marker.edge}
                 style={{ left: pct(marker.x) }}
               >
                 <button
@@ -164,8 +186,14 @@ export function DeadlineTimeline({
                   id={tipId}
                   className="deadline-timeline-tip"
                 >
-                  {marker.label} · {formatDate(marker.date)} ·{" "}
-                  {STATE_LABELS[marker.state]}
+                  {marker.label} ·{" "}
+                  <span className="deadline-timeline-tip-part">
+                    {formatDate(marker.date)}
+                  </span>{" "}
+                  ·{" "}
+                  <span className="deadline-timeline-tip-part">
+                    {STATE_LABELS[marker.state]}
+                  </span>
                 </span>
               </li>
             );

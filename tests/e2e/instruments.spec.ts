@@ -120,6 +120,78 @@ test.describe("timeline marker and due-soon check-in", () => {
   });
 });
 
+test.describe("timeline tooltip and label near the axis end", () => {
+  test.use({ identity: freshIdentity() });
+
+  test("a deadline late in the window hangs its tooltip and label from the marker's own side: Home never scrolls sideways and the revealed tip stays on screen", async ({ page, app }) => {
+    // 330 days out lands at ~92% of the axis — the ordinary state of a
+    // freshly renewed annual credential, not an edge case. A hidden tooltip
+    // still counts toward the page's scrollable overflow, so a tip centred on
+    // that marker gave Home a horizontal scrollbar with nothing hovered, and
+    // the revealed tip ran off the viewport's right edge. The long name is
+    // the widest tip a real credential produces.
+    await app.seedCredential({
+      credentialName: "Certified Rehabilitation Counselor Supervisor",
+      cycleStart: isoDaysFromToday(-35),
+      deadline: isoDaysFromToday(330),
+    });
+    await app.goto("/");
+    const viewportWidth = page.viewportSize()?.width ?? 0;
+    const sidewaysOverflow = () =>
+      page.evaluate(
+        () =>
+          document.documentElement.scrollWidth -
+          document.documentElement.clientWidth,
+      );
+    expect(await sidewaysOverflow()).toBeLessThanOrEqual(0);
+    const marker = page
+      .getByRole("list", { name: "Deadlines in the next twelve months" })
+      .getByRole("button", {
+        name: /Certified Rehabilitation Counselor Supervisor/,
+      });
+    await expect(marker.locator("..")).toHaveAttribute("data-edge", "end");
+    // The decorative name above the marker ends at the marker, so the SVG
+    // (which clips) shows the whole name rather than its first half.
+    const name = page.locator(".deadline-timeline-marker-name", {
+      hasText: "Certified Rehabilitation Counselor Supervisor",
+    });
+    await expect(name).toHaveAttribute("text-anchor", "end");
+    const svgBox = await page.locator(".deadline-timeline-plot svg").boundingBox();
+    const nameBox = await name.boundingBox();
+    expect(nameBox?.x).toBeGreaterThanOrEqual(svgBox?.x ?? Infinity);
+    expect((nameBox?.x ?? Infinity) + (nameBox?.width ?? 0)).toBeLessThanOrEqual(
+      (svgBox?.x ?? 0) + (svgBox?.width ?? 0),
+    );
+    const tip = page.getByRole("tooltip", {
+      name: /Certified Rehabilitation Counselor Supervisor/,
+    });
+    await expect(tip).toBeHidden();
+    const expectTipOnScreen = async () => {
+      await expect(tip).toBeVisible();
+      const box = await tip.boundingBox();
+      expect(box?.x).toBeGreaterThanOrEqual(0);
+      expect((box?.x ?? Infinity) + (box?.width ?? 0)).toBeLessThanOrEqual(
+        viewportWidth,
+      );
+      // Wrapped, not cut: every line of text is laid out inside the box.
+      expect(
+        await tip.evaluate((node) => node.scrollWidth <= node.clientWidth + 1),
+      ).toBe(true);
+      expect(await sidewaysOverflow()).toBeLessThanOrEqual(0);
+    };
+    await marker.hover();
+    await expectTipOnScreen();
+    await page.mouse.move(2, 2);
+    await expect(tip).toBeHidden();
+    await marker.focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    await expect(marker).toBeFocused();
+    await expectTipOnScreen();
+    app.expectNoErrors();
+  });
+});
+
 test("the styleguide renders every ring state with a numeric value", async ({ page, app }) => {
   await app.goto("/styleguide");
   const rings = page.locator(".cycle-ring");
@@ -140,5 +212,14 @@ test("the styleguide renders every ring state with a numeric value", async ({ pa
   });
   await expect(overEarned).toHaveAttribute("data-state", "complete");
   await expect(overEarned).not.toHaveAttribute("data-overflow", "true");
+  // The sample's fixed today (2026-09-15) makes the timeline's edge logic
+  // deterministic: LCSW (Nov 30) sits in the axis's first third and hangs its
+  // tooltip and label from the marker's right; CRC (Feb 1) sits in the middle
+  // third and stays centred; CLCP (2028) is beyond the window.
+  const items = page.locator(".deadline-timeline-list > li");
+  await expect(items).toHaveCount(2);
+  await expect(items.filter({ has: page.getByRole("button", { name: /^LCSW/ }) })).toHaveAttribute("data-edge", "start");
+  await expect(page.locator('.deadline-timeline-list > li:not([data-edge])')).toHaveCount(1);
+  await expect(page.locator('.deadline-timeline-list > li[data-edge="end"]')).toHaveCount(0);
   app.expectNoErrors();
 });

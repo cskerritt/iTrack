@@ -30,6 +30,21 @@ test("Home is the current tab, names the credential, and scores it", async ({ pa
       .getByRole("list", { name: "Deadlines in the next twelve months" })
       .getByRole("button", { name: /Licensed Clinical Social Worker, Nov 30, 2026/ }),
   ).toBeVisible();
+  // The demo deadline sits in the axis's first third, so its tooltip and its
+  // decorative name hang from the marker's right (data-edge="start"): the
+  // phone screenshots show the whole name where a centred label was clipped
+  // by the SVG's left edge.
+  await expect(page.locator('.deadline-timeline-list > li[data-edge="start"]')).toHaveCount(1);
+  const markerName = page.locator(".deadline-timeline-marker-name", {
+    hasText: "Licensed Clinical Social Worker",
+  });
+  await expect(markerName).toHaveAttribute("text-anchor", "start");
+  const plotBox = await page.locator(".deadline-timeline-plot svg").boundingBox();
+  const nameBox = await markerName.boundingBox();
+  expect(nameBox?.x).toBeGreaterThanOrEqual(plotBox?.x ?? Infinity);
+  expect((nameBox?.x ?? Infinity) + (nameBox?.width ?? 0)).toBeLessThanOrEqual(
+    (plotBox?.x ?? 0) + (plotBox?.width ?? 0),
+  );
   app.expectNoErrors();
 });
 
