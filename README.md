@@ -111,6 +111,21 @@ npm run db:generate
 
 Node.js `>=22.13.0` is required.
 
+### Design system
+
+[`docs/DESIGN-SYSTEM.md`](docs/DESIGN-SYSTEM.md) is the reference: the token file (`app/styles/tokens.css`), the three self-hosted faces, the primitives and instruments, the three motion moments, and every gate. The checks it names, from the repo root with Node 22:
+
+```bash
+node tools/contrast-audit.mjs                 # every stylesheet: claims hold, no colour literal outside app/styles/tokens.css
+tools/fonts/build-fonts.sh                    # rebuild the faces under public/fonts/; paste the printed names into app/lib/fonts.ts and app/styles/fonts.css
+E2E_BASE_URL=http://localhost:3100 npm run dev -- --port 3100   # then open http://localhost:3100/styleguide (dev only: every primitive and instrument in every state)
+E2E_BASE_URL=http://localhost:3100 npm run test:e2e             # four projects; axe on every route, zero serious/critical
+WAVE3_SCREENSHOTS=1 E2E_BASE_URL=http://localhost:3100 npx playwright test tests/e2e/screenshots.spec.ts   # the gate screenshots under docs/design/wave3/
+B=http://localhost:8080 OPS_PASSWORD=… bash deploy/railway/runcheck.sh all    # the Docker run-check (matrix 46 · seed 4 · actions 22 · all 68)
+B=https://itrackceu.com bash deploy/railway/runcheck.sh matrix                # live smoke, curl half; never `actions` or `seed` against production
+LIVE_BASE_URL=https://itrackceu.com npx playwright test --config playwright.live.config.ts   # live smoke, Playwright half (unauthenticated: login form, generic error, landing, /login?next=)
+```
+
 ## Next product phases
 
 - a two-step mobile Quick Log with “save and add another” conference entry
