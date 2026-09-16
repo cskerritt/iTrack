@@ -81,15 +81,17 @@ export const RING_SIZES = {
 
 export type RingSize = keyof typeof RING_SIZES;
 
+// Clamped to [0, 1] on both sides: +Infinity is a full ring, NaN and
+// -Infinity read empty.
 const clamp01 = (value: number): number =>
-  Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+  Number.isNaN(value) ? 0 : Math.max(0, Math.min(1, value));
 
 /**
  * The arc geometry for one ring: `dashArray` is the `stroke-dasharray` of an
  * arc drawn on the `r` circle and rotated -90° (12 o'clock start). At 100 %
  * the dash is exactly the circumference so the round caps meet without a
  * seam; the component omits the arc element altogether when `fraction` is 0
- * (a round cap would still paint a dot).
+ * (a round cap would still paint a dot). `fraction` is clamped to [0, 1].
  */
 export function ringArc({
   size,
@@ -133,6 +135,9 @@ export function ringArc({
  * numeral); a marker is placed only strictly inside the bar — a minimum
  * equal to the total is the bar's end, not a marker. A zero requirement has
  * nothing left to earn (the `credentialProgress` rule), so it reads full.
+ * The layout never emits NaN: a non-finite `counted` reads as nothing
+ * counted, a non-finite `minimum` / `cap` as no marker, and a fill that
+ * cannot be computed (a non-finite `required`) is empty.
  */
 export function creditBarLayout({
   counted,
@@ -152,17 +157,24 @@ export function creditBarLayout({
   overflow: boolean;
 } {
   if (required <= 0) return { fillPercent: 100, met: true, overflow: false };
-  const fillPercent = Math.max(0, Math.min(100, (counted / required) * 100));
+  const safeCounted = Number.isFinite(counted) ? counted : 0;
+  const ratio = (safeCounted / required) * 100;
+  const fillPercent = Number.isFinite(ratio)
+    ? Math.max(0, Math.min(100, ratio))
+    : 0;
   const percentOf = (value: number | undefined): number | undefined =>
-    value !== undefined && value > 0 && value < required
+    value !== undefined &&
+    Number.isFinite(value) &&
+    value > 0 &&
+    value < required
       ? (value / required) * 100
       : undefined;
   return {
     fillPercent,
     minimumPercent: percentOf(minimum),
     capPercent: percentOf(cap),
-    met: counted >= required,
-    overflow: counted > required,
+    met: safeCounted >= required,
+    overflow: safeCounted > required,
   };
 }
 
@@ -209,12 +221,24 @@ export function stateOf(cycle: CycleLike, nowMs: number): InstrumentState {
  * green arc and a check under a "Submitted" pill): ring completeness is
  * credits-based, the pill is cycle-based. A checklist-only credential never
  * completes by credits; its ring follows the cycle.
+ *
+ * "Counted in full" is the raw `totalEarned >= totalRequired` — the same
+ * rule as `creditBarLayout(...).met`, so the ring and the bar on one row
+ * never disagree. It is deliberately NOT `ringValueOf(...).fraction >= 1`:
+ * that fraction is the rounded numeral (`credentialProgress` →
+ * `clampPercent` → `Math.round`), which reads 100 % from 99.5 % up — CRC's
+ * 100-hour rule at 99.5 hours, or 199 of 200 whole credits — while the
+ * credential is still short. Task 10 amendment, binding for Task 11: the
+ * numeral may say "100%" over a ring that is not complete (no full arc, no
+ * check), and `STATE_LABELS.complete` ("Renewed") is the cycle-based pill
+ * word — a credits-complete ring on an open or submitted cycle must not
+ * take it as its accessible name.
  */
 export function ringStateOf(
   cycle: CycleLike & ReadinessCredential,
   nowMs: number,
 ): InstrumentState {
-  if (cycle.totalRequired > 0 && ringValueOf(cycle).fraction >= 1) {
+  if (cycle.totalRequired > 0 && cycle.totalEarned >= cycle.totalRequired) {
     return "complete";
   }
   return stateOf(cycle, nowMs);

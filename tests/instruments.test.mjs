@@ -91,11 +91,14 @@ test("ringArc reproduces the mockup's dasharrays for 72 / 56 / 40 and clamps the
   assert.equal(inline.centre, 20);
   assert.equal(inline.dashArray, "100.53 100.53");
   assert.deepEqual(inline.check, RING_SIZES[40].check);
-  // Over-earned, negative and NaN fractions clamp.
-  const over = ringArc({ size: 72, fraction: 1.4 });
-  assert.equal(over.fraction, 1);
-  assert.equal(over.dashArray, "188.50 188.50");
-  for (const fraction of [-1, Number.NaN]) {
+  // Over-earned, negative and NaN fractions clamp — to [0, 1] on both sides,
+  // so +Infinity is a full ring and only NaN / -Infinity read empty.
+  for (const fraction of [1.4, Number.POSITIVE_INFINITY]) {
+    const over = ringArc({ size: 72, fraction });
+    assert.equal(over.fraction, 1);
+    assert.equal(over.dashArray, "188.50 188.50");
+  }
+  for (const fraction of [-1, Number.NaN, Number.NEGATIVE_INFINITY]) {
     const arc = ringArc({ size: 72, fraction });
     assert.equal(arc.fraction, 0);
     assert.equal(arc.dashArray, "0.00 188.50");
@@ -148,6 +151,30 @@ test("creditBarLayout keeps the fill unrounded and places the minimum and cap ma
   assert.deepEqual(creditBarLayout({ counted: 0, required: 0 }), {
     fillPercent: 100,
     met: true,
+    overflow: false,
+  });
+  // A non-finite count reads as nothing counted and a non-finite marker as
+  // no marker: the layout never hands Task 11 a `width: NaN%`.
+  assert.deepEqual(
+    creditBarLayout({
+      counted: Number.NaN,
+      required: 40,
+      minimum: Number.NaN,
+      cap: Number.POSITIVE_INFINITY,
+    }),
+    {
+      fillPercent: 0,
+      minimumPercent: undefined,
+      capPercent: undefined,
+      met: false,
+      overflow: false,
+    },
+  );
+  assert.deepEqual(creditBarLayout({ counted: 5, required: Number.NaN }), {
+    fillPercent: 0,
+    minimumPercent: undefined,
+    capPercent: undefined,
+    met: false,
     overflow: false,
   });
 });
@@ -215,6 +242,32 @@ test("ringStateOf is complete only when credits are counted in full", () => {
   );
   assert.equal(
     ringStateOf(cycle("renewed", "2026-11-30", { ...counted, totalRequired: 40, totalEarned: 5 }), NOW),
+    "complete",
+  );
+  // "Counted in full" is the raw comparison, not the rounded numeral: 99.5
+  // of 100 (CRC's 100-hour rule with decimal credits) and 199 of 200 both
+  // round to a "100%" numeral yet are not complete, and the ring agrees with
+  // creditBarLayout's `met` on the same numbers — one row, one answer.
+  for (const [totalEarned, totalRequired] of [
+    [99.5, 100],
+    [199, 200],
+  ]) {
+    const credential = cycle("active", "2026-11-30", {
+      ...counted,
+      totalRequired,
+      totalEarned,
+    });
+    assert.equal(ringValueOf(credential).percent, 100, `${totalEarned}/${totalRequired} numeral`);
+    assert.equal(ringStateOf(credential, NOW), "due-soon", `${totalEarned}/${totalRequired} ring state`);
+    assert.equal(
+      creditBarLayout({ counted: totalEarned, required: totalRequired }).met,
+      false,
+      `${totalEarned}/${totalRequired} bar met`,
+    );
+  }
+  // Over-earned is complete, exactly as the bar's `met` reads it.
+  assert.equal(
+    ringStateOf(cycle("active", "2026-11-30", { ...counted, totalRequired: 40, totalEarned: 45 }), NOW),
     "complete",
   );
 });
