@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "./fixtures";
+import { test } from "./fixtures";
 
 // The spec §2 finish-gate evidence: every surface in every project, written
 // under docs/design/wave3/ and committed. Off by default so the ordinary

@@ -2121,9 +2121,9 @@ export function ITrackApp() {
     );
   }, [selectedCredentialId, workspace]);
 
-  // The pushed screen is addressed by URL, not by the app-wide selection, so
-  // a cold /credentials/<id> load and a `popstate` from the iOS back gesture
-  // resolve the same way a tap does.
+  // The detail page is addressed by its URL (/credentials/<id>), not by the
+  // app-wide selection, so a cold deep link, the browser's own Back and
+  // Forward, and a tap all resolve the same way.
   const detailCredentialId = nav.route.detail?.id ?? "";
   const detailCredential = useMemo(() => {
     if (!workspace || !detailCredentialId) return null;
@@ -2134,13 +2134,12 @@ export function ITrackApp() {
     );
   }, [detailCredentialId, workspace]);
 
-  // Tapping a credential sets the selection and then pushes, but the URL is an
-  // external system that also moves on its own: a cold deep link and the browser's
-  // Back and Forward all change which credential is open
-  // without any tap. Mirror those into the app-wide selection — "Log
-  // submission" and "Record acceptance" on the detail screen act on
-  // `selectedCredential` — by subscribing to the same events the router reads,
-  // so the write lands in an event callback instead of a render-driven effect.
+  // Opening a credential sets the selection and navigates to /credentials/<id>,
+  // but the URL also moves without a tap — a cold deep link, the browser's own
+  // Back and Forward — so those are mirrored into the app-wide selection ("Log
+  // submission" and "Record acceptance" on the detail page act on
+  // `selectedCredential`). Subscribing to the same `popstate` the router reads
+  // keeps the write in an event callback instead of a render-driven effect.
   useEffect(() => {
     const adoptRouteSelection = () => {
       const routedId = parseRoute(window.location.pathname).detail?.id;
@@ -7554,8 +7553,8 @@ function CredentialsView({
     }),
   );
   // The highlight marks the credential the rest of the app is pointed at —
-  // Today's card, the log sheet's default — not a detail pane beside the list,
-  // which now lives on its own pushed screen.
+  // Today's card, the log sheet's default. The detail is its own page at
+  // /credentials/<id>, not a pane beside this list.
   const activeId =
     credentials.find((credential) => credential.id === selectedId)?.id ??
     series[0]?.current?.id ??
