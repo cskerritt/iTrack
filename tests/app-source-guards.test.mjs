@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
-import { readClientSources } from "./helpers/clientSources.mjs";
+import { readClientSources, readStylesheets } from "./helpers/clientSources.mjs";
 import { WORKSPACE_ACTIONS } from "./helpers/workspaceActions.mjs";
 
 // Returns the text of every `setX((current) => …)` updater body, found by
@@ -106,13 +106,42 @@ test("sign out is a POST form to /auth/logout, not a link (app-ux-02)", () => {
   );
 });
 
-test("the parked screen is inert while a credential is pushed, and routes set document.title (app-ux-09, a11y-01, app-ux-17, a11y-03)", () => {
+test("routes set document.title from routeTitle() (app-ux-17, a11y-03)", () => {
   const sources = readClientSources();
-  assert.ok(
-    sources.some(({ source }) => /screen screen-root[\s\S]{0,200}?inert=\{Boolean\(detailCredential\)\}/.test(source)),
-    "screen-root carries inert={Boolean(detailCredential)}",
-  );
   assert.ok(sources.some(({ source }) => /document\.title = routeTitle\(/.test(source)), "document.title is set from routeTitle()");
+});
+
+// spec §5.1: navigation is ordinary page routing. Nothing is parked, pushed,
+// staged or swiped any more, and no screen or hook may bring the stack back
+// under its old names (a11y-01, a11y-13, app-ux-16).
+test("the screen stack is gone: no parked screen, no pushed screen, no edge swipe (a11y-01, a11y-13, app-ux-16)", () => {
+  let scanned = 0;
+  for (const { file, source } of readClientSources()) {
+    scanned += 1;
+    assert.doesNotMatch(
+      source,
+      /screen-(?:pushed|root|under|exiting)|push-title|push-header|useEdgeSwipeBack|useSheetDragDismiss|sheet-grabber|mobile-nav|desktop-sidebar/,
+      `${file}: the push stack is gone; screens are routed inside AppShell`,
+    );
+  }
+  assert.ok(scanned > 0, "scanned the client sources");
+});
+
+// One history writer. Every pushState/replaceState/back/go lives in
+// app/lib/useNavigation.ts, so the same-URL rule, the scroll memory, the
+// navigation counter and the fragment-jump guard cannot be bypassed.
+test("history is written only by useNavigation", () => {
+  let scanned = 0;
+  for (const { file, source } of readClientSources()) {
+    if (file.startsWith("api/") || file === "lib/useNavigation.ts") continue;
+    scanned += 1;
+    assert.doesNotMatch(
+      source,
+      /\b(?:pushState|replaceState|history\.back|history\.go)\b/,
+      `${file}: writes history directly — go through useNavigation()`,
+    );
+  }
+  assert.ok(scanned > 0, "scanned the client sources");
 });
 
 // tests/isolation.test.mjs probes every workspace action by name from
@@ -135,14 +164,17 @@ test("every workspace dispatch label is in WORKSPACE_ACTIONS (critic-08)", () =>
 // every refactor without catching a regression (architecture-03), and Wave 2
 // retired all 196 of them. Every tests/*.test.mjs is walked except the two
 // generic walkers (this file and tests/protected-identifiers.test.mjs), so
-// the pattern cannot come back in a new file either.
+// the pattern cannot come back in a new file either. From Wave 3 that covers
+// app/styles/ and app/components/ too; tests/contrast-audit.test.mjs is exempt
+// because it imports tools/contrast-audit.mjs, which walks app/**/*.css itself.
 test("no test file reads client source text (architecture-03)", () => {
   let scanned = 0;
   for (const name of readdirSync(new URL("./", import.meta.url))) {
     if (
       !/\.test\.mjs$/.test(name) ||
       name === "app-source-guards.test.mjs" ||
-      name === "protected-identifiers.test.mjs"
+      name === "protected-identifiers.test.mjs" ||
+      name === "contrast-audit.test.mjs"
     ) {
       continue;
     }
@@ -150,7 +182,7 @@ test("no test file reads client source text (architecture-03)", () => {
     const suite = readFileSync(new URL(`./${name}`, import.meta.url), "utf8");
     assert.doesNotMatch(
       suite,
-      /\.\.\/app\/(ITrackApp\.tsx|globals\.css|layout\.tsx)/,
+      /\.\.\/app\/(ITrackApp\.tsx|globals\.css|layout\.tsx|styles\/|components\/)/,
       `${name}: a readFile of a client source file is back — prove the behaviour in tests/e2e/ or a unit test instead`,
     );
     assert.doesNotMatch(
@@ -199,4 +231,37 @@ test("the open-cycle test is spelled out only in app/lib/cycles.ts (app-ux-04, a
     );
   }
   assert.ok(scanned > 0, "scanned the client sources");
+});
+
+// a11y-14 / spec §5.1: the type scale is rem so a browser font-size
+// preference scales the UI. The one px allowed is --text-control (16px), the
+// iOS zoom floor for editable values, declared once in app/styles/tokens.css
+// and consumed only through max(var(--text-control), 1em). Comments are
+// blanked (newlines kept) so a claim comment cannot trip the regexes.
+test("no font-size in px under app/**/*.css except the documented --text-control floor (a11y-14)", () => {
+  const blank = (text) => text.replace(/[^\n]/g, " ");
+  let scanned = 0;
+  let controls = 0;
+  for (const { file, source } of readStylesheets()) {
+    scanned += 1;
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, blank);
+    for (const match of code.matchAll(/^\s*font-size\s*:\s*([^;{}]+);/gm)) {
+      assert.doesNotMatch(
+        match[1],
+        /\b\d*\.?\d+px\b/,
+        `${file}: \`${match[0].trim()}\` — use a --text-* token or rem`,
+      );
+    }
+    for (const match of code.matchAll(/^\s*(--text-[a-z0-9-]+)\s*:\s*([^;]+);/gm)) {
+      if (match[1] === "--text-control") {
+        controls += 1;
+        assert.equal(file, "styles/tokens.css", "--text-control is declared in tokens.css only");
+        assert.equal(match[2].trim(), "16px", "--text-control is the 16px iOS zoom floor");
+        continue;
+      }
+      assert.match(match[2], /^\s*\d*\.?\d+rem\s*$/, `${file}: ${match[1]} must be declared in rem`);
+    }
+  }
+  assert.ok(scanned >= 9, "walked app/globals.css and app/styles/*.css");
+  assert.equal(controls, 1, "--text-control is declared exactly once");
 });

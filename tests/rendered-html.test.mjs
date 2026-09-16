@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, stat } from "node:fs/promises";
 import { register } from "node:module";
 import test from "node:test";
+import { FONT_PRELOADS } from "../.test-build/fonts.js";
 
 const testCloudflareEnv = {};
 globalThis.__LICENSE_LANTERN_TEST_ENV__ = testCloudflareEnv;
@@ -609,36 +610,56 @@ test("iTrack product contract", async (t) => {
     );
     assert.match(html, /<link rel="manifest"[^>]*manifest\.webmanifest/i);
     // One theme-color per scheme, for the browser and OS chrome rather than
-    // for anything the app paints. Both name --paper, the page itself, so the
-    // status bar the phone draws inside the app's own canvas is never a colour
-    // the app is not showing. color-scheme tells the UA to render form
+    // for anything the app paints. Both name --paper-deep, the surface the
+    // rail and the phone app bar are painted with, so the status bar the
+    // phone draws inside the app's own canvas is never a colour the app is
+    // not showing under it. color-scheme tells the UA to render form
     // controls to match.
     assert.match(
       html,
-      /<meta name="theme-color" content="#f2f2f7" media="\(prefers-color-scheme: light\)"\/>/i,
+      /<meta name="theme-color" content="#ebe7dc" media="\(prefers-color-scheme: light\)"\/>/i,
     );
     assert.match(
       html,
-      /<meta name="theme-color" content="#0b0b0e" media="\(prefers-color-scheme: dark\)"\/>/i,
+      /<meta name="theme-color" content="#0f0e0b" media="\(prefers-color-scheme: dark\)"\/>/i,
     );
     assert.match(html, /<meta name="color-scheme" content="light dark"\/>/i);
+    // The four first-paint faces are preloaded from RootLayout
+    // (app/lib/fonts.ts FONT_PRELOADS). React 19 hoists <link rel="preload">
+    // and may reorder attributes, so each attribute is matched on its own;
+    // `crossorigin` is what lets the CORS-mode font fetch reuse the preload.
+    for (const href of FONT_PRELOADS) {
+      const escaped = href.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+      assert.match(
+        html,
+        new RegExp(
+          `<link(?=[^>]*\\brel="preload")(?=[^>]*\\bhref="${escaped}")(?=[^>]*\\bas="font")(?=[^>]*\\btype="font/woff2")(?=[^>]*\\bcrossorigin)[^>]*>`,
+          "i",
+        ),
+        `${href} is preloaded`,
+      );
+    }
 
-    assert.match(html, /aria-label="iTrack"/i);
+    // The brand is visible text, not an aria-label on a div (a11y-12).
+    assert.match(html, /<span class="brand[^"]*"><span class="brand-i"[^>]*>i<\/span>Track<\/span>/i);
     assert.match(html, /Skip to content/i);
     assert.match(html, /aria-label="Primary navigation"/i);
+    // Both navs are server-rendered (CSS hides one per viewport): the rail's
+    // four labels and the bottom nav's short third label.
     assert.match(html, />Home<\/span>/i);
     assert.match(html, />Credentials<\/span>/i);
-    assert.match(html, />History<\/span>/i);
-    assert.match(html, />Profile<\/span>/i);
+    assert.match(html, />Activity log<\/span>/i);
+    assert.match(html, />Account<\/span>/i);
+    assert.match(html, />Activity<\/span>/i, "the bottom nav is server-rendered with its short label");
     assert.match(html, /aria-label="Loading iTrack"/i);
     assert.match(html, /Loading your renewal workspace/i);
   });
 
   await t.test("serves the app shell at every routed tab path", async () => {
-    // The nav stack writes real URLs (app/lib/navigation.ts), so a refresh or
-    // a deep link can land on any of these. Each has to return the same shell
-    // rather than a 404, and each has to hydrate against the home root — the
-    // server has no window, so the tab is only adopted client-side.
+    // Every screen is a URL (app/lib/navigation.ts), so a refresh or a deep
+    // link can land on any of these. Each has to return the same shell rather
+    // than a 404, and each has to hydrate against the home root — the server
+    // has no window, so the route is adopted client-side one render later.
     for (const path of [
       "/",
       "/credentials",
@@ -662,6 +683,17 @@ test("iTrack product contract", async (t) => {
     });
     assert.equal(response.status, 404);
     assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+    assert.match(await response.text(), /Page not found/);
+  });
+
+  await t.test("the styleguide is a development-only route: the built worker answers 404", async () => {
+    // app/styleguide/page.tsx calls notFound() unless NODE_ENV is
+    // "development"; vinext inlines process.env.NODE_ENV as "production" in
+    // `npm run build`, so the worker under test never renders it.
+    const response = await fetchWorker("http://localhost/styleguide", {
+      headers: { accept: "text/html" },
+    });
+    assert.equal(response.status, 404);
     assert.match(await response.text(), /Page not found/);
   });
 
@@ -7005,10 +7037,10 @@ export {
       assert.equal(manifest.start_url, "/");
       assert.equal(manifest.scope, "/");
       assert.equal(manifest.display, "standalone");
-      // Read once at install to paint the splash, so both stay on the light
-      // scheme's page colour (--paper) rather than a brand fill.
-      assert.equal(manifest.background_color, "#f2f2f7");
-      assert.equal(manifest.theme_color, "#f2f2f7");
+      // Read once at install to paint the splash (--paper, the page) and the
+      // standalone status bar (--paper-deep, the app bar); light scheme only.
+      assert.equal(manifest.background_color, "#f5f2ea");
+      assert.equal(manifest.theme_color, "#ebe7dc");
       assert.ok(
         manifest.icons.some(
           (icon) =>

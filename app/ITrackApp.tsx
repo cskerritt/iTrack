@@ -1,12 +1,9 @@
 "use client";
 
 import {
-  AnimationEvent,
   ChangeEvent,
   FormEvent,
   Fragment,
-  ReactNode,
-  RefObject,
   useCallback,
   useEffect,
   useMemo,
@@ -63,25 +60,26 @@ import {
   selectDefaultCredentialId,
 } from "./lib/cycles";
 import {
+  STATE_LABELS,
+  reminderState,
+  ringStateOf,
+  ringValueOf,
+  stateOf,
+  type InstrumentState,
+  type TimelineDeadline,
+} from "./lib/instruments";
+import {
   oppositeFloridaMentalHealthRuleSetId,
 } from "./lib/floridaMentalHealth";
 import { isExpandedCertificationRuleSetId } from "./lib/expandedCertifications";
-import {
-  buildPath,
-  parseRoute,
-  readNavEntry,
-  routeAt,
-  withNavEntry,
-  type DetailRoute,
-  type Route,
-  type TabName,
-} from "./lib/navigation";
+import { buildPath, parseRoute, type TabName } from "./lib/navigation";
 import {
   SESSION_ENDED_MESSAGE,
   UNEXPECTED_RESPONSE_MESSAGE,
   readApiResponse,
 } from "./lib/apiResponse";
 import {
+  ISO_DATE_PATTERN,
   UTC_FALLBACK_ZONE,
   addDaysIso,
   addMonthsIso,
@@ -90,7 +88,6 @@ import {
   effectiveDateZone,
   todayLocal,
 } from "./lib/dates";
-import { routeTitle } from "./lib/routeTitle";
 import {
   nextRequirementSelection,
   requirementIncompatibilityMessage,
@@ -108,6 +105,29 @@ import {
   type PushDeviceState,
   type ReminderLaunchTarget,
 } from "./lib/webPush";
+import { Icon } from "./components/Icon";
+import { AppShell } from "./components/AppShell";
+import { isPlainLeftClick } from "./components/NavItem";
+import { PageHeader } from "./components/PageHeader";
+import { RouteAnnouncementContext } from "./components/RouteAnnouncement";
+import { useNavigation } from "./lib/useNavigation";
+import { Modal } from "./components/Modal";
+import {
+  DateInput,
+  ErrorSummary,
+  Field,
+  ModalError,
+  Select,
+  TextInput,
+} from "./components/Form";
+import { Button } from "./components/Button";
+import { EmptyState } from "./components/EmptyState";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { useToast } from "./components/Toast";
+import { CreditBar } from "./components/instruments/CreditBar";
+import { CycleRing } from "./components/instruments/CycleRing";
+import { DeadlineTimeline } from "./components/instruments/DeadlineTimeline";
+import { StatusPill } from "./components/instruments/StatusPill";
 
 const DENTAL_LINKED_APPLICABILITY_CHILD_CATEGORY_IDS = new Set<string>(
   DENTAL_LINKED_APPLICABILITY_CATEGORY_GROUPS.flatMap((categoryIds) =>
@@ -375,11 +395,6 @@ type Reminder = {
   urgency: "overdue" | "today" | "soon";
 };
 
-type ToastState = {
-  message: string;
-  undo?: () => void;
-};
-
 // What the credential editor hands back. `issuer` and the custom-only keys
 // are only forwarded for custom credentials; a source-linked credential takes
 // them from its template (the server answers 400 template_field_locked).
@@ -472,6 +487,17 @@ function daysUntil(value: string) {
 // component body, so react-hooks/purity does not see Date.now() in render.
 function credentialCountdown(credential: Credential) {
   return cycleCountdown(credential, Date.now());
+}
+
+// The instrument state a pill or bar colours by (overdue / due soon / on
+// track / submitted / renewed) and the ring state (credits complete wins)
+// read the clock the same way, outside any component body.
+function credentialInstrumentState(credential: Credential): InstrumentState {
+  return stateOf(credential, Date.now());
+}
+
+function credentialRingState(credential: Credential): InstrumentState {
+  return ringStateOf(credential, Date.now());
 }
 
 // Default cycle window for a new credential, anchored on the caller's local
@@ -1298,378 +1324,6 @@ function questActionKey(questKey: string) {
 
 const WEEKLY_GOAL_ACTION_KEY = "weeklyGoal";
 
-const HOME_ROUTE: Route = { tab: "home", detail: null };
-
-// What each tab is called, in one place: the two nav bars label their buttons
-// from it and a pushed screen names the screen it returns to from it.
-const TAB_LABELS: Record<TabName, string> = {
-  home: "Home",
-  credentials: "Credentials",
-  history: "History",
-  profile: "Profile",
-};
-
-/**
- * The app's navigation stack, backed by real browser history.
- *
- * Tabs are roots and switching between them *replaces* the entry, so the
- * hardware/edge-swipe back gesture never walks backwards through a trail of
- * tab taps — it leaves the app, which is what iOS does. Detail screens push,
- * so back pops them. Depth tracks only the entries this app created: without
- * it `pop()` on a cold deep link would call `history.back()` into whatever
- * page the user was on before iTrack.
- *
- * A tab switch taken *from* a pushed screen therefore has two jobs, not one:
- * it shows the new tab, and it unwinds the entries the app pushed. Skipping
- * the unwind is what would leave an orphan behind — the entry the push was
- * made from, still sitting under the tab root the switch wrote — and back
- * would then return to the tab the user just left instead of leaving the app.
- * The unwind is a `history.go`, so it lands a beat later; the tab is shown
- * immediately and `pendingTab` finishes the job when the entry arrives.
- */
-function useNavigation() {
-  // Deliberately *not* seeded from `window.location` — the server renders this
-  // component with no window, so it always emits the home root. Seeding the
-  // client differently would make a deep link like /credentials disagree with
-  // the server HTML and throw the hydrated tree away; the mount effect below
-  // adopts the real URL one render later instead.
-  const [route, setRoute] = useState<Route>(HOME_ROUTE);
-  // The same route, readable during an event rather than a render, so nothing
-  // here has to reach for it through a state updater — a `pushState` inside
-  // one would fire twice under StrictMode's double invocation.
-  const routeRef = useRef<Route>(HOME_ROUTE);
-  const depthRef = useRef(0);
-  const pendingTabRef = useRef<TabName | null>(null);
-
-  const applyRoute = useCallback((next: Route) => {
-    routeRef.current = next;
-    setRoute(next);
-  }, []);
-
-  const commitTab = useCallback(
-    (tab: TabName) => {
-      const next: Route = { tab, detail: null };
-      depthRef.current = 0;
-      window.history.replaceState(
-        withNavEntry(window.history.state, { depth: 0, tab }),
-        "",
-        buildPath(next),
-      );
-      applyRoute(next);
-    },
-    [applyRoute],
-  );
-
-  useEffect(() => {
-    const adopt = (state: unknown) => {
-      const entry = readNavEntry(state);
-      depthRef.current = entry?.depth ?? 0;
-      applyRoute(routeAt(window.location.pathname, entry));
-    };
-    adopt(window.history.state);
-    const onPop = (event: PopStateEvent) => {
-      const pending = pendingTabRef.current;
-      if (pending !== null) {
-        pendingTabRef.current = null;
-        commitTab(pending);
-        return;
-      }
-      adopt(event.state);
-    };
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
-  }, [applyRoute, commitTab]);
-
-  const setTab = useCallback(
-    (tab: TabName) => {
-      if (pendingTabRef.current !== null) {
-        // An unwind is already on its way back; a second `go` would travel
-        // past the tab root and out of the app. Re-aim the one in flight.
-        pendingTabRef.current = tab;
-        applyRoute({ tab, detail: null });
-        return;
-      }
-      if (depthRef.current > 0) {
-        pendingTabRef.current = tab;
-        // The tab is shown now and the history is squared away on the popstate
-        // this asks for; until then the URL still names the screen being left.
-        applyRoute({ tab, detail: null });
-        window.history.go(-depthRef.current);
-        return;
-      }
-      commitTab(tab);
-    },
-    [applyRoute, commitTab],
-  );
-
-  const push = useCallback(
-    (detail: DetailRoute) => {
-      const tab = routeRef.current.tab;
-      const depth = depthRef.current + 1;
-      depthRef.current = depth;
-      window.history.pushState(
-        withNavEntry(null, { depth, tab }),
-        "",
-        buildPath({ tab, detail }),
-      );
-      applyRoute({ tab, detail });
-    },
-    [applyRoute],
-  );
-
-  // The screen stays where it is in the stack and swaps which credential it is
-  // showing — what an accepted renewal does, having just replaced the cycle
-  // the screen was opened on with its successor.
-  const replaceDetail = useCallback(
-    (detail: DetailRoute) => {
-      const { tab, detail: current } = routeRef.current;
-      if (!current) return;
-      window.history.replaceState(
-        withNavEntry(window.history.state, {
-          depth: depthRef.current,
-          tab,
-        }),
-        "",
-        buildPath({ tab, detail }),
-      );
-      applyRoute({ tab, detail });
-    },
-    [applyRoute],
-  );
-
-  const pop = useCallback(() => {
-    if (depthRef.current > 0) {
-      window.history.back();
-      return;
-    }
-    // Nothing of ours underneath — a cold deep link. Drop to the tab root
-    // rather than calling `back()` out of the app entirely.
-    commitTab(routeRef.current.tab);
-  }, [commitTab]);
-  const popToRoot = pop; // single-level stack today; alias kept for tab re-tap
-  return { route, setTab, push, replaceDetail, pop, popToRoot };
-}
-
-// The left-hand band the back gesture may start in, how far it then has to
-// travel before letting go means "go back" rather than "never mind", and the
-// vertical travel past which the finger is plainly scrolling instead.
-const EDGE_SWIPE_ZONE = 24;
-const EDGE_SWIPE_COMMIT = 80;
-const EDGE_SWIPE_ABANDON = 40;
-
-/**
- * The platform back gesture: drag from the left edge and the pushed screen
- * comes with the finger; let go past the threshold and it leaves.
- *
- * The listeners sit on the document rather than on the stack because the edge
- * band overlaps the page gutter, and a touch that lands in the gutter never
- * reaches the stack to bubble out of it. The drag is published as a custom
- * property on the stack instead of as React state — see SCREEN STACK in
- * globals.css, where both screens read it — because this runs on every frame
- * of a drag and a re-render per frame is a dropped one.
- */
-function useEdgeSwipeBack(
-  stackRef: RefObject<HTMLDivElement | null>,
-  enabled: boolean,
-  onBack: () => void,
-) {
-  useEffect(() => {
-    const stack = stackRef.current;
-    if (!enabled || !stack) return;
-    let startX = 0;
-    let startY = 0;
-    let tracking = false;
-    const release = () => {
-      tracking = false;
-      stack.classList.remove("screen-dragging");
-    };
-    const rest = () => {
-      release();
-      stack.style.removeProperty("--screen-drag");
-    };
-    const onStart = (event: TouchEvent) => {
-      const touch = event.touches[0];
-      if (!touch) return;
-      // Whatever is on top owns the finger. A sheet covers the whole viewport,
-      // so an edge drag over one belongs to it — without this, pushing a sheet
-      // away would also pop the screen it is sitting on.
-      const target = event.target;
-      if (
-        target instanceof Element &&
-        target.closest(".modal-backdrop") !== null
-      ) {
-        return;
-      }
-      tracking = touch.clientX <= EDGE_SWIPE_ZONE;
-      startX = touch.clientX;
-      startY = touch.clientY;
-      if (tracking) stack.classList.add("screen-dragging");
-    };
-    const onMove = (event: TouchEvent) => {
-      if (!tracking) return;
-      const touch = event.touches[0];
-      if (!touch) return;
-      const dx = touch.clientX - startX;
-      const dy = Math.abs(touch.clientY - startY);
-      if (dy > EDGE_SWIPE_ABANDON && dy > Math.abs(dx)) {
-        rest();
-        return;
-      }
-      // Only forwards: dragging back past the edge would peel the screen off
-      // its own left side, which is not a thing this stack can show.
-      stack.style.setProperty("--screen-drag", `${Math.max(0, dx)}px`);
-    };
-    const onEnd = (event: TouchEvent) => {
-      if (!tracking) return;
-      const dx = event.changedTouches[0]
-        ? event.changedTouches[0].clientX - startX
-        : 0;
-      if (dx > EDGE_SWIPE_COMMIT) {
-        // The offset deliberately stays where the finger left it: the exit
-        // animation reads it as its starting point, so the screen carries on
-        // from the release instead of snapping back and then leaving.
-        release();
-        onBack();
-        return;
-      }
-      rest();
-    };
-    document.addEventListener("touchstart", onStart, { passive: true });
-    document.addEventListener("touchmove", onMove, { passive: true });
-    document.addEventListener("touchend", onEnd);
-    document.addEventListener("touchcancel", onEnd);
-    return () => {
-      document.removeEventListener("touchstart", onStart);
-      document.removeEventListener("touchmove", onMove);
-      document.removeEventListener("touchend", onEnd);
-      document.removeEventListener("touchcancel", onEnd);
-      // The class goes, the offset stays: this teardown runs on the pop that a
-      // committed drag just asked for, and the exit animation about to start
-      // is the one thing still reading that offset. Whatever it leaves behind
-      // is cleared when the animation ends.
-      release();
-    };
-  }, [enabled, onBack, stackRef]);
-}
-
-// Below this width every modal is anchored to the bottom edge (see SHEET in
-// globals.css), which is the only shape a downward drag is a dismissal of.
-// Above it the dialog is centred and the gesture does not exist.
-const SHEET_MEDIA = "(max-width: 540px)";
-// How far the sheet has to be pushed before letting go means "close this", and
-// the sideways travel past which the finger is plainly doing something else.
-const SHEET_DISMISS_COMMIT = 120;
-const SHEET_DISMISS_ABANDON = 30;
-
-/**
- * The platform's sheet dismissal: push the sheet back down and it goes.
- *
- * It may only start from the top of the sheet's own scroll — below that the
- * finger belongs to the content, and a sheet that slides away while its reader
- * is scrolling back up is the most irritating gesture a phone can have. The
- * offset is published as a custom property rather than as React state for the
- * same reason the back gesture does it: this runs on every frame of a drag.
- */
-function useSheetDragDismiss(
-  cardRef: RefObject<HTMLElement | null>,
-  onDismiss: () => void,
-) {
-  // Read through a ref so the listeners are attached once, at mount, rather
-  // than re-attached — mid-drag, losing the gesture — every time the sheet's
-  // owner re-renders and hands down a fresh closure.
-  const dismissRef = useRef(onDismiss);
-  useEffect(() => {
-    dismissRef.current = onDismiss;
-  }, [onDismiss]);
-
-  // The gesture exists only at the width where the dialog *is* a bottom sheet,
-  // and that width can change under an open sheet — a phone rotates. Tracked
-  // live rather than read once at mount, so the gesture and the grabber that
-  // advertises it are never out of step with each other.
-  const [isSheet, setIsSheet] = useState(false);
-  useEffect(() => {
-    const media = window.matchMedia(SHEET_MEDIA);
-    const sync = () => setIsSheet(media.matches);
-    sync();
-    media.addEventListener("change", sync);
-    return () => media.removeEventListener("change", sync);
-  }, []);
-
-  useEffect(() => {
-    const card = cardRef.current;
-    if (!card || !isSheet) return;
-    let startX = 0;
-    let startY = 0;
-    let tracking = false;
-    const release = () => {
-      tracking = false;
-      card.classList.remove("sheet-dragging");
-    };
-    const rest = () => {
-      release();
-      card.style.removeProperty("--sheet-drag");
-    };
-    const onStart = (event: TouchEvent) => {
-      const touch = event.touches[0];
-      if (!touch) return;
-      tracking = card.scrollTop <= 0;
-      startX = touch.clientX;
-      startY = touch.clientY;
-      if (tracking) card.classList.add("sheet-dragging");
-    };
-    const onMove = (event: TouchEvent) => {
-      if (!tracking) return;
-      const touch = event.touches[0];
-      if (!touch) return;
-      const dy = touch.clientY - startY;
-      const dx = Math.abs(touch.clientX - startX);
-      // Upwards is the content's own scroll, and a sideways drag is a swipe
-      // through something inside the sheet; neither is this gesture.
-      if (dy < 0 || (dx > SHEET_DISMISS_ABANDON && dx > dy)) {
-        rest();
-        return;
-      }
-      card.style.setProperty("--sheet-drag", `${dy}px`);
-    };
-    const onEnd = (event: TouchEvent) => {
-      if (!tracking) return;
-      const dy = event.changedTouches[0]
-        ? event.changedTouches[0].clientY - startY
-        : 0;
-      if (dy > SHEET_DISMISS_COMMIT) {
-        // The offset stays where the finger left it deliberately: the sheet
-        // unmounts on the next render, so clearing it here would paint one
-        // frame of the sheet snapping back up before it disappeared.
-        //
-        // Unless the owner refuses to close — the log sheet holds itself open
-        // when a draft cannot be saved — in which case the sheet is still
-        // here a frame later and has to come back up, or it would sit parked
-        // at the drag offset with its controls pushed off-screen.
-        release();
-        dismissRef.current();
-        window.requestAnimationFrame(() => {
-          if (card.isConnected) card.style.removeProperty("--sheet-drag");
-        });
-        return;
-      }
-      rest();
-    };
-    card.addEventListener("touchstart", onStart, { passive: true });
-    card.addEventListener("touchmove", onMove, { passive: true });
-    card.addEventListener("touchend", onEnd);
-    card.addEventListener("touchcancel", onEnd);
-    return () => {
-      card.removeEventListener("touchstart", onStart);
-      card.removeEventListener("touchmove", onMove);
-      card.removeEventListener("touchend", onEnd);
-      card.removeEventListener("touchcancel", onEnd);
-      // A sheet that stops being a sheet mid-drag — the phone rotated — keeps
-      // neither the drag class nor the offset it was placed by.
-      rest();
-    };
-  }, [cardRef, isSheet]);
-}
-
 export function ITrackApp() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const nav = useNavigation();
@@ -1678,6 +1332,7 @@ export function ITrackApp() {
   // no-dependency useCallback) while `nav` itself is a fresh object every
   // render — effects can depend on this without re-running constantly.
   const navigateToTab = nav.setTab;
+  const scrubQuery = nav.scrubQuery;
   const [selectedCredentialId, setSelectedCredentialId] = useState("");
   const [activityOpen, setActivityOpen] = useState(false);
   const [credentialOpen, setCredentialOpen] = useState(false);
@@ -1723,7 +1378,7 @@ export function ITrackApp() {
   // surface behind an open sheet keeps working.
   const pending = pendingActionKeys.includes(FORM_ACTION_KEY);
   const [error, setError] = useState("");
-  const [toast, setToast] = useState<ToastState | null>(null);
+  const toast = useToast();
   const [activityDraft, setActivityDraft] = useState<ActivityDraft>(() => ({
     title: "",
     completionDate: todayLocal(deviceTimeZone()),
@@ -1963,7 +1618,7 @@ export function ITrackApp() {
   const closeActivityEntry = useCallback(() => {
     const draftPersisted = persistActivityDraftNow();
     if (!draftPersisted) {
-      setToast({
+      toast.show({
         message:
           "This browser couldn’t save your draft. Keep this form open or finish logging the activity before leaving.",
       });
@@ -1983,6 +1638,7 @@ export function ITrackApp() {
     persistActivityDraftNow,
     resetActivityEntry,
     restoreSelectionBeforeActivityEntry,
+    toast,
   ]);
 
   // A 401 from any fetch means the session lapsed. Drop the workspace so the
@@ -2186,10 +1842,6 @@ export function ITrackApp() {
   }, [loadWorkspace]);
 
   useEffect(() => {
-    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-  }, [view]);
-
-  useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
       void loadWorkspace();
@@ -2292,13 +1944,8 @@ export function ITrackApp() {
     if (!workspace || !pendingReminderLaunch) return;
     const controller = new AbortController();
     // Scrub the one-time `?delivery=` token out of the address bar so a
-    // refresh cannot replay it. The path itself belongs to the router now, so
-    // keep whatever route we are on rather than pinning back to "/".
-    window.history.replaceState(
-      window.history.state,
-      "",
-      window.location.pathname,
-    );
+    // refresh cannot replay it; the route itself is not touched.
+    scrubQuery();
     void (async () => {
       try {
         const response = await fetch(
@@ -2327,7 +1974,7 @@ export function ITrackApp() {
           typeof result.target.reminderKey !== "string"
         ) {
           setHighlightedReminderKey("");
-          setToast({
+          toast.show({
             message:
               "That check-in is no longer available in this signed-in workspace.",
           });
@@ -2345,7 +1992,7 @@ export function ITrackApp() {
         );
         if (!credential) {
           setHighlightedReminderKey("");
-          setToast({
+          toast.show({
             message:
               "That check-in is no longer available in this signed-in workspace.",
           });
@@ -2355,7 +2002,7 @@ export function ITrackApp() {
         navigateToTab("home");
         setHighlightedReminderKey(reminder?.key ?? "");
         if (!reminder) {
-          setToast({
+          toast.show({
             message:
               "That check-in may already be complete. The related credential is open.",
           });
@@ -2364,14 +2011,21 @@ export function ITrackApp() {
         if (controller.signal.aborted) return;
         setPendingReminderLaunch(null);
         setHighlightedReminderKey("");
-        setToast({
+        toast.show({
           message:
             "That check-in could not be opened. Reconnect and try the alert again.",
         });
       }
     })();
     return () => controller.abort();
-  }, [handleSessionEnded, navigateToTab, pendingReminderLaunch, workspace]);
+  }, [
+    handleSessionEnded,
+    navigateToTab,
+    pendingReminderLaunch,
+    scrubQuery,
+    toast,
+    workspace,
+  ]);
 
   useEffect(() => {
     if (!highlightedReminderKey || view !== "home") return;
@@ -2454,30 +2108,6 @@ export function ITrackApp() {
     return () => window.removeEventListener("pagehide", flushActivityDraft);
   }, [activityOpen, persistActivityDraftNow]);
 
-  useEffect(() => {
-    if (!toast) return;
-    const timeout = window.setTimeout(() => setToast(null), 6000);
-    return () => window.clearTimeout(timeout);
-  }, [toast]);
-
-  useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      closeActivityEntry();
-      setCredentialOpen(false);
-      setSubmissionOpen(false);
-      setAcceptanceOpen(false);
-      setRemindersOpen(false);
-      setAllocationActivity(null);
-      setClassificationRepair(null);
-      setEvidenceActivity(null);
-      setEditingActivity(null);
-      setTaskEditor(null);
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [closeActivityEntry]);
-
   const selectedCredential = useMemo(() => {
     if (!workspace) return null;
     return (
@@ -2491,9 +2121,9 @@ export function ITrackApp() {
     );
   }, [selectedCredentialId, workspace]);
 
-  // The pushed screen is addressed by URL, not by the app-wide selection, so
-  // a cold /credentials/<id> load and a `popstate` from the iOS back gesture
-  // resolve the same way a tap does.
+  // The detail page is addressed by its URL (/credentials/<id>), not by the
+  // app-wide selection, so a cold deep link, the browser's own Back and
+  // Forward, and a tap all resolve the same way.
   const detailCredentialId = nav.route.detail?.id ?? "";
   const detailCredential = useMemo(() => {
     if (!workspace || !detailCredentialId) return null;
@@ -2504,97 +2134,12 @@ export function ITrackApp() {
     );
   }, [detailCredentialId, workspace]);
 
-  // app-ux-17 / a11y-03: every route names itself in the tab and hands focus
-  // to its heading, so screen readers hear the move and keyboard users start
-  // at the top. The first paint keeps the browser's own focus (skip link).
-  const announcedRouteRef = useRef<string | null>(null);
-  useEffect(() => {
-    document.title = routeTitle(nav.route, detailCredential?.credentialName ?? null);
-    const key = buildPath(nav.route);
-    if (announcedRouteRef.current === null) {
-      announcedRouteRef.current = key;
-      return;
-    }
-    if (announcedRouteRef.current === key) return;
-    announcedRouteRef.current = key;
-    const heading = document.querySelector<HTMLElement>(
-      nav.route.detail ? ".screen-pushed h1" : ".screen-root h1",
-    );
-    if (!heading) return;
-    if (!heading.hasAttribute("tabindex")) heading.setAttribute("tabindex", "-1");
-    heading.focus({ preventScroll: true });
-  }, [nav.route, detailCredential]);
-
-  // A pop is a navigation, so the route drops the detail the instant it
-  // happens — but the screen still has to leave the stage. Hold the departing
-  // credential for as long as its exit animation is playing.
-  //
-  // Worked out during render rather than in an effect on purpose: an effect
-  // would unmount the screen for a frame and put it straight back, so the exit
-  // would play on a freshly mounted element, which is a flash rather than a
-  // transition. This shape also means *every* pop animates — the back control,
-  // the edge gesture, the browser's own back button — because it watches the
-  // route rather than the thing that moved it.
-  const [lastDetailCredential, setLastDetailCredential] =
-    useState<Credential | null>(null);
-  const [exitingDetail, setExitingDetail] = useState<Credential | null>(null);
-  if (detailCredential !== lastDetailCredential) {
-    setLastDetailCredential(detailCredential);
-    setExitingDetail(detailCredential ? null : lastDetailCredential);
-  }
-  const stagedDetail = detailCredential ?? exitingDetail;
-  const screenStackRef = useRef<HTMLDivElement | null>(null);
-  useEdgeSwipeBack(screenStackRef, Boolean(detailCredential), nav.pop);
-
-  const finishScreenExit = useCallback(
-    (event: AnimationEvent<HTMLDivElement>) => {
-      // Both screen animations end on this element and plenty of others end
-      // inside it; only the screen's own are this handler's business.
-      if (event.target !== event.currentTarget) return;
-      screenStackRef.current?.style.removeProperty("--screen-drag");
-      setExitingDetail(null);
-    },
-    [],
-  );
-
-  // Backstop. An exit that never reports its end — a browser that skips the
-  // animation outright, a tab hidden mid-pop — would otherwise leave the
-  // departing screen parked on top of the app for good.
-  useEffect(() => {
-    if (!exitingDetail) return;
-    const timeout = window.setTimeout(() => setExitingDetail(null), 700);
-    return () => window.clearTimeout(timeout);
-  }, [exitingDetail]);
-
-  // A pushed screen opens at its own top the way a native one does, and the
-  // screen it covered comes back to where it was left. Both share the document
-  // scroller, so this is the only place that memory can live.
-  //
-  // The offset is remembered with the tab it was taken from, because leaving a
-  // pushed screen is not always a pop: a tab tap also clears the detail, and
-  // dropping the History tab 800px down the Credentials list it never showed
-  // is worse than any scroll restoration is worth.
-  const parkedScrollRef = useRef<{ tab: TabName; y: number } | null>(null);
-  useEffect(() => {
-    if (detailCredentialId) {
-      parkedScrollRef.current = { tab: view, y: window.scrollY };
-      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-      return;
-    }
-    const parked = parkedScrollRef.current;
-    parkedScrollRef.current = null;
-    if (parked && parked.tab === view && parked.y) {
-      window.scrollTo({ top: parked.y, left: 0, behavior: "auto" });
-    }
-  }, [detailCredentialId, view]);
-
-  // Tapping a credential sets the selection and then pushes, but the URL is an
-  // external system that also moves on its own: a cold deep link, the browser
-  // back button and the iOS back gesture all change which credential is open
-  // without any tap. Mirror those into the app-wide selection — "Log
-  // submission" and "Record acceptance" on the pushed screen act on
-  // `selectedCredential` — by subscribing to the same events the router reads,
-  // so the write lands in an event callback instead of a render-driven effect.
+  // Opening a credential sets the selection and navigates to /credentials/<id>,
+  // but the URL also moves without a tap — a cold deep link, the browser's own
+  // Back and Forward — so those are mirrored into the app-wide selection ("Log
+  // submission" and "Record acceptance" on the detail page act on
+  // `selectedCredential`). Subscribing to the same `popstate` the router reads
+  // keeps the write in an event callback instead of a render-driven effect.
   useEffect(() => {
     const adoptRouteSelection = () => {
       const routedId = parseRoute(window.location.pathname).detail?.id;
@@ -2608,10 +2153,11 @@ export function ITrackApp() {
   // A link naming a credential that was deleted (or never existed) falls back
   // to the list root instead of stranding the user on an empty screen. The
   // workspace guard matters: without it a cold /credentials/<id> load would
-  // bounce off before the credential it names had arrived.
+  // bounce off before the credential it names had arrived. It REPLACES the
+  // entry: the dead URL must not stay in history for Back to land on.
   useEffect(() => {
     if (!workspace || !detailCredentialId || detailCredential) return;
-    navigateToTab("credentials");
+    navigateToTab("credentials", { replace: true });
   }, [detailCredential, detailCredentialId, navigateToTab, workspace]);
 
   const selectedNremtNextRule = useMemo(
@@ -2776,7 +2322,7 @@ export function ITrackApp() {
         throw new Error(result.error || "That update didn’t save.");
       }
       await loadWorkspace();
-      setToast({ message: successMessage });
+      toast.show({ message: successMessage });
       return result;
     } catch (actionError) {
       setError(
@@ -2846,7 +2392,7 @@ export function ITrackApp() {
     activityDraftPersistenceGeneration.current += 1;
     const cleared = clearSavedActivityDraft();
     resetActivityEntry();
-    setToast({
+    toast.show({
       message: cleared
         ? "The browser-saved course draft was cleared."
         : "The form was cleared, but this browser would not remove its saved draft. Clear iTrack site data to remove it.",
@@ -2863,7 +2409,7 @@ export function ITrackApp() {
     setActivityOpen(false);
     resetActivityEntry();
     if (!cleared) {
-      setToast({
+      toast.show({
         message:
           "Activity saved, but this browser would not clear its local draft. Clear iTrack site data to remove it.",
       });
@@ -2880,7 +2426,7 @@ export function ITrackApp() {
     setInstallPrompt(null);
     if (choice.outcome === "accepted") {
       setIsStandalone(true);
-      setToast({ message: "iTrack was added to this device." });
+      toast.show({ message: "iTrack was added to this device." });
     }
   }
 
@@ -2893,7 +2439,7 @@ export function ITrackApp() {
     }
     if (capability === "denied") {
       setPushDeviceState("denied");
-      setToast({
+      toast.show({
         message:
           "Alerts are blocked in this device’s notification settings. Change that setting, then return here.",
       });
@@ -2904,7 +2450,7 @@ export function ITrackApp() {
       !workspace.reminderPreferences.webPushConfigured ||
       !workspace.reminderPreferences.vapidPublicKey
     ) {
-      setToast({
+      toast.show({
         message:
           "Phone alerts are not available on this device yet. Calendar check-ins still work.",
       });
@@ -2960,7 +2506,7 @@ export function ITrackApp() {
       setCurrentPushSubscription(subscription);
       setPushDeviceState("subscribed");
       await loadWorkspace();
-      setToast({
+      toast.show({
         message:
           "Phone alerts are on for this device. Lock-screen previews stay private.",
       });
@@ -3004,7 +2550,7 @@ export function ITrackApp() {
       setCurrentPushSubscription(null);
       setPushDeviceState("available");
       await loadWorkspace();
-      setToast({
+      toast.show({
         message:
           workspace.reminderPreferences.activePushDeviceCount > 1
             ? "Phone alerts are off on this device. Other connected devices are unchanged."
@@ -3026,7 +2572,7 @@ export function ITrackApp() {
     const subscription = currentPushSubscription;
     if (!subscription) {
       await refreshPushDeviceState();
-      setToast({
+      toast.show({
         message: "Turn on phone alerts for this device before sending a test.",
       });
       return;
@@ -3037,7 +2583,7 @@ export function ITrackApp() {
       await postPushAction("sendTestPush", {
         endpoint: subscription.endpoint,
       });
-      setToast({
+      toast.show({
         message:
           "Test sent. Your device will show a private iTrack check-in.",
       });
@@ -3075,7 +2621,7 @@ export function ITrackApp() {
     try {
       const delivery = await offerCalendarInvite(events, fileName);
       if (delivery !== "cancelled") {
-        setToast({ message: successMessage });
+        toast.show({ message: successMessage });
       }
     } catch {
       setError(
@@ -3113,7 +2659,7 @@ export function ITrackApp() {
       preferredCalendarLeadDays(),
     );
     if (!events.length) {
-      setToast({ message: "There are no open check-ins to add yet." });
+      toast.show({ message: "There are no open check-ins to add yet." });
       return;
     }
     await deliverCalendarInvite(
@@ -3388,13 +2934,13 @@ export function ITrackApp() {
       if (!uploaded) {
         finishSavedActivityEntry();
         formElement.reset();
-        setToast({
+        toast.show({
           message:
             "Activity saved, but the proof file did not upload. You can add it from History.",
         });
         return;
       }
-      setToast({
+      toast.show({
         message:
           allocatedUnits === totalUnits
             ? `${compactNumber(totalUnits)} ${
@@ -3492,7 +3038,7 @@ export function ITrackApp() {
     const uploaded = await uploadEvidence(evidenceActivity.id, file);
     if (uploaded) {
       formElement.reset();
-      setToast({ message: "Proof saved securely." });
+      toast.show({ message: "Proof saved securely." });
     }
   }
 
@@ -3527,7 +3073,7 @@ export function ITrackApp() {
         current.filter((item) => item.id !== evidence.id),
       );
       await loadWorkspace();
-      setToast({ message: "Proof removed." });
+      toast.show({ message: "Proof removed." });
     } catch (deleteError) {
       setError(
         deleteError instanceof Error
@@ -3732,11 +3278,11 @@ export function ITrackApp() {
       if (result.id) {
         setSelectedCredentialId(result.id);
         // Accepting a renewal ends the cycle the screen was opened on and
-        // starts its successor. A pushed detail screen is addressed by URL, so
-        // it has to be re-pointed at the new cycle or it would sit there
-        // showing the finished one while everything else had moved on.
+        // starts its successor. The detail screen is addressed by URL, so it
+        // is re-pointed at the new cycle — replacing the entry, so Back does
+        // not return to the finished one.
         if (nav.route.detail) {
-          nav.replaceDetail({ kind: "credential", id: result.id });
+          nav.openCredential(result.id, { replace: true });
         }
       }
     }
@@ -4041,18 +3587,21 @@ export function ITrackApp() {
     );
     if (!result) return;
     setEditingActivity(null);
-    setToast({
+    toast.show({
       message: "Learning record archived. Its proof remains saved.",
-      undo: () => {
-        void runAction(
-          "restoreActivity",
-          {
-            activityId: activity.id,
-            expectedRevision: activity.revision + 1,
-          },
-          "Learning record restored.",
-          activityActionKey(activity.id),
-        );
+      action: {
+        label: "Undo",
+        onClick: () => {
+          void runAction(
+            "restoreActivity",
+            {
+              activityId: activity.id,
+              expectedRevision: activity.revision + 1,
+            },
+            "Learning record restored.",
+            activityActionKey(activity.id),
+          );
+        },
       },
     });
     window.setTimeout(
@@ -4139,23 +3688,25 @@ export function ITrackApp() {
       credentialActionKey(credential.id),
     );
     if (!result) return;
-    // No nav.pop() here: the refetched workspace no longer lists the
+    // No navigation here: the refetched workspace no longer lists the
     // credential, so the "deleted (or never existed)" effect above already
-    // bounces a pushed detail to /credentials. Popping as well would queue a
-    // second history move behind the one that effect asks for.
-    setToast({
+    // replaces a routed detail with /credentials.
+    toast.show({
       message:
         "Credential archived. Find it under History → Archived credentials.",
-      undo: () => {
-        void runAction(
-          "restoreCredential",
-          {
-            credentialId: credential.id,
-            expectedRevision: credential.revision + 1,
-          },
-          "Credential restored.",
-          credentialActionKey(credential.id),
-        );
+      action: {
+        label: "Undo",
+        onClick: () => {
+          void runAction(
+            "restoreCredential",
+            {
+              credentialId: credential.id,
+              expectedRevision: credential.revision + 1,
+            },
+            "Credential restored.",
+            credentialActionKey(credential.id),
+          );
+        },
       },
     });
   }
@@ -4191,11 +3742,12 @@ export function ITrackApp() {
     if (!result) return;
     setCredentialDeletion(null);
     setSelectedCredentialId("");
-    // Deleting from the History tab's archived list has no pushed detail for
-    // the effect above to bounce, so land on the list explicitly; when a
-    // detail was pushed the two calls collapse into one move (setTab re-aims
-    // an unwind that is already in flight).
-    navigateToTab("credentials");
+    // Deleting from the Activity log's archived list has no routed detail for
+    // the effect above to replace, so land on the list explicitly — pushed,
+    // so Back still returns to the log. From a detail the URL no longer
+    // resolves: replace it (usually the effect already has, and this is the
+    // same-URL no-op).
+    navigateToTab("credentials", { replace: Boolean(nav.route.detail) });
   }
 
   async function savePersonalTask(input: {
@@ -4233,18 +3785,21 @@ export function ITrackApp() {
     );
     if (!result) return;
     setTaskEditor(null);
-    setToast({
+    toast.show({
       message: "Personal task archived.",
-      undo: () => {
-        void runAction(
-          "restorePersonalTask",
-          {
-            taskId: task.id,
-            expectedRevision: task.revision + 1,
-          },
-          "Personal task restored.",
-          taskActionKey(task.id),
-        );
+      action: {
+        label: "Undo",
+        onClick: () => {
+          void runAction(
+            "restorePersonalTask",
+            {
+              taskId: task.id,
+              expectedRevision: task.revision + 1,
+            },
+            "Personal task restored.",
+            taskActionKey(task.id),
+          );
+        },
       },
     });
     window.setTimeout(
@@ -4285,19 +3840,22 @@ export function ITrackApp() {
       taskActionKey(task.id),
     );
     if (success) {
-      setToast({
+      toast.show({
         message: completed ? "Task checked off." : "Task reopened.",
-        undo: () => {
-          void runAction(
-            "toggleTask",
-            {
-              taskId: task.id,
-              completed: !completed,
-              expectedRevision: task.revision + 1,
-            },
-            "Change undone.",
-            taskActionKey(task.id),
-          );
+        action: {
+          label: "Undo",
+          onClick: () => {
+            void runAction(
+              "toggleTask",
+              {
+                taskId: task.id,
+                completed: !completed,
+                expectedRevision: task.revision + 1,
+              },
+              "Change undone.",
+              taskActionKey(task.id),
+            );
+          },
         },
       });
     }
@@ -4327,30 +3885,18 @@ export function ITrackApp() {
     );
   }
 
-  const userName = workspace?.user.displayName ?? "Professional";
-
   /*
-   * Tapping the tab you are already on is not a navigation. On this platform
-   * it means "take me back to the start of this tab": it pops whatever is
-   * stacked on it, and with nothing stacked it returns the tab to its own top.
-   * The scroll is left at `auto` so the stylesheet's smooth behaviour applies
-   * and the reduced-motion block can still take it away.
+   * A tab is a link to its root URL. useNavigation applies the one rule of
+   * its own: the same URL is not a navigation (it scrolls the tab to its
+   * top); from a detail, the tab's root is pushed like any other screen.
    */
   function selectTab(tab: TabName) {
-    if (tab !== view) {
-      nav.setTab(tab);
-      return;
-    }
-    if (nav.route.detail) {
-      nav.popToRoot();
-      return;
-    }
-    window.scrollTo({ top: 0 });
+    nav.setTab(tab);
   }
 
   /*
    * The two shortcuts Home's cards take. Both re-point the app at the
-   * credential, because the pushed screen, the log sheet and the submission
+   * credential, because the detail screen, the log sheet and the submission
    * actions all read that one selection; the log sheet additionally remembers
    * what the selection was and puts it back if the sheet closes without
    * saving, so a shortcut taken and abandoned leaves no trace.
@@ -4366,38 +3912,33 @@ export function ITrackApp() {
       (credential) => credential.id === id,
     );
     if (target && isOpenCycle(target)) setSelectedCredentialId(id);
-    nav.push({ kind: "credential", id });
+    nav.openCredential(id);
   }
 
   function logCreditsFor(id: string) {
     openActivityEntryFor(id);
   }
 
+  // What every PageHeader reads: the route it names the document after, the
+  // credential a detail is showing, and how many navigations have happened
+  // since mount (0 on first paint, so the skip link keeps the first Tab stop).
+  const announcement = useMemo(
+    () => ({
+      route: nav.route,
+      credentialName: detailCredential?.credentialName ?? null,
+      navigations: nav.navigations,
+    }),
+    [nav.route, nav.navigations, detailCredential],
+  );
+
   return (
-    <div className="app-shell">
-      <a className="skip-link" href="#main-content">
-        Skip to content
-      </a>
-      <DesktopSidebar
-        view={view}
-        onView={selectTab}
-        onAdd={openActivityEntry}
-      />
-
-      <div className="app-stage">
-        <header className="mobile-header">
-          <Brand />
-          <button
-            className="avatar-button"
-            type="button"
-            aria-label="Open account"
-            onClick={() => nav.setTab("profile")}
-          >
-            {firstName(userName).slice(0, 1).toUpperCase()}
-          </button>
-        </header>
-
-        <main id="main-content" className="main-content">
+    <div className="app-root" data-app-root>
+      <RouteAnnouncementContext value={announcement}>
+        <AppShell
+          activeTab={view}
+          onNavigate={selectTab}
+          onLogActivity={openActivityEntry}
+        >
           {!isOnline ? (
             <div className="offline-banner" role="status">
               <span>
@@ -4452,182 +3993,35 @@ export function ITrackApp() {
             </div>
           ) : null}
 
-          <div className="screen-stack" ref={screenStackRef}>
-            <div
-              className={`screen screen-root${
-                detailCredential ? " screen-under" : ""
-              }`}
-              inert={Boolean(detailCredential)}
-              aria-hidden={detailCredential ? "true" : undefined}
-            >
-              {!workspace ? (
-                !isOnline ? (
-                  <OfflineWorkspace />
-                ) : workspaceLoadFailed ? (
-                  <WorkspaceLoadFailure
-                    status={workspaceLoadFailureStatus}
-                    message={error}
-                    onRetry={() => void loadWorkspace()}
-                  />
-                ) : (
-                  <LoadingDashboard />
-                )
-              ) : view === "home" ? (
-                <TodayView
-                  workspace={workspace}
-                  credential={selectedCredential}
-                  isOnline={isOnline}
-                  highlightedReminderKey={highlightedReminderKey}
-                  onAddActivity={openActivityEntry}
-                  onAddCredential={openCredentialSetup}
-                  onViewRecords={() => nav.setTab("history")}
-                  onOpenCredential={openCredentialDetail}
-                  onLogCreditsFor={logCreditsFor}
-                  onSubmit={openSubmission}
-                  onAccept={openAcceptance}
-                  onReminders={() => {
-                    setError("");
-                    setRemindersOpen(true);
-                  }}
-                  onReminderState={(reminder, status) =>
-                    void setReminderState(reminder, status)
-                  }
-                  onAddReminderToCalendar={(reminder) =>
-                    void addReminderToCalendar(reminder)
-                  }
-                  onToggleTask={toggleTask}
-                  onAddPersonalTask={(credential) => {
-                    setError("");
-                    setTaskEditor({ credential, task: null });
-                  }}
-                  onEditPersonalTask={(credential, task) => {
-                    setError("");
-                    setTaskEditor({ credential, task });
-                  }}
-                  onRestorePersonalTask={(task) =>
-                    void restorePersonalTask(task)
-                  }
-                  taskActionsDisabled={!isOnline}
-                  pendingActionKeys={pendingActionKeys}
-                  onClaimQuest={(quest) => void claimWeeklyQuest(quest)}
-                  onRequirementApplicability={(requirement, status) =>
-                    selectedCredential
-                      ? void setRequirementApplicability(
-                          selectedCredential.id,
-                          requirement,
-                          status,
-                        )
-                      : undefined
-                  }
-                  onDentalCheckpoint={(requirement, completed, evidenceNote) =>
-                    selectedCredential
-                      ? void saveDentalCheckpoint(
-                          selectedCredential.id,
-                          requirement,
-                          completed,
-                          evidenceNote,
-                        )
-                      : undefined
-                  }
-                />
-              ) : view === "credentials" ? (
-                <CredentialsView
-                  credentials={workspace.credentials}
-                  selectedId={selectedCredential?.id ?? ""}
-                  onSelect={openCredentialDetail}
-                  onAdd={openCredentialSetup}
-                />
-              ) : view === "history" ? (
-                <RecordsView
-                  activities={workspace.activities}
-                  archivedActivities={workspace.archivedActivities}
-                  credentials={workspace.credentials}
-                  archivedCredentials={workspace.archivedCredentials}
-                  onAdd={openActivityEntry}
-                  onEdit={(activity) => {
-                    setError("");
-                    setEditingActivity(activity);
-                  }}
-                  onRestore={(activity) => void restoreActivityRecord(activity)}
-                  onRestoreCredential={(credential) =>
-                    void restoreCredentialRecord(credential)
-                  }
-                  onDeleteCredential={(credential) => {
-                    setError("");
-                    setCredentialDeletion(credential);
-                  }}
-                  actionsDisabled={!isOnline}
-                  pendingActionKeys={pendingActionKeys}
-                  onEvidence={(activity) => void openEvidence(activity)}
-                  onAllocate={(activity) => {
-                    setError("");
-                    const existingIds = new Set(
-                      allocationsFor(activity).map(
-                        (allocation) => allocation.credentialId,
-                      ),
-                    );
-                    const firstEligible = workspace.credentials.find(
-                      (credential) =>
-                        isOpenCycle(credential) &&
-                        !existingIds.has(credential.id),
-                    );
-                    setAllocationCredentialId(firstEligible?.id ?? "");
-                    setAllocationActivity(activity);
-                  }}
-                  onClassify={(activity, allocation) => {
-                    setError("");
-                    setClassificationRepair({ activity, allocation });
-                  }}
+          <ErrorBoundary resetKey={buildPath(nav.route)}>
+            {!workspace ? (
+              !isOnline ? (
+                <OfflineWorkspace />
+              ) : workspaceLoadFailed ? (
+                <WorkspaceLoadFailure
+                  status={workspaceLoadFailureStatus}
+                  message={error}
+                  onRetry={() => void loadWorkspace()}
                 />
               ) : (
-                <AccountView
-                  workspace={workspace}
-                  onReminders={() => {
-                    setError("");
-                    setRemindersOpen(true);
-                  }}
-                  onWeeklyGoal={(weeklyGoal) =>
-                    void updateWeeklyGoal(weeklyGoal)
-                  }
-                  weeklyGoalPending={pendingActionKeys.includes(
-                    WEEKLY_GOAL_ACTION_KEY,
-                  )}
-                  isStandalone={isStandalone}
-                  installAvailable={Boolean(installPrompt)}
-                  onInstall={() => void handleInstallApp()}
-                  onAddAllCheckIns={() => void addAllCheckInsToCalendar()}
-                  pushDeviceState={pushDeviceState}
-                  pushPending={pushPending}
-                  isOnline={isOnline}
-                  onEnablePhoneAlerts={() => void handleEnablePhoneAlerts()}
-                  onDisablePhoneAlerts={() => void handleDisablePhoneAlerts()}
-                  onTestPhoneAlert={() => void handleTestPhoneAlert()}
-                  onRefreshPhoneAlerts={() => void refreshPushDeviceState()}
-                />
-              )}
-            </div>
-            {stagedDetail ? (
-              <div
-                className={`screen screen-pushed${
-                  detailCredential ? "" : " screen-exiting"
-                }`}
-                onAnimationEnd={finishScreenExit}
-              >
+                <LoadingDashboard />
+              )
+            ) : nav.route.detail ? (
+              detailCredential ? (
                 <CredentialDetailScreen
-                  credential={stagedDetail}
+                  credential={detailCredential}
                   onEdit={() => {
                     setError("");
-                    setCredentialEditor(stagedDetail);
+                    setCredentialEditor(detailCredential);
                   }}
-                  onArchive={() => void archiveCredentialRecord(stagedDetail)}
+                  onArchive={() => void archiveCredentialRecord(detailCredential)}
                   onDelete={() => {
                     setError("");
-                    setCredentialDeletion(stagedDetail);
+                    setCredentialDeletion(detailCredential);
                   }}
-                  activities={workspace?.activities ?? []}
+                  activities={workspace.activities}
                   isOnline={isOnline}
-                  backLabel={TAB_LABELS[view]}
-                  onBack={nav.pop}
+                  onBreadcrumb={() => nav.setTab("credentials")}
                   onSubmit={openSubmission}
                   onAccept={openAcceptance}
                   onReminders={() => {
@@ -4664,17 +4058,144 @@ export function ITrackApp() {
                   actionsDisabled={!isOnline}
                   pendingActionKeys={pendingActionKeys}
                 />
-              </div>
-            ) : null}
-          </div>
-        </main>
-      </div>
-
-      <MobileNavigation
-        view={view}
-        onView={selectTab}
-        onAdd={openActivityEntry}
-      />
+              ) : null
+            ) : view === "home" ? (
+              <TodayView
+                workspace={workspace}
+                credential={selectedCredential}
+                today={today()}
+                isOnline={isOnline}
+                highlightedReminderKey={highlightedReminderKey}
+                onAddActivity={openActivityEntry}
+                onAddCredential={openCredentialSetup}
+                onViewRecords={() => nav.setTab("history")}
+                onOpenCredential={openCredentialDetail}
+                onLogCreditsFor={logCreditsFor}
+                onSubmit={openSubmission}
+                onAccept={openAcceptance}
+                onReminders={() => {
+                  setError("");
+                  setRemindersOpen(true);
+                }}
+                onReminderState={(reminder, status) =>
+                  void setReminderState(reminder, status)
+                }
+                onAddReminderToCalendar={(reminder) =>
+                  void addReminderToCalendar(reminder)
+                }
+                onToggleTask={toggleTask}
+                onAddPersonalTask={(credential) => {
+                  setError("");
+                  setTaskEditor({ credential, task: null });
+                }}
+                onEditPersonalTask={(credential, task) => {
+                  setError("");
+                  setTaskEditor({ credential, task });
+                }}
+                onRestorePersonalTask={(task) =>
+                  void restorePersonalTask(task)
+                }
+                taskActionsDisabled={!isOnline}
+                pendingActionKeys={pendingActionKeys}
+                onClaimQuest={(quest) => void claimWeeklyQuest(quest)}
+                onRequirementApplicability={(requirement, status) =>
+                  selectedCredential
+                    ? void setRequirementApplicability(
+                        selectedCredential.id,
+                        requirement,
+                        status,
+                      )
+                    : undefined
+                }
+                onDentalCheckpoint={(requirement, completed, evidenceNote) =>
+                  selectedCredential
+                    ? void saveDentalCheckpoint(
+                        selectedCredential.id,
+                        requirement,
+                        completed,
+                        evidenceNote,
+                      )
+                    : undefined
+                }
+              />
+            ) : view === "credentials" ? (
+              <CredentialsView
+                credentials={workspace.credentials}
+                selectedId={selectedCredential?.id ?? ""}
+                onSelect={openCredentialDetail}
+                onAdd={openCredentialSetup}
+              />
+            ) : view === "history" ? (
+              <RecordsView
+                activities={workspace.activities}
+                archivedActivities={workspace.archivedActivities}
+                credentials={workspace.credentials}
+                archivedCredentials={workspace.archivedCredentials}
+                onAdd={openActivityEntry}
+                onEdit={(activity) => {
+                  setError("");
+                  setEditingActivity(activity);
+                }}
+                onRestore={(activity) => void restoreActivityRecord(activity)}
+                onRestoreCredential={(credential) =>
+                  void restoreCredentialRecord(credential)
+                }
+                onDeleteCredential={(credential) => {
+                  setError("");
+                  setCredentialDeletion(credential);
+                }}
+                actionsDisabled={!isOnline}
+                pendingActionKeys={pendingActionKeys}
+                onEvidence={(activity) => void openEvidence(activity)}
+                onAllocate={(activity) => {
+                  setError("");
+                  const existingIds = new Set(
+                    allocationsFor(activity).map(
+                      (allocation) => allocation.credentialId,
+                    ),
+                  );
+                  const firstEligible = workspace.credentials.find(
+                    (credential) =>
+                      isOpenCycle(credential) &&
+                      !existingIds.has(credential.id),
+                  );
+                  setAllocationCredentialId(firstEligible?.id ?? "");
+                  setAllocationActivity(activity);
+                }}
+                onClassify={(activity, allocation) => {
+                  setError("");
+                  setClassificationRepair({ activity, allocation });
+                }}
+              />
+            ) : (
+              <AccountView
+                workspace={workspace}
+                onReminders={() => {
+                  setError("");
+                  setRemindersOpen(true);
+                }}
+                onWeeklyGoal={(weeklyGoal) =>
+                  void updateWeeklyGoal(weeklyGoal)
+                }
+                weeklyGoalPending={pendingActionKeys.includes(
+                  WEEKLY_GOAL_ACTION_KEY,
+                )}
+                isStandalone={isStandalone}
+                installAvailable={Boolean(installPrompt)}
+                onInstall={() => void handleInstallApp()}
+                onAddAllCheckIns={() => void addAllCheckInsToCalendar()}
+                pushDeviceState={pushDeviceState}
+                pushPending={pushPending}
+                isOnline={isOnline}
+                onEnablePhoneAlerts={() => void handleEnablePhoneAlerts()}
+                onDisablePhoneAlerts={() => void handleDisablePhoneAlerts()}
+                onTestPhoneAlert={() => void handleTestPhoneAlert()}
+                onRefreshPhoneAlerts={() => void refreshPushDeviceState()}
+              />
+            )}
+          </ErrorBoundary>
+        </AppShell>
+      </RouteAnnouncementContext>
 
       {activityOpen && workspace ? (
         <Modal
@@ -4683,14 +4204,18 @@ export function ITrackApp() {
           onClose={closeActivityEntry}
         >
           {activityCredentials.length === 0 ? (
-            <EmptyModalState
+            <EmptyState
+              compact
               title="Add an active credential first"
               body="Credits need an open renewal cycle so iTrack knows where to count them."
-              action="Set up credential"
-              onAction={() => {
-                closeActivityEntry();
-                openCredentialSetup();
+              action={{
+                label: "Set up credential",
+                onClick: () => {
+                  closeActivityEntry();
+                  openCredentialSetup();
+                },
               }}
+              icon={<Icon name="plus" size={22} />}
             />
           ) : (
             <form className="form-stack" onSubmit={handleActivitySubmit}>
@@ -5255,7 +4780,11 @@ export function ITrackApp() {
           }}
         >
           <form className="form-stack" onSubmit={handleCredentialSubmit}>
-            <div className="mode-switch" aria-label="Credential setup mode">
+            <div
+              className="mode-switch"
+              role="group"
+              aria-label="Credential setup mode"
+            >
               <button
                 className={!customCredential ? "active" : ""}
                 type="button"
@@ -5337,53 +4866,44 @@ export function ITrackApp() {
               </>
             ) : (
               <>
-                <label className="field">
-                  <span>Find a credential template</span>
-                  <input
-                    autoFocus
-                    type="search"
-                    value={catalogQuery}
-                    onChange={(event) => {
-                      setCatalogQuery(event.currentTarget.value);
-                      setSelectedRuleId("");
-                    }}
-                    placeholder="Search profession, license, certification, or state"
-                  />
-                  <small aria-live="polite">
-                    {catalogStatus === "loading"
+                <Field
+                  label="Profession, credential, and state"
+                  hint={
+                    catalogStatus === "loading"
                       ? "Loading researched starting templates · custom plans are always available"
                       : catalogStatus === "error"
                         ? "Templates couldn’t be loaded · custom plans are always available"
-                        : `${catalogTemplates.length} researched starting templates · custom plans are always available`}
-                  </small>
-                </label>
-                <label className="field">
-                  <span>Profession, credential, and state</span>
-                  <select
+                        : `${catalogTemplates.length} researched starting templates · custom plans are always available`
+                  }
+                >
+                  <Select
                     name="ruleSetId"
                     value={selectedRuleId}
                     onChange={(event) => {
-                      setSelectedRuleId(event.currentTarget.value)
+                      setSelectedRuleId(event.currentTarget.value);
                       setCatalogQuery("");
                     }}
                     required
-                  >
-                    <option value="">Choose a rule template</option>
-                    {catalogGroups.map((group) => (
-                      <optgroup key={group.profession} label={group.profession}>
-                        {group.rules.map((rule) => (
-                          <option key={rule.id} value={rule.id}>
-                            {rule.credentialName} · {rule.jurisdiction}
-                          </option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
-                  <small aria-live="polite">
-                    {catalogMatches.length}{" "}
-                    {catalogMatches.length === 1 ? "match" : "matches"}
-                  </small>
-                </label>
+                    placeholder="Choose a rule template"
+                    searchable
+                    autoFocus
+                    searchLabel="Find a credential template"
+                    searchPlaceholder="Search profession, license, certification, or state"
+                    query={catalogQuery}
+                    onQueryChange={(query) => {
+                      setCatalogQuery(query);
+                      setSelectedRuleId("");
+                    }}
+                    options={catalogGroups.map((group) => ({
+                      label: group.profession,
+                      options: group.rules.map((rule) => ({
+                        value: rule.id,
+                        label: `${rule.credentialName} · ${rule.jurisdiction}`,
+                        keywords: `${rule.profession} ${rule.credentialName} ${rule.jurisdiction} ${rule.issuer}`,
+                      })),
+                    }))}
+                  />
+                </Field>
                 {catalogStatus === "error" ? (
                   <button
                     className="button button-outline catalog-custom-button"
@@ -6575,11 +6095,12 @@ export function ITrackApp() {
               </div>
             </form>
           ) : (
-            <EmptyModalState
+            <EmptyState
+              compact
               title="No other eligible credential"
               body="Add another active credential, or this activity is already applied everywhere it can be."
-              action="Close"
-              onAction={() => setAllocationActivity(null)}
+              action={{ label: "Close", onClick: () => setAllocationActivity(null) }}
+              icon={<Icon name="plus" size={22} />}
             />
           )}
         </Modal>
@@ -6741,11 +6262,12 @@ export function ITrackApp() {
               </div>
             </form>
           ) : (
-            <EmptyModalState
+            <EmptyState
+              compact
               title="Credential unavailable"
               body="This activity’s credential could not be opened for classification."
-              action="Close"
-              onAction={() => setClassificationRepair(null)}
+              action={{ label: "Close", onClick: () => setClassificationRepair(null) }}
+              icon={<Icon name="plus" size={22} />}
             />
           )}
         </Modal>
@@ -6761,12 +6283,10 @@ export function ITrackApp() {
           }}
         >
           <div className="form-stack">
-            {error ? (
-              <div className="modal-error" role="alert">
-                <strong>Proof could not be updated</strong>
-                <span>{error}</span>
-              </div>
-            ) : null}
+            <ErrorSummary
+              title="Proof could not be updated"
+              errors={error ? [{ message: error }] : []}
+            />
             {evidenceIsFrozen ? (
               <div className="advisory-note frozen-proof-advisory">
                 <span aria-hidden="true">i</span>
@@ -6854,362 +6374,14 @@ export function ITrackApp() {
           </div>
         </Modal>
       ) : null}
-
-      {toast ? (
-        <div className="toast" role="status" aria-live="polite">
-          <span>{toast.message}</span>
-          {toast.undo ? (
-            <button
-              type="button"
-              onClick={() => {
-                toast.undo?.();
-                setToast(null);
-              }}
-            >
-              Undo
-            </button>
-          ) : null}
-          <button
-            className="toast-close"
-            type="button"
-            aria-label="Dismiss notification"
-            onClick={() => setToast(null)}
-          >
-            <Icon name="close" size={17} />
-          </button>
-        </div>
-      ) : null}
     </div>
-  );
-}
-
-/*
- * ICONS
- * One shape per meaning, all drawn on the same 24px grid at one stroke weight,
- * so marks set at the same `size` read as one set. The stroke is in viewBox
- * units and therefore scales with `size` — a 13px mark carries a lighter line
- * than a 21px one, which is what keeps a small mark from going blobby. Keep
- * adjacent icons on the same size for them to weigh the same. Inline SVG
- * rather than a font or sprite: the app ships no icon dependency and has to
- * paint from the offline cache. Every icon is decorative — the label next to
- * it carries the meaning — so it stays out of the accessibility tree and the
- * surrounding element keeps whatever accessible name it already had.
- *
- * Filled variants exist only where the UI already distinguished filled from
- * outline (an earned badge, a completed quest). Everything else is outline.
- */
-const ICON_SHAPES = {
-  edit: (
-    <>
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
-    </>
-  ),
-  home: (
-    <>
-      <path d="M3 10a2 2 0 0 1 .71-1.53l7-6a2 2 0 0 1 2.58 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-      <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
-    </>
-  ),
-  layoutGrid: (
-    <>
-      <rect x="3" y="3" width="7" height="7" rx="1.4" />
-      <rect x="14" y="3" width="7" height="7" rx="1.4" />
-      <rect x="3" y="14" width="7" height="7" rx="1.4" />
-      <rect x="14" y="14" width="7" height="7" rx="1.4" />
-    </>
-  ),
-  listRows: (
-    <>
-      <path d="M8 5h13" />
-      <path d="M8 12h13" />
-      <path d="M8 19h13" />
-      <path d="M3 5h.01" />
-      <path d="M3 12h.01" />
-      <path d="M3 19h.01" />
-    </>
-  ),
-  userCircle: (
-    <>
-      <circle cx="12" cy="12" r="9.4" />
-      <circle cx="12" cy="10" r="3" />
-      <path d="M6.6 19.9V19a2 2 0 0 1 2-2h6.8a2 2 0 0 1 2 2v.9" />
-    </>
-  ),
-  plus: (
-    <>
-      <path d="M12 5v14" />
-      <path d="M5 12h14" />
-    </>
-  ),
-  minus: <path d="M5 12h14" />,
-  check: <path d="M20 6 9 17l-5-5" />,
-  close: (
-    <>
-      <path d="M18 6 6 18" />
-      <path d="m6 6 12 12" />
-    </>
-  ),
-  arrowRight: (
-    <>
-      <path d="M5 12h14" />
-      <path d="m12 5 7 7-7 7" />
-    </>
-  ),
-  arrowUpRight: (
-    <>
-      <path d="M7 7h10v10" />
-      <path d="M7 17 17 7" />
-    </>
-  ),
-  arrowDown: (
-    <>
-      <path d="M12 5v14" />
-      <path d="m19 12-7 7-7-7" />
-    </>
-  ),
-  chevronDown: <path d="m6 9 6 6 6-6" />,
-  chevronLeft: <path d="M15 18l-6-6 6-6" />,
-  chevronRight: <path d="m9 18 6-6-6-6" />,
-  refresh: (
-    <>
-      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-      <path d="M3 3v5h5" />
-    </>
-  ),
-  clock: (
-    <>
-      <circle cx="12" cy="12" r="9.4" />
-      <path d="M12 6.6V12l3.8 2.2" />
-    </>
-  ),
-  diamond: (
-    <path d="M2.7 10.3a2.41 2.41 0 0 0 0 3.4l7.6 7.6a2.41 2.41 0 0 0 3.4 0l7.6-7.6a2.41 2.41 0 0 0 0-3.4l-7.6-7.6a2.41 2.41 0 0 0-3.4 0z" />
-  ),
-  diamondFilled: (
-    <path
-      d="M2.7 10.3a2.41 2.41 0 0 0 0 3.4l7.6 7.6a2.41 2.41 0 0 0 3.4 0l7.6-7.6a2.41 2.41 0 0 0 0-3.4l-7.6-7.6a2.41 2.41 0 0 0-3.4 0z"
-      fill="currentColor"
-    />
-  ),
-  circle: <circle cx="12" cy="12" r="9.4" />,
-  target: (
-    <>
-      <circle cx="12" cy="12" r="9.4" />
-      <circle cx="12" cy="12" r="3.6" />
-    </>
-  ),
-  camera: (
-    <>
-      <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z" />
-      <circle cx="12" cy="13" r="3.2" />
-    </>
-  ),
-  save: (
-    <>
-      <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
-      <path d="M17 21v-8H7v8" />
-      <path d="M7 3v4h8" />
-    </>
-  ),
-  shield: (
-    <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
-  ),
-  info: (
-    <>
-      <circle cx="12" cy="12" r="9.4" />
-      <path d="M12 16.4v-4.6" />
-      <path d="M12 7.9h.01" />
-    </>
-  ),
-  alert: (
-    <>
-      <circle cx="12" cy="12" r="9.4" />
-      <path d="M12 7.6v4.8" />
-      <path d="M12 16.4h.01" />
-    </>
-  ),
-  trendingUp: (
-    <>
-      <path d="M16 7h6v6" />
-      <path d="m22 7-8.5 8.5-5-5L2 17" />
-    </>
-  ),
-  zap: (
-    <path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z" />
-  ),
-};
-
-type IconName = keyof typeof ICON_SHAPES;
-
-function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
-  return (
-    <svg
-      className="icon"
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.8}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      focusable="false"
-    >
-      {ICON_SHAPES[name]}
-    </svg>
-  );
-}
-
-function Brand() {
-  return (
-    <div className="brand" aria-label="iTrack">
-      <span className="brand-mark" aria-hidden="true">
-        i
-      </span>
-      <span>iTrack</span>
-    </div>
-  );
-}
-
-function DesktopSidebar({
-  view,
-  onView,
-  onAdd,
-}: {
-  view: TabName;
-  onView: (view: TabName) => void;
-  onAdd: () => void;
-}) {
-  return (
-    <aside className="desktop-sidebar">
-      <Brand />
-      <nav aria-label="Primary navigation">
-        <NavButton
-          active={view === "home"}
-          label={TAB_LABELS.home}
-          icon="home"
-          onClick={() => onView("home")}
-        />
-        <NavButton
-          active={view === "credentials"}
-          label={TAB_LABELS.credentials}
-          icon="layoutGrid"
-          onClick={() => onView("credentials")}
-        />
-        <NavButton
-          active={view === "history"}
-          label={TAB_LABELS.history}
-          icon="listRows"
-          onClick={() => onView("history")}
-        />
-        <NavButton
-          active={view === "profile"}
-          label={TAB_LABELS.profile}
-          icon="userCircle"
-          onClick={() => onView("profile")}
-        />
-      </nav>
-      {/*
-       * Never inert. Before a first credential exists the sheet opens on its
-       * own empty state, which explains why credits need a cycle and routes to
-       * credential setup; a dead button explains nothing.
-       */}
-      <button className="sidebar-add" type="button" onClick={onAdd}>
-        <Icon name="plus" size={18} />
-        Log activity
-      </button>
-      <div className="sidebar-coach">
-        <span>Weekly rhythm</span>
-        <strong>Small updates. Calm renewals.</strong>
-        <p>Log proof while it’s easy to find.</p>
-      </div>
-    </aside>
-  );
-}
-
-function MobileNavigation({
-  view,
-  onView,
-  onAdd,
-}: {
-  view: TabName;
-  onView: (view: TabName) => void;
-  onAdd: () => void;
-}) {
-  return (
-    <nav className="mobile-nav" aria-label="Primary navigation">
-      <NavButton
-        active={view === "home"}
-        label={TAB_LABELS.home}
-        icon="home"
-        onClick={() => onView("home")}
-      />
-      <NavButton
-        active={view === "credentials"}
-        label={TAB_LABELS.credentials}
-        icon="layoutGrid"
-        onClick={() => onView("credentials")}
-      />
-      {/*
-       * Never inert: with no credential yet the sheet opens on its own empty
-       * state, which explains the gap and routes to credential setup. A dead
-       * primary button explains nothing.
-       */}
-      <button
-        className="mobile-add"
-        type="button"
-        aria-label="Log completed learning"
-        onClick={onAdd}
-      >
-        <Icon name="plus" size={24} />
-      </button>
-      <NavButton
-        active={view === "history"}
-        label={TAB_LABELS.history}
-        icon="listRows"
-        onClick={() => onView("history")}
-      />
-      <NavButton
-        active={view === "profile"}
-        label={TAB_LABELS.profile}
-        icon="userCircle"
-        onClick={() => onView("profile")}
-      />
-    </nav>
-  );
-}
-
-function NavButton({
-  active,
-  label,
-  icon,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  icon: IconName;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      className={`nav-button ${active ? "active" : ""}`}
-      type="button"
-      aria-current={active ? "page" : undefined}
-      onClick={onClick}
-    >
-      <span className="nav-symbol">
-        <Icon name={icon} size={20} />
-      </span>
-      <span>{label}</span>
-    </button>
   );
 }
 
 function TodayView({
   workspace,
   credential,
+  today,
   isOnline,
   highlightedReminderKey,
   onAddActivity,
@@ -7234,6 +6406,7 @@ function TodayView({
 }: {
   workspace: Workspace;
   credential: Credential | null;
+  today: string;
   isOnline: boolean;
   highlightedReminderKey: string;
   onAddActivity: () => void;
@@ -7276,10 +6449,10 @@ function TodayView({
   if (!credential) {
     return (
       <div className="view-stack">
-        <PageGreeting
+        <PageHeader
           eyebrow="Your renewal companion"
           title={`Welcome, ${firstName(workspace.user.displayName)}.`}
-          body="Let’s turn your license or certification requirements into a clear, manageable plan."
+          lede="Let’s turn your license or certification requirements into a clear, manageable plan."
         />
         <section className="onboarding-hero">
           <div className="onboarding-copy">
@@ -7348,6 +6521,12 @@ function TodayView({
 
   const progress = credentialProgress(credential);
   const readiness = readinessScore(credential);
+  // spec §5.1: the ring counts credits vs required (the Credentials list's
+  // rule — readiness only for a credential with no numeric total); the ring
+  // turns complete on credits, the pills on the cycle's own state.
+  const ringValue = ringValueOf(credential);
+  const ringState = credentialRingState(credential);
+  const cycleState = credentialInstrumentState(credential);
   const missingEvidence = workspace.activities.filter(
     (activity) =>
       allocationsFor(activity).some(
@@ -7356,6 +6535,21 @@ function TodayView({
       activity.evidenceStatus === "missing",
   ).length;
   const countdown = credentialCountdown(credential);
+  const timelineDeadlines: TimelineDeadline[] = groupCycles(
+    workspace.credentials,
+    today,
+  ).flatMap((series) =>
+    series.current
+      ? [
+          {
+            id: series.current.id,
+            label: series.current.credentialName,
+            date: series.current.deadline,
+            state: credentialInstrumentState(series.current),
+          },
+        ]
+      : [],
+  );
   const highlightedReminder = workspace.reminders.find(
     (reminder) => reminder.key === highlightedReminderKey,
   );
@@ -7405,15 +6599,15 @@ function TodayView({
 
   return (
     <div className="view-stack">
-      <PageGreeting
+      <PageHeader
         eyebrow={
           workspace.user.isDemo
             ? "Private preview workspace"
             : "Your credential companion"
         }
         title={`Good ${dayPart()}, ${firstName(workspace.user.displayName)}.`}
-        body="Here’s the clearest next step toward a calm deadline."
-        action={
+        lede="Here’s the clearest next step toward a calm deadline."
+        actions={
           <button
             className="button button-primary desktop-only"
             type="button"
@@ -7429,8 +6623,7 @@ function TodayView({
         <div className="renewal-hero-main">
           <div className="renewal-identity">
             <div>
-              <span className="status-pill">
-                <span aria-hidden="true" />
+              <StatusPill state={cycleState}>
                 {credential.status === "active"
                   ? isCompliancePeriodCredential(credential)
                     ? "Active compliance period"
@@ -7444,7 +6637,7 @@ function TodayView({
                     : isCompliancePeriodCredential(credential)
                       ? "Completed"
                       : "Renewed"}
-              </span>
+              </StatusPill>
               <h2 id="renewal-heading">{credential.credentialName}</h2>
               <p>
                 {credential.jurisdiction}
@@ -7497,9 +6690,24 @@ function TodayView({
               </span>
               {credential.totalRequired > 0 ? (
                 <>
-                  <div className="progress-track progress-track-light">
-                    <span style={{ width: `${progress}%` }} />
-                  </div>
+                  <CreditBar
+                    counted={credential.totalEarned}
+                    required={credential.totalRequired}
+                    minimum={
+                      Math.max(
+                        0,
+                        ...activeMinimums(credential).map(
+                          (item) => item.requiredUnits,
+                        ),
+                      ) || undefined
+                    }
+                    state={ringState}
+                    label={`${credential.credentialName}: ${compactNumber(
+                      credential.totalEarned,
+                    )} of ${compactNumber(credential.totalRequired)} ${
+                      credential.unitLabel
+                    }`}
+                  />
                   <p>
                     <strong>
                       {compactNumber(credential.totalEarned)} of{" "}
@@ -7525,30 +6733,68 @@ function TodayView({
               ? "Compliance readiness"
               : "Renewal readiness"}
           </span>
-          <div
-            className="readiness-ring"
-            style={{ "--score": readiness } as React.CSSProperties}
-            role="progressbar"
-            aria-label={`${readiness}% ${
-              isCompliancePeriodCredential(credential)
-                ? "compliance"
-                : "renewal"
-            } readiness`}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={readiness}
-          >
-            <span>
-              <strong>{readiness}%</strong>
-              <small>ready</small>
-            </span>
-          </div>
+          {/*
+           * Keyed on the credential: the ring's completion moment (decision 5)
+           * compares one instance's successive fractions, so a hero that
+           * switched credential in place would read an incomplete → complete
+           * hop as a requirement just met and replay the check. A new
+           * credential is a new mount instead.
+           *
+           * The value text is the CYCLE's word, not the ring's: ringStateOf
+           * turns "complete" on credits alone, while STATE_LABELS.complete
+           * ("Renewed") is the cycle-based pill word — a fully counted
+           * credential on an overdue or open cycle must say "100%, overdue" /
+           * "100%, due soon", never "100%, renewed" (the Task 10 amendment in
+           * app/lib/instruments.ts; WCAG 4.1.2). data-state stays the ring's.
+           */}
+          <CycleRing
+            key={credential.id}
+            size={72}
+            fraction={ringValue.fraction}
+            percent={ringValue.percent}
+            state={ringState}
+            label={
+              ringValue.basis === "credits"
+                ? `${credential.credentialName}: ${compactNumber(
+                    credential.totalEarned,
+                  )} of ${compactNumber(credential.totalRequired)} ${
+                    credential.unitLabel
+                  } counted`
+                : `${credential.credentialName}: ${ringValue.percent}% ready`
+            }
+            valueText={`${ringValue.percent}%, ${STATE_LABELS[
+              cycleState
+            ].toLowerCase()}`}
+          />
           <p>
             {credential.totalRequired > 0
               ? "Based on countable units, active minimums, required checkpoints, and checklist steps."
               : "Based on applicable training conditions and checklist steps."}
           </p>
         </div>
+      </section>
+
+      <section
+        className="card deadline-timeline-card"
+        aria-labelledby="timeline-eyebrow"
+      >
+        <div className="card-heading">
+          <div>
+            <span className="section-kicker" id="timeline-eyebrow">
+              Next twelve months
+            </span>
+          </div>
+        </div>
+        <DeadlineTimeline
+          today={today}
+          deadlines={timelineDeadlines}
+          formatDate={(iso) => formatDate(iso)}
+          formatShortDate={(iso) => formatDate(iso, { year: undefined })}
+          formatMonth={(iso) =>
+            formatDate(iso, { day: undefined, month: "short", year: "numeric" })
+          }
+          onSelect={onOpenCredential}
+        />
       </section>
 
       {visibleReminders.length ? (
@@ -7581,7 +6827,13 @@ function TodayView({
                   reminder.key === highlightedReminderKey ? -1 : undefined
                 }
               >
-                <span className="reminder-dot" aria-hidden="true" />
+                <StatusPill state={reminderState(reminder)}>
+                  {reminder.urgency === "overdue"
+                    ? "Overdue"
+                    : reminder.urgency === "today"
+                      ? "Due today"
+                      : STATE_LABELS[reminderState(reminder)]}
+                </StatusPill>
                 <button
                   className="reminder-open"
                   type="button"
@@ -7693,6 +6945,7 @@ function TodayView({
             {credential.totalRequired > 0 ? (
               <ProgressRow
                 name="Overall"
+                state={credentialInstrumentState(credential)}
                 earned={credential.totalEarned}
                 required={credential.totalRequired}
                 unit={credential.unitLabel}
@@ -7723,6 +6976,7 @@ function TodayView({
               <ProgressRow
                 key={requirement.id}
                 name={requirement.name}
+                state={credentialInstrumentState(credential)}
                 earned={requirementEarned(requirement)}
                 required={requirement.requiredUnits}
                 unit={credential.unitLabel}
@@ -8233,11 +7487,12 @@ function TodayView({
               ))}
             </div>
           ) : (
-            <EmptyInline
+            <EmptyState
+              compact
               title="No learning logged yet"
               body="Your first record will appear here."
-              action="Add one"
-              onAction={onAddActivity}
+              action={{ label: "Add one", onClick: onAddActivity }}
+              icon={<Icon name="plus" size={16} />}
             />
           )}
         </section>
@@ -8298,19 +7553,19 @@ function CredentialsView({
     }),
   );
   // The highlight marks the credential the rest of the app is pointed at —
-  // Today's card, the log sheet's default — not a detail pane beside the list,
-  // which now lives on its own pushed screen.
+  // Today's card, the log sheet's default. The detail is its own page at
+  // /credentials/<id>, not a pane beside this list.
   const activeId =
     credentials.find((credential) => credential.id === selectedId)?.id ??
     series[0]?.current?.id ??
     "";
   return (
     <div className="view-stack">
-      <PageGreeting
+      <PageHeader
         eyebrow="Credentials"
         title="Every renewal, one clear place."
-        body="Requirements, sources, cycles, and submission status stay connected."
-        action={
+        lede="Requirements, sources, cycles, and submission status stay connected."
+        actions={
           <button className="button button-primary" type="button" onClick={onAdd}>
             <Icon name="plus" size={16} />
             Add credential
@@ -8389,11 +7644,10 @@ function CredentialsView({
           </button>
         </section>
       ) : (
-        <EmptyPage
+        <EmptyState
           title="Add your first credential"
           body="Choose a source-linked rule template or make a custom plan from your credential information."
-          action="Set up credential"
-          onAction={onAdd}
+          action={{ label: "Set up credential", onClick: onAdd }}
         />
       )}
     </div>
@@ -8401,18 +7655,16 @@ function CredentialsView({
 }
 
 /*
- * The credential detail is a *pushed* screen, not a pane: it owns a history
- * entry, so the iOS back gesture, the browser back button and a refresh all
- * behave the way the platform promises. Its header carries the iOS pairing of
- * a back control labelled with the screen it returns to and this screen's own
- * title.
+ * The credential detail is a routed screen: /credentials/:id is an ordinary
+ * history entry, so the browser's Back and Forward and a refresh all land
+ * here on their own. Its header is a PageHeader whose eyebrow is a breadcrumb
+ * naming the URL parent — Credentials, whichever screen opened it.
  */
 function CredentialDetailScreen({
   credential,
   activities,
   isOnline,
-  backLabel,
-  onBack,
+  onBreadcrumb,
   onSubmit,
   onAccept,
   onReminders,
@@ -8428,11 +7680,9 @@ function CredentialDetailScreen({
   credential: Credential;
   activities: Activity[];
   isOnline: boolean;
-  // The tab this screen was pushed from, which is not always the Credentials
-  // list: Home opens credentials too, and the control has to name the screen
-  // the user will actually land back on.
-  backLabel: string;
-  onBack: () => void;
+  // The breadcrumb's client-side navigation to /credentials. A plain left
+  // click is intercepted; anything else is the browser's (it is a real link).
+  onBreadcrumb: () => void;
   onSubmit: () => void;
   onAccept: () => void;
   onReminders: () => void;
@@ -8490,17 +7740,29 @@ function CredentialDetailScreen({
     openTaskCount;
   return (
     <div className="view-stack">
-      <header className="push-header">
-        <button type="button" className="push-back" onClick={onBack}>
-          <Icon name="chevronLeft" size={22} />
-          <span>{backLabel}</span>
-        </button>
-        <h1 className="push-title">{credential.credentialName}</h1>
-      </header>
+      <PageHeader
+        eyebrow={
+          // The breadcrumb is a real link the client router intercepts
+          // (isPlainLeftClick → useNavigation), exactly like NavItem's tabs;
+          // next/link would put a second router beside the one history writer.
+          // eslint-disable-next-line @next/next/no-html-link-for-pages -- client-side navigation is already provided by useNavigation
+          <a
+            href="/credentials"
+            onClick={(event) => {
+              if (!isPlainLeftClick(event)) return;
+              event.preventDefault();
+              onBreadcrumb();
+            }}
+          >
+            Credentials
+          </a>
+        }
+        title={credential.credentialName}
+      />
       <section className="credential-detail">
         <div className="credential-detail-header">
           <div>
-            <span className="status-pill status-pill-dark">
+            <StatusPill state={credentialInstrumentState(credential)}>
               {isIsc2AutomaticRenewalCredential(credential)
                 ? credential.status === "active"
                   ? "active renewal cycle"
@@ -8514,7 +7776,7 @@ function CredentialDetailScreen({
                       ? "compliance recorded"
                       : "completed"
                   : credential.status}
-            </span>
+            </StatusPill>
             <h2>{credential.credentialName}</h2>
             <p>
               {credential.jurisdiction}
@@ -8557,6 +7819,7 @@ function CredentialDetailScreen({
             </p>
             <div
               className="credential-packet-gaps"
+              role="group"
               aria-label={`${trackedGapCount} tracked packet gaps`}
             >
               <span>{requirementGapCount} requirement gaps</span>
@@ -8684,6 +7947,7 @@ function CredentialDetailScreen({
           {credential.totalRequired > 0 ? (
             <ProgressRow
               name="Overall"
+              state={credentialInstrumentState(credential)}
               earned={credential.totalEarned}
               required={credential.totalRequired}
               unit={credential.unitLabel}
@@ -8714,6 +7978,7 @@ function CredentialDetailScreen({
             <ProgressRow
               key={requirement.id}
               name={requirement.name}
+              state={credentialInstrumentState(credential)}
               earned={requirementEarned(requirement)}
               required={requirement.requiredUnits}
               unit={credential.unitLabel}
@@ -8944,11 +8209,11 @@ function RecordsView({
   ).length;
   return (
     <div className="view-stack">
-      <PageGreeting
+      <PageHeader
         eyebrow="Activity record"
         title="Your learning, organized as you go."
-        body="Credits earned and proof status stay visible before renewal season."
-        action={
+        lede="Credits earned and proof status stay visible before renewal season."
+        actions={
           <button className="button button-primary" type="button" onClick={onAdd}>
             <Icon name="plus" size={16} />
             Log activity
@@ -9154,11 +8419,10 @@ function RecordsView({
           ))}
         </section>
       ) : (
-        <EmptyPage
+        <EmptyState
           title="Your learning record starts here"
           body="Log a course, conference, webinar, or other completed activity in under a minute."
-          action="Log first activity"
-          onAction={onAdd}
+          action={{ label: "Log first activity", onClick: onAdd }}
         />
       )}
       {archivedActivities.length ? (
@@ -9367,12 +8631,10 @@ function ActivityEditorModal({
       onClose={onClose}
     >
       <div className="form-stack">
-        {error ? (
-          <div className="modal-error" role="alert">
-            <strong>This correction did not save</strong>
-            <span>{error}</span>
-          </div>
-        ) : null}
+        <ErrorSummary
+          title="This correction did not save"
+          errors={error ? [{ message: error }] : []}
+        />
         {allocations.length ? (
           <div className="advisory-note">
             <span aria-hidden="true">i</span>
@@ -9488,7 +8750,11 @@ function ActivityEditorModal({
               />
             </label>
           ) : null}
-          <div className="read-only-status" aria-label="Current proof status">
+          <div
+            className="read-only-status"
+            role="group"
+            aria-label="Current proof status"
+          >
             <span
               className={`proof-label ${activity.evidenceStatus}`}
               aria-hidden="true"
@@ -9643,11 +8909,7 @@ function CredentialEditorModal({
   return (
     <Modal eyebrow="Credential" title="Edit credential" onClose={onClose}>
       <form className="form-stack" onSubmit={handleSubmit}>
-        {error ? (
-          <div className="modal-error" role="alert">
-            <span>{error}</span>
-          </div>
-        ) : null}
+        <ErrorSummary errors={error ? [{ message: error }] : []} />
         <label className="field">
           <span>License or professional certification</span>
           <input
@@ -9854,11 +9116,7 @@ function ConfirmDeleteCredentialModal({
           onConfirm(value.trim(), orphans);
         }}
       >
-        {error ? (
-          <div className="modal-error" role="alert">
-            <span>{error}</span>
-          </div>
-        ) : null}
+        <ErrorSummary errors={error ? [{ message: error }] : []} />
         <ul>
           <li>
             Removes this credential, every past cycle, its checklist and
@@ -9932,16 +9190,43 @@ function PersonalTaskEditorModal({
   onArchive?: () => void;
 }) {
   const [confirmingArchive, setConfirmingArchive] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<{
+    title?: string;
+    dueDate?: string;
+  }>({});
   const editing = Boolean(task);
 
+  // Validated here, not by the browser: `noValidate` turns the native bubble
+  // off, each problem is written under its field and listed in a focused
+  // summary (a11y-09). The due date stays optional — the server accepts an
+  // empty one — so its message fires only for a value that is not a
+  // calendar date. `pending` is guarded here because Button expresses it as
+  // aria-disabled, which does not stop Enter in a text field from submitting.
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (pending) return;
     const form = new FormData(event.currentTarget);
-    onSave({
-      title: String(form.get("title") ?? ""),
-      dueDate: String(form.get("dueDate") ?? ""),
-    });
+    const title = String(form.get("title") ?? "").trim();
+    const dueDate = String(form.get("dueDate") ?? "");
+    const next: { title?: string; dueDate?: string } = {};
+    if (!title) next.title = "Enter a task name";
+    if (dueDate && !ISO_DATE_PATTERN.test(dueDate)) {
+      next.dueDate = "Enter a due date";
+    }
+    setFieldErrors(next);
+    if (next.title || next.dueDate) return;
+    onSave({ title, dueDate });
   };
+
+  const summary = [
+    ...(error ? [{ message: error }] : []),
+    ...(fieldErrors.title
+      ? [{ fieldId: "personal-task-title", message: fieldErrors.title }]
+      : []),
+    ...(fieldErrors.dueDate
+      ? [{ fieldId: "personal-task-due", message: fieldErrors.dueDate }]
+      : []),
+  ];
 
   return (
     <Modal
@@ -9950,12 +9235,6 @@ function PersonalTaskEditorModal({
       onClose={onClose}
     >
       <div className="form-stack">
-        {error ? (
-          <div className="modal-error" role="alert">
-            <strong>This task did not save</strong>
-            <span>{error}</span>
-          </div>
-        ) : null}
         <div className="advisory-note">
           <span aria-hidden="true">i</span>
           <p>
@@ -9963,10 +9242,9 @@ function PersonalTaskEditorModal({
             them before submission. They do not earn XP.
           </p>
         </div>
-        <form className="form-stack" onSubmit={handleSubmit}>
-          <label className="field">
-            <span>Task</span>
-            <input
+        <form className="form-stack" noValidate onSubmit={handleSubmit}>
+          <Field id="personal-task-title" label="Task" error={fieldErrors.title}>
+            <TextInput
               autoFocus
               name="title"
               defaultValue={task?.title ?? ""}
@@ -9974,42 +9252,37 @@ function PersonalTaskEditorModal({
               placeholder="e.g., Request transcript from provider"
               required
             />
-          </label>
-          <label className="field">
-            <span>
-              Due date <em>Optional</em>
-            </span>
-            <input
-              name="dueDate"
-              type="date"
-              defaultValue={task?.dueDate ?? ""}
-            />
-            <small>
-              Due dates appear in Today check-ins when reminders are on.
-            </small>
-          </label>
+          </Field>
+          <Field
+            id="personal-task-due"
+            label="Due date"
+            optional
+            hint="Due dates appear in Today check-ins when reminders are on."
+            error={fieldErrors.dueDate}
+          >
+            <DateInput name="dueDate" defaultValue={task?.dueDate ?? ""} />
+          </Field>
+          <ErrorSummary
+            title={error ? "This task did not save" : undefined}
+            errors={summary}
+          />
           <div className="form-actions">
-            <button
-              className="button button-ghost"
-              type="button"
-              onClick={onClose}
-              disabled={pending}
-            >
+            <Button variant="quiet" onClick={onClose}>
               Cancel
-            </button>
-            <button
-              className="button button-primary"
+            </Button>
+            <Button
               type="submit"
-              disabled={pending || !isOnline}
+              variant="primary"
+              pending={pending}
+              pendingLabel="Saving…"
+              disabled={!isOnline}
             >
-              {pending
-                ? "Saving…"
-                : !isOnline
-                  ? "Reconnect to save"
-                  : editing
-                    ? "Save changes"
-                    : "Add task"}
-            </button>
+              {!isOnline
+                ? "Reconnect to save"
+                : editing
+                  ? "Save changes"
+                  : "Add task"}
+            </Button>
           </div>
         </form>
         {task?.isPersonal && onArchive ? (
@@ -10162,10 +9435,10 @@ function AccountView({
 
   return (
     <div className="view-stack">
-      <PageGreeting
+      <PageHeader
         eyebrow="Profile"
         title="A renewal system that stays yours."
-        body="Your identity, momentum, and product safeguards in one place."
+        lede="Your identity, momentum, and product safeguards in one place."
       />
       <div className="account-grid">
         <section className="card account-profile">
@@ -10538,6 +9811,7 @@ function ProgressRow({
   earned,
   required,
   unit,
+  state = "on-track",
   requirement,
   onApplicability,
   onDentalCheckpoint,
@@ -10548,6 +9822,7 @@ function ProgressRow({
   earned: number;
   required: number;
   unit: string;
+  state?: InstrumentState;
   requirement?: Requirement;
   onApplicability?: (
     status: "applies" | "not_applicable",
@@ -10753,12 +10028,6 @@ function ProgressRow({
     );
   }
 
-  const progress =
-    required <= 0
-      ? kind === "maximum"
-        ? 0
-        : 100
-      : clampPercent((rawEarned / required) * 100);
   const met = kind === "maximum" ? excess === 0 : earned >= required;
   const statusLabel =
     kind === "maximum"
@@ -10792,20 +10061,15 @@ function ProgressRow({
           {unit}
         </span>
       </div>
-      <div
-        className={`progress-track ${met ? "met" : ""} ${
-          excess > 0 ? "over-limit" : ""
-        }`}
-        role="progressbar"
-        aria-label={`${name}: ${compactNumber(rawEarned)} of ${compactNumber(
+      <CreditBar
+        counted={rawEarned}
+        required={required}
+        cap={kind === "maximum" ? required : undefined}
+        state={kind === "maximum" ? "none" : state}
+        label={`${name}: ${compactNumber(rawEarned)} of ${compactNumber(
           required,
         )} ${unit}${kind === "maximum" ? " maximum" : ""}`}
-        aria-valuemin={0}
-        aria-valuemax={required}
-        aria-valuenow={Math.min(rawEarned, required)}
-      >
-        <span style={{ width: `${progress}%` }} />
-      </div>
+      />
       {kind === "maximum" && excess > 0 ? (
         <p className="limit-note">
           {compactNumber(earned)} {unit} count toward this limit;{" "}
@@ -11497,288 +10761,14 @@ function RequirementPicker({
   );
 }
 
-function PageGreeting({
-  eyebrow,
-  title,
-  body,
-  action,
-}: {
-  eyebrow: string;
-  title: string;
-  body: string;
-  action?: ReactNode;
-}) {
-  return (
-    <header className="page-greeting">
-      <div>
-        <span className="page-eyebrow">{eyebrow}</span>
-        <h1>{title}</h1>
-        <p>{body}</p>
-      </div>
-      {action}
-    </header>
-  );
-}
-
-function Modal({
-  title,
-  eyebrow,
-  children,
-  onClose,
-}: {
-  title: string;
-  eyebrow: string;
-  children: ReactNode;
-  onClose: () => void;
-}) {
-  const backdropRef = useRef<HTMLDivElement>(null);
-  const dialogRef = useRef<HTMLElement>(null);
-  useSheetDragDismiss(dialogRef, onClose);
-
-  useEffect(() => {
-    const backdrop = backdropRef.current;
-    const dialog = dialogRef.current;
-    if (!backdrop || !dialog) return;
-
-    const previouslyFocused =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    const surroundingElements = backdrop.parentElement
-      ? Array.from(backdrop.parentElement.children).filter(
-          (element): element is HTMLElement =>
-            element instanceof HTMLElement && element !== backdrop,
-        )
-      : [];
-    const priorSurroundingState = surroundingElements.map((element) => ({
-      element,
-      inert: element.inert,
-      ariaHidden: element.getAttribute("aria-hidden"),
-    }));
-    const priorBodyOverflow = document.body.style.overflow;
-
-    for (const element of surroundingElements) {
-      element.inert = true;
-      element.setAttribute("aria-hidden", "true");
-    }
-    document.body.style.overflow = "hidden";
-
-    const focusableSelector = [
-      "a[href]",
-      "button:not([disabled])",
-      "input:not([disabled]):not([type='hidden'])",
-      "select:not([disabled])",
-      "textarea:not([disabled])",
-      "[tabindex]:not([tabindex='-1'])",
-    ].join(",");
-    const getFocusableElements = () =>
-      Array.from(
-        dialog.querySelectorAll<HTMLElement>(focusableSelector),
-      ).filter(
-        (element) =>
-          !element.hasAttribute("hidden") &&
-          element.getAttribute("aria-hidden") !== "true",
-      );
-    const requestedInitialFocus =
-      dialog.querySelector<HTMLElement>("[autofocus]");
-    (requestedInitialFocus ?? dialog).focus({ preventScroll: true });
-
-    const keepFocusInside = (event: KeyboardEvent) => {
-      if (event.key !== "Tab") return;
-      const focusableElements = getFocusableElements();
-      if (focusableElements.length === 0) {
-        event.preventDefault();
-        dialog.focus({ preventScroll: true });
-        return;
-      }
-      const first = focusableElements[0];
-      const last = focusableElements[focusableElements.length - 1];
-      const activeElement =
-        document.activeElement instanceof HTMLElement
-          ? document.activeElement
-          : null;
-
-      if (
-        event.shiftKey &&
-        (activeElement === first ||
-          activeElement === dialog ||
-          !activeElement ||
-          !dialog.contains(activeElement))
-      ) {
-        event.preventDefault();
-        last.focus();
-      } else if (
-        !event.shiftKey &&
-        (activeElement === last ||
-          activeElement === dialog ||
-          !activeElement ||
-          !dialog.contains(activeElement))
-      ) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    dialog.addEventListener("keydown", keepFocusInside);
-    return () => {
-      dialog.removeEventListener("keydown", keepFocusInside);
-      document.body.style.overflow = priorBodyOverflow;
-      for (const state of priorSurroundingState) {
-        state.element.inert = state.inert;
-        if (state.ariaHidden === null) {
-          state.element.removeAttribute("aria-hidden");
-        } else {
-          state.element.setAttribute("aria-hidden", state.ariaHidden);
-        }
-      }
-      if (previouslyFocused?.isConnected) {
-        previouslyFocused.focus({ preventScroll: true });
-      }
-    };
-  }, []);
-
-  return (
-    <div className="modal-backdrop" ref={backdropRef}>
-      <section
-        className="modal-card"
-        ref={dialogRef}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="modal-title"
-      >
-        <header className="modal-header">
-          {/*
-           * Decorative: it says the sheet can be pushed away, and the gesture
-           * and the close button are what actually do it. Hung off the sticky
-           * header so scrolling the sheet cannot carry the handle out of view.
-           */}
-          <span className="sheet-grabber" aria-hidden="true" />
-          <div>
-            <span className="section-kicker">{eyebrow}</span>
-            <h2 id="modal-title">{title}</h2>
-          </div>
-          <button
-            className="modal-close"
-            type="button"
-            aria-label="Close dialog"
-            onClick={onClose}
-          >
-            <Icon name="close" size={19} />
-          </button>
-        </header>
-        <div className="modal-body">{children}</div>
-      </section>
-    </div>
-  );
-}
-
-function EmptyInline({
-  title,
-  body,
-  action,
-  onAction,
-}: {
-  title: string;
-  body: string;
-  action: string;
-  onAction: () => void;
-}) {
-  return (
-    <div className="empty-inline">
-      <span>
-        <Icon name="plus" size={16} />
-      </span>
-      <div>
-        <strong>{title}</strong>
-        <p>{body}</p>
-      </div>
-      <button type="button" onClick={onAction}>
-        {action}
-      </button>
-    </div>
-  );
-}
-
-function EmptyPage({
-  title,
-  body,
-  action,
-  onAction,
-}: {
-  title: string;
-  body: string;
-  action: string;
-  onAction: () => void;
-}) {
-  return (
-    <section className="empty-page">
-      <span className="empty-page-mark" aria-hidden="true">
-        L
-      </span>
-      <span className="section-kicker">Ready when you are</span>
-      <h2>{title}</h2>
-      <p>{body}</p>
-      <button className="button button-primary" type="button" onClick={onAction}>
-        {action}
-      </button>
-    </section>
-  );
-}
-
-/*
- * A rejected save has to be readable from inside the sheet that caused it: the
- * page-level error banner sits under `.modal-backdrop` and is marked inert
- * while a modal is open, so it can never be seen or announced from there. Each
- * modal renders this immediately above its own submit row, and it pulls itself
- * into view because a phone sheet is usually already scrolled to that row.
- */
-function ModalError({ title, message }: { title: string; message: string }) {
-  const errorRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const node = errorRef.current;
-    if (!node) return;
-    node.scrollIntoView({ block: "center" });
-    node.focus({ preventScroll: true });
-  }, [message]);
-
-  return (
-    <div className="modal-error" role="alert" ref={errorRef} tabIndex={-1}>
-      <strong>{title}</strong>
-      <span>{message}</span>
-    </div>
-  );
-}
-
-function EmptyModalState({
-  title,
-  body,
-  action,
-  onAction,
-}: {
-  title: string;
-  body: string;
-  action: string;
-  onAction: () => void;
-}) {
-  return (
-    <div className="empty-modal">
-      <span>
-        <Icon name="plus" size={24} />
-      </span>
-      <h3>{title}</h3>
-      <p>{body}</p>
-      <button className="button button-primary" type="button" onClick={onAction}>
-        {action}
-      </button>
-    </div>
-  );
-}
-
 function LoadingDashboard() {
   return (
-    <div className="view-stack" aria-busy="true" aria-label="Loading iTrack">
+    <div
+      className="view-stack"
+      role="status"
+      aria-busy="true"
+      aria-label="Loading iTrack"
+    >
       <div className="loading-heading">
         <span />
         <strong />
@@ -11795,7 +10785,7 @@ function LoadingDashboard() {
         <span />
         <span />
       </div>
-      <p className="sr-only" role="status">
+      <p className="sr-only">
         Loading your renewal workspace
       </p>
     </div>

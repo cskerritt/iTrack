@@ -20,22 +20,50 @@ test("Home is the current tab, names the credential, and scores it", async ({ pa
   for (const bar of await bars.all()) {
     await expect(bar).toHaveAttribute("aria-valuenow", /^\d+(\.\d+)?$/);
   }
+  // The hero ring counts credits (spec §5.1), the timeline lists the demo
+  // deadline as a real button, and both are named for assistive technology.
+  await expect(
+    page.getByRole("progressbar", { name: "Licensed Clinical Social Worker: 5 of 40 credits counted" }),
+  ).toHaveAttribute("aria-valuenow", "13");
+  await expect(
+    page
+      .getByRole("list", { name: "Deadlines in the next twelve months" })
+      .getByRole("button", { name: /Licensed Clinical Social Worker, Nov 30, 2026/ }),
+  ).toBeVisible();
+  // The demo deadline sits in the axis's first third, so its tooltip and its
+  // decorative name hang from the marker's right (data-edge="start"): the
+  // phone screenshots show the whole name where a centred label was clipped
+  // by the SVG's left edge.
+  await expect(page.locator('.deadline-timeline-list > li[data-edge="start"]')).toHaveCount(1);
+  const markerName = page.locator(".deadline-timeline-marker-name", {
+    hasText: "Licensed Clinical Social Worker",
+  });
+  await expect(markerName).toHaveAttribute("text-anchor", "start");
+  const plotBox = await page.locator(".deadline-timeline-plot svg").boundingBox();
+  const nameBox = await markerName.boundingBox();
+  expect(nameBox?.x).toBeGreaterThanOrEqual(plotBox?.x ?? Infinity);
+  expect((nameBox?.x ?? Infinity) + (nameBox?.width ?? 0)).toBeLessThanOrEqual(
+    (plotBox?.x ?? 0) + (plotBox?.width ?? 0),
+  );
   app.expectNoErrors();
 });
 
-test("View plan pushes the credential and the browser back button returns Home", async ({ page, app }) => {
+test("View plan opens the credential and the browser back button returns Home with focus on its heading", async ({ page, app }) => {
   await app.goto("/");
   await page.getByRole("button", { name: "View plan" }).click();
   await expect(page).toHaveURL(/\/credentials\/[^/]+$/);
-  await expect(page.locator("h1.push-title")).toHaveText("Licensed Clinical Social Worker");
+  const detailHeading = page
+    .getByRole("main")
+    .getByRole("heading", { level: 1, name: "Licensed Clinical Social Worker", exact: true });
+  await expect(detailHeading).toBeVisible();
+  // a11y-03 / a11y-M-02: every navigation lands focus on the new heading.
+  await expect(detailHeading).toBeFocused();
   await expect(page).toHaveTitle("Licensed Clinical Social Worker · iTrack");
   await page.goBack();
   await expect(page).toHaveURL(/^https?:\/\/[^/]+\/$/);
   await expect(page).toHaveTitle("Home · iTrack");
-  // The pushed screen stays mounted while it slides out (screen-exiting,
-  // unmounted on animationend), and it names the credential twice; the
-  // Home heading is unique only once it has left.
-  await expect(page.locator("h1.push-title")).toHaveCount(0);
+  await expect(page.getByRole("main").getByRole("heading", { level: 1 })).toBeFocused();
+  // One screen is mounted at a time, so the hero heading is unique at once.
   await expect(
     page.getByRole("heading", { name: "Licensed Clinical Social Worker", exact: true }),
   ).toBeVisible();

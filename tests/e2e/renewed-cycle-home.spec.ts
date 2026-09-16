@@ -54,7 +54,7 @@ test("after a renewal is accepted, Home shows the successor and the renewed cycl
 
   // The renewed cycle, opened on purpose, shows when it ended — never days.
   await expect(page).toHaveURL(new RegExp(`/credentials/${sourceId}$`));
-  const pushed = page.locator(".screen-pushed");
+  const pushed = page.getByRole("main");
   await expect(pushed.getByRole("heading", { level: 1, name: "E2E custom credential" })).toBeVisible();
   await expect(pushed.getByText("Cycle ended", { exact: true })).toBeVisible();
   await expect(pushed).toContainText("Renewed Jun 15, 2026");

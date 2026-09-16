@@ -1,0 +1,82 @@
+/*
+ * The three ledger faces, self-hosted latin subsets built by
+ * tools/fonts/build-fonts.sh (spec §5.1 Type; audit perf-08; mockup
+ * decision 4). A consumer stylesheet for tools/contrast-audit.mjs: no
+ * colour, no alias, no var() at all. The Fallback faces are the local system
+ * fonts metric-adjusted to the real ones (advance widths scaled to the
+ * frequency-weighted a–z average, line metrics overridden), so the
+ * font-display: swap never moves a line. Static instances: no
+ * font-optical-sizing or font-variation-settings anywhere.
+ */
+@font-face {
+  font-family: "Bricolage Grotesque";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(/fonts/bricolage-grotesque-700-173536fe.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Bricolage Grotesque";
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url(/fonts/bricolage-grotesque-800-202ac87c.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Atkinson Hyperlegible";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(/fonts/atkinson-hyperlegible-400-7d34b8b4.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Atkinson Hyperlegible";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(/fonts/atkinson-hyperlegible-700-532ece55.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Atkinson Hyperlegible";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url(/fonts/atkinson-hyperlegible-400-italic-c8316744.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "iTrack Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(/fonts/itrack-mono-400-92fca17d.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "iTrack Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url(/fonts/itrack-mono-500-ee11a094.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/*
+ * Metric-matched fallbacks (perf-08), printed by tools/fonts/build-fonts.sh:
+ * size-adjust = frequency-weighted a–z advance of the face ÷ the same for the
+ * local fallback; the overrides are the face's hhea metrics ÷ upem ÷
+ * size-adjust. local() matches a full or PostScript name, hence both forms.
+ */
+@font-face { font-family: "Atkinson Hyperlegible Fallback"; src: local("Arial"), local("ArialMT"); size-adjust: 99.69%; ascent-override: 95.30%; descent-override: 29.09%; line-gap-override: 0.00%; }
+@font-face { font-family: "Bricolage Grotesque Fallback"; src: local("Arial"), local("ArialMT"); size-adjust: 102.71%; ascent-override: 90.54%; descent-override: 26.29%; line-gap-override: 0.00%; }
+@font-face { font-family: "iTrack Mono Fallback"; src: local("Menlo"), local("Menlo-Regular"); size-adjust: 99.66%; ascent-override: 102.85%; descent-override: 27.59%; line-gap-override: 0.00%; }

@@ -3,10 +3,18 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { describeError } from "../lib/clientError";
 import { reportClientError } from "./ClientErrorBeacon";
+import { Button } from "./Button";
 
 type ErrorBoundaryState = { error: unknown | null };
+type ErrorBoundaryProps = {
+  children: ReactNode;
+  // Changing the key (the shell passes the current path) clears a caught
+  // error, so a crashed screen recovers on the next navigation.
+  resetKey?: string;
+  fallback?: (error: unknown, reset: () => void) => ReactNode;
+};
 
-export class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryState> {
+export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = { error: null };
 
   static getDerivedStateFromError(error: unknown): ErrorBoundaryState {
@@ -18,13 +26,35 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBound
     console.error("iTrack render error", error, info.componentStack);
   }
 
+  componentDidUpdate(previous: ErrorBoundaryProps) {
+    if (this.state.error !== null && previous.resetKey !== this.props.resetKey) {
+      this.setState({ error: null });
+    }
+  }
+
+  reset = () => this.setState({ error: null });
+
   render() {
     if (this.state.error === null) return this.props.children;
-    return <ErrorFallback error={this.state.error} />;
+    if (this.props.fallback) return this.props.fallback(this.state.error, this.reset);
+    return <ErrorFallback error={this.state.error} onReset={this.reset} />;
   }
 }
 
-export function ErrorFallback({ error, onReset }: { error: unknown; onReset?: () => void }) {
+// The crash surface for the boundary, app/error.tsx and the styleguide
+// sample. The raw message is rendered only inside the disclosure; the
+// visible copy stays the two sentences Wave 1 shipped.
+export function ErrorFallback({
+  error,
+  onReset,
+  title = "Something broke on our side",
+  body = "Your data is safe on the server. Reload to pick up where you left off.",
+}: {
+  error: unknown;
+  onReset?: () => void;
+  title?: string;
+  body?: string;
+}) {
   const details = describeError(error);
   const copyDetails = () => {
     const text = `${details.message}\n${details.stack}\n${window.location.href}\n${new Date().toISOString()}`;
@@ -32,21 +62,25 @@ export function ErrorFallback({ error, onReset }: { error: unknown; onReset?: ()
   };
   return (
     <section className="error-fallback" role="alert">
-      <h1>Something broke on our side</h1>
-      <p>Your data is safe on the server. Reload to pick up where you left off.</p>
+      <h1 className="page-title">{title}</h1>
+      <p>{body}</p>
       <div className="error-fallback-actions">
-        <button className="button button-primary" type="button" onClick={() => window.location.reload()}>
+        <Button variant="primary" onClick={() => window.location.reload()}>
           Reload
-        </button>
-        <button className="button button-outline" type="button" onClick={copyDetails}>
+        </Button>
+        <Button variant="secondary" onClick={copyDetails}>
           Copy details
-        </button>
+        </Button>
         {onReset ? (
-          <button className="button button-outline" type="button" onClick={onReset}>
+          <Button variant="secondary" onClick={onReset}>
             Try again
-          </button>
+          </Button>
         ) : null}
       </div>
+      <details className="error-fallback-details">
+        <summary>Technical details</summary>
+        <pre>{details.message}</pre>
+      </details>
     </section>
   );
 }

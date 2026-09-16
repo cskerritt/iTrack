@@ -2,6 +2,8 @@ import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
 import { ClientErrorBeacon } from "./components/ClientErrorBeacon";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { ToastProvider } from "./components/Toast";
+import { FONT_PRELOADS } from "./lib/fonts";
 import "./globals.css";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -75,15 +77,15 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export const viewport: Viewport = {
   // This colours the browser and OS chrome — the address bar and the
-  // standalone status bar — not anything the app paints. Both schemes now
-  // name the page itself (--paper), which is what the mobile header under the
-  // bar is painted with at `rgb(var(--paper-rgb) / 0.9)`: on a platform where
-  // the status bar sits *inside* the app's own canvas, any bar that is not
-  // the page reads as a stripe. `light dark` lets the UA render form controls
-  // and scrollbars in the matching scheme.
+  // standalone status bar — not anything the app paints. Both schemes name
+  // --paper-deep, the surface the rail and the phone app bar are painted
+  // with (app/styles/tokens.css): on a phone the status bar sits directly on
+  // that bar, so a chrome colour that is not the bar's reads as a stripe.
+  // `light dark` lets the UA render form controls and scrollbars in the
+  // matching scheme.
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f2f2f7" },
-    { media: "(prefers-color-scheme: dark)", color: "#0b0b0e" },
+    { media: "(prefers-color-scheme: light)", color: "#ebe7dc" },
+    { media: "(prefers-color-scheme: dark)", color: "#0f0e0b" },
   ],
   colorScheme: "light dark",
   width: "device-width",
@@ -99,12 +101,31 @@ export default function RootLayout({
   return (
     <html lang="en">
       {/*
-       * No font className: nothing requests a font on the critical path;
-       * --font-ui in globals.css is the system stack.
+       * The four faces on every first paint — body 400/700, display 700/800 —
+       * are preloaded; the rest (mono, the italic) load through @font-face in
+       * app/styles/fonts.css with font-display: swap behind metric-matched
+       * fallbacks, so no font request ever blocks paint. Font fetches are
+       * CORS-mode even same-origin, hence crossOrigin on the preload. The
+       * names come from app/lib/fonts.ts — never next/font, whose cache
+       * tests/dist-hygiene.test.mjs forbids.
        */}
+      <head>
+        {FONT_PRELOADS.map((href) => (
+          <link
+            key={href}
+            rel="preload"
+            href={href}
+            as="font"
+            type="font/woff2"
+            crossOrigin="anonymous"
+          />
+        ))}
+      </head>
       <body>
         <ClientErrorBeacon />
-        <ErrorBoundary>{children}</ErrorBoundary>
+        <ErrorBoundary>
+          <ToastProvider>{children}</ToastProvider>
+        </ErrorBoundary>
       </body>
     </html>
   );

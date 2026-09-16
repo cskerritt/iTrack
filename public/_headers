@@ -4,3 +4,7 @@
 # Keep Vinext's generated immutable asset policy when this source file is copied.
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
+
+# Self-hosted type (spec §5.1): content-hashed names, so the files are immutable.
+/fonts/*
+  Cache-Control: public, max-age=31536000, immutable

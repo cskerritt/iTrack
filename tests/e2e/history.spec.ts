@@ -3,8 +3,8 @@ import { expect, freshIdentity, test } from "./fixtures";
 
 test("History lists the demo record with a labelled Edit control that opens the editor", async ({ page, app }) => {
   await app.goto("/history");
-  await expect(page).toHaveTitle("History · iTrack");
-  await expect(app.tab("History")).toHaveAttribute("aria-current", "page");
+  await expect(page).toHaveTitle("Activity log · iTrack");
+  await expect(app.tab("Activity log")).toHaveAttribute("aria-current", "page");
   await expect(
     page.getByRole("heading", { name: "Your learning, organized as you go." }),
   ).toBeVisible();

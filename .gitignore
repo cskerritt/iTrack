@@ -46,3 +46,8 @@ next-env.d.ts
 # playwright (npm run test:e2e)
 /test-results/
 /playwright-report/
+/tests/e2e/*-snapshots/
+
+# fonts — tools/fonts/build-fonts.sh (venv + intermediates; the subsets under public/fonts are committed)
+/.fonts-venv/
+/.fonts-build/

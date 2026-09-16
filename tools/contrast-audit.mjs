@@ -19,17 +19,20 @@
  * WHICH FILES. `collectStylesheets` walks every .css under app/ (recursively)
  * and the <style> blocks of deploy/railway/pages/*.html. A .css file is a TOKEN
  * file iff its first rule — after comments and any leading `@import …;` /
- * `@charset …;` statements; app/globals.css opens with `@import "tailwindcss";`
- * — is `:root {`. Every page is a token file because each inlines its own
- * :root. Everything else under app/ is a CONSUMER. Today app/globals.css and
- * the five pages qualify; after the Wave 3 split only app/styles/tokens.css and
- * the pages will, and every per-screen stylesheet is a consumer.
+ * `@charset …;` statements — is `:root {`. Every page is a token file because
+ * each inlines its own :root. Everything else under app/ is a CONSUMER: the one
+ * token file under app/ is app/styles/tokens.css, and app/globals.css (imports
+ * + the reset), app/styles/fonts.css, primitives.css, instruments.css,
+ * shell.css, legacy-shared.css and the six screen files (home, credentials,
+ * credential-detail, log-activity, history, account) are consumers, so any
+ * colour literal in them is a violation.
  *
  * TOKEN BLOCKS of a token file are the first `:root {` block and, when present,
  * the `@media (prefers-color-scheme: dark)` block — never a later :root such as
- * globals.css's responsive `@media (max-width: 1040px) { :root … }`. System
- * colour keywords are allowed only inside `@media (forced-colors …)`; a file
- * without that block allows none.
+ * tokens.css's prefers-reduced-motion durations or its LEGACY ALIASES block
+ * (var() references only: no literal can hide there and no claim is read from
+ * it). System colour keywords are allowed only inside `@media (forced-colors …)`;
+ * a file without that block allows none.
  *
  *   node tools/contrast-audit.mjs            audit every stylesheet; exit 1 on any failure or literal
  *   node tools/contrast-audit.mjs --list     also print every passing claim

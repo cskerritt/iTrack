@@ -1,0 +1,169 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700;12..96,800&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; background: #F5F2EA; color: #1C1A17; font-family: "Atkinson Hyperlegible", "Helvetica Neue", Arial, sans-serif; font-size: 16px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+    a { color: #2743B8; text-decoration: none; } a:hover { color: #1B2F86; text-decoration: underline; }
+    .display { font-family: "Bricolage Grotesque", "Helvetica Neue", Arial, sans-serif; letter-spacing: -0.025em; }
+    .mono { font-family: "IBM Plex Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+    .eyebrow { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #5E5A52; font-weight: 700; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 48px; padding: 0 22px; border-radius: 8px; font-weight: 700; font-size: 16px; border: 1px solid transparent; }
+    .btn-primary { background: #2743B8; color: #FFFDF8; }
+    .btn-secondary { background: transparent; color: #1C1A17; border-color: #B9B2A3; }
+    .wrap { width: 1120px; margin: 0 auto; }
+    .h2 { font-size: 34px; font-weight: 700; line-height: 1.1; margin: 0; text-wrap: balance; }
+    .step { display: flex; flex-direction: column; gap: 10px; padding: 24px; background: #FFFDF8; border: 1px solid #DAD5C8; border-radius: 12px; }
+    .trust { display: grid; grid-template-columns: 28px minmax(0,1fr); gap: 14px; align-items: start; }
+    .trust svg { width: 28px; height: 28px; stroke: #2743B8; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+    .mini-row { display: grid; grid-template-columns: 40px minmax(0,1fr) auto; gap: 12px; align-items: center; padding: 12px 14px; background: #FFFDF8; border: 1px solid #DAD5C8; border-radius: 10px; }
+  </style>
+</helmet>
+
+<div style="width: 1440px; background: #F5F2EA; display: flex; flex-direction: column;">
+
+  <header class="wrap" style="display: flex; justify-content: space-between; align-items: center; padding: 22px 0;">
+    <div class="display" style="font-size: 26px; font-weight: 800;"><span style="color: #2743B8;">i</span>Track</div>
+    <nav style="display: flex; align-items: center; gap: 28px; font-size: 15px; font-weight: 700;">
+      <a href="#" style="color: #1C1A17;">How it works</a>
+      <a href="#" style="color: #1C1A17;">Who it's for</a>
+      <a href="#" style="color: #1C1A17;">Log in</a>
+      <div class="btn btn-primary" style="min-height: 42px; font-size: 15px;">Create a free account</div>
+    </nav>
+  </header>
+
+  <!-- Hero -->
+  <section class="wrap" style="display: grid; grid-template-columns: 520px minmax(0,1fr); gap: 56px; align-items: center; padding: 56px 0 72px;">
+    <div style="display: flex; flex-direction: column; gap: 22px;">
+      <div class="eyebrow">Continuing education, on the record</div>
+      <h1 class="display" style="margin: 0; font-size: 64px; font-weight: 800; line-height: 0.98; text-wrap: balance;">Every renewal, accounted for.</h1>
+      <p style="margin: 0; font-size: 19px; color: #5E5A52; max-width: 30em;">iTrack turns your license and certification requirements into a plan, keeps your certificates where you can find them, and hands you a renewal packet when the deadline comes.</p>
+      <div style="display: flex; gap: 12px; align-items: center;">
+        <div class="btn btn-primary">Create a free account</div>
+        <div class="btn btn-secondary">See how it works</div>
+      </div>
+      <div style="font-size: 14px; color: #5E5A52;">Free. No ads. Your records stay yours.</div>
+    </div>
+
+    <!-- Product excerpt -->
+    <div style="display: flex; flex-direction: column; gap: 10px; padding: 22px; background: #EBE7DC; border: 1px solid #DAD5C8; border-radius: 16px; box-shadow: 0 24px 48px -32px rgba(28, 26, 23, 0.35);">
+      <div style="display: flex; justify-content: space-between; align-items: baseline;">
+        <div class="display" style="font-size: 22px; font-weight: 700;">Your renewals</div>
+        <div class="mono" style="font-size: 11px; color: #5E5A52;">Thu, Sep 10</div>
+      </div>
+      <div class="mini-row" style="border-color: #E5C98A;">
+        <svg viewBox="0 0 40 40" style="width: 40px; height: 40px;"><circle cx="20" cy="20" r="16" fill="none" stroke="#F5F2EA" stroke-width="5"/><circle cx="20" cy="20" r="16" fill="none" stroke="#8A5A00" stroke-width="5" stroke-linecap="round" stroke-dasharray="12.6 100.5" transform="rotate(-90 20 20)"/></svg>
+        <div style="display: flex; flex-direction: column;"><div style="font-weight: 700; font-size: 15px;">Licensed Clinical Social Worker</div><div class="mono" style="font-size: 11px; color: #5E5A52;">5 of 40 credits · due Nov 30</div></div>
+        <div class="display" style="font-size: 26px; font-weight: 800; line-height: 1;">82<span style="font-size: 11px; font-weight: 700; color: #5E5A52; margin-left: 4px;">days</span></div>
+      </div>
+      <div class="mini-row">
+        <svg viewBox="0 0 40 40" style="width: 40px; height: 40px;"><circle cx="20" cy="20" r="16" fill="none" stroke="#F5F2EA" stroke-width="5"/><circle cx="20" cy="20" r="16" fill="none" stroke="#2743B8" stroke-width="5" stroke-linecap="round" stroke-dasharray="62.3 100.5" transform="rotate(-90 20 20)"/></svg>
+        <div style="display: flex; flex-direction: column;"><div style="font-weight: 700; font-size: 15px;">Certified Rehabilitation Counselor</div><div class="mono" style="font-size: 11px; color: #5E5A52;">62 of 100 credits · due Mar 31, 2028</div></div>
+        <div class="display" style="font-size: 26px; font-weight: 800; line-height: 1;">567<span style="font-size: 11px; font-weight: 700; color: #5E5A52; margin-left: 4px;">days</span></div>
+      </div>
+      <div class="mini-row">
+        <svg viewBox="0 0 40 40" style="width: 40px; height: 40px;"><circle cx="20" cy="20" r="16" fill="none" stroke="#22694E" stroke-width="5"/><path d="M13 21l5 5 9-10" fill="none" stroke="#22694E" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <div style="display: flex; flex-direction: column;"><div style="font-weight: 700; font-size: 15px;">Certified Life Care Planner</div><div class="mono" style="font-size: 11px; color: #5E5A52;">40 of 40 · renewal sent Aug 28</div></div>
+        <div class="display" style="font-size: 18px; font-weight: 700; color: #22694E;">Sent</div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 6px; padding: 14px; background: #1C1A17; color: #F5F2EA; border-radius: 10px; margin-top: 4px;">
+        <div class="eyebrow" style="color: #C9C2B4;">Best next action</div>
+        <div class="display" style="font-size: 17px; font-weight: 700;">Book a clinical practice course this month.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section style="background: #EBE7DC; border-top: 1px solid #DAD5C8; border-bottom: 1px solid #DAD5C8; padding: 64px 0;">
+    <div class="wrap" style="display: flex; flex-direction: column; gap: 28px;">
+      <div style="display: flex; flex-direction: column; gap: 8px; max-width: 620px;">
+        <div class="eyebrow">How it works</div>
+        <h2 class="display h2">Three steps, then it keeps the books for you.</h2>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px;">
+        <div class="step">
+          <div class="mono" style="font-size: 12px; color: #2743B8; font-weight: 500;">Step 1</div>
+          <div class="display" style="font-size: 21px; font-weight: 700;">Add your credential</div>
+          <p style="margin: 0; color: #5E5A52; font-size: 15px;">Pick it from 170 source-linked templates or describe your own. iTrack lays out the cycle, the credit total, the minimums, and the caps, and asks you the conditional questions the board would.</p>
+        </div>
+        <div class="step">
+          <div class="mono" style="font-size: 12px; color: #2743B8; font-weight: 500;">Step 2</div>
+          <div class="display" style="font-size: 21px; font-weight: 700;">Log what you complete</div>
+          <p style="margin: 0; color: #5E5A52; font-size: 15px;">A course, a conference, a webinar. Attach the certificate once and it counts toward every credential it qualifies for, without double-counting your total.</p>
+        </div>
+        <div class="step">
+          <div class="mono" style="font-size: 12px; color: #2743B8; font-weight: 500;">Step 3</div>
+          <div class="display" style="font-size: 21px; font-weight: 700;">Renew with the packet</div>
+          <p style="margin: 0; color: #5E5A52; font-size: 15px;">When the deadline nears, print a cycle packet with exact balances, every activity, and an inventory of your evidence. Record the submission, then the acceptance, and the next cycle opens clean.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Who it's for + trust -->
+  <section class="wrap" style="display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 64px; padding: 72px 0;">
+    <div style="display: flex; flex-direction: column; gap: 18px;">
+      <div class="eyebrow">Who it's for</div>
+      <h2 class="display h2">Anyone who renews a license or a certification.</h2>
+      <p style="margin: 0; color: #5E5A52;">Counselors, social workers, nurses, EMS, accountants, planners, safety and quality professionals, and 40 more profession labels across 98 issuing bodies. Seventy-nine templates are state-specific for California, Florida, New Jersey, New York, Pennsylvania, and Texas; the rest are national or global.</p>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px;">
+        <span class="mono" style="font-size: 12px; padding: 5px 10px; border: 1px solid #DAD5C8; border-radius: 999px; background: #FFFDF8;">CRC</span>
+        <span class="mono" style="font-size: 12px; padding: 5px 10px; border: 1px solid #DAD5C8; border-radius: 999px; background: #FFFDF8;">LCSW</span>
+        <span class="mono" style="font-size: 12px; padding: 5px 10px; border: 1px solid #DAD5C8; border-radius: 999px; background: #FFFDF8;">NREMT</span>
+        <span class="mono" style="font-size: 12px; padding: 5px 10px; border: 1px solid #DAD5C8; border-radius: 999px; background: #FFFDF8;">CPA</span>
+        <span class="mono" style="font-size: 12px; padding: 5px 10px; border: 1px solid #DAD5C8; border-radius: 999px; background: #FFFDF8;">RN</span>
+        <span class="mono" style="font-size: 12px; padding: 5px 10px; border: 1px solid #DAD5C8; border-radius: 999px; background: #FFFDF8;">CLCP</span>
+        <span class="mono" style="font-size: 12px; padding: 5px 10px; border: 1px solid #DAD5C8; border-radius: 999px; background: #FFFDF8;">ABVE</span>
+        <span class="mono" style="font-size: 12px; padding: 5px 10px; border: 1px solid #DAD5C8; border-radius: 999px; background: #FFFDF8;">+ custom</span>
+      </div>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 22px;">
+      <div class="eyebrow">Why trust it</div>
+      <div class="trust">
+        <svg viewBox="0 0 28 28"><path d="M6 6h11l5 5v11H6z"/><path d="M17 6v5h5M10 16h8M10 20h5"/></svg>
+        <div><div style="font-weight: 700;">Rules link to their source</div><div style="color: #5E5A52; font-size: 15px;">Every template cites the board's published requirements and shows when it was last reviewed. The board's current instructions always control.</div></div>
+      </div>
+      <div class="trust">
+        <svg viewBox="0 0 28 28"><rect x="6" y="12" width="16" height="11" rx="2"/><path d="M9 12V9a5 5 0 0 1 10 0v3"/></svg>
+        <div><div style="font-weight: 700;">Your evidence is private</div><div style="color: #5E5A52; font-size: 15px;">Certificates and photos are stored for you alone. Nothing is shared, sold, or used for advertising.</div></div>
+      </div>
+      <div class="trust">
+        <svg viewBox="0 0 28 28"><circle cx="14" cy="14" r="9"/><path d="M14 10v5l3 2"/></svg>
+        <div><div style="font-weight: 700;">An organizer, not an authority</div><div style="color: #5E5A52; font-size: 15px;">iTrack never decides that a course is eligible or that a renewal is approved. It keeps the record so you can show your work.</div></div>
+      </div>
+      <div class="trust">
+        <svg viewBox="0 0 28 28"><path d="M5 14h18M14 5v18"/></svg>
+        <div><div style="font-weight: 700;">Free, with no ads</div><div style="color: #5E5A52; font-size: 15px;">Every feature is available to every account. Export your records at any time.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- After signup -->
+  <section style="background: #1C1A17; color: #F5F2EA; padding: 64px 0;">
+    <div class="wrap" style="display: grid; grid-template-columns: minmax(0,1fr) 380px; gap: 64px; align-items: center;">
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <div class="eyebrow" style="color: #C9C2B4;">What happens after you sign up</div>
+        <h2 class="display h2" style="color: #F5F2EA;">Confirm your email, add one credential, log one course. Ten minutes.</h2>
+        <p style="margin: 0; color: #C9C2B4;">You'll get a confirmation email from iTrack. Once you confirm, the app opens on an empty ledger with one prompt: add your first credential. Reminders are off until you turn them on.</p>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 12px;">
+        <div class="btn" style="background: #F5F2EA; color: #1C1A17;">Create a free account</div>
+        <div style="text-align: center; font-size: 14px; color: #C9C2B4;">Already have one? <a href="#" style="color: #F5F2EA; font-weight: 700;">Log in</a></div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="wrap" style="display: flex; justify-content: space-between; align-items: center; padding: 28px 0 40px; font-size: 14px; color: #5E5A52;">
+    <div>© 2026 iTrack · <a href="#">Privacy</a> · <a href="#">Terms</a> · <a href="#">support@itrackceu.com</a></div>
+    <div>Rule templates are reviewed on a published schedule. Confirm requirements with your issuing authority.</div>
+  </footer>
+</div>
+</x-dc>
+</body>
+</html>
