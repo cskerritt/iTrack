@@ -12,6 +12,7 @@ import {
 import { createPortal } from "react-dom";
 import { createModalStack } from "../lib/modalStack";
 import { Icon } from "./Icon";
+import { usePublishedHeight } from "./usePublishedHeight";
 
 // The one dialog shell (spec §5.2 Modal; Sheet is its presentation below
 // 540px, CSS only — see the MODAL / SHEET section of app/styles/primitives.css).
@@ -36,6 +37,10 @@ import { Icon } from "./Icon";
 //   backdrop closes a clean form; a dirty one stays. Dirtiness is a FormData
 //   snapshot of the dialog's first <form>, taken after mount, unless the
 //   owner hands in `isDirty`.
+// - The header's clearance (WCAG 2.2 2.4.11). The header is sticky inside the
+//   card, and the card is what scrolls, so the card's scroll-padding-top
+//   (primitives.css) has to clear the header's rendered height; that height
+//   is published on the card as --modal-header-height.
 // - Its accessible name: aria-labelledby points at a useId()-based id, one per
 //   instance (architecture-14).
 // Nothing here holds "closing" state: `onClose` may refuse (the log sheet
@@ -98,6 +103,7 @@ export function Modal({
   const titleId = `${id}-title`;
   const backdropRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
   const pressTarget = useRef<EventTarget | null>(null);
   const snapshot = useRef<string | null>(null);
   const onCloseRef = useRef(onClose);
@@ -110,6 +116,11 @@ export function Modal({
       ? document.activeElement
       : null,
   );
+
+  // A field reached by Shift+Tab, or an error summary scrolled into view,
+  // must never land behind the sticky header: the card's scroll padding reads
+  // the height published here.
+  usePublishedHeight(headerRef, "--modal-header-height", dialogRef);
 
   // Read through refs so the mount effect attaches its listeners once and
   // still calls the owner's latest closure (the pattern the old drag hook
@@ -265,7 +276,7 @@ export function Modal({
         tabIndex={-1}
         data-size={size}
       >
-        <header className="modal-header">
+        <header ref={headerRef} className="modal-header">
           <div>
             {eyebrow ? <span className="modal-eyebrow">{eyebrow}</span> : null}
             <h2 id={titleId} className="modal-title">

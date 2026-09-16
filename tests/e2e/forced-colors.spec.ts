@@ -108,3 +108,42 @@ test("check rows and instruments keep their state under forced colours", async (
   }
   app.expectNoErrors();
 });
+
+// WCAG 2.4.7 under forced colours: the current tab keeps a 2px inset
+// Highlight line (shell.css) once its card fill and inset shadow are forced
+// away, and that rule outranks the global :focus-visible ring — so, without
+// its own focused rule, the focused current tab would look exactly like the
+// unfocused one. Focused, it wears the shared ring, 3px and 2px out, the same
+// geometry as every other focused control. Every outline takes the forced
+// colour, so the geometry is the whole difference and is what is asserted.
+// Programmatic focus alone is not :focus-visible in Chromium; a keyboard
+// round trip (Tab away, Shift+Tab back) is.
+test("the current tab shows a focus ring under forced colours (WCAG 2.4.7)", async ({ page, app }) => {
+  await page.emulateMedia({ forcedColors: "active" });
+  await app.goto("/");
+  const current = app.tab("Home");
+  await expect(current).toHaveAttribute("aria-current", "page");
+  const outline = (tab: typeof current) =>
+    tab.evaluate((element) => {
+      const computed = getComputedStyle(element);
+      return {
+        style: computed.outlineStyle,
+        width: parseFloat(computed.outlineWidth),
+        offset: parseFloat(computed.outlineOffset),
+      };
+    });
+  const idle = await outline(current);
+  expect(idle, "unfocused, the current tab wears its 2px inset line").toEqual({ style: "solid", width: 2, offset: -2 });
+  await current.focus();
+  await page.keyboard.press("Tab");
+  const other = app.tab("Credentials");
+  await expect(other).toBeFocused();
+  const otherFocused = await outline(other);
+  await page.keyboard.press("Shift+Tab");
+  await expect(current).toBeFocused();
+  const focused = await outline(current);
+  expect(focused, "focused, the current tab wears the shared ring — 3px, 2px out").toEqual({ style: "solid", width: 3, offset: 2 });
+  expect(focused, "the same ring every other focused tab wears").toEqual(otherFocused);
+  expect(focused).not.toEqual(idle);
+  app.expectNoErrors();
+});

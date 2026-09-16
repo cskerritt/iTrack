@@ -213,7 +213,10 @@ dialogs, a focused error summary, every ring size and state).
   `isComposing`; a pointer-down-and-click on the backdrop closes a clean form
   (`isDirty()` false, else a `FormData` snapshot of the dialog's first form); initial
   focus lands on `[data-autofocus]`, else the card; focus returns to the opener, captured
-  before any child's `autoFocus` commits. Classes `.modal-backdrop .modal-card
+  before any child's `autoFocus` commits. The header is sticky inside the scrolling card,
+  so the card's `scroll-padding-top` clears the height the header publishes on the card
+  as `--modal-header-height`, plus 12 px — a field reached by Shift+Tab never sits under
+  it (WCAG 2.2 2.4.11). Classes `.modal-backdrop .modal-card
   .modal-header .modal-eyebrow .modal-title .modal-body .modal-close`. Below 540 px the
   card is a bottom sheet: full width, 16 px top radius, no grabber, no drag, no slide.
   Every page root that must go inert carries `data-app-root`.
@@ -251,7 +254,10 @@ dialogs, a focused error summary, every ring size and state).
   through `routeTitle()` from the route context (or `documentTitle` off-route) and moves
   focus to its `h1[tabindex="-1"]` after every navigation — never on first paint, so the
   skip link stays the first Tab stop. At ≤ 820 px it *is* the sticky paper-deep app bar,
-  brand at right, lede hidden, actions wrapped beneath: one H1 per page.
+  brand at right, lede hidden, actions wrapped beneath: one H1 per page. It publishes its
+  rendered height on `<html>` as `--app-bar-height` (`usePublishedHeight`, a
+  `ResizeObserver`; removed on unmount), which the root's `scroll-padding-top` clears at
+  ≤ 820 px so a focused control never lands behind the bar (WCAG 2.2 2.4.11).
 - **Rail / BottomNav** (`Rail.tsx`, `BottomNav.tsx`, `NavItem.tsx`, `Brand.tsx`,
   `AppShell.tsx`) — both navs are `aria-label="Primary navigation"` and server-rendered;
   items are real links (`<a class="nav-item" href aria-current="page">`; a modified click
@@ -335,8 +341,12 @@ dialogs, a focused error summary, every ring size and state).
   `.bottom-nav` is fixed on `--card` with a 1 px top line — Home · Credentials · the 52 px
   accent Log button · Activity · Account, 22 px icons with `--text-2xs` labels;
   `.app-main` pads its bottom by `--bottom-nav-height` + 24 px + the safe-area inset,
-  and the toast region sits above the bar by the same token + 12 px. Every
-  `env(safe-area-inset-*)` use is kept.
+  and the toast region sits above the bar by the same token + 12 px. The root's scroll
+  padding clears both bars for every focus scroll and `scrollIntoView` (WCAG 2.2 2.4.11):
+  `scroll-padding-top` is the measured `--app-bar-height` + 12 px (the bar is 77 px on
+  Home and 158 px where a primary action wraps under a two-line title, so it is measured,
+  not declared) and `scroll-padding-bottom` is `--bottom-nav-height` + 12 px + the
+  safe-area inset. Every `env(safe-area-inset-*)` use is kept.
 - Navigation is ordinary routing (`app/lib/useNavigation.ts`): `route`, `navigations`,
   `setTab(tab, { replace? })`, `openCredential(id, { replace? })`, `back()`,
   `scrubQuery()` over `pushState` / `replaceState` / `popstate`; a navigation to a URL
@@ -374,14 +384,17 @@ Each consumer that paints a colour-carried meaning owns a `@media (forced-colors
 block; the audit allows system colour keywords there and nowhere else. `instruments.css`:
 the ring arc and bar fill are `Highlight` with `forced-color-adjust: none`, the trough
 `ButtonFace`, the compact pill dot `Highlight`. `shell.css`: the bottom-nav Log button is
-a `ButtonText` fill with a `ButtonFace` glyph, and the active nav item keeps a `Highlight`
-outline. `legacy-shared.css`: the legacy custom check rows (`.custom-check`,
-`.requirement-check`, the segmented, check-grid and condition spans) are `Canvas` /
-`CanvasText` with a `ButtonText` border when unchecked, `Highlight` / `HighlightText`
-when checked, and the check glyph is hidden while unchecked. The `Checkbox` primitive
-needs no rule: it is a native input. `tokens.css` carries no forced-colours block
+a `ButtonText` fill with a `ButtonFace` glyph, and the active nav item keeps a 2 px inset
+`Highlight` outline — focused, it wears the shared 3 px ring 2 px out instead, so focus
+still reads once every outline takes the forced colour (WCAG 2.4.7). `legacy-shared.css`:
+the legacy custom check rows (`.custom-check`, `.requirement-check`, the segmented,
+check-grid and condition spans) are `Canvas` / `CanvasText` with a `ButtonText` border
+when unchecked, `Highlight` / `HighlightText` when checked, and the check glyph is hidden
+while unchecked. The `Checkbox` primitive needs no rule: it is a native input.
+`tokens.css` carries no forced-colours block
 (`tests/contrast-audit.test.mjs` pins that). `tests/e2e/forced-colors.spec.ts` proves a
-checked and an unchecked row differ and a ring's arc still reads against its track.
+checked and an unchecked row differ, a ring's arc still reads against its track, and the
+focused current tab differs from the unfocused one.
 
 ## Tests
 
@@ -413,8 +426,11 @@ and `phone-light` at 390×844), against the dev server on 3100
 critical violations on `/`, `/credentials`, `/credentials/:id`, `/history`, `/profile`,
 `/nonexistent`, `/styleguide`, the Log activity sheet and the load-failure state),
 `reflow.spec.ts` (nothing scrolls sideways at 320 px), `forced-colors.spec.ts`,
-`fonts.spec.ts`, `shell.spec.ts`, `primitives.spec.ts`, `toast.spec.ts`,
-`instruments.spec.ts`, `error-surfaces.spec.ts`, plus the screen specs.
+`fonts.spec.ts`, `shell.spec.ts` (including a Tab and Shift+Tab walk of Home and the
+Activity log in which no bar covers the focused control, and the `--app-bar-height`
+mirror on three bar shapes), `primitives.spec.ts` (including the same walk inside the
+Log sheet against its sticky header), `toast.spec.ts`, `instruments.spec.ts`,
+`error-surfaces.spec.ts`, plus the screen specs.
 `WAVE3_SCREENSHOTS=1 E2E_BASE_URL=http://localhost:3100 npx playwright test
 tests/e2e/screenshots.spec.ts` writes the 32 gate screenshots under `docs/design/wave3/`;
 `WAVE3_PARITY=1 E2E_BASE_URL=http://localhost:3100 npx playwright test

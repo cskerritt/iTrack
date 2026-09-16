@@ -2,10 +2,12 @@
 // spread across the shell: focus return to the opener after every close path
 // (a11y-02), an Escape that closes only the top-most dialog and reaches every
 // sheet including install help (a11y-07, architecture-10), a backdrop press
-// that closes a clean form and is ignored on a dirty one (app-ux-23), and a
-// per-instance accessible name (architecture-14). Read-only against the demo
-// workspace: nothing here submits a form. Every case runs in all four
-// projects; below 540px the same dialog is the bottom sheet.
+// that closes a clean form and is ignored on a dirty one (app-ux-23), a
+// per-instance accessible name (architecture-14), and a sticky header that
+// never covers the field focus scrolled under it (WCAG 2.2 2.4.11).
+// Read-only against the demo workspace: nothing here submits a form. Every
+// case runs in all four projects; below 540px the same dialog is the bottom
+// sheet.
 import { expect, test } from "./fixtures";
 
 // Profile's install control is named by the push state the browser reports:
@@ -289,6 +291,82 @@ test("the personal-task editor validates inline instead of with native bubbles",
   await summary.getByRole("link", { name: "Enter a task name" }).click();
   await expect(title).toBeFocused();
   // Read-only against the demo workspace: the sheet is closed, never saved.
+  await page.keyboard.press("Escape");
+  await expect(sheet).toHaveCount(0);
+  app.expectNoErrors();
+});
+
+// ---------------------------------------------------------------------------
+// WCAG 2.2 2.4.11 (Focus Not Obscured). The card is the sheet's scroll
+// container and its header is sticky inside it, so a field that Shift+Tab
+// brings to the card's top edge would sit under the header. The card's
+// scroll-padding-top (primitives.css) clears the height Modal publishes as
+// --modal-header-height. The Log sheet is the longest dialog in the app and
+// scrolls at every project viewport; walked forward and back, no field in
+// its body may share a pixel with the header while it holds focus.
+// ---------------------------------------------------------------------------
+
+test("the sheet's sticky header never covers the field a Tab or Shift+Tab lands on (WCAG 2.2 2.4.11)", async ({ page, app }) => {
+  await app.goto("/");
+  const sheet = await app.openLog();
+  const card = page.locator(".modal-card");
+  const geometry = await card.evaluate((element) => {
+    const header = element.querySelector(".modal-header");
+    if (!header) throw new Error("the sheet did not render its header");
+    return {
+      scrolls: element.scrollHeight > element.clientHeight,
+      headerHeight: header.getBoundingClientRect().height,
+      headerPosition: getComputedStyle(header).position,
+      padding: parseFloat(getComputedStyle(element).scrollPaddingTop),
+      // Modal.tsx's own tab order: what keepFocusInside cycles through.
+      controls: element.querySelectorAll(
+        "a[href],button:not([disabled]),input:not([disabled]):not([type='hidden']),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex='-1'])",
+      ).length,
+    };
+  });
+  expect(geometry.scrolls, "the Log sheet scrolls inside its card at this viewport").toBe(true);
+  expect(geometry.headerPosition).toBe("sticky");
+  expect(geometry.padding, "the card clears the header plus 12px of air").toBeCloseTo(geometry.headerHeight + 12, 1);
+  expect(geometry.controls).toBeGreaterThan(10);
+
+  const focusedAgainstHeader = () =>
+    page.evaluate(() => {
+      const active = document.activeElement;
+      const header = document.querySelector(".modal-header");
+      if (!(active instanceof HTMLElement) || !header) return null;
+      const rect = active.getBoundingClientRect();
+      const bar = header.getBoundingClientRect();
+      const name = active.getAttribute("name") ?? active.getAttribute("aria-label") ?? active.textContent ?? "";
+      return {
+        control: `${active.tagName.toLowerCase()} "${name.trim().slice(0, 40)}"`,
+        inBody: active.closest(".modal-body") !== null,
+        hidden:
+          rect.top < bar.bottom && rect.bottom > bar.top && rect.left < bar.right && rect.right > bar.left,
+        rect: { top: rect.top, bottom: rect.bottom },
+        header: { top: bar.top, bottom: bar.bottom },
+      };
+    });
+  const walk = async (key: "Tab" | "Shift+Tab") => {
+    let visited = 0;
+    for (let step = 1; step < geometry.controls; step += 1) {
+      await page.keyboard.press(key);
+      const focused = await focusedAgainstHeader();
+      if (!focused || !focused.inBody) continue;
+      visited += 1;
+      expect(
+        focused.hidden,
+        `${key} ${step}: ${focused.control} at ${JSON.stringify(focused.rect)} is behind the header at ${JSON.stringify(focused.header)}`,
+      ).toBe(false);
+    }
+    return visited;
+  };
+  // From the header's close button — the first control — to the last, and
+  // back: the card scrolls to its bottom and returns to its top.
+  await sheet.getByRole("button", { name: "Close dialog" }).focus();
+  expect(await walk("Tab"), "the forward walk visited the body's fields").toBeGreaterThan(10);
+  expect(await card.evaluate((element) => element.scrollTop), "the walk scrolled the card").toBeGreaterThan(0);
+  expect(await walk("Shift+Tab"), "the backward walk visited the body's fields").toBeGreaterThan(10);
+  // Read-only against the demo workspace: closed, never saved.
   await page.keyboard.press("Escape");
   await expect(sheet).toHaveCount(0);
   app.expectNoErrors();

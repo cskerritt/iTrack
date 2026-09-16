@@ -249,6 +249,26 @@
     gap: 12px;
   }
 
+  /*
+   * WCAG 2.2 2.4.11 (Focus Not Obscured): the app bar above and the bottom
+   * nav below are the two author-created bars a control can be scrolled
+   * under when Tab, a focused error summary or scrollIntoView brings it to
+   * the scrollport's edge. Scroll padding on the root keeps every such scroll
+   * clear of both, with 12px of air. The bar's height follows its title and
+   * the actions wrapped beneath it (77px on Home, 158px where a primary
+   * action wraps under a two-line title), so PageHeader publishes the
+   * rendered height on <html> as --app-bar-height — absent, and so 0, when
+   * no bar is mounted; the nav is the fixed --bottom-nav-height (tokens.css)
+   * above the safe-area inset. shell.spec.ts sweeps Home and the Activity log
+   * with Tab and Shift+Tab and checks the mirror on three bar shapes.
+   */
+  html {
+    scroll-padding-top: calc(var(--app-bar-height, 0px) + 12px);
+    scroll-padding-bottom: calc(
+      var(--bottom-nav-height) + 12px + env(safe-area-inset-bottom)
+    );
+  }
+
   .app-main-solo {
     padding-top: calc(48px + env(safe-area-inset-top));
   }
@@ -381,6 +401,18 @@
   .nav-item[aria-current="page"] {
     outline: 2px solid Highlight;
     outline-offset: -2px;
+  }
+
+  /*
+   * Focused, the current tab wears the shared ring — 3px, 2px out — instead
+   * of its 2px inset line, so the focus reads (WCAG 2.4.7): the rule above
+   * outranks the global :focus-visible and would otherwise keep the focused
+   * tab identical to the unfocused one. Both outlines take the forced colour;
+   * the geometry is what differs. forced-colors.spec.ts Tabs onto the tab.
+   */
+  .nav-item[aria-current="page"]:focus-visible {
+    outline-width: 3px;
+    outline-offset: 2px;
   }
 }
 

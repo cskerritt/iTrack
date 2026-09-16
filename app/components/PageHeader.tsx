@@ -3,6 +3,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { Brand } from "./Brand";
 import { useRouteAnnouncement } from "./RouteAnnouncement";
+import { usePublishedHeight } from "./usePublishedHeight";
 import { buildPath } from "../lib/navigation";
 import { routeTitle } from "../lib/routeTitle";
 
@@ -26,6 +27,7 @@ export function PageHeader({
 }) {
   const announcement = useRouteAnnouncement();
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
   const route = announcement?.route ?? null;
   const credentialName = announcement?.credentialName ?? null;
   const navigations = announcement?.navigations ?? 0;
@@ -48,8 +50,16 @@ export function PageHeader({
     headingRef.current?.focus({ preventScroll: true });
   }, [routeKey, navigations]);
 
+  // At ≤ 820px this header is the sticky app bar, and the root's
+  // scroll-padding-top (shell.css) clears --app-bar-height so a control that
+  // Tab or scrollIntoView brings to the top edge never lands behind it (WCAG
+  // 2.2 2.4.11). The height follows the title's wrap and the actions wrapped
+  // beneath it, so it is measured rather than declared; the desktop consumes
+  // nothing — the header is in flow there.
+  usePublishedHeight(headerRef, "--app-bar-height");
+
   return (
-    <header className="page-header">
+    <header ref={headerRef} className="page-header">
       <div className="page-header-text">
         {eyebrow ? <div className="eyebrow">{eyebrow}</div> : null}
         <h1 ref={headingRef} tabIndex={-1} className="page-title">
